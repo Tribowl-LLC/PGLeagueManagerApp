@@ -227,10 +227,10 @@ function NavBadge({ count, isCollapsed }: { count: number; isCollapsed: boolean 
     <span
       data-testid="nav-badge"
       className={cn(
-        "inline-flex items-center justify-center rounded-full bg-red-500 text-white font-semibold tabular-nums",
+        "inline-flex items-center justify-center rounded-full bg-danger-500 text-white font-semibold tabular-nums",
         isCollapsed
-          ? "absolute -top-1 -right-1 min-w-[18px] h-[18px] text-[10px] px-1"
-          : "ml-auto min-w-[20px] h-5 px-1.5 text-xs"
+          ? "absolute -top-1 -right-1 min-w-4.5 h-4.5 navigation-badge px-1"
+          : "ml-auto min-w-5 h-5 px-1.5 text-xs"
       )}
       aria-label={`${count} pending`}
     >
@@ -285,25 +285,25 @@ function NavLeafRow({
       title={effectiveCollapsed ? item.label : undefined}
       className={cn(
         "flex w-full items-center gap-3 rounded-md transition-all duration-200 group no-underline",
-        "focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0f172a]",
+        "focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent-400 focus-visible:ring-offset-2 focus-visible:ring-offset-navigation-deep",
         effectiveCollapsed
           ? "relative justify-center p-2.5"
           : isSub
             ? "pl-9 pr-3 py-2"
             : "px-3 py-2.5",
         isActive
-          ? "bg-indigo-500/10 text-indigo-400"
-          : "text-slate-300 hover:bg-slate-800 hover:text-white"
+          ? "bg-brand-accent-500/10 text-brand-accent-400"
+          : "text-navigation-300 hover:bg-navigation-800 hover:text-white"
       )}
     >
       <item.icon
         className={cn(
           "size-5 shrink-0",
-          isActive ? "text-indigo-400" : "text-slate-400 group-hover:text-slate-300"
+          isActive ? "text-brand-accent-400" : "text-navigation-400 group-hover:text-navigation-300"
         )}
       />
       {!effectiveCollapsed && (
-        <span className={cn("font-medium", isSub ? "text-[13px]" : "text-sm")}>
+        <span className={cn("font-medium", isSub ? "navigation-subitem" : "text-sm")}>
           {item.label}
         </span>
       )}
@@ -362,17 +362,17 @@ function NavSubMenu({
             aria-haspopup="menu"
             className={cn(
               "flex w-full items-center gap-3 rounded-md transition-all duration-200 group relative justify-center p-2.5",
-              "focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0f172a]",
+              "focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent-400 focus-visible:ring-offset-2 focus-visible:ring-offset-navigation-deep",
               childActive
-                ? "bg-indigo-500/10 text-indigo-400"
-                : "text-slate-300 hover:bg-slate-800 hover:text-white"
+                ? "bg-brand-accent-500/10 text-brand-accent-400"
+                : "text-navigation-300 hover:bg-navigation-800 hover:text-white"
             )}
             title={item.label}
           >
             <item.icon
               className={cn(
                 "size-5 shrink-0",
-                childActive ? "text-indigo-400" : "text-slate-400 group-hover:text-slate-300"
+                childActive ? "text-brand-accent-400" : "text-navigation-400 group-hover:text-navigation-300"
               )}
             />
             <NavBadge count={aggregatedBadge} isCollapsed />
@@ -382,9 +382,10 @@ function NavSubMenu({
           side="right"
           align="start"
           sideOffset={8}
-          className="w-56 p-1 bg-[#0f172a] border-slate-800 text-slate-300"
+          variant="sidebar"
+          className="w-56"
         >
-          <div className="px-3 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+          <div className="px-3 py-2 text-xs font-semibold text-navigation-500 uppercase tracking-wider">
             {item.label}
           </div>
           <div className="flex flex-col gap-0.5">
@@ -418,16 +419,16 @@ function NavSubMenu({
           aria-expanded={userOpen}
           className={cn(
             "flex w-full items-center gap-3 rounded-md transition-all duration-200 group px-3 py-2.5",
-            "focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0f172a]",
+            "focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent-400 focus-visible:ring-offset-2 focus-visible:ring-offset-navigation-deep",
             childActive
-              ? "bg-indigo-500/10 text-indigo-400"
-              : "text-slate-300 hover:bg-slate-800 hover:text-white"
+              ? "bg-brand-accent-500/10 text-brand-accent-400"
+              : "text-navigation-300 hover:bg-navigation-800 hover:text-white"
           )}
         >
           <item.icon
             className={cn(
               "size-5 shrink-0",
-              childActive ? "text-indigo-400" : "text-slate-400 group-hover:text-slate-300"
+              childActive ? "text-brand-accent-400" : "text-navigation-400 group-hover:text-navigation-300"
             )}
           />
           <span className="font-medium text-sm">{item.label}</span>
@@ -436,14 +437,14 @@ function NavSubMenu({
           )}
           <ChevronDown
             className={cn(
-              "size-4 shrink-0 text-slate-500 transition-transform",
+              "size-4 shrink-0 text-navigation-500 transition-transform",
               userOpen ? "rotate-180" : "rotate-0",
               !userOpen && aggregatedBadge > 0 ? "ml-1" : "ml-auto"
             )}
           />
         </button>
       </CollapsibleTrigger>
-      <CollapsibleContent className="overflow-hidden data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-top-1 data-[state=open]:slide-in-from-top-1">
+      <CollapsibleContent animation="slide" className="overflow-hidden">
         <div className="flex flex-col gap-0.5 mt-0.5">
           {subItems.map((sub) => (
             <NavLeafRow
@@ -524,7 +525,7 @@ function SidebarNav({
     <nav className="flex-1 py-6 px-3 flex flex-col gap-1 overflow-y-auto">
       {topItems.map(renderItem)}
       {bottomItems.length > 0 && (
-        <div className="mt-auto pt-4 flex flex-col gap-1 border-t border-slate-800/60">
+        <div className="mt-auto pt-4 flex flex-col gap-1 border-t border-navigation-800/60">
           {bottomItems.map(renderItem)}
         </div>
       )}
@@ -631,20 +632,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
       className="w-full h-auto max-h-12 object-contain"
     />
   ) : (
-    <div className="size-10 rounded-md bg-indigo-500 flex items-center justify-center shadow-sm">
+    <div className="size-10 rounded-md bg-brand-accent-500 flex items-center justify-center shadow-sm">
       <span className="text-sm font-bold text-white">{orgInitials}</span>
     </div>
   );
 
   return (
-    <div className="min-h-screen bg-[#f8fafc] text-slate-900 font-sans flex overflow-hidden">
+    <div className="min-h-screen bg-app-shell text-navigation-900 font-sans flex overflow-hidden">
       <aside
         className={cn(
-          "transition-all duration-300 ease-in-out bg-[#0f172a] text-slate-300 flex-col border-r border-slate-800 shadow-xl z-50 shrink-0 fixed top-0 bottom-0 left-0 hidden md:flex",
+          "transition-all duration-300 ease-in-out bg-navigation-deep text-navigation-300 flex-col border-r border-navigation-800 shadow-xl z-50 shrink-0 fixed top-0 bottom-0 left-0 hidden md:flex",
           isCollapsed ? "w-20" : "w-64"
         )}
       >
-        <div className="border-b border-slate-800/60 shrink-0">
+        <div className="border-b border-navigation-800/60 shrink-0">
           <div className="flex items-center justify-center p-3">
             {logoElement}
           </div>
@@ -652,7 +653,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <button type="button"
               onClick={toggleSidebar}
               aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-              className="p-1 rounded-md hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
+              className="p-1 rounded-md hover:bg-navigation-800 text-navigation-400 hover:text-white transition-colors"
             >
               <Menu className="size-4" />
             </button>
@@ -673,7 +674,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </Suspense>
         </ErrorBoundary>
 
-        <div className="p-4 border-t border-slate-800/60 shrink-0">
+        <div className="p-4 border-t border-navigation-800/60 shrink-0">
           {currentUserResponse?.data && (
             <div className={cn("flex items-center", isCollapsed ? "justify-center" : "gap-3")}>
               <UserProfileMenu user={currentUserResponse.data} />
@@ -682,7 +683,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <span className="text-sm font-medium text-white truncate">
                     {currentUserResponse.data.name || currentUserResponse.data.email}
                   </span>
-                  <span className="text-xs text-slate-500 truncate">
+                  <span className="text-xs text-navigation-500 truncate">
                     {currentUserResponse.data.email}
                   </span>
                 </div>
@@ -693,9 +694,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </aside>
 
       <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
-        <SheetContent side="left" className="w-72 p-0 bg-[#0f172a] text-slate-300 border-slate-800 [&>button]:text-slate-400 [&>button]:hover:text-white">
+        <SheetContent side="left" variant="sidebar" className="w-72">
           <SheetTitle className="sr-only">Navigation Menu</SheetTitle>
-          <div className="border-b border-slate-800/60 shrink-0">
+          <div className="border-b border-navigation-800/60 shrink-0">
             <div className="flex items-center justify-center p-3">
               {logoElement}
             </div>
@@ -716,7 +717,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             </Suspense>
           </ErrorBoundary>
 
-          <div className="p-4 border-t border-slate-800/60 shrink-0">
+          <div className="p-4 border-t border-navigation-800/60 shrink-0">
             {currentUserResponse?.data && (
               <div className="flex items-center gap-3">
                 <UserProfileMenu user={currentUserResponse.data} />
@@ -724,7 +725,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <span className="text-sm font-medium text-white truncate">
                     {currentUserResponse.data.name || currentUserResponse.data.email}
                   </span>
-                  <span className="text-xs text-slate-500 truncate">
+                  <span className="text-xs text-navigation-500 truncate">
                     {currentUserResponse.data.email}
                   </span>
                 </div>
@@ -738,14 +739,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
         "flex-1 flex flex-col min-h-screen transition-all duration-300",
         isCollapsed ? "md:ml-20" : "md:ml-64"
       )}>
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-8 shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.02)] z-10 sticky top-0">
-          <div className="flex items-center gap-3 text-slate-500">
+        <header className="h-16 bg-white border-b border-navigation-200 flex items-center justify-between px-4 md:px-8 shrink-0 app-header-shadow z-10 sticky top-0">
+          <div className="flex items-center gap-3 text-navigation-500">
             <button
               type="button"
               onClick={() => setMobileMenuOpen(true)}
               aria-label="Open navigation menu"
               aria-expanded={mobileMenuOpen}
-              className="p-2 -ml-2 rounded-md hover:bg-slate-100 text-slate-600 transition-colors md:hidden"
+              className="p-2 -ml-2 rounded-md hover:bg-navigation-100 text-navigation-600 transition-colors md:hidden"
             >
               <Menu className="size-5" />
             </button>
@@ -753,19 +754,19 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <div className="hidden sm:flex items-center">
               {parentLabel ? (
                 <>
-                  <Link href={parentLabel.href} className="text-sm font-medium hover:text-slate-900 transition-colors">{parentLabel.label}</Link>
-                  <ChevronRight className="size-4 mx-2 text-slate-300" />
-                  <span className="text-sm font-medium text-slate-900">{pageLabel}</span>
+                  <Link href={parentLabel.href} className="text-sm font-medium hover:text-navigation-900 transition-colors">{parentLabel.label}</Link>
+                  <ChevronRight className="size-4 mx-2 text-navigation-300" />
+                  <span className="text-sm font-medium text-navigation-900">{pageLabel}</span>
                 </>
               ) : (
                 <>
-                  <Link href="/" className="text-sm font-medium hover:text-slate-900 transition-colors">Dashboard</Link>
-                  <ChevronRight className="size-4 mx-2 text-slate-300" />
-                  <span className="text-sm font-medium text-slate-900">{pageLabel}</span>
+                  <Link href="/" className="text-sm font-medium hover:text-navigation-900 transition-colors">Dashboard</Link>
+                  <ChevronRight className="size-4 mx-2 text-navigation-300" />
+                  <span className="text-sm font-medium text-navigation-900">{pageLabel}</span>
                 </>
               )}
             </div>
-            <span className="text-sm font-medium text-slate-900 sm:hidden">{pageLabel}</span>
+            <span className="text-sm font-medium text-navigation-900 sm:hidden">{pageLabel}</span>
           </div>
 
           <div className="flex items-center gap-3 md:gap-5">
@@ -774,7 +775,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8">
-          <div className="max-w-[1400px] mx-auto">
+          <div className="max-w-350 mx-auto">
             <ErrorBoundary level="section" onReset={() => window.location.reload()}>
               <Suspense fallback={<LoadingFallback />}>
                 {children}

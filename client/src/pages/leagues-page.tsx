@@ -174,9 +174,9 @@ export default function LeaguesPage() {
           <div className="flex items-center justify-between gap-4 p-3 border-b">
             {allLocations.length > 0 && (
               <div className="flex items-center gap-2">
-                <Label className="text-sm text-muted-foreground whitespace-nowrap">Location:</Label>
+                <Label size="sm" tone="muted" className="whitespace-nowrap">Location:</Label>
                 <Select value={locationFilter} onValueChange={setLocationFilter}>
-                  <SelectTrigger className="w-[180px] h-8"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-45 h-8"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Locations</SelectItem>
                     <SelectItem value="none">No Location</SelectItem>
@@ -189,7 +189,7 @@ export default function LeaguesPage() {
             )}
             {archivedCount > 0 && (
               <div className="flex items-center gap-2 ml-auto">
-                <Label htmlFor="show-archived-leagues" className="text-sm text-muted-foreground cursor-pointer">
+                <Label htmlFor="show-archived-leagues" size="sm" tone="muted" className="cursor-pointer">
                   Show archived ({archivedCount})
                 </Label>
                 <Switch

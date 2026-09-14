@@ -96,16 +96,16 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
   const isSystemAdmin = currentUserResponse?.data?.role === 'system_admin';
 
   return (
-    <div className="fixed top-0 right-0 bottom-0 left-0 flex flex-col bg-[#f8fafc] font-sans">
-      <header className="flex-none bg-white border-b border-slate-200 px-4 h-14 flex items-center justify-center z-10 shadow-sm relative">
+    <div className="fixed top-0 right-0 bottom-0 left-0 flex flex-col bg-app-shell font-sans">
+      <header className="flex-none bg-white border-b border-navigation-200 px-4 h-14 flex items-center justify-center z-10 shadow-sm relative">
         {(organization?.logo || organization?.darkLogo) ? (
           <img
             src={organization.logo || organization.darkLogo || ''}
             alt={orgName}
-            className="h-10 w-auto max-w-[200px] object-contain"
+            className="h-10 w-auto max-w-50 object-contain"
           />
         ) : organization ? (
-          <div className="size-9 bg-slate-900 rounded-lg flex items-center justify-center shadow-inner">
+          <div className="size-9 bg-navigation-900 rounded-lg flex items-center justify-center shadow-inner">
             <span className="text-white font-bold text-sm tracking-wider">{orgInitials}</span>
           </div>
         ) : null}
@@ -116,7 +116,7 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
           {isSystemAdmin && (
             <Link
               href="/"
-              className="inline-flex items-center text-sm font-medium text-slate-500 hover:text-slate-800 transition-colors mb-4 no-underline focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-sm"
+              className="inline-flex items-center text-sm font-medium text-navigation-500 hover:text-navigation-800 transition-colors mb-4 no-underline focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent-500 rounded-sm"
             >
               <ArrowLeft className="size-4 mr-1" />
               Back to Admin Dashboard
@@ -130,8 +130,8 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
         </div>
       </main>
 
-      <nav className="flex-none bg-white border-t border-slate-200 z-20 shadow-[0_-4px_12px_rgba(0,0,0,0.06)]">
-        <div className="grid grid-cols-4 w-full items-center gap-1 px-2 pt-2 pb-2" style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom, 8px))' }}>
+      <nav className="flex-none bg-white border-t border-navigation-200 z-20 mobile-navigation-shadow">
+        <div className="grid grid-cols-4 w-full items-center gap-1 px-2 pt-2 pb-safe-area">
           {navItems.map((item) => {
             const isActive = location === item.baseHref || location.startsWith(item.baseHref + '?') || location.startsWith(item.baseHref + '/');
             return (
@@ -141,18 +141,18 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
                 aria-label={item.label}
                 aria-current={isActive ? "page" : undefined}
                 className={cn(
-                  "flex min-w-0 flex-col items-center justify-center gap-0.5 w-full no-underline rounded-md focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500",
-                  isActive ? "text-indigo-600" : "text-slate-400 active:text-slate-600"
+                  "flex min-w-0 flex-col items-center justify-center gap-0.5 w-full no-underline rounded-md focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent-500",
+                  isActive ? "text-brand-accent-600" : "text-navigation-400 active:text-navigation-600"
                 )}
               >
                 <div className={cn(
                   "flex items-center justify-center w-10 h-7 rounded-full transition-all duration-200",
-                  isActive ? "bg-indigo-50" : "bg-transparent"
+                  isActive ? "bg-brand-accent-50" : "bg-transparent"
                 )}>
                   <item.icon className="size-7" />
                 </div>
                 <span className={cn(
-                  "text-[10px] tracking-wide text-center whitespace-nowrap",
+                  "navigation-badge tracking-wide text-center whitespace-nowrap",
                   isActive ? "font-bold" : "font-medium"
                 )}>{item.label}</span>
               </Link>

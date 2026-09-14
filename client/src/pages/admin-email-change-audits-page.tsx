@@ -61,7 +61,7 @@ function PostConfirmCell({
   if (status === 'pending_retry') {
     return (
       <div className="flex flex-col gap-1" data-testid="post-confirm-pending-retry">
-        <Badge variant="destructive" className="gap-1 w-fit">
+        <Badge variant="destructive" spacing="compact" className="w-fit">
           <AlertTriangle className="size-3" aria-hidden />
           Needs manual retry
         </Badge>
@@ -290,10 +290,10 @@ export default function AdminEmailChangeAuditsPage() {
                               #{row.targetUserId}
                             </div>
                           </TableCell>
-                          <TableCell className="font-mono text-xs">
+                          <TableCell font="mono" size="xs">
                             {row.oldEmailMasked}
                           </TableCell>
-                          <TableCell className="font-mono text-xs">
+                          <TableCell font="mono" size="xs">
                             {row.newEmailMasked}
                           </TableCell>
                           <TableCell>

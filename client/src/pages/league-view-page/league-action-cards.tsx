@@ -14,7 +14,7 @@ export function LeagueActionCards({
   return (
     <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
       {(canManageRoster || canManagePayments) && <Link href={`/leagues/${leagueId}/teams`} className="block">
-        <Card className="hover:bg-accent transition-colors">
+        <Card interaction="accent">
           <CardHeader>
             <div className="flex justify-center mb-2">
               <Users className="size-6" />
@@ -31,7 +31,7 @@ export function LeagueActionCards({
 
       {canManagePayments && (
         <Link href={`/leagues/${leagueId}/payments/manage`} className="block">
-          <Card className="hover:bg-accent transition-colors">
+          <Card interaction="accent">
             <CardHeader>
               <div className="mb-2 flex justify-center">
                 <ClipboardPenLine className="size-6" />
@@ -48,7 +48,7 @@ export function LeagueActionCards({
 
       {canManagePayments && (
         <Link href={`/payments?leagueId=${leagueId}`} className="block">
-          <Card className="hover:bg-accent transition-colors">
+          <Card interaction="accent">
             <CardHeader>
               <div className="flex justify-center mb-2">
                 <CircleDollarSign className="size-6" />
@@ -65,7 +65,7 @@ export function LeagueActionCards({
       )}
 
       <Link href={`/leagues/${leagueId}/schedule`} className="block">
-        <Card className="hover:bg-accent transition-colors">
+        <Card interaction="accent">
           <CardHeader>
             <div className="flex justify-center mb-2">
               <CalendarDays className="size-6" />

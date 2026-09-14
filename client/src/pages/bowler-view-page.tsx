@@ -224,7 +224,7 @@ export default function BowlerViewPage() {
               value={effectiveLeagueId?.toString() || ""}
               onValueChange={(value) => { setSelectedLeagueId(parseInt(value)); setPaymentReportPage(1); }}
             >
-              <SelectTrigger className="w-[300px]">
+              <SelectTrigger className="w-75">
                 <SelectValue placeholder="Select a league" />
               </SelectTrigger>
               <SelectContent>
@@ -245,7 +245,7 @@ export default function BowlerViewPage() {
         </div>
 
         <ErrorBoundary level="section">
-          {loadingFinancials ? <div className="text-sm text-muted-foreground">Loading server financial evidence…</div> : financialError || financialResponse?.data?.contractVersion !== "canonical-due-past-due/2" ? <div className="text-sm text-amber-700">Financial evidence unavailable or requires review.</div> : <BowlerFinancialSummary league={league} financials={financials} sourceLabel="Roster obligations" />}
+          {loadingFinancials ? <div className="text-sm text-muted-foreground">Loading server financial evidence…</div> : financialError || financialResponse?.data?.contractVersion !== "canonical-due-past-due/2" ? <div className="text-sm text-warning-700">Financial evidence unavailable or requires review.</div> : <BowlerFinancialSummary league={league} financials={financials} sourceLabel="Roster obligations" />}
         </ErrorBoundary>
       </div>
 

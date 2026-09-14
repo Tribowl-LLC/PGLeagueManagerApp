@@ -327,7 +327,7 @@ export default function PaymentsPage() {
               <Input
                 type="search"
                 placeholder="Search by bowler name..."
-                className="pl-8"
+                leading="sm"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
@@ -353,7 +353,7 @@ export default function PaymentsPage() {
                 {orphanedFinancialRows.map((row, index) => {
                   const bowler = bowlers.find((candidate) => candidate.id === row.bowlerId);
                   return (
-                    <div key={`${row.paymentOperationId ?? "payment-attempt"}-${index}`} className="grid gap-1 px-3 py-2 text-sm sm:grid-cols-[1fr_auto] sm:items-center">
+                    <div key={`${row.paymentOperationId ?? "payment-attempt"}-${index}`} className="grid gap-1 px-3 py-2 text-sm sm:grid-cols-content-action sm:items-center">
                       <div>
                         <div className="font-medium">{bowler?.name || "Unknown Bowler"}</div>
                         <div className="text-muted-foreground">{row.authoritativeLocalDate} · {row.status === "pending" ? "Pending confirmation" : "Review required"}</div>

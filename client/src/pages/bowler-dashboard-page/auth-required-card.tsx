@@ -10,7 +10,7 @@ export const AuthRequiredCard: FC = () => {
         <CardTitle>Authentication Required</CardTitle>
         <CardDescription>Please log in to view your dashboard</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent spacing="normal">
         <p className="text-muted-foreground">
           You need to be logged in to access your bowler dashboard.
         </p>

@@ -68,10 +68,10 @@ export const AdminBowlerLinkPanel: FC<{ bowlerId: number; organizationId: number
   return (
     <Card data-testid="card-admin-bowler-links" className="mt-4">
       <CardHeader>
-        <CardTitle className="text-base">Payment partners (admin)</CardTitle>
+        <CardTitle size="base">Payment partners (admin)</CardTitle>
         <CardDescription>Link this bowler to another bowler in the same organization.</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent spacing="tight">
         {mine.length > 0 && (
           <div className="space-y-2">
             {mine.map((l) => {
@@ -116,4 +116,3 @@ export const AdminBowlerLinkPanel: FC<{ bowlerId: number; organizationId: number
     </Card>
   );
 };
-

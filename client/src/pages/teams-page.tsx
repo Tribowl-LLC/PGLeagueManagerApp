@@ -222,12 +222,12 @@ export default function TeamsPage() {
                 <TableHead>Number</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>Status</TableHead>
-                {canManageRoster && <TableHead className="w-[50px]"></TableHead>}
+                {canManageRoster && <TableHead className="w-12.5"></TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
               {sortedTeams.map((team) => (
-                <TableRow key={team.id} className={!team.active ? "opacity-60" : ""}>
+                <TableRow key={team.id} state={!team.active ? "muted" : "default"}>
                   <TableCell>{team.number || 'Not assigned'}</TableCell>
                   <TableCell>
                     <Link href={`/teams/${team.id}`} className="hover:underline text-foreground">
@@ -242,7 +242,7 @@ export default function TeamsPage() {
                   {canManageRoster && <TableCell>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="sm" className="size-8 p-0">
+                        <Button variant="ghost" size="iconSm">
                           <MoreHorizontal className="size-4" />
                         </Button>
                       </DropdownMenuTrigger>
@@ -261,7 +261,7 @@ export default function TeamsPage() {
                           )}
                         </DropdownMenuItem>
                         <DropdownMenuItem
-                          className="text-destructive focus:text-destructive"
+                          variant="destructive"
                           onClick={() => setDeleteTeam(team)}
                         >
                           <Trash2 className="mr-2 size-4" />

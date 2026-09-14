@@ -183,7 +183,7 @@ export function FallDraftReviewPanel({
       </div>
 
       <div className="overflow-x-auto rounded-md border">
-        <table className="w-full min-w-[680px] text-left text-sm">
+        <table className="w-full min-w-170 text-left text-sm">
           <caption className="sr-only">League nights and schedule editing controls</caption>
           <thead className="bg-muted/50">
             <tr>

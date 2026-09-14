@@ -46,11 +46,21 @@ AlertTitle.displayName = "AlertTitle"
 
 const AlertDescription = React.forwardRef<
   HTMLParagraphElement,
-  React.HTMLAttributes<HTMLParagraphElement>
->(({ className, ...props }, ref) => (
+  React.HTMLAttributes<HTMLParagraphElement> & {
+    spacing?: "default" | "tight" | "normal"
+    gap?: "2" | "3"
+  }
+>(({ className, spacing, gap, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("text-sm [&_p]:leading-relaxed", className)}
+    className={cn(
+      "text-sm [&_p]:leading-relaxed",
+      spacing === "tight" && "space-y-2",
+      spacing === "normal" && "space-y-3",
+      gap === "2" && "gap-2",
+      gap === "3" && "gap-3",
+      className,
+    )}
     {...props}
   />
 ))

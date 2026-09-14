@@ -52,17 +52,17 @@ export function PaymentSummaryCards({
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       {isPaidInFull && (
-        <Card className="md:col-span-3 border-green-500/50 bg-green-500/5">
-          <CardContent className="flex items-center justify-center gap-3 py-4">
-            <CheckCircle2 className="size-6 text-green-600" />
-            <span className="text-lg font-semibold text-green-600">Season Paid in Full</span>
+        <Card tone="success" className="md:col-span-3">
+          <CardContent className="flex items-center justify-center" gap="3" padding="vertical">
+            <CheckCircle2 className="size-6 text-success-600" />
+            <span className="text-lg font-semibold text-success-600">Season Paid in Full</span>
           </CardContent>
         </Card>
       )}
 
       <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-lg">Full Season Amount Due</CardTitle>
+        <CardHeader padding="compact">
+          <CardTitle size="lg">Full Season Amount Due</CardTitle>
           <CardDescription>
             {totalWeeksInSeason} week{totalWeeksInSeason === 1 ? "" : "s"} at {formatCurrency(weeklyFee)}
           </CardDescription>
@@ -74,14 +74,14 @@ export function PaymentSummaryCards({
 
       {waivedAmount > 0 && (
         <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-lg">Refunds Waived</CardTitle><CardDescription>Not counted as payments</CardDescription></CardHeader>
+          <CardHeader padding="compact"><CardTitle size="lg">Refunds Waived</CardTitle><CardDescription>Not counted as payments</CardDescription></CardHeader>
           <CardContent><p className="text-2xl font-bold">{formatCurrency(waivedAmount)}</p></CardContent>
         </Card>
       )}
 
       <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-lg">Weekly Fee</CardTitle>
+        <CardHeader padding="compact">
+          <CardTitle size="lg">Weekly Fee</CardTitle>
           <CardDescription>Regular payment amount</CardDescription>
         </CardHeader>
         <CardContent>
@@ -90,8 +90,8 @@ export function PaymentSummaryCards({
       </Card>
 
       <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-lg">Amount Due to Date</CardTitle>
+        <CardHeader padding="compact">
+          <CardTitle size="lg">Amount Due to Date</CardTitle>
           <CardDescription>
             {weeksDueCount} week{weeksDueCount === 1 ? "" : "s"} at {formatCurrency(weeklyFee)}
           </CardDescription>
@@ -102,8 +102,8 @@ export function PaymentSummaryCards({
       </Card>
 
       <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-lg">Amount Paid to Date</CardTitle>
+        <CardHeader padding="compact">
+          <CardTitle size="lg">Amount Paid to Date</CardTitle>
           <CardDescription>
             {weeksPaid} week{weeksPaid === 1 ? "" : "s"} at {formatCurrency(weeklyFee)}
           </CardDescription>
@@ -120,9 +120,9 @@ export function PaymentSummaryCards({
           onClick={() => amountPastDue > 0 && onPayPastDue()}
           className="block no-underline text-inherit"
         >
-          <Card className={amountPastDue > 0 ? "cursor-pointer transition-colors hover:border-destructive/50 hover:bg-destructive/5" : ""}>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-lg">Amount Past Due to Date</CardTitle>
+          <Card interaction={amountPastDue > 0 ? "danger" : "none"} className={amountPastDue > 0 ? "cursor-pointer" : undefined}>
+            <CardHeader padding="compact">
+              <CardTitle size="lg">Amount Past Due to Date</CardTitle>
               <CardDescription>{amountPastDue > 0 ? "Make a payment" : "No amount past due"}</CardDescription>
             </CardHeader>
             <CardContent><p className="text-2xl font-bold text-destructive">{formatCurrency(amountPastDue)}</p></CardContent>
@@ -130,10 +130,11 @@ export function PaymentSummaryCards({
         </Link>
       ) : (
         <Card
-          className={amountPastDue > 0 ? "cursor-pointer transition-colors hover:border-destructive/50 hover:bg-destructive/5" : ""}
+          interaction={amountPastDue > 0 ? "danger" : "none"}
+          className={amountPastDue > 0 ? "cursor-pointer" : undefined}
           onClick={() => amountPastDue > 0 && onPayPastDue()}
         >
-          <CardHeader className="pb-2"><CardTitle className="text-lg">Amount Past Due to Date</CardTitle><CardDescription>{amountPastDue > 0 ? "Click to make a payment" : "No amount past due"}</CardDescription></CardHeader>
+          <CardHeader padding="compact"><CardTitle size="lg">Amount Past Due to Date</CardTitle><CardDescription>{amountPastDue > 0 ? "Click to make a payment" : "No amount past due"}</CardDescription></CardHeader>
           <CardContent><p className="text-2xl font-bold text-destructive">{formatCurrency(amountPastDue)}</p></CardContent>
         </Card>
       )}
@@ -145,25 +146,26 @@ export function PaymentSummaryCards({
           onClick={() => remainingBalance > 0 && onPayRemaining()}
           className="block no-underline text-inherit"
         >
-          <Card className={remainingBalance > 0 ? "cursor-pointer transition-colors hover:border-primary/50 hover:bg-primary/5" : ""}>
-            <CardHeader className="pb-2"><CardTitle className="text-lg">Full Season Remaining Balance</CardTitle><CardDescription>{remainingBalance > 0 ? "Make a one-time payment" : "Fully paid"}</CardDescription></CardHeader>
+          <Card interaction={remainingBalance > 0 ? "primary" : "none"} className={remainingBalance > 0 ? "cursor-pointer" : undefined}>
+            <CardHeader padding="compact"><CardTitle size="lg">Full Season Remaining Balance</CardTitle><CardDescription>{remainingBalance > 0 ? "Make a one-time payment" : "Fully paid"}</CardDescription></CardHeader>
             <CardContent><p className="text-2xl font-bold">{formatCurrency(remainingBalance)}</p></CardContent>
           </Card>
         </Link>
       ) : (
         <Card
-          className={remainingBalance > 0 ? "cursor-pointer transition-colors hover:border-primary/50 hover:bg-primary/5" : ""}
+          interaction={remainingBalance > 0 ? "primary" : "none"}
+          className={remainingBalance > 0 ? "cursor-pointer" : undefined}
           onClick={() => remainingBalance > 0 && onPayRemaining()}
         >
-          <CardHeader className="pb-2"><CardTitle className="text-lg">Full Season Remaining Balance</CardTitle><CardDescription>{remainingBalance > 0 ? "Click to make a one-time payment" : "Fully paid"}</CardDescription></CardHeader>
+          <CardHeader padding="compact"><CardTitle size="lg">Full Season Remaining Balance</CardTitle><CardDescription>{remainingBalance > 0 ? "Click to make a one-time payment" : "Fully paid"}</CardDescription></CardHeader>
           <CardContent><p className="text-2xl font-bold">{formatCurrency(remainingBalance)}</p></CardContent>
         </Card>
       )}
 
       {doublePay.dates.length > 0 && (
-        <Card className="border-emerald-500/50 bg-emerald-500/5">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-lg flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400">
+        <Card tone="positive">
+          <CardHeader padding="compact">
+            <CardTitle size="lg" iconSpacing="tight" tone="positive">
               <CircleDollarSign className="size-5" />
               Double-Pay Weeks
             </CardTitle>
@@ -173,7 +175,7 @@ export function PaymentSummaryCards({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-400">
+            <p className="text-2xl font-bold text-positive-700 dark:text-positive-400">
               {formatCurrency(doublePay.perWeekExtra * 2)}/week
             </p>
             <ul className="mt-2 space-y-1 text-sm text-muted-foreground">

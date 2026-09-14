@@ -39,8 +39,8 @@ function renderButtons(overrides: Partial<React.ComponentProps<typeof WalletPaym
     googlePayTokenizeOnly: false,
     ...overrides,
   };
-  render(<WalletPaymentButtons {...props} />);
-  return { onApplePayClick, onGooglePayClick };
+  const result = render(<WalletPaymentButtons {...props} />);
+  return { onApplePayClick, onGooglePayClick, props, rerender: result.rerender };
 }
 
 describe('<WalletPaymentButtons /> (#761)', () => {
@@ -55,15 +55,36 @@ describe('<WalletPaymentButtons /> (#761)', () => {
     expect(google).toBeInTheDocument();
 
     // ...but they're hidden until the *Available flag flips.
-    expect(apple).toHaveStyle({ display: 'none' });
-    expect(google).toHaveStyle({ display: 'none' });
+    expect(apple).toHaveClass('hidden');
+    expect(google).toHaveClass('hidden');
   });
 
   it('reveals the attach nodes once the wallets are available', () => {
     renderButtons({ applePayAvailable: true, googlePayAvailable: true });
 
-    expect(screen.getByTestId('wallet-apple-pay')).not.toHaveStyle({ display: 'none' });
-    expect(screen.getByTestId('wallet-google-pay')).not.toHaveStyle({ display: 'none' });
+    expect(screen.getByTestId('wallet-apple-pay')).not.toHaveClass('hidden');
+    expect(screen.getByTestId('wallet-google-pay')).not.toHaveClass('hidden');
+  });
+
+  it('preserves SDK mount nodes and attached content across availability changes', () => {
+    const { props, rerender } = renderButtons();
+    const apple = screen.getByTestId('wallet-apple-pay');
+    const google = screen.getByTestId('wallet-google-pay');
+    const attachedButton = document.createElement('button');
+    attachedButton.textContent = 'Provider wallet';
+    google.appendChild(attachedButton);
+
+    rerender(<WalletPaymentButtons {...props} applePayAvailable googlePayAvailable />);
+    expect(screen.getByTestId('wallet-apple-pay')).toBe(apple);
+    expect(screen.getByTestId('wallet-google-pay')).toBe(google);
+    expect(attachedButton.parentElement).toBe(google);
+    expect(google).not.toHaveClass('hidden');
+
+    rerender(<WalletPaymentButtons {...props} />);
+    expect(props.applePayRef.current).toBe(apple);
+    expect(props.googlePayRef.current).toBe(google);
+    expect(attachedButton.parentElement).toBe(google);
+    expect(google).toHaveClass('hidden');
   });
 
   it('invokes the handlers on click and on Enter/Space only when available', async () => {

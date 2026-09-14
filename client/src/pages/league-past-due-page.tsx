@@ -168,7 +168,7 @@ export default function LeaguePastDuePage() {
                 <TableRow key={item.bowler.id}>
                   <TableCell>
                     <div className="flex items-center gap-1.5">
-                      <CheckCircle2 className={`size-4 ${item.bowler.hasAccount ? "text-green-500" : "text-muted-foreground/40"}`} />
+                      <CheckCircle2 className={`size-4 ${item.bowler.hasAccount ? "text-success-500" : "text-muted-foreground/40"}`} />
                       <Link href={`/bowlers/${item.bowler.id}?from=league-past-due&fromLeagueId=${leagueId}`} className="hover:underline">
                         {item.bowler.name}
                       </Link>
@@ -176,7 +176,7 @@ export default function LeaguePastDuePage() {
                   </TableCell>
                   <TableCell>{item.team.name}</TableCell>
                   <TableCell>{item.reviewRequired ? "Review required" : item.pastDueObligations}</TableCell>
-                  <TableCell className="text-destructive">
+                  <TableCell tone="destructive">
                     {`$${(item.pastDueAmount / 100).toFixed(2)}`}
                   </TableCell>
                 </TableRow>

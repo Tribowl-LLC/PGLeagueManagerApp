@@ -115,17 +115,17 @@ const LoginPage: FC = () => {
     <ErrorBoundary level="section">
     <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
       <Card className="w-full max-w-md mt-4 sm:mt-0">
-        <CardHeader className="space-y-1 pb-4 sm:pb-6">
+        <CardHeader spacing="tight" padding="comfortable">
           {subdomainOrg?.logo && (
             <div className="flex justify-center mb-4">
               <img
                 src={subdomainOrg.logo}
                 alt={subdomainOrg.name}
-                className="h-14 w-auto max-w-[200px] object-contain"
+                className="h-14 w-auto max-w-50 object-contain"
               />
             </div>
           )}
-          <CardTitle className="text-2xl font-bold text-center">
+          <CardTitle size="2xl" weight="bold" className="text-center">
             Welcome Back
           </CardTitle>
           <CardDescription className="text-center">
@@ -134,7 +134,7 @@ const LoginPage: FC = () => {
               : "Sign in to your bowling league account"}
           </CardDescription>
         </CardHeader>
-        <CardContent className="pb-4 sm:pb-6">
+        <CardContent padding="responsive">
           {sessionExpired && (
             <Alert className="mb-4" data-testid="alert-session-expired">
               <AlertTitle>Session expired</AlertTitle>
@@ -155,7 +155,7 @@ const LoginPage: FC = () => {
                 control={form.control}
                 name="email"
                 render={({ field }) => (
-                  <FormItem className="space-y-1 sm:space-y-2">
+                  <FormItem spacing="responsive">
                     <FormLabel>Email Address</FormLabel>
                     <FormControl>
                       <Input
@@ -172,7 +172,7 @@ const LoginPage: FC = () => {
                 control={form.control}
                 name="password"
                 render={({ field }) => (
-                  <FormItem className="space-y-1 sm:space-y-2">
+                  <FormItem spacing="responsive">
                     <FormLabel>Password</FormLabel>
                     <FormControl>
                       <Input
@@ -189,7 +189,7 @@ const LoginPage: FC = () => {
                 <Alert variant="destructive" data-testid="alert-login-throttled">
                   <AlertTriangle className="size-4" />
                   <AlertTitle>Too many sign-in attempts</AlertTitle>
-                  <AlertDescription className="space-y-2">
+                  <AlertDescription spacing="tight">
                     <p>
                       For your protection, we've paused sign-ins for this
                       account for about{" "}
@@ -238,7 +238,7 @@ const LoginPage: FC = () => {
             </form>
           </Form>
         </CardContent>
-        <CardFooter className="flex flex-col items-center gap-2 pt-0">
+        <CardFooter spacing="tight" className="flex flex-col items-center">
           <Link href="/forgot-password" className="text-sm text-primary hover:underline">
             Forgot your password?
           </Link>

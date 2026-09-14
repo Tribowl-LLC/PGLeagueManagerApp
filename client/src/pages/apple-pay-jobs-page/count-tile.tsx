@@ -1,6 +1,6 @@
 export function CountTile({ label, value, tone }: { label: string; value: number; tone?: 'success' | 'danger' }) {
   const toneClass = tone === 'success'
-    ? 'text-emerald-600'
+    ? 'text-positive-600'
     : tone === 'danger'
       ? 'text-destructive'
       : 'text-foreground';

@@ -25,8 +25,7 @@ export function LeagueSquareCatalogStatus({
           <Button
             type="button"
             variant="ghost"
-            size="sm"
-            className="h-auto px-2 py-1 text-xs"
+            size="xs"
             onClick={onClearFilters}
             data-testid="button-clear-catalog-filters"
           >

@@ -115,7 +115,7 @@ export default function LocationsPage() {
               </div>
               {archivedCount > 0 && (
                 <div className="flex items-center gap-2">
-                  <Label htmlFor="show-archived-locations" className="text-sm text-muted-foreground cursor-pointer">
+                  <Label htmlFor="show-archived-locations" size="sm" tone="muted" className="cursor-pointer">
                     Show archived ({archivedCount})
                   </Label>
                   <Switch
@@ -147,8 +147,8 @@ export default function LocationsPage() {
                   </TableRow>
                 ) : (
                   locations.map((loc) => (
-                    <TableRow key={loc.id} className={loc.active === false ? "opacity-60" : ""}>
-                      <TableCell className="font-medium">{loc.name}</TableCell>
+                    <TableRow key={loc.id} state={loc.active === false ? "muted" : "default"}>
+                      <TableCell weight="medium">{loc.name}</TableCell>
                       <TableCell>{loc.address || "—"}</TableCell>
                       <TableCell>{loc.city || "—"}</TableCell>
                       <TableCell>{loc.state || "—"}</TableCell>

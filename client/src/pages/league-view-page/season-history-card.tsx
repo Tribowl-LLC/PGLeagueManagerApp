@@ -17,7 +17,7 @@ export function SeasonHistoryCard({
       <CardHeader>
         <div className="flex items-center gap-2">
           <History className="size-5" />
-          <CardTitle className="text-lg">Season History</CardTitle>
+          <CardTitle size="lg">Season History</CardTitle>
         </div>
       </CardHeader>
       <CardContent>
@@ -26,7 +26,7 @@ export function SeasonHistoryCard({
             <Link key={season.id} href={`/leagues/${season.id}`}>
               <Badge
                 variant={season.id === leagueId ? "default" : "outline"}
-                className="cursor-pointer hover:bg-accent transition-colors"
+                interactive="accent" className="cursor-pointer"
               >
                 {getSeasonLabel(season.seasonStart, season.seasonEnd)}
                 {!season.active && season.id !== leagueId && " (Archived)"}

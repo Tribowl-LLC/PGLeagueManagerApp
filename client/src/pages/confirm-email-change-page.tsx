@@ -116,7 +116,7 @@ const ConfirmEmailChangePage: FC = () => {
     <ErrorBoundary level="section">
       <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
         <Card className="w-full max-w-md mt-4 sm:mt-0">
-          <CardHeader className="space-y-1 pb-4 sm:pb-6 text-center">
+          <CardHeader spacing="tight" padding="comfortable" className="text-center">
             <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10">
               {status.kind === "pending" ? (
                 <Loader2 className="size-6 text-primary animate-spin" />
@@ -126,7 +126,7 @@ const ConfirmEmailChangePage: FC = () => {
                 <XCircle className="size-6 text-destructive" />
               )}
             </div>
-            <CardTitle className="text-2xl font-bold">
+            <CardTitle size="2xl" weight="bold">
               {status.kind === "pending"
                 ? "Confirming your new email…"
                 : status.kind === "success"
@@ -146,7 +146,7 @@ const ConfirmEmailChangePage: FC = () => {
             </CardDescription>
           </CardHeader>
           {status.kind !== "pending" && (
-            <CardContent className="pb-2 space-y-3 text-center text-sm text-muted-foreground">
+            <CardContent padding="bottomTight" spacing="tight" size="sm" tone="muted" className="text-center">
               {status.kind === "success" && (
                 <>
                   <p>
@@ -176,7 +176,7 @@ const ConfirmEmailChangePage: FC = () => {
               )}
             </CardContent>
           )}
-          <CardFooter className="flex flex-col items-center gap-2 pt-0">
+          <CardFooter spacing="tight" className="flex flex-col items-center">
             <Link
               href="/login"
               className="inline-flex items-center gap-1 text-sm text-primary hover:underline"

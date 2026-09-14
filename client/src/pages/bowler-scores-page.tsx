@@ -127,7 +127,7 @@ export default function BowlerScoresPage() {
         </div>
 
         <Card>
-          <CardContent className="pt-6">
+          <CardContent padding="topComfortable">
             {scoresError ? (
               <PageErrorState message={`Error loading scores: ${scoresError.message}`} onRetry={() => refetchScores()} />
             ) : weeklyScores.length > 0 ? (
@@ -157,7 +157,7 @@ export default function BowlerScoresPage() {
                         </TableCell>
                         );
                       })}
-                      <TableCell className="text-right font-medium">
+                      <TableCell className="text-right" weight="medium">
                         {week.seriesTotal || "—"}
                       </TableCell>
                     </TableRow>

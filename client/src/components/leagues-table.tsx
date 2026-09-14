@@ -41,12 +41,12 @@ export function LeaguesTable({
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead className="w-[12%]">Weekday</TableHead>
-          <TableHead className="w-[20%]">Name</TableHead>
+          <TableHead columnWidth="weekday">Weekday</TableHead>
+          <TableHead columnWidth="name">Name</TableHead>
           <TableHead className="hidden md:table-cell">Location</TableHead>
           <TableHead className="hidden md:table-cell">Teams</TableHead>
-          <TableHead className="hidden md:table-cell w-[15%]">Start Date</TableHead>
-          <TableHead className="hidden md:table-cell w-[15%]">End Date</TableHead>
+          <TableHead columnWidth="date" className="hidden md:table-cell">Start Date</TableHead>
+          <TableHead columnWidth="date" className="hidden md:table-cell">End Date</TableHead>
           <TableHead className="hidden md:table-cell">Duration</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Actions</TableHead>
@@ -60,7 +60,7 @@ export function LeaguesTable({
             ? league.weekDay.charAt(0).toUpperCase() + league.weekDay.slice(1)
             : "Not set";
           return (
-            <TableRow key={league.id} className={!league.active ? "opacity-60" : ""}>
+            <TableRow key={league.id} state={league.active ? "default" : "muted"}>
               <TableCell>{bowlingDay}</TableCell>
               <TableCell>
                 <Link href={`/leagues/${league.id}`} className="text-foreground hover:underline font-medium">
@@ -70,7 +70,7 @@ export function LeaguesTable({
                   {getSeasonLabel(league.seasonStart, league.seasonEnd)}
                 </p>
               </TableCell>
-              <TableCell className="hidden md:table-cell text-sm text-muted-foreground">
+              <TableCell className="hidden md:table-cell" size="sm" tone="muted">
                 {league.locationId ? locationMap[league.locationId] || "—" : "—"}
               </TableCell>
               <TableCell className="hidden md:table-cell">{teamCounts[league.id] || 0}</TableCell>

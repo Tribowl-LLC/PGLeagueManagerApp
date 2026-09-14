@@ -100,9 +100,9 @@ export function EmailTemplateEditDialog({
 }: EmailTemplateEditDialogProps) {
   return (
     <Dialog open={!!editingTemplate} onOpenChange={(open) => { if (!open) setEditingTemplate(null); }}>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+      <DialogContent viewport="dialog" className="max-w-3xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle iconSpacing>
             <Mail className="size-5" />
             Edit: {editingTemplate?.name}
           </DialogTitle>
@@ -127,7 +127,7 @@ export function EmailTemplateEditDialog({
 
           <div className="space-y-2">
             <Label htmlFor="body">Email Body (Plain Text)</Label>
-            <Textarea id="body" value={editBody} onChange={(e) => setEditBody(e.target.value)} placeholder="Email body..." rows={12} className="font-mono text-sm" />
+            <Textarea id="body" value={editBody} onChange={(e) => setEditBody(e.target.value)} placeholder="Email body..." rows={12} font="mono" />
           </div>
 
           <div className="rounded-lg border bg-muted/50 p-4">
@@ -161,7 +161,7 @@ export function EmailTemplateEditDialog({
                   </div>
                   <div>
                     <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Body</span>
-                    <div className="text-sm mt-1 whitespace-pre-line bg-gray-50 rounded p-4">
+                    <div className="text-sm mt-1 whitespace-pre-line bg-neutral-surface-50 rounded p-4">
                       {replaceVariables(editBody, SAMPLE_DATA)}
                     </div>
                   </div>
@@ -177,13 +177,13 @@ export function EmailTemplateEditDialog({
         <Separator />
 
         <div className="space-y-3">
-          <Label className="flex items-center gap-2">
+          <Label iconSpacing>
             <Send className="size-4" />
             Send Test Email
           </Label>
           <div className="space-y-2">
             <div>
-              <Label htmlFor="test-org" className="text-xs text-muted-foreground mb-1 block">Organization</Label>
+              <Label htmlFor="test-org" size="xs" tone="muted" className="mb-1 block">Organization</Label>
               <Select value={testOrgId} onValueChange={setTestOrgId}>
                 <SelectTrigger id="test-org">
                   <SelectValue placeholder="Sample data (no real org)" />
@@ -206,7 +206,7 @@ export function EmailTemplateEditDialog({
               </Select>
             </div>
             <div>
-              <Label htmlFor="test-email-input" className="text-xs text-muted-foreground mb-1 block">Recipient</Label>
+            <Label htmlFor="test-email-input" size="xs" tone="muted" className="mb-1 block">Recipient</Label>
               <div className="flex gap-2">
                 <Input
                   id="test-email-input"

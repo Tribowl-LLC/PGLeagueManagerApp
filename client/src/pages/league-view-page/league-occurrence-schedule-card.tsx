@@ -133,12 +133,12 @@ export function LeagueOccurrenceScheduleCard({
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <CardTitle as="h2" className="flex items-center gap-2"><CalendarDays className="size-5" />Season Schedule</CardTitle>
+            <CardTitle as="h2" iconSpacing><CalendarDays className="size-5" />Season Schedule</CardTitle>
             <CardDescription>League dates and start times. Skipped and cancelled dates remain visible.</CardDescription>
           </div>
         </div>
       </CardHeader>
-      <CardContent className="mt-5 space-y-5">
+      <CardContent spacing="relaxed" className="mt-5">
         {scheduleQuery.isLoading && (
           <p className="flex items-center gap-2 text-sm text-muted-foreground" aria-live="polite">
             <Loader2 className="size-4 animate-spin" /> Loading season schedule…

@@ -102,16 +102,16 @@ const RegistrationCompletePage: FC = () => {
     <ErrorBoundary level="section">
       <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
         <Card className="w-full max-w-md mt-4 sm:mt-0">
-          <CardHeader className="text-center space-y-2">
+          <CardHeader spacing="relaxed" className="text-center">
             <div className="flex justify-center">
               <Clock3 className="size-12 text-primary" aria-hidden="true" />
             </div>
-            <CardTitle className="text-2xl font-bold">Registration in progress</CardTitle>
+            <CardTitle size="2xl" weight="bold">Registration in progress</CardTitle>
             <CardDescription>
               Your account is waiting for administrator setup.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent spacing="normal">
             <div className="rounded-md border bg-muted/40 p-4 flex items-start gap-3">
               <MailCheck className="size-5 text-primary mt-0.5 shrink-0" aria-hidden="true" />
               <p className="text-sm text-muted-foreground">
@@ -124,7 +124,7 @@ const RegistrationCompletePage: FC = () => {
             {statusError && (
               <Alert variant="destructive" role="alert">
                 <AlertTitle>Couldn’t check registration status</AlertTitle>
-                <AlertDescription className="space-y-3">
+                <AlertDescription spacing="normal">
                   <p>
                     We couldn’t reach the registration service. Your account
                     is still safe; please try again.
@@ -158,7 +158,7 @@ const RegistrationCompletePage: FC = () => {
               </Button>
             </div>
           </CardContent>
-          <CardFooter className="flex flex-col gap-2">
+          <CardFooter spacing="tight" className="flex flex-col">
             <Button asChild variant="outline" className="w-full">
               <Link href="/profile">View Profile</Link>
             </Button>

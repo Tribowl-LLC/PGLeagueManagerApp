@@ -160,7 +160,7 @@ export function ReorderBowlersDialog({
             <Button 
               onClick={handleSave} 
               disabled={isSubmitting}
-              className="min-w-[80px]"
+              className="min-w-20"
             >
               {isSubmitting ? (
                 <>

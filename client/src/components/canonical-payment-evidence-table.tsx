@@ -94,7 +94,7 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
                       {formatLocalDate(row.authoritativeLocalDate)}
                       <div className="text-xs text-muted-foreground md:hidden">{paymentTypeLabel(row.paymentType)}</div>
                     </TableCell>
-                    <TableCell className="whitespace-nowrap font-mono">
+                    <TableCell className="whitespace-nowrap" font="mono">
                       {formatCurrency(row.amountMinor, row.currency)}
                       {paidByName && <div className="font-sans text-xs font-normal text-muted-foreground">Paid by {paidByName}</div>}
                     </TableCell>

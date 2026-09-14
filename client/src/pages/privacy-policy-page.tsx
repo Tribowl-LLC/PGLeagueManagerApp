@@ -18,17 +18,17 @@ const PrivacyPolicyPage: FC = () => {
   return (
     <div className="min-h-screen bg-background flex justify-center p-4 py-8">
       <Card className="w-full max-w-3xl">
-        <CardHeader className="space-y-1 pb-4">
+        <CardHeader spacing="tight" padding="standard">
           <div className="flex items-center gap-2 mb-2">
-            <Button variant="ghost" size="sm" className="gap-1" onClick={handleBack}>
+            <Button variant="ghost" size="sm" spacing="tight" onClick={handleBack}>
               <ArrowLeft className="size-4" />
               Back
             </Button>
           </div>
-          <CardTitle className="text-2xl font-bold">Privacy Policy</CardTitle>
+          <CardTitle size="2xl" weight="bold">Privacy Policy</CardTitle>
           <p className="text-sm text-muted-foreground">Last updated: March 30, 2026</p>
         </CardHeader>
-        <CardContent className="prose prose-sm dark:prose-invert max-w-none space-y-6">
+        <CardContent spacing="loose" typography="prose" className="max-w-none">
           <section>
             <h3 className="text-lg font-semibold mb-2">1. Introduction</h3>
             <p className="text-sm text-muted-foreground leading-relaxed">

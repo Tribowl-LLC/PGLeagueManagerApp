@@ -10,11 +10,11 @@ export const LeagueUnavailableCard: FC<{ onRetry: () => void }> = ({ onRetry }) 
         <CardTitle>League Data Unavailable</CardTitle>
         <CardDescription>Unable to load league information</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent spacing="normal">
         <p className="text-muted-foreground">
           Please try again later or contact support if the problem persists.
         </p>
-        <Button variant="outline" onClick={onRetry} className="w-full flex items-center gap-2">
+        <Button variant="outline" onClick={onRetry} className="w-full flex items-center">
           <RefreshCw className="size-4" />
           Try Again
         </Button>

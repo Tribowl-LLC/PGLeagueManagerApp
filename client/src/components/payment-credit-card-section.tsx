@@ -188,7 +188,7 @@ export function PaymentCreditCardSection({
       )}
 
       <div className={cardMode === 'saved' && savedCards.length > 0 ? 'hidden' : ''}>
-        <div className="min-h-[200px] border rounded-lg bg-card">
+        <div className="min-h-50 border rounded-lg bg-card">
           <div ref={cardContainerRef} className="p-4" />
           {!isSquareReady && (
             <div className="flex items-center justify-center p-4">
@@ -213,7 +213,7 @@ export function PaymentCreditCardSection({
               control={form.control}
               name="storeCard"
               render={({ field }) => (
-                <FormItem className="flex flex-row items-center gap-x-2 gap-y-0">
+                <FormItem layout="row" className="flex flex-row items-center">
                   <FormControl>
                     <Checkbox
                       id="storeCard"

@@ -153,7 +153,7 @@ function OrphanCountsCard({ activeType, onPick }: { activeType: OrphanType; onPi
                   type="button"
                   onClick={() => onPick(t)}
                   data-testid={`button-orphan-tab-${t}`}
-                  className={`text-left rounded-lg border p-3 transition hover-elevate active-elevate-2 ${
+                  className={`text-left rounded-lg border p-3 transition ${
                     isActive ? 'border-primary bg-primary/5' : 'border-border'
                   }`}
                 >
@@ -239,10 +239,10 @@ function RecentActivityCard() {
                   const undone = row.undoneAt !== null;
                   return (
                     <TableRow key={row.id} data-testid={`row-cleanup-audit-${row.id}`}>
-                      <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                      <TableCell className="whitespace-nowrap" size="sm" tone="muted">
                         {formatTimestamp(row.createdAt)}
                       </TableCell>
-                      <TableCell className="text-sm">
+                      <TableCell size="sm">
                         {row.adminUserName ?? row.adminUserEmail ?? `User #${row.adminUserId}`}
                       </TableCell>
                       <TableCell>
@@ -257,11 +257,11 @@ function RecentActivityCard() {
                           <Badge variant="outline" className="ml-2" data-testid={`badge-audit-undone-${row.id}`}>Undone</Badge>
                         )}
                       </TableCell>
-                      <TableCell className="text-sm">
+                      <TableCell size="sm">
                         <span className="font-medium">{TYPE_LABELS[row.resourceType] ?? row.resourceType}</span>
                         <span className="text-xs text-muted-foreground ml-1 font-mono">#{row.resourceId}</span>
                       </TableCell>
-                      <TableCell className="text-sm">
+                      <TableCell size="sm">
                         {isDelete ? (
                           <span className="text-muted-foreground">-</span>
                         ) : (
@@ -424,10 +424,10 @@ export default function DataIntegrityPage() {
       case 'leagues':
         return (
           <TableRow key={`league-${row.id}`}>
-            <TableCell className="font-mono text-xs">{row.id}</TableCell>
-            <TableCell className="font-medium">{row.name}</TableCell>
+            <TableCell font="mono" size="xs">{row.id}</TableCell>
+            <TableCell weight="medium">{row.name}</TableCell>
             <TableCell>{row.active ? <Badge>Active</Badge> : <Badge variant="outline">Archived</Badge>}</TableCell>
-            <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+            <TableCell className="whitespace-nowrap" size="sm" tone="muted">
               {formatDate(row.seasonStart)} – {formatDate(row.seasonEnd)}
             </TableCell>
             <TableCell className="text-right">{actions}</TableCell>
@@ -436,8 +436,8 @@ export default function DataIntegrityPage() {
       case 'teams':
         return (
           <TableRow key={`team-${row.id}`}>
-            <TableCell className="font-mono text-xs">{row.id}</TableCell>
-            <TableCell className="font-medium">#{row.number} {row.name}</TableCell>
+            <TableCell font="mono" size="xs">{row.id}</TableCell>
+            <TableCell weight="medium">#{row.number} {row.name}</TableCell>
             <TableCell>
               {row.parentLeagueExists ? (
                 <span className="text-sm">{row.leagueName ?? '—'} <span className="text-xs text-muted-foreground">(#{row.leagueId})</span></span>
@@ -451,8 +451,8 @@ export default function DataIntegrityPage() {
       case 'bowlerLeagues':
         return (
           <TableRow key={`bl-${row.id}`}>
-            <TableCell className="font-mono text-xs">{row.id}</TableCell>
-            <TableCell className="font-medium">{row.bowlerName ?? `Bowler #${row.bowlerId}`}</TableCell>
+            <TableCell font="mono" size="xs">{row.id}</TableCell>
+            <TableCell weight="medium">{row.bowlerName ?? `Bowler #${row.bowlerId}`}</TableCell>
             <TableCell>
               {row.parentLeagueExists ? (
                 <span className="text-sm">{row.leagueName ?? '—'} <span className="text-xs text-muted-foreground">(#{row.leagueId})</span></span>
@@ -466,9 +466,9 @@ export default function DataIntegrityPage() {
       case 'payments':
         return (
           <TableRow key={`pay-${row.id}`}>
-            <TableCell className="font-mono text-xs">{row.id}</TableCell>
-            <TableCell className="font-medium">{formatCents(row.amount)}</TableCell>
-            <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(row.createdAt)}</TableCell>
+            <TableCell font="mono" size="xs">{row.id}</TableCell>
+            <TableCell weight="medium">{formatCents(row.amount)}</TableCell>
+            <TableCell className="whitespace-nowrap" size="sm" tone="muted">{formatDate(row.createdAt)}</TableCell>
             <TableCell>{row.bowlerName ?? `Bowler #${row.bowlerId}`}</TableCell>
             <TableCell>
               {row.parentLeagueExists ? (
@@ -483,11 +483,11 @@ export default function DataIntegrityPage() {
       case 'users':
         return (
           <TableRow key={`user-${row.id}`}>
-            <TableCell className="font-mono text-xs">{row.id}</TableCell>
-            <TableCell className="font-medium">{row.name}</TableCell>
-            <TableCell className="text-sm text-muted-foreground">{row.email}</TableCell>
+            <TableCell font="mono" size="xs">{row.id}</TableCell>
+            <TableCell weight="medium">{row.name}</TableCell>
+            <TableCell size="sm" tone="muted">{row.email}</TableCell>
             <TableCell><Badge variant="outline">{row.role}</Badge></TableCell>
-            <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(row.createdAt)}</TableCell>
+            <TableCell className="whitespace-nowrap" size="sm" tone="muted">{formatDate(row.createdAt)}</TableCell>
             <TableCell className="text-right">{actions}</TableCell>
           </TableRow>
         );

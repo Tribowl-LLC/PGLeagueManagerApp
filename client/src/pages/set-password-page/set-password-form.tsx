@@ -76,7 +76,7 @@ export function SetPasswordForm({
             type="button"
             variant="ghost"
             size="icon"
-            className="absolute right-0 top-0 h-full px-3"
+            padding="input" className="absolute right-0 top-0 h-full"
             onClick={() => setShowPassword(!showPassword)}
           >
             {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
@@ -140,11 +140,11 @@ export function SetPasswordForm({
           {requirements.map((req) => (
             <div key={req.label} className="flex items-center gap-2 text-sm">
               {req.met ? (
-                <Check className="size-3.5 text-green-600" />
+                <Check className="size-3.5 text-success-600" />
               ) : (
                 <X className="size-3.5 text-muted-foreground" />
               )}
-              <span className={req.met ? 'text-green-600' : 'text-muted-foreground'}>{req.label}</span>
+              <span className={req.met ? 'text-success-600' : 'text-muted-foreground'}>{req.label}</span>
             </div>
           ))}
         </div>

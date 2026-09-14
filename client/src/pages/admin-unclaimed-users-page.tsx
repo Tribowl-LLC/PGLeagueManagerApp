@@ -147,7 +147,7 @@ const AdminUnclaimedUsersPage: FC = () => {
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="text-destructive hover:text-destructive"
+                        tone="destructive"
                         onClick={() => setDeleting(u)}
                         data-testid={`delete-unclaimed-user-${u.id}`}
                         aria-label={`Delete ${u.name}`}

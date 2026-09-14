@@ -142,7 +142,7 @@ function LeagueSquareMissingBannerBody({
 
   return (
     <div
-      className="rounded-md border border-amber-500/50 bg-amber-50 p-4 text-sm text-amber-900 dark:bg-amber-500/10 dark:text-amber-200 flex items-start gap-3 mb-4"
+      className="rounded-md border border-warning-500/50 bg-warning-50 p-4 text-sm text-warning-900 dark:bg-warning-500/10 dark:text-warning-200 flex items-start gap-3 mb-4"
       data-testid="banner-league-square-missing-alert"
       role="alert"
     >
@@ -188,7 +188,7 @@ function LeagueSquareMissingBannerBody({
           writeDismissed(userId, newest.sentAt);
           setDismissed(true);
         }}
-        className="text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100"
+        className="text-warning-700 hover:text-warning-900 dark:text-warning-300 dark:hover:text-warning-100"
         aria-label="Dismiss league Square-catalog missing alert banner"
         data-testid="button-dismiss-league-square-missing-alert"
       >

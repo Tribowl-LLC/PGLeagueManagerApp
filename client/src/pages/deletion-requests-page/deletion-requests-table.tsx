@@ -70,7 +70,7 @@ export function DeletionRequestsTable({
             return (
               <Fragment key={req.id}>
                   <TableRow data-testid={`deletion-request-row-${req.id}`}>
-                    <TableCell className="font-medium">{req.email}</TableCell>
+                    <TableCell weight="medium">{req.email}</TableCell>
                     <TableCell className="whitespace-nowrap">{formatDate(req.createdAt)}</TableCell>
                     <TableCell className="max-w-xs">
                       <span className="line-clamp-2 text-sm text-muted-foreground">
@@ -80,7 +80,7 @@ export function DeletionRequestsTable({
                     <TableCell>
                       <Badge variant={meta.variant}>{meta.label}</Badge>
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                    <TableCell className="whitespace-nowrap" size="sm" tone="muted">
                       {req.reviewedAt ? formatDate(req.reviewedAt) : '—'}
                     </TableCell>
                     <TableCell className="text-right">
@@ -131,7 +131,7 @@ export function DeletionRequestsTable({
                               {providerFailures > 0 && (
                                 <Badge
                                   variant="destructive"
-                                  className="ml-2 px-1.5 py-0 text-[10px]"
+                                  size="compact" className="ml-2"
                                 >
                                   {providerFailures} failed
                                 </Badge>
@@ -145,9 +145,9 @@ export function DeletionRequestsTable({
                   {expanded && summary && (
                     <TableRow
                       data-testid={`deletion-request-summary-row-${req.id}`}
-                      className="bg-transparent hover:bg-transparent"
+                      variant="plain" hover="none"
                     >
-                      <TableCell colSpan={6} className="p-3">
+                      <TableCell colSpan={6} density="compact">
                         <ExecutionSummaryPanel summary={summary} requestId={req.id} />
                       </TableCell>
                     </TableRow>

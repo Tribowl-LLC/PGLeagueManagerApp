@@ -43,7 +43,7 @@ export function ProfileInfoView({
         </p>
       </div>
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" onClick={onEdit} className="flex items-center gap-2">
+        <Button variant="outline" onClick={onEdit}>
           <Pencil className="size-4" />
           Edit Profile
         </Button>
@@ -52,7 +52,6 @@ export function ProfileInfoView({
             variant="outline"
             onClick={onRetry}
             disabled={retryPending || inRetryCooldown}
-            className="flex items-center gap-2"
             data-testid="button-retry-payment-sync"
           >
             {retryPending ? (

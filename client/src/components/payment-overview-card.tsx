@@ -30,7 +30,7 @@ export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({ weeklyFee, f
       <CardHeader>
         <CardTitle>Payment Overview</CardTitle>
       </CardHeader>
-      <CardContent className="pt-6 space-y-4">
+      <CardContent padding="topComfortable" spacing="normal">
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-sm text-muted-foreground">Full Season Total Due</span>
@@ -65,9 +65,9 @@ export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({ weeklyFee, f
             <span className="text-sm font-medium">{formatCurrency(financials.remainingBalance)}</span>
           </div>
           {!isUpfront && financials.remainingBalance <= 0 && financials.totalPaid > 0 && (
-            <div className="flex items-center justify-center gap-2 rounded-md bg-green-500/10 p-3">
-              <CheckCircle2 className="size-5 text-green-600" />
-              <span className="text-sm font-semibold text-green-600">Season Paid in Full</span>
+            <div className="flex items-center justify-center gap-2 rounded-md bg-success-500/10 p-3">
+              <CheckCircle2 className="size-5 text-success-600" />
+              <span className="text-sm font-semibold text-success-600">Season Paid in Full</span>
             </div>
           )}
         </div>

@@ -157,22 +157,24 @@ export function UserProfileMenu({ user, showName = false }: UserProfileMenuProps
           <Button 
             variant="ghost" 
             size={showName ? "sm" : "icon"}
-            className={showName ? "flex items-center gap-2 px-2" : "rounded-full"}
+            padding={showName ? "compact" : undefined}
+            shape={showName ? undefined : "circular"}
+            className={showName ? "flex items-center" : undefined}
           >
-            <Avatar className="size-10 flex-shrink-0 border border-muted">
+            <Avatar size="sm" border="muted">
               {user.avatar ? (
                 <AvatarImage src={user.avatar} alt={user.name || user.email} />
               ) : null}
-              <AvatarFallback className="text-base">{getInitials()}</AvatarFallback>
+              <AvatarFallback size="base">{getInitials()}</AvatarFallback>
             </Avatar>
             {showName && (
-              <span className="ml-2 text-sm font-medium max-w-[120px] overflow-hidden text-ellipsis whitespace-nowrap">
+              <span className="ml-2 text-sm font-medium max-w-30 overflow-hidden text-ellipsis whitespace-nowrap">
                 {user.name || user.email}
               </span>
             )}
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-[220px]">
+        <DropdownMenuContent align="end" className="w-55">
           <div className="px-3 py-2 text-sm font-medium">
             <div className="truncate font-medium">{user.name}</div>
             <div className="truncate text-xs text-muted-foreground">{user.email}</div>
@@ -220,7 +222,7 @@ export function UserProfileMenu({ user, showName = false }: UserProfileMenuProps
         type="file"
         ref={fileInputRef}
         aria-label="Upload profile photo"
-        style={{ display: 'none' }}
+        className="hidden"
         accept="image/jpeg,image/png,image/gif,image/webp"
         onChange={handleFileChange}
       />
@@ -228,7 +230,7 @@ export function UserProfileMenu({ user, showName = false }: UserProfileMenuProps
       {/* Payment Partners Dialog */}
       {user.bowlerId ? (
         <Dialog open={isPartnersDialogOpen} onOpenChange={setIsPartnersDialogOpen}>
-          <DialogContent className="sm:max-w-[480px]">
+          <DialogContent className="sm:max-w-120">
             <DialogHeader>
               <DialogTitle>Payment partners</DialogTitle>
             </DialogHeader>
@@ -241,16 +243,16 @@ export function UserProfileMenu({ user, showName = false }: UserProfileMenuProps
 
       {/* Profile Dialog */}
       <Dialog open={isProfileDialogOpen} onOpenChange={setIsProfileDialogOpen}>
-        <DialogContent className="sm:max-w-[425px]">
+        <DialogContent className="sm:max-w-106.25">
           <DialogHeader>
             <DialogTitle>User Profile</DialogTitle>
           </DialogHeader>
           <div className="py-4 flex flex-col items-center gap-y-4">
-            <Avatar className="size-24 border border-muted">
+            <Avatar size="lg" border="muted">
               {user.avatar ? (
                 <AvatarImage src={user.avatar} alt={user.name || user.email} />
               ) : null}
-              <AvatarFallback className="text-lg">{getInitials()}</AvatarFallback>
+              <AvatarFallback size="lg">{getInitials()}</AvatarFallback>
             </Avatar>
             <div className="text-center">
               <h3 className="font-medium text-lg">{user.name}</h3>

@@ -100,7 +100,7 @@ export default function IntegrationsPage() {
 
       {isSystemAdmin && orgList.length > 0 && (
         <div className="mb-6 max-w-2xl">
-          <Label htmlFor="org-select" className="text-sm font-medium mb-2 block">
+          <Label htmlFor="org-select" size="sm" weight="medium" className="mb-2 block">
             Organization
           </Label>
           <Select

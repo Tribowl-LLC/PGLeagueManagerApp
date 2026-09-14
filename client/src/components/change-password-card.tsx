@@ -136,13 +136,13 @@ export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}
 
   return (
     <Card>
-      <CardHeader className="pb-4">
+      <CardHeader padding="standard">
         <CardTitle>Change Password</CardTitle>
         <CardDescription className="mt-1.5">Update your account password</CardDescription>
       </CardHeader>
       <CardContent>
         {!showForm ? (
-          <Button variant="outline" onClick={() => setUserOpen(true)} className="flex items-center gap-2" data-testid="button-change-password-toggle">
+          <Button variant="outline" onClick={() => setUserOpen(true)} data-testid="button-change-password-toggle">
             <Lock className="size-4" />
             Change Password
           </Button>
@@ -153,7 +153,7 @@ export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}
                 <Alert variant="destructive" data-testid="alert-change-password-throttled">
                   <AlertTriangle className="size-4" />
                   <AlertTitle>Too many attempts</AlertTitle>
-                  <AlertDescription className="space-y-2">
+                  <AlertDescription spacing="tight">
                     <p>
                       You've made too many password change attempts. Please wait about{" "}
                       <span data-testid="text-change-password-retry-in">
