@@ -109,7 +109,7 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
         role: "self",
         amountMinor: 3_000,
         coveredWeeks: ["Week 1"],
-        allocations: [{ amountMinor: 3_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1" }],
+        allocations: [{ obligationId: "obligation-1", amountMinor: 3_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1" }],
       },
       {
         bowlerId: 84,
@@ -118,8 +118,8 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
         amountMinor: 4_000,
         coveredWeeks: ["Week 2", "Week 3"],
         allocations: [
-          { amountMinor: 2_000, occurrenceLocalDate: "2026-09-08", plannedOrdinal: 2, label: "Week 2" },
-          { amountMinor: 2_000, occurrenceLocalDate: "2026-09-15", plannedOrdinal: 3, label: "Week 3" },
+          { obligationId: "obligation-2", amountMinor: 2_000, occurrenceLocalDate: "2026-09-08", plannedOrdinal: 2, label: "Week 2" },
+          { obligationId: "obligation-3", amountMinor: 2_000, occurrenceLocalDate: "2026-09-15", plannedOrdinal: 3, label: "Week 3" },
         ],
       },
     ]);
@@ -145,5 +145,21 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByRole("button", { name: "Pay Bowler for one fewer week" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Pay Bowler for one more week" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Pay $87.50" })).toBeDisabled();
+  });
+
+  it("keeps repeated schedule labels distinct with server obligation identity", () => {
+    renderCard(false, {}, [], [{
+      bowlerId: 42,
+      name: "Bowler",
+      role: "self",
+      amountMinor: 4_000,
+      coveredWeeks: ["Week 1", "Week 1"],
+      allocations: [
+        { obligationId: "obligation-1", amountMinor: 2_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1" },
+        { obligationId: "obligation-2", amountMinor: 2_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1" },
+      ],
+    }]);
+
+    expect(screen.getAllByText("Week 1 · 2026-09-01")).toHaveLength(2);
   });
 });

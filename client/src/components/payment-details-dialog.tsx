@@ -26,9 +26,11 @@ type Props = {
 // server-added safe name fields without widening the shared contract locally.
 type DisplayAllocation = CanonicalPaymentRow["allocations"][number] & { bowlerName?: string | null };
 type DisplayAppliedTo = NonNullable<CanonicalPaymentRow["appliedTo"]>[number] & { bowlerName?: string | null };
+type DisplayReceipt = CanonicalPaymentRow["receipt"] & { canOpenReceipt?: boolean | null };
 type DisplayEvidence = Omit<CanonicalPaymentRow, "allocations" | "appliedTo"> & {
   allocations: DisplayAllocation[];
   appliedTo?: DisplayAppliedTo[];
+  receipt: DisplayReceipt;
   paidByName?: string | null;
 };
 
@@ -91,8 +93,13 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     && (evidence.paymentType === "cash" || evidence.paymentType === "check")
     && evidence.allocations.some((allocation) => allocation.state === "active");
   const displayStatus = paymentEvidenceDisplayStatus(evidence);
-  const canOpenReceipt = evidence.paymentId !== null && ["confirmed_paid", "refunded", "disputed"].includes(evidence.status);
   const displayEvidence = evidence as DisplayEvidence;
+  // The server marks ordinary-reader partner rows with canOpenReceipt=false.
+  // Do not infer permission from cached URL availability: payer/admin rows may
+  // legitimately lazy-backfill a receipt when the URL is not cached yet.
+  const canOpenReceipt = evidence.paymentId !== null
+    && ["confirmed_paid", "refunded", "disputed"].includes(evidence.status)
+    && displayEvidence.receipt.canOpenReceipt !== false;
   const appliedAllocations: Array<DisplayAllocation | DisplayAppliedTo> = displayEvidence.allocations.length > 0
     ? displayEvidence.allocations
     : (displayEvidence.appliedTo ?? []);

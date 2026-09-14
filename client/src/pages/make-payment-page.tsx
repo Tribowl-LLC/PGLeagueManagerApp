@@ -294,36 +294,52 @@ export default function MakePaymentPage() {
   const recipientWeeksRef = useRef(recipientWeeks);
   recipientWeeksRef.current = recipientWeeks;
   const participantSnapshotRef = useRef<InteractivePaymentParticipant[] | null>(null);
+  // A successful payment is expected to change the participant balances on
+  // the next authoritative refetch. Keep that expected transition from being
+  // mistaken for an external stale-basket change.
+  const participantRefreshBaselineRef = useRef<InteractivePaymentParticipant[] | null>(null);
   const [isRecoveryBlocked, setIsRecoveryBlocked] = useState(false);
   const { supportsWallets } = usePaymentProvider(league?.locationId ?? null);
 
   useEffect(() => {
     if (participants.length === 0) return;
-    const previousParticipants = participantSnapshotRef.current;
-    if (previousParticipants && Object.values(selectedRecipientsRef.current).some(Boolean)) {
-      const previousById = new Map(previousParticipants.map((participant) => [participant.bowlerId, participant]));
-      const currentById = new Map(participants.map((participant) => [participant.bowlerId, participant]));
-      const stale = Object.entries(selectedRecipientsRef.current).some(([id, isSelected]) => {
-        if (!isSelected) return false;
-        const bowlerId = Number(id);
-        const previous = previousById.get(bowlerId);
-        const current = currentById.get(bowlerId);
-        if (!previous || !current || !current.eligible || current.remainingMinor <= 0) return true;
-        const selectedWeeks = recipientWeeksRef.current[bowlerId] ?? 1;
-        const maximumWeeks = current.weeklyOptions.at(-1)?.weeks ?? 0;
-        return selectedWeeks > maximumWeeks
-          || previous.role !== current.role
-          || previous.remainingMinor !== current.remainingMinor
-          || previous.pastDueMinor !== current.pastDueMinor
-          || JSON.stringify(previous.weeklyOptions) !== JSON.stringify(current.weeklyOptions);
-      });
-      participantSnapshotRef.current = participants;
-      if (stale) {
-        setSelectionStale(true);
-        return;
+    const expectedRefreshBaseline = participantRefreshBaselineRef.current;
+    const isExpectedPaymentRefresh = expectedRefreshBaseline !== null;
+    if (isExpectedPaymentRefresh) {
+      // The query may rerender with the same participant data before the
+      // post-payment response arrives. Keep the marker until that data
+      // actually changes, then accept that expected balance transition.
+      if (JSON.stringify(expectedRefreshBaseline) !== JSON.stringify(participants)) {
+        participantRefreshBaselineRef.current = null;
       }
-    } else {
       participantSnapshotRef.current = participants;
+    } else {
+      const previousParticipants = participantSnapshotRef.current;
+      if (previousParticipants && Object.values(selectedRecipientsRef.current).some(Boolean)) {
+        const previousById = new Map(previousParticipants.map((participant) => [participant.bowlerId, participant]));
+        const currentById = new Map(participants.map((participant) => [participant.bowlerId, participant]));
+        const stale = Object.entries(selectedRecipientsRef.current).some(([id, isSelected]) => {
+          if (!isSelected) return false;
+          const bowlerId = Number(id);
+          const previous = previousById.get(bowlerId);
+          const current = currentById.get(bowlerId);
+          if (!previous || !current || !current.eligible || current.remainingMinor <= 0) return true;
+          const selectedWeeks = recipientWeeksRef.current[bowlerId] ?? 1;
+          const maximumWeeks = current.weeklyOptions.at(-1)?.weeks ?? 0;
+          return selectedWeeks > maximumWeeks
+            || previous.role !== current.role
+            || previous.remainingMinor !== current.remainingMinor
+            || previous.pastDueMinor !== current.pastDueMinor
+            || JSON.stringify(previous.weeklyOptions) !== JSON.stringify(current.weeklyOptions);
+        });
+        participantSnapshotRef.current = participants;
+        if (stale) {
+          setSelectionStale(true);
+          return;
+        }
+      } else {
+        participantSnapshotRef.current = participants;
+      }
     }
     if (selectionStale) return;
     setSelectedRecipients((current) => {
@@ -473,13 +489,15 @@ export default function MakePaymentPage() {
     setRecipientWeeks((current) => ({ ...current, [recipientBowlerId]: nextWeeks }));
   }, [participants, fullBalanceOnly]);
 
-  const resetRecipientSelection = useCallback(() => {
+  const resetRecipientSelection = useCallback((expectBalanceRefresh = false) => {
     const nextSelected: Record<number, boolean> = {};
     const nextWeeks: Record<number, number> = {};
     for (const participant of participants) {
       nextSelected[participant.bowlerId] = isInteractiveParticipantSelectedByDefault(participant);
       nextWeeks[participant.bowlerId] = initialInteractivePaymentWeeks(participant, paymentMode);
     }
+    participantSnapshotRef.current = null;
+    participantRefreshBaselineRef.current = expectBalanceRefresh ? participants : null;
     setSelectionStale(false);
     setSelectedRecipients(nextSelected);
     setRecipientWeeks(nextWeeks);
@@ -521,7 +539,7 @@ export default function MakePaymentPage() {
       assertRosterPaymentSucceeded(status);
       clearPaymentIntent(scope);
       const affectedIds = [...new Set([bowlerId, ...recipientSelections.map((recipient) => recipient.bowlerId)])];
-      resetRecipientSelection();
+      resetRecipientSelection(true);
       cleanupCard();
       setCardEditorMode(null);
       toast({ title: "Payment Successful", description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.` });
@@ -577,7 +595,7 @@ export default function MakePaymentPage() {
         const affectedIds = [...new Set([bowlerId, ...affectedBowlerIdsRef.current])];
         await Promise.all(affectedIds.map((affectedId) => invalidatePaymentHistoryFinancials(queryClient, leagueId, affectedId)));
         invalidatePaymentViews(leagueId, bowlerId, affectedIds);
-        resetRecipientSelection();
+        resetRecipientSelection(true);
         clearPaymentIntent(preparedIntent.scope ?? paymentIntentScope, preparedIntent.requestKey);
         setIsRecoveryBlocked(false);
         return;
@@ -610,7 +628,7 @@ export default function MakePaymentPage() {
       assertRosterPaymentSucceeded(body.data?.status ?? body.status);
       clearPaymentIntent(paymentIntentScope);
       const affectedIds = [...new Set([bowlerId, ...recipientSelections.map((recipient) => recipient.bowlerId)])];
-      resetRecipientSelection();
+      resetRecipientSelection(true);
       cleanupCard();
       const reinitializeOneTimeEditor = shouldReinitializeOneTimeCardEditor(cardMode, savedCards.length);
       setCardEditorMode(reinitializeOneTimeEditor ? "one-time" : null);
@@ -639,7 +657,7 @@ export default function MakePaymentPage() {
   if (!league || leagueId === undefined || !bowlerId) return <MakePaymentReadError message="Payment information is unavailable. Try again or view payment history." onRetry={() => { void refetchDetails(); void refetchParticipants(); }} leagueId={selectedLeagueId ?? undefined} />;
 
   const hasEligibleParticipant = participants.some((participant) => participant.eligible && participant.remainingMinor > 0);
-  const isPaidInFull = !hasEligibleParticipant && (selfParticipant?.remainingMinor ?? 0) <= 0;
+  const isPaidInFull = selfParticipant !== undefined && !hasEligibleParticipant && selfParticipant.remainingMinor <= 0;
   const breakdownRows: PaymentBreakdownRow[] = quote?.recipients?.map((row) => ({
     bowlerId: row.bowlerId,
     name: row.name,
@@ -647,6 +665,7 @@ export default function MakePaymentPage() {
     amountMinor: row.subtotalMinor,
     coveredWeeks: row.coveredWeeks,
     allocations: row.allocations.map((allocation) => ({
+      obligationId: allocation.obligationId,
       amountMinor: allocation.amountMinor,
       occurrenceLocalDate: allocation.occurrenceLocalDate,
       plannedOrdinal: allocation.plannedOrdinal,

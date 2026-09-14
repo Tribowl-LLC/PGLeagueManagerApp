@@ -11,7 +11,12 @@ beforeEach(() => {
   csrfFetchMock.mockResolvedValue(new Response(JSON.stringify({ data: { receiptUrl: "https://receipt.example" } }), { status: 200 }));
 });
 
-const row = (overrides: Partial<CanonicalPaymentRow & { paidByName?: string | null }> = {}): CanonicalPaymentRow => ({
+type PaymentRowFixture = Omit<CanonicalPaymentRow, "receipt"> & {
+  receipt: CanonicalPaymentRow["receipt"] & { canOpenReceipt?: boolean };
+  paidByName?: string | null;
+};
+
+const row = (overrides: Partial<PaymentRowFixture> = {}): PaymentRowFixture => ({
   paymentId: null,
   leagueId: 7,
   bowlerId: 42,
@@ -86,6 +91,35 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByText(/Dispute:/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Receipt" }));
     await waitFor(() => expect(csrfFetchMock).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt?organizationId=11"));
+    open.mockRestore();
+  });
+
+  it("does not offer a receipt when the ordinary-reader projection marks it unavailable", async () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 12,
+      status: "confirmed_paid",
+      unresolved: false,
+      source: "canonical_allocation",
+      receipt: { ...row().receipt, source: "canonical_allocation", availability: "unavailable", canOpenReceipt: false },
+    })]} />);
+
+    await fireEvent.click(screen.getByRole("button", { name: "View payment details: Confirmed paid" }));
+    expect(screen.queryByRole("button", { name: "Receipt" })).not.toBeInTheDocument();
+  });
+
+  it("keeps payer receipt lookup available when the URL needs lazy backfill", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 12,
+      status: "confirmed_paid",
+      unresolved: false,
+      source: "canonical_allocation",
+      receipt: { ...row().receipt, source: "canonical_allocation", availability: "unavailable", canOpenReceipt: true },
+    })]} />);
+
+    await fireEvent.click(screen.getByRole("button", { name: "View payment details: Confirmed paid" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Receipt" }));
+    await waitFor(() => expect(csrfFetchMock).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt"));
     open.mockRestore();
   });
 

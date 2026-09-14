@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => {
   const oneTimePaymentCard = vi.fn((..._args: unknown[]) => null);
   let paymentMode: "upfront" | "weekly" = "upfront";
   let paidInFull = false;
+  let zeroParticipants = false;
   let remainingMinor = 8_750;
   const csrfFetch = vi.fn();
   const tokenizeCard = vi.fn();
@@ -59,7 +60,7 @@ const mocks = vi.hoisted(() => {
     organizationId: 1,
     leagueId: 17,
     paymentMode,
-    participants: [{
+    participants: zeroParticipants ? [] : [{
       bowlerId: 42,
       name: "Bowler",
       role: "self" as const,
@@ -151,6 +152,7 @@ const mocks = vi.hoisted(() => {
     standingQueryCalls,
     setPaymentMode: (mode: "upfront" | "weekly") => { paymentMode = mode; },
     setPaidInFull: (value: boolean) => { paidInFull = value; },
+    setZeroParticipants: (value: boolean) => { zeroParticipants = value; },
     setRemainingBalance: (value: number) => { remainingMinor = value; },
     setQuoteFetching: (value: boolean) => { quoteFetching = value; },
     csrfFetch,
@@ -226,6 +228,7 @@ afterEach(() => {
   mocks.standingQueryCalls.length = 0;
   mocks.setPaymentMode("upfront");
   mocks.setPaidInFull(false);
+  mocks.setZeroParticipants(false);
   mocks.setRemainingBalance(8_750);
   mocks.setQuoteFetching(false);
   mocks.csrfFetch.mockReset();
@@ -261,6 +264,14 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(mocks.oneTimePaymentCard).not.toHaveBeenCalled();
     expect(mocks.standingAutopayCard).not.toHaveBeenCalled();
     expect(mocks.standingQueryCalls).toHaveLength(0);
+  });
+
+  it("does not claim season paid in full when the participant projection is empty", async () => {
+    mocks.setZeroParticipants(true);
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    expect(document.body).not.toHaveTextContent("Season Paid in Full");
   });
 
   it("mounts StandingAutopayCard for weekly leagues", async () => {
@@ -346,6 +357,25 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(mocks.tokenizeCard).toHaveBeenCalledOnce();
     expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment already confirmed" }));
     expect(document.body).not.toHaveTextContent("Payment confirmation in progress");
+  });
+
+  it("clears the participant baseline after success before the balance refetch", async () => {
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "successful-request", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded" } }) });
+    mocks.tokenizeCard.mockResolvedValue("card-source");
+
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+    await act(async () => { await props.onSubmit(); });
+    await waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment Successful" })));
+
+    mocks.setRemainingBalance(5_750);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: false, paymentAmountMinor: 5_750 }));
+    view.unmount();
   });
 
   it("keeps recovered checkout blocked until the balance refresh settles", async () => {

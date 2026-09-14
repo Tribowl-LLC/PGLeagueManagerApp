@@ -33,6 +33,7 @@ export interface PaymentBreakdownRow {
   amountMinor: number;
   coveredWeeks: string[];
   allocations: Array<{
+    obligationId: string | null;
     amountMinor: number;
     occurrenceLocalDate: string;
     plannedOrdinal: number | null;
@@ -163,8 +164,8 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
                     <span className="shrink-0 font-medium">{formatCurrency(row.amountMinor)}</span>
                   </div>
                   <div className="flex flex-col gap-1 pl-3 text-xs text-muted-foreground">
-                    {(row.allocations.length > 0 ? row.allocations : row.coveredWeeks.map((label) => ({ label, amountMinor: 0, occurrenceLocalDate: "", plannedOrdinal: null }))).map((allocation, index) => (
-                      <div key={`${row.bowlerId}-${allocation.plannedOrdinal ?? (allocation.occurrenceLocalDate || index)}`} className="flex items-center justify-between gap-3">
+                    {(row.allocations.length > 0 ? row.allocations : row.coveredWeeks.map((label) => ({ obligationId: null, label, amountMinor: 0, occurrenceLocalDate: "", plannedOrdinal: null }))).map((allocation, index) => (
+                      <div key={`${row.bowlerId}-${allocation.obligationId ?? "unlinked"}-${allocation.plannedOrdinal ?? (allocation.occurrenceLocalDate || index)}-${index}`} className="flex items-center justify-between gap-3">
                         <span>{allocation.label}{allocation.occurrenceLocalDate ? ` · ${allocation.occurrenceLocalDate}` : ""}</span>
                         {allocation.amountMinor > 0 && <span>{formatCurrency(allocation.amountMinor)}</span>}
                       </div>
