@@ -127,7 +127,7 @@ export function RefundPaymentDialog({ payment, refundEvidence, onClose, onConfir
           </Alert>
         ) : payment && recipientSummaries ? (
           <section className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3" aria-label="Whole payment refund allocation">
-            <p className="text-sm font-medium">This refunds the complete tender and every affected recipient allocation.</p>
+            <p className="text-sm font-medium">This refunds the entire payment for everyone listed below.</p>
             <div className="divide-y rounded-md border bg-background">
               {recipientSummaries.map((recipient) => (
                 <div key={recipient.bowlerId} className="px-3 py-2 text-sm">

@@ -160,7 +160,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
 
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
           <div><dt className="text-muted-foreground">Collected</dt><dd>{formatLocalDate(evidence.authoritativeLocalDate)}</dd></div>
-          <div><dt className="text-muted-foreground">{hasRecipientNames ? "Tender total" : "Credited amount"}</dt><dd>{formatCurrency(evidence.amountMinor, evidence.currency)}</dd></div>
+          <div><dt className="text-muted-foreground">{hasRecipientNames ? "Payment total" : "Paid for"}</dt><dd>{formatCurrency(evidence.amountMinor, evidence.currency)}</dd></div>
           <div><dt className="text-muted-foreground">Payment type</dt><dd>{paymentTypeLabel(evidence.paymentType, payment?.checkNumber)}</dd></div>
           {displayEvidence.paidByName && <div><dt className="text-muted-foreground">Paid by</dt><dd>{displayEvidence.paidByName}</dd></div>}
           <div>
@@ -173,7 +173,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
         </dl>
 
         <section className="space-y-2" aria-labelledby="payment-allocation-heading">
-          <h3 id="payment-allocation-heading" className="font-medium">{hasRecipientNames ? "Tender allocation by recipient" : "Credited weeks"}</h3>
+          <h3 id="payment-allocation-heading" className="font-medium">{hasRecipientNames ? "Payment breakdown" : "Paid for"}</h3>
           {appliedAllocations.length === 0 ? (
             <p className="text-sm text-muted-foreground">No canonical allocation is recorded.</p>
           ) : (

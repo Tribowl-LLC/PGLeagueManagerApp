@@ -546,7 +546,12 @@ export default function MakePaymentPage() {
     walletStartQuoteRef.current = { ...displayedQuote };
     return true;
   }, [walletRecoveryReady, selectionStale, recipientSelections.length]);
-  const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: savedCardReadState === "ready" && !!league?.locationId && paymentAmountMinor > 0 && supportsWallets && walletRecoveryReady && !selectionStale && !loadingQuote && !fetchingQuote && recipientSelections.length > 0, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
+  // Keep the SDK instance mounted while quote data is refreshing. A native
+  // wallet sheet can outlive the render that opened it; tearing down the SDK
+  // on a transient loading flag would invalidate that in-flight tokenization.
+  // beginWalletPayment and handleWalletPayment still reject stale selections
+  // and amounts before any charge request is sent.
+  const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: savedCardReadState === "ready" && !!league?.locationId && paymentAmountMinor > 0 && supportsWallets && walletRecoveryReady && !selectionStale && recipientSelections.length > 0, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
   const cleanupWallet = wallet.cleanup;
   useEffect(() => () => cleanupWallet(), [cleanupWallet]);
 

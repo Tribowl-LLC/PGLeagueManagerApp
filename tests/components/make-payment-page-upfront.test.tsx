@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => {
     onPaymentStarted?: () => void | boolean;
     onTokenReceived?: (token: string, walletType: "apple_pay" | "google_pay") => Promise<void>;
   } = { enabled: false };
+  let quoteFetching = false;
   const standingQueryCalls: unknown[][] = [];
   const financialData = () => ({
     contractVersion: "canonical-due-past-due/2",
@@ -120,7 +121,7 @@ const mocks = vi.hoisted(() => {
           coveredWeeks: ["Week 1"],
         }],
       };
-      return { data: { success: true, data: quote }, isLoading: false, isFetching: false, error: null, refetch: vi.fn(async () => ({ data: { success: true, data: quote }, error: null })) };
+      return { data: { success: true, data: quote }, isLoading: false, isFetching: quoteFetching, error: null, refetch: vi.fn(async () => ({ data: { success: true, data: quote }, error: null })) };
     }
     if (key.includes("canonical-due-past-due")) {
       return {
@@ -151,6 +152,7 @@ const mocks = vi.hoisted(() => {
     setPaymentMode: (mode: "upfront" | "weekly") => { paymentMode = mode; },
     setPaidInFull: (value: boolean) => { paidInFull = value; },
     setRemainingBalance: (value: number) => { remainingMinor = value; },
+    setQuoteFetching: (value: boolean) => { quoteFetching = value; },
     csrfFetch,
     tokenizeCard,
     toast,
@@ -225,6 +227,7 @@ afterEach(() => {
   mocks.setPaymentMode("upfront");
   mocks.setPaidInFull(false);
   mocks.setRemainingBalance(8_750);
+  mocks.setQuoteFetching(false);
   mocks.csrfFetch.mockReset();
   mocks.tokenizeCard.mockReset();
   mocks.toast.mockReset();
@@ -450,6 +453,19 @@ describe("MakePaymentPage upfront payment mode", () => {
     await act(async () => { await mocks.walletOptions.onTokenReceived?.("deferred-wallet-source", "apple_pay"); });
     expect(mocks.csrfFetch).toHaveBeenCalledOnce();
     expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment Failed" }));
+    view.unmount();
+  });
+
+  it("keeps wallet SDK eligibility mounted while a background quote fetch is in flight", async () => {
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "wallet-request", outcome: "new" });
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
+
+    mocks.setQuoteFetching(true);
+    view.rerender(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ quoteLoading: true }));
+    expect(mocks.walletOptions.enabled).toBe(true);
     view.unmount();
   });
 

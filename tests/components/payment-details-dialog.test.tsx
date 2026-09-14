@@ -118,9 +118,9 @@ describe("PaymentDetailsDialog", () => {
 
     render(<PaymentDetailsDialog payment={payment} evidence={payerEvidence} bowlerName="Alex Payer" canCorrect={false} onClose={() => {}} />);
 
-    expect(screen.getByText("Tender total")).toBeInTheDocument();
+    expect(screen.getByText("Payment total")).toBeInTheDocument();
     expect(screen.getByText("Paid by").parentElement).toHaveTextContent("Alex Payer");
-    expect(screen.getByText("Tender allocation by recipient")).toBeInTheDocument();
+    expect(screen.getByText("Payment breakdown")).toBeInTheDocument();
     expect(screen.getByText("Partner Bowler")).toBeInTheDocument();
     expect(screen.getByText("Week 2")).toBeInTheDocument();
     expect(screen.getByText("$20.00")).toBeInTheDocument();

@@ -141,7 +141,7 @@ describe("RefundPaymentDialog", () => {
 
   it("enumerates every affected recipient and covered week before refund", () => {
     render(<RefundPaymentDialog payment={payment(7)} refundEvidence={{ ...refundEvidence, paymentId: 7 }} onClose={() => {}} onConfirm={() => {}} isPending={false} />);
-    expect(screen.getByRole("region", { name: "Whole payment refund allocation" })).toHaveTextContent("complete tender");
+    expect(screen.getByRole("region", { name: "Whole payment refund allocation" })).toHaveTextContent("entire payment");
     expect(screen.getByRole("region", { name: "Whole payment refund allocation" })).toHaveTextContent("Alex Payer");
     expect(screen.getByRole("region", { name: "Whole payment refund allocation" })).toHaveTextContent("Partner Bowler");
     expect(screen.getByRole("region", { name: "Whole payment refund allocation" })).toHaveTextContent("Week 1");
