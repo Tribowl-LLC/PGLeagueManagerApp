@@ -288,6 +288,13 @@
       "when": 1789311087511,
       "tag": "0040_remove_league_public_signup",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1789345803616,
+      "tag": "0041_combined_partner_payment_snapshot",
+      "breakpoints": true
     }
   ]
 }

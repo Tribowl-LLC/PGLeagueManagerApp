@@ -11,6 +11,7 @@ import {
 } from "@shared/schema";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
+import { reconstructInteractivePartnerSnapshot, type InteractivePartnerPaymentSnapshot } from "./interactive-partner-payment-snapshot.js";
 
 /**
  * Expected local evidence failures are durable reconciliation outcomes, not
@@ -42,6 +43,54 @@ type SnapshotRecord = {
   pastDueAt?: string;
 };
 
+function snapshotRecordObligationId(record: SnapshotRecord | InteractivePartnerPaymentSnapshot["allocations"][number]): string | undefined {
+  return "id" in record ? record.id ?? record.obligationId : record.obligationId;
+}
+
+/** v3 stores the selected-recipient/link evidence beside the allocation
+ * records. Every dispatch/finalization path must validate that immutable
+ * evidence and its fingerprint before interpreting those records; this
+ * deliberately does not re-read live partner links. */
+function validateInteractivePartnerSnapshot(
+  operation: { id: string; organizationId: number; amountMinor: number; currency: string; providerName: string; providerIdempotencyKey: string },
+  snapshot: typeof paymentOperationRosterSnapshots.$inferSelect,
+): InteractivePartnerPaymentSnapshot | undefined {
+  if (snapshot.snapshotVersion !== 3) return undefined;
+  if (snapshot.requestKind === null || snapshot.sourceKind === null || snapshot.encryptedSourceId === null || snapshot.payerBowlerId === null || snapshot.quoteFingerprint === null || !Array.isArray(snapshot.partnerEvidence)) {
+    throw new RosterSnapshotFinalizationError("SNAPSHOT_INVALID", "The interactive partner snapshot is incomplete");
+  }
+  try {
+    return reconstructInteractivePartnerSnapshot({
+      organizationId: operation.organizationId,
+      amountMinor: operation.amountMinor,
+      currency: operation.currency,
+      providerName: operation.providerName,
+      providerIdempotencyKey: operation.providerIdempotencyKey,
+      stored: {
+        snapshotVersion: 3,
+        snapshotFingerprint: snapshot.snapshotFingerprint,
+        leagueId: snapshot.leagueId,
+        locationId: snapshot.locationId,
+        providerLocationId: snapshot.providerLocationId,
+        payerBowlerId: snapshot.payerBowlerId,
+        requestKind: snapshot.requestKind,
+        encryptedSourceId: snapshot.encryptedSourceId,
+        encryptedCustomerId: snapshot.encryptedCustomerId,
+        encryptedBuyerEmail: snapshot.encryptedBuyerEmail,
+        storeCard: snapshot.storeCard,
+        sourceKind: snapshot.sourceKind,
+        quoteFingerprint: snapshot.quoteFingerprint,
+        partnerEvidence: snapshot.partnerEvidence,
+      },
+      allocations: (Array.isArray(snapshot.obligations) ? snapshot.obligations : []) as InteractivePartnerPaymentSnapshot["allocations"],
+      lineItems: snapshot.lineItems,
+    });
+  } catch (error) {
+    if (error instanceof RosterSnapshotFinalizationError) throw error;
+    throw new RosterSnapshotFinalizationError("SNAPSHOT_INVALID", "The interactive partner snapshot failed immutable validation");
+  }
+}
+
 /** Validate the same immutable reservation immediately before the provider
  * dispatch cutoff. This closes the roster-edit/cancel race before any money
  * movement can begin. */
@@ -55,6 +104,13 @@ export async function validateRosterSnapshotForDispatchInTransaction(
     eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
   )).limit(1).for("share");
   if (!snapshot) return false;
+  const [operation] = await tx.select().from(paymentOperations).where(and(
+    eq(paymentOperations.id, input.operationId),
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.leagueId, input.leagueId),
+  )).limit(1).for("share");
+  if (!operation) throw new RosterSnapshotFinalizationError("OPERATION_NOT_FOUND", "The payment operation is unavailable");
+  const validatedPartnerSnapshot = validateInteractivePartnerSnapshot(operation, snapshot);
   const items = await tx.select().from(paymentOperationRosterSnapshotItems).where(and(
     eq(paymentOperationRosterSnapshotItems.operationId, input.operationId),
     eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
@@ -67,7 +123,7 @@ export async function validateRosterSnapshotForDispatchInTransaction(
   if (total !== snapshot.amountMinor) {
     throw new RosterSnapshotFinalizationError("SNAPSHOT_AMOUNT_MISMATCH", "The roster snapshot amount is inconsistent");
   }
-  const records = Array.isArray(snapshot.obligations) ? snapshot.obligations as SnapshotRecord[] : [];
+  const records = validatedPartnerSnapshot?.allocations ?? (Array.isArray(snapshot.obligations) ? snapshot.obligations as SnapshotRecord[] : []);
   const responsibilityIds = [...new Set(records.map((record) => record.responsibilityId).filter((id): id is string => typeof id === "string"))];
   const responsibilities = await tx.select({
     id: occurrencePaymentResponsibilities.id,
@@ -87,7 +143,7 @@ export async function validateRosterSnapshotForDispatchInTransaction(
     )).for("share");
   if (obligations.length !== items.length) throw new RosterSnapshotFinalizationError("OBLIGATION_MISSING", "The roster reservation references a missing obligation");
   for (const item of items) {
-    const record = records.find((candidate) => (candidate.id ?? candidate.obligationId) === item.obligationId);
+    const record = records.find((candidate) => snapshotRecordObligationId(candidate) === item.obligationId);
     const responsibility = record?.responsibilityId ? byId.get(record.responsibilityId) : undefined;
     const obligation = obligations.find((candidate) => candidate.id === item.obligationId);
     if (!record || !responsibility || !obligation || responsibility.state !== "active"
@@ -133,6 +189,7 @@ export async function finalizeRosterSnapshotInTransaction(
     // continue through the retained general ledger finalizer unchanged.
     return { finalized: false, allocationIds: [] };
   }
+  const validatedPartnerSnapshot = validateInteractivePartnerSnapshot(operation, snapshot);
 
   const items = await tx.select().from(paymentOperationRosterSnapshotItems).where(and(
     eq(paymentOperationRosterSnapshotItems.operationId, operation.id),
@@ -155,9 +212,9 @@ export async function finalizeRosterSnapshotInTransaction(
     throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_INCOMPLETE", "Provider payment evidence is incomplete for the roster snapshot");
   }
 
-  const records = Array.isArray(snapshot.obligations)
+  const records = validatedPartnerSnapshot?.allocations ?? (Array.isArray(snapshot.obligations)
     ? snapshot.obligations as SnapshotRecord[]
-    : [];
+    : []);
   const responsibilityIds = [...new Set(records
     .map((record) => record.responsibilityId)
     .filter((id): id is string => typeof id === "string"))];
@@ -173,7 +230,7 @@ export async function finalizeRosterSnapshotInTransaction(
   const responsibilityById = new Map(responsibilities.map((row) => [row.id, row]));
 
   for (const item of items) {
-    const record = records.find((candidate) => (candidate.id ?? candidate.obligationId) === item.obligationId);
+    const record = records.find((candidate) => snapshotRecordObligationId(candidate) === item.obligationId);
     const responsibility = record?.responsibilityId ? responsibilityById.get(record.responsibilityId) : undefined;
     if (!record || record.responsibilityId === undefined || record.responsibilityVersion === undefined
       || !responsibility || responsibility.state !== "active" || responsibility.version !== record.responsibilityVersion) {

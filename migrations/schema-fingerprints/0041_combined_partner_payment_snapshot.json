@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0041_combined_partner_payment_snapshot",
+    "hash": "119f48c839774bcd3d0840999dfb6117f01dee8a3e564acb9692108bfab25aef",
+    "createdAt": 1789345803616
+  },
+  "digest": "73a6e5f90e88b789a66c3d634a357136d94b3c3e05ce06b09a83e57cc7830881",
+  "counts": {
+    "tables": 67,
+    "columns": 914,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 25,
+    "constraints": 511,
+    "indexes": 281,
+    "types": 1,
+    "functions": 19,
+    "triggers": 33,
+    "policies": 0
+  }
+}

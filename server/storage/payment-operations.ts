@@ -46,6 +46,13 @@ import {
   reconstructRosterOperationSnapshot,
   type RosterOperationSemanticSnapshot,
 } from "../services/roster-operation-snapshot.js";
+import {
+  encryptInteractivePartnerSnapshot,
+  fingerprintInteractivePartnerSnapshot,
+  reconstructInteractivePartnerSnapshot,
+  type InteractivePartnerPaymentSnapshot,
+} from "../services/interactive-partner-payment-snapshot.js";
+export type RosterOperationExecutionSnapshot = RosterOperationSemanticSnapshot | InteractivePartnerPaymentSnapshot;
 import { deriveSquareCardSaveIdempotencyKey } from "../services/payment-operation-idempotency.js";
 import {
   encryptRefundPaymentSnapshot,
@@ -619,7 +626,7 @@ export async function createOrGetRefundPaymentOperation(
  */
 async function validateRosterOperationSnapshotTenantReferences(
   executor: PaymentOperationTransaction,
-  snapshot: RosterOperationSemanticSnapshot,
+  snapshot: RosterOperationExecutionSnapshot,
 ): Promise<void> {
   const bowlerIds = [...new Set([snapshot.payerBowlerId, ...snapshot.allocations.map((row) => row.bowlerId)])];
   const paidByUserIds = [...new Set(snapshot.allocations.map((row) => row.paidByUserId).filter((id): id is number => id !== null))];
@@ -643,7 +650,7 @@ async function validateRosterOperationSnapshotTenantReferences(
 async function loadRosterOperationSnapshot(
   executor: typeof db | PaymentOperationTransaction,
   operation: PaymentOperation,
-): Promise<RosterOperationSemanticSnapshot | undefined> {
+): Promise<RosterOperationExecutionSnapshot | undefined> {
   if (operation.operationType !== "interactive_charge" || operation.leagueId === null) return undefined;
   const [stored] = await executor.select().from(paymentOperationRosterSnapshots).where(and(
     eq(paymentOperationRosterSnapshots.operationId, operation.id),
@@ -661,6 +668,17 @@ async function loadRosterOperationSnapshot(
   const payerBowlerId = stored.payerBowlerId;
   const quoteFingerprint = stored.quoteFingerprint;
   const allocations = Array.isArray(stored.obligations) ? stored.obligations : [];
+  if (stored.snapshotVersion === 3) {
+    if (!Array.isArray(stored.partnerEvidence)) throw new PaymentOperationImmutableMismatchError();
+    return reconstructInteractivePartnerSnapshot({
+      organizationId: operation.organizationId, amountMinor: operation.amountMinor, currency: operation.currency,
+      providerName: operation.providerName, providerIdempotencyKey: operation.providerIdempotencyKey,
+      stored: { ...stored, snapshotVersion: 3, requestKind, sourceKind, encryptedSourceId, payerBowlerId, quoteFingerprint, partnerEvidence: stored.partnerEvidence },
+      allocations: allocations as InteractivePartnerPaymentSnapshot["allocations"],
+      lineItems: stored.lineItems,
+    });
+  }
+  if (stored.snapshotVersion !== 2) throw new PaymentOperationImmutableMismatchError();
   return reconstructRosterOperationSnapshot({
     organizationId: operation.organizationId, amountMinor: operation.amountMinor, currency: operation.currency,
     providerName: operation.providerName, providerIdempotencyKey: operation.providerIdempotencyKey,
@@ -668,6 +686,48 @@ async function loadRosterOperationSnapshot(
     allocations: allocations as RosterOperationSemanticSnapshot["allocations"],
     lineItems: stored.lineItems,
   });
+}
+
+/** Persist the v3 interactive partner snapshot without widening or rewriting
+ * the historical v2 snapshot writer. */
+export async function persistInteractivePartnerOperationSnapshot(
+  operation: PaymentOperation,
+  snapshot: InteractivePartnerPaymentSnapshot,
+  transaction: PaymentOperationTransaction,
+): Promise<InteractivePartnerPaymentSnapshot> {
+  if (snapshot.organizationId !== operation.organizationId
+    || operation.operationType !== "interactive_charge"
+    || operation.leagueId !== snapshot.leagueId
+    || snapshot.amountMinor !== operation.amountMinor
+    || snapshot.currency !== operation.currency
+    || snapshot.providerName !== operation.providerName) throw new PaymentOperationImmutableMismatchError();
+  await validateRosterOperationSnapshotTenantReferences(transaction, snapshot);
+  const [storedOperation] = await transaction.select().from(paymentOperations).where(and(
+    eq(paymentOperations.id, operation.id), eq(paymentOperations.organizationId, operation.organizationId),
+  )).limit(1).for("share");
+  if (!storedOperation || storedOperation.operationType !== operation.operationType || storedOperation.leagueId !== snapshot.leagueId
+    || storedOperation.targetKey !== operation.targetKey || storedOperation.amountMinor !== operation.amountMinor
+    || storedOperation.currency !== operation.currency || storedOperation.providerName !== operation.providerName
+    || storedOperation.requestFingerprint !== operation.requestFingerprint || storedOperation.providerIdempotencyKey !== operation.providerIdempotencyKey) throw new PaymentOperationImmutableMismatchError();
+  const encrypted = encryptInteractivePartnerSnapshot(snapshot);
+  const [created] = await transaction.insert(paymentOperationRosterSnapshots).values({
+    operationId: operation.id, organizationId: snapshot.organizationId, leagueId: snapshot.leagueId, snapshotVersion: 3,
+    snapshotKind: "interactive", amountMinor: snapshot.amountMinor, currency: snapshot.currency,
+    obligations: snapshot.allocations, locationId: encrypted.locationId, providerLocationId: encrypted.providerLocationId,
+    payerBowlerId: encrypted.payerBowlerId, requestKind: encrypted.requestKind, encryptedSourceId: encrypted.encryptedSourceId,
+    encryptedCustomerId: encrypted.encryptedCustomerId, encryptedBuyerEmail: encrypted.encryptedBuyerEmail,
+    storeCard: encrypted.storeCard, sourceKind: encrypted.sourceKind, quoteFingerprint: encrypted.quoteFingerprint,
+    lineItems: snapshot.lineItems, partnerEvidence: encrypted.partnerEvidence, snapshotFingerprint: encrypted.snapshotFingerprint,
+  }).onConflictDoNothing().returning({ operationId: paymentOperationRosterSnapshots.operationId });
+  if (!created) {
+    const existing = await loadRosterOperationSnapshot(transaction, operation);
+    if (!existing || existing.snapshotVersion !== 3 || fingerprintInteractivePartnerSnapshot(existing) !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
+    return existing;
+  }
+  if (snapshot.storeCard) await initializeInteractiveCardSaveState(transaction, operation, snapshot);
+  const stored = await loadRosterOperationSnapshot(transaction, operation);
+  if (!stored || stored.snapshotVersion !== 3 || fingerprintInteractivePartnerSnapshot(stored) !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
+  return stored;
 }
 
 export async function persistRosterOperationSnapshot(
@@ -701,12 +761,12 @@ export async function persistRosterOperationSnapshot(
   }).onConflictDoNothing().returning({ operationId: paymentOperationRosterSnapshots.operationId });
   if (!created) {
     const existing = await loadRosterOperationSnapshot(transaction, operation);
-    if (!existing || fingerprintRosterOperationSnapshot(existing) !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
+    if (!existing || existing.snapshotVersion !== 2 || fingerprintRosterOperationSnapshot(existing) !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
     return existing;
   }
   if (snapshot.storeCard) await initializeInteractiveCardSaveState(transaction, operation, snapshot);
   const stored = await loadRosterOperationSnapshot(transaction, operation);
-  if (!stored || fingerprintRosterOperationSnapshot(stored) !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
+  if (!stored || stored.snapshotVersion !== 2 || fingerprintRosterOperationSnapshot(stored) !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
   return stored;
 }
 
@@ -735,7 +795,7 @@ function validateCardSaveErrorCode(errorCode: string): void {
 async function initializeInteractiveCardSaveState(
   transaction: PaymentOperationTransaction,
   operation: PaymentOperation,
-  snapshot: RosterOperationSemanticSnapshot,
+  snapshot: Pick<RosterOperationSemanticSnapshot, "storeCard" | "sourceKind">,
 ): Promise<void> {
   // Preparation callers may use a deterministic/future transaction clock in
   // tests and recovery tooling. Keep the mutable side-effect timestamp at or
@@ -962,7 +1022,7 @@ export async function getRefundPaymentOperationSnapshotForOrganization(
 export async function getRosterOperationSnapshotForOrganization(
   organizationId: number,
   operationId: string,
-): Promise<RosterOperationSemanticSnapshot | undefined> {
+): Promise<RosterOperationExecutionSnapshot | undefined> {
   const operation = await getPaymentOperationForOrganization(organizationId, operationId);
   if (!operation) return undefined;
   return loadRosterOperationSnapshot(db, operation);
@@ -1954,7 +2014,7 @@ const webhookCompletableStatuses = new Set<PaymentOperation["status"]>([
 
 function rosterWebhookPaymentRows(
   operation: PaymentOperation,
-  snapshot: RosterOperationSemanticSnapshot,
+  snapshot: RosterOperationExecutionSnapshot,
   input: ProviderWebhookCompletionEvidence,
 ): PaymentOperationLinkedPaymentInput[] {
   const first = snapshot.allocations[0];

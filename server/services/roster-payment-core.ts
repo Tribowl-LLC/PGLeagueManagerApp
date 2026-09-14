@@ -76,7 +76,7 @@ function resolveInteractiveBuyerEmail(providerName: string, requestedEmail: stri
   return parsed.data;
 }
 
-type RosterPaymentTransaction = PaymentOperationTransaction;
+export type RosterPaymentTransaction = PaymentOperationTransaction;
 
 async function beginFinancialCommand(
   tx: RosterPaymentTransaction,
@@ -635,6 +635,9 @@ export type FifoPaymentCandidate = BaseFifoPaymentCandidate & {
   reviewRequired: boolean;
   pairedCollectionReady: boolean;
   effectiveCollectionAt: string;
+  /** Stored schedule labels; callers must not reconstruct them from dueAt. */
+  occurrenceLocalDate?: string | null;
+  plannedOrdinal?: number | null;
 };
 
 /** Pure FIFO allocator used by the transaction-bound quote and finalizer. */
@@ -657,7 +660,7 @@ type FifoQuoteInput = {
   transaction?: RosterPaymentTransaction;
 };
 
-async function fifoCandidatesInTransaction(
+export async function fifoCandidatesInTransaction(
   tx: RosterPaymentTransaction,
   input: { organizationId: number; leagueId: number; payerBowlerId: number; now: string },
 ): Promise<FifoPaymentCandidate[]> {
@@ -683,6 +686,19 @@ async function fifoCandidatesInTransaction(
     throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing active canonical responsibility evidence", 503);
   }
   const occurrenceIds = [...new Set(rows.map((row) => row.occurrenceId))];
+  const occurrenceRows = await tx.select({
+    id: leagueOccurrences.id,
+    authoritativeLocalDate: leagueOccurrences.authoritativeLocalDate,
+    plannedOrdinal: leagueOccurrences.plannedOrdinal,
+  }).from(leagueOccurrences).where(and(
+    eq(leagueOccurrences.organizationId, input.organizationId),
+    eq(leagueOccurrences.leagueId, input.leagueId),
+    inArray(leagueOccurrences.id, occurrenceIds),
+  ));
+  if (occurrenceRows.length !== occurrenceIds.length) {
+    throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its authoritative occurrence labels", 503);
+  }
+  const occurrenceById = new Map(occurrenceRows.map((row) => [row.id, row]));
   const groupRows = await tx.select({
     groupId: canonicalCollectionGroups.id,
     state: canonicalCollectionGroups.state,
@@ -809,6 +825,8 @@ async function fifoCandidatesInTransaction(
       reviewRequired: reviewById.get(row.id) ?? false,
       pairedCollectionReady,
       effectiveCollectionAt: member?.role === "paired" && pairedCollectionReady && triggerAt !== undefined ? triggerAt : new Date(row.dueAt).toISOString(),
+      occurrenceLocalDate: occurrenceById.get(row.occurrenceId)?.authoritativeLocalDate ?? null,
+      plannedOrdinal: occurrenceById.get(row.occurrenceId)?.plannedOrdinal ?? null,
     };
   });
 }

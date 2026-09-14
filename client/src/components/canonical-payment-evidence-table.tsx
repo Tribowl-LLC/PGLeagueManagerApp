@@ -87,13 +87,17 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
                 const displayStatus = paymentEvidenceDisplayStatus(row);
                 const reviewRequired = row.reviewRequired || row.dispute.reviewRequired === true;
                 const hasSeparateReviewIndicator = reviewRequired && displayStatus !== "Review required";
+                const paidByName = row.paidByName;
                 return (
                   <TableRow key={`${row.paymentOperationId ?? row.paymentId ?? "unresolved"}:${row.bowlerId}:${index}`}>
                     <TableCell className="whitespace-nowrap">
                       {formatLocalDate(row.authoritativeLocalDate)}
                       <div className="text-xs text-muted-foreground md:hidden">{paymentTypeLabel(row.paymentType)}</div>
                     </TableCell>
-                    <TableCell className="whitespace-nowrap font-mono">{formatCurrency(row.amountMinor, row.currency)}</TableCell>
+                    <TableCell className="whitespace-nowrap font-mono">
+                      {formatCurrency(row.amountMinor, row.currency)}
+                      {paidByName && <div className="font-sans text-xs font-normal text-muted-foreground">Paid by {paidByName}</div>}
+                    </TableCell>
                     <TableCell className="hidden whitespace-nowrap md:table-cell">{paymentTypeLabel(row.paymentType)}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap items-center gap-2">

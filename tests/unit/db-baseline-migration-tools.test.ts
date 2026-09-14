@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(41);
+    expect(migrations).toHaveLength(42);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -472,6 +472,14 @@ describe('normalized migration baseline tools', () => {
       hash: '9a4ea8867032497cff3dd402ba6b132ede5ed4f6eefe676e82c313ebcf663b5e',
     });
     expect(migrations[40]?.sql.trim()).toBe('ALTER TABLE "leagues" DROP COLUMN "allow_public_signup";');
+    expect(migrations[41]).toMatchObject({
+      idx: 41,
+      tag: '0041_combined_partner_payment_snapshot',
+      createdAt: 1789345803616,
+      hash: '119f48c839774bcd3d0840999dfb6117f01dee8a3e564acb9692108bfab25aef',
+    });
+    expect(migrations[41]?.sql).toContain('ADD COLUMN "partner_evidence" jsonb');
+    expect(migrations[41]?.sql).toContain('snapshot_version" = 3');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

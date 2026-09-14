@@ -103,4 +103,14 @@ describe("PaymentsPage canonical evidence presentation", () => {
 
     invalidate.mockRestore();
   });
+
+  it("refreshes each recipient projection after a combined-payment refund", () => {
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+
+    invalidateRefundPaymentViews(7, 42, [42, 43]);
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/bowlers/42/details"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/bowlers/43/details"] });
+    invalidate.mockRestore();
+  });
 });

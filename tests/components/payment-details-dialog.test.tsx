@@ -79,6 +79,11 @@ const evidence: CanonicalPaymentRow = {
   ],
 };
 
+type NamedPaymentEvidence = CanonicalPaymentRow & {
+  paidByName?: string | null;
+  allocations: Array<CanonicalPaymentRow["allocations"][number] & { bowlerName?: string | null }>;
+};
+
 beforeEach(() => {
   mocks.csrfFetch.mockReset();
   mocks.csrfFetch.mockResolvedValue(new Response(JSON.stringify({ data: {} }), { status: 200 }));
@@ -99,6 +104,26 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.queryByText("occurrence-1")).not.toBeInTheDocument();
     expect(screen.queryByText("obligation-1")).not.toBeInTheDocument();
     expect(screen.queryByText(/Canonical settlement and allocation details/)).not.toBeInTheDocument();
+  });
+
+  it("labels a payer tender and renders the server-provided recipient breakdown", () => {
+    const payerEvidence: NamedPaymentEvidence = {
+      ...evidence,
+      paidByName: "Alex Payer",
+      allocations: [
+        { ...evidence.allocations[0], bowlerName: "Alex Payer", plannedOrdinal: 1 },
+        { ...evidence.allocations[1], bowlerName: "Partner Bowler", plannedOrdinal: 2 },
+      ],
+    };
+
+    render(<PaymentDetailsDialog payment={payment} evidence={payerEvidence} bowlerName="Alex Payer" canCorrect={false} onClose={() => {}} />);
+
+    expect(screen.getByText("Payment total")).toBeInTheDocument();
+    expect(screen.getByText("Paid by").parentElement).toHaveTextContent("Alex Payer");
+    expect(screen.getByText("Payment breakdown")).toBeInTheDocument();
+    expect(screen.getByText("Partner Bowler")).toBeInTheDocument();
+    expect(screen.getByText("Week 2")).toBeInTheDocument();
+    expect(screen.getByText("$20.00")).toBeInTheDocument();
   });
 
   it("preserves the authorized cash correction flow and refreshes both projections", async () => {
@@ -218,6 +243,35 @@ describe("PaymentDetailsDialog", () => {
     expect(receiptButton.parentElement?.querySelectorAll("button")).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Receipt" }));
     await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt?organizationId=11"));
+    expect(open).toHaveBeenCalledWith("https://receipt.example.test", "_blank", "noopener,noreferrer");
+    open.mockRestore();
+  });
+
+  it("hides receipts when the evidence projection disallows opening them", () => {
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={{ ...evidence, receipt: { ...evidence.receipt, canOpenReceipt: false } }}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      onClose={() => {}}
+    />);
+
+    expect(screen.queryByRole("button", { name: "Receipt" })).not.toBeInTheDocument();
+  });
+
+  it("keeps payer receipt lookup available for lazy backfill", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    mocks.csrfFetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: { receiptUrl: "https://receipt.example.test" } }), { status: 200 }));
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={{ ...evidence, receipt: { ...evidence.receipt, availability: "unavailable", canOpenReceipt: true } }}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      onClose={() => {}}
+    />);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Receipt" }));
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt"));
     expect(open).toHaveBeenCalledWith("https://receipt.example.test", "_blank", "noopener,noreferrer");
     open.mockRestore();
   });

@@ -11,7 +11,12 @@ beforeEach(() => {
   csrfFetchMock.mockResolvedValue(new Response(JSON.stringify({ data: { receiptUrl: "https://receipt.example" } }), { status: 200 }));
 });
 
-const row = (overrides: Partial<CanonicalPaymentRow> = {}): CanonicalPaymentRow => ({
+type PaymentRowFixture = Omit<CanonicalPaymentRow, "receipt"> & {
+  receipt: CanonicalPaymentRow["receipt"] & { canOpenReceipt?: boolean };
+  paidByName?: string | null;
+};
+
+const row = (overrides: Partial<PaymentRowFixture> = {}): PaymentRowFixture => ({
   paymentId: null,
   leagueId: 7,
   bowlerId: 42,
@@ -89,6 +94,35 @@ describe("CanonicalPaymentEvidenceTable", () => {
     open.mockRestore();
   });
 
+  it("does not offer a receipt when the ordinary-reader projection marks it unavailable", async () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 12,
+      status: "confirmed_paid",
+      unresolved: false,
+      source: "canonical_allocation",
+      receipt: { ...row().receipt, source: "canonical_allocation", availability: "unavailable", canOpenReceipt: false },
+    })]} />);
+
+    await fireEvent.click(screen.getByRole("button", { name: "View payment details: Confirmed paid" }));
+    expect(screen.queryByRole("button", { name: "Receipt" })).not.toBeInTheDocument();
+  });
+
+  it("keeps payer receipt lookup available when the URL needs lazy backfill", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 12,
+      status: "confirmed_paid",
+      unresolved: false,
+      source: "canonical_allocation",
+      receipt: { ...row().receipt, source: "canonical_allocation", availability: "unavailable", canOpenReceipt: true },
+    })]} />);
+
+    await fireEvent.click(screen.getByRole("button", { name: "View payment details: Confirmed paid" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Receipt" }));
+    await waitFor(() => expect(csrfFetchMock).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt"));
+    open.mockRestore();
+  });
+
   it("keeps review and correction indicators visible when the settlement is paid", () => {
     render(<CanonicalPaymentEvidenceTable rows={[row({
       paymentId: 12,
@@ -102,5 +136,10 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByRole("button", { name: "View payment details: Confirmed paid" })).toBeInTheDocument();
     expect(screen.getByText("Review required")).toBeInTheDocument();
     expect(screen.getByText("Voided")).toBeInTheDocument();
+  });
+
+  it("shows the server-provided payer name in history", () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({ status: "confirmed_paid", source: "canonical_allocation", unresolved: false, paidByName: "Alex Payer" })]} />);
+    expect(screen.getByText("Paid by Alex Payer")).toBeInTheDocument();
   });
 });

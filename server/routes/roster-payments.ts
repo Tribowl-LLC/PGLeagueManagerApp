@@ -10,6 +10,10 @@ import {
   rosterPaymentResponsibilityRequestSchema,
   occurrenceResponsibilityInputSchema,
 } from "@shared/roster-payment-contract";
+import {
+  interactivePaymentChargeRequestV3Schema,
+  interactivePaymentQuoteRequestV3Schema,
+} from "@shared/interactive-payment-v3-contract";
 import { hasAccessToLeague, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague } from "../utils/access-control.js";
 import { canUserPayForBowler } from "../utils/bowler-payment-authz.js";
 import { sendError, sendSuccess } from "../utils/api.js";
@@ -27,6 +31,11 @@ import {
   RosterPaymentReplay,
   saveTeamRoster,
 } from "../services/roster-payment-core.js";
+import {
+  chargeInteractivePartnerPayments,
+  quoteInteractivePartnerPayments,
+  readInteractivePaymentParticipants,
+} from "../services/interactive-partner-payment.js";
 import {
   recoverRosterPaymentOperation,
   recoverRosterPaymentOperationByRequestKey,
@@ -155,6 +164,112 @@ function rosterWireResult(value: unknown): Record<string, unknown> {
   }
   return base;
 }
+
+function interactivePartnerWireResult(value: unknown): Record<string, unknown> {
+  const source = wireObject(value) ?? {};
+  const result: Record<string, unknown> = {};
+  for (const key of ["contractVersion", "organizationId", "leagueId", "payerBowlerId", "currency", "amountMinor", "fingerprint", "operationId", "status"]) {
+    if (source[key] !== undefined) result[key] = source[key];
+  }
+  if (source.payment !== undefined) result.payment = wireObject(source.payment) ? {
+    id: wireObject(source.payment)?.id,
+    bowlerId: wireObject(source.payment)?.bowlerId,
+    leagueId: wireObject(source.payment)?.leagueId,
+    amount: wireObject(source.payment)?.amount,
+    currency: wireObject(source.payment)?.currency ?? "USD",
+    createdAt: wireObject(source.payment)?.createdAt,
+    status: wireObject(source.payment)?.status,
+    type: wireObject(source.payment)?.type,
+  } : null;
+  if (Array.isArray(source.participants)) result.participants = source.participants;
+  if (Array.isArray(source.recipients)) result.recipients = source.recipients.map((recipient) => {
+    const value = wireObject(recipient) ?? {};
+    return {
+      bowlerId: value.bowlerId,
+      name: value.name,
+      role: value.role,
+      weeks: value.weeks,
+      fullBalance: value.fullBalance,
+      subtotalMinor: value.subtotalMinor,
+      coveredWeeks: Array.isArray(value.coveredWeeks) ? value.coveredWeeks.filter((label): label is string => typeof label === "string") : [],
+      allocations: Array.isArray(value.allocations) ? value.allocations.map((allocation) => {
+        const item = wireObject(allocation) ?? {};
+        return {
+          obligationId: item.obligationId,
+          amountMinor: item.amountMinor,
+          occurrenceId: item.occurrenceId,
+          occurrenceLocalDate: item.occurrenceLocalDate,
+          plannedOrdinal: item.plannedOrdinal ?? null,
+          label: item.label,
+        };
+      }) : [],
+    };
+  });
+  if (Array.isArray(source.allocations)) result.allocations = source.allocations.map((row) => {
+    const value = wireObject(row) ?? {};
+    return { allocationIndex: value.allocationIndex, bowlerId: value.bowlerId, amountMinor: value.amountMinor, obligationId: value.obligationId, responsibilityId: value.responsibilityId, responsibilityVersion: value.responsibilityVersion };
+  });
+  if (Array.isArray(source.records)) result.records = source.records.map((record) => {
+    const value = wireObject(record) ?? {};
+    const payment = wireObject(value.payment);
+    const allocation = wireObject(value.allocation);
+    return {
+      payment: payment ? {
+        id: payment.id,
+        bowlerId: payment.bowlerId,
+        leagueId: payment.leagueId,
+        amount: payment.amount,
+        currency: payment.currency ?? "USD",
+        createdAt: payment.createdAt,
+        status: payment.status,
+        type: payment.type,
+      } : null,
+      allocation: allocation ? {
+        id: allocation.id,
+        obligationId: allocation.obligationId,
+        amountMinor: allocation.amountMinor,
+        currency: allocation.currency,
+        state: allocation.state,
+      } : null,
+    };
+  });
+  return result;
+}
+
+router.get("/leagues/:leagueId/interactive-payment-participants/3", async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user?.bowlerId) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    return sendSuccess(res, await readInteractivePaymentParticipants({ organizationId: league.organizationId, leagueId, payerBowlerId: req.user.bowlerId }));
+  } catch (error) { return handleError(res, error); }
+});
+
+router.post("/leagues/:leagueId/interactive-payment-quote/3", paymentWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user?.bowlerId) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = interactivePaymentQuoteRequestV3Schema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid interactive payment quote request", 400, "INVALID_REQUEST");
+  const league = await authorizedLeague(req, leagueId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    return sendSuccess(res, interactivePartnerWireResult(await quoteInteractivePartnerPayments({ organizationId: league.organizationId, leagueId, payerBowlerId: req.user.bowlerId, recipients: parsed.data.recipients })));
+  } catch (error) { return handleError(res, error); }
+});
+
+router.post("/leagues/:leagueId/interactive-payment-charge/3", paymentWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user?.bowlerId || req.user.role === "payment_manager") return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = interactivePaymentChargeRequestV3Schema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid interactive payment charge request", 400, "INVALID_REQUEST");
+  const league = await authorizedLeague(req, leagueId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    const result = await chargeInteractivePartnerPayments({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId: req.user.bowlerId, request: parsed.data });
+    return sendSuccess(res, interactivePartnerWireResult(result), result.status === "succeeded" ? 201 : 202);
+  } catch (error) { return handleError(res, error); }
+});
 
 router.get("/leagues/:leagueId/roster-payment-responsibility/1", async (req, res) => {
   const leagueId = leagueIdParam(req.params.leagueId);

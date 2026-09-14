@@ -29,11 +29,15 @@ describe("dedicated make-payment guards", () => {
     expect(requestKeyRef.current).toBe("wallet-request-key");
   });
 
-  it("invalidates standing status and quote after a successful one-time payment", () => {
+  it("invalidates every affected participant view plus the new recipient quote after a successful payment", () => {
     const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
-    invalidatePaymentViews(17, 42);
+    invalidatePaymentViews(17, 42, [42, 84]);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/17/standing-autopay/1"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/17/standing-autopay/1/quote"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 17, "interactive-payment-participants/3"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 17, "interactive-payment-quote/3"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/payments", { bowlerId: 84, leagueId: 17 }] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/bowlers/84/details"] });
     invalidate.mockRestore();
   });
 

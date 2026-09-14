@@ -80,8 +80,16 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     && (evidence.paymentType === "cash" || evidence.paymentType === "check")
     && evidence.allocations.some((allocation) => allocation.state === "active");
   const displayStatus = paymentEvidenceDisplayStatus(evidence);
-  const canOpenReceipt = evidence.paymentId !== null && ["confirmed_paid", "refunded", "disputed"].includes(evidence.status);
-  const appliedAllocations = evidence.allocations.length > 0 ? evidence.allocations : (evidence.appliedTo ?? []);
+  // The server marks ordinary-reader partner rows with canOpenReceipt=false.
+  // Do not infer permission from cached URL availability: payer/admin rows may
+  // legitimately lazy-backfill a receipt when the URL is not cached yet.
+  const canOpenReceipt = evidence.paymentId !== null
+    && ["confirmed_paid", "refunded", "disputed"].includes(evidence.status)
+    && evidence.receipt.canOpenReceipt !== false;
+  const appliedAllocations = evidence.allocations.length > 0
+    ? evidence.allocations
+    : (evidence.appliedTo ?? []);
+  const hasRecipientNames = appliedAllocations.some((allocation) => Boolean(allocation.bowlerName?.trim()));
 
   const openReceipt = async () => {
     if (evidence.paymentId === null) return;
@@ -145,8 +153,9 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
 
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
           <div><dt className="text-muted-foreground">Collected</dt><dd>{formatLocalDate(evidence.authoritativeLocalDate)}</dd></div>
-          <div><dt className="text-muted-foreground">Amount</dt><dd>{formatCurrency(evidence.amountMinor, evidence.currency)}</dd></div>
+          <div><dt className="text-muted-foreground">{hasRecipientNames ? "Payment total" : "Paid for"}</dt><dd>{formatCurrency(evidence.amountMinor, evidence.currency)}</dd></div>
           <div><dt className="text-muted-foreground">Payment type</dt><dd>{paymentTypeLabel(evidence.paymentType, payment?.checkNumber)}</dd></div>
+          {evidence.paidByName && <div><dt className="text-muted-foreground">Paid by</dt><dd>{evidence.paidByName}</dd></div>}
           <div>
             <dt className="text-muted-foreground">Settlement</dt>
             <dd className="flex flex-wrap gap-1">
@@ -157,7 +166,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
         </dl>
 
         <section className="space-y-2" aria-labelledby="payment-allocation-heading">
-          <h3 id="payment-allocation-heading" className="font-medium">Applied to</h3>
+          <h3 id="payment-allocation-heading" className="font-medium">{hasRecipientNames ? "Payment breakdown" : "Paid for"}</h3>
           {appliedAllocations.length === 0 ? (
             <p className="text-sm text-muted-foreground">No canonical allocation is recorded.</p>
           ) : (
@@ -165,6 +174,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
               {appliedAllocations.map((allocation, index) => (
                 <div key={`${allocation.plannedOrdinal ?? "un-numbered"}-${allocation.occurrenceLocalDate ?? "undated"}-${index}`} className="flex items-center justify-between gap-4 px-3 py-2 text-sm">
                   <div>
+                    {allocation.bowlerName && <div className="font-medium">{allocation.bowlerName}</div>}
                     <div>{allocationLabel(allocation)}</div>
                     {allocation.plannedOrdinal !== null && allocation.plannedOrdinal !== undefined && allocation.occurrenceLocalDate && <div className="text-xs text-muted-foreground">{formatLocalDate(allocation.occurrenceLocalDate)}</div>}
                     {allocation.state !== "active" && <div className="text-xs capitalize text-muted-foreground">{allocation.state ?? "unresolved"}</div>}

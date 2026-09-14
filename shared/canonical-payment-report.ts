@@ -18,6 +18,8 @@ export type CanonicalPaymentEvidenceStatus =
 export interface CanonicalPaymentReceiptSummary {
   contractVersion: "payment-receipt/1";
   availability: "available" | "unavailable";
+  /** Whether this viewer may open or lazily fetch the provider receipt. */
+  canOpenReceipt?: boolean;
   receiptUrl: string | null;
   receiptNumber: string | null;
   deliveryEvidence: "delivery_not_recorded";
@@ -71,6 +73,8 @@ export interface CanonicalPaymentAllocationRow {
   /** Stored canonical schedule position; never derive this from dates. */
   plannedOrdinal?: number | null;
   bowlerId: number;
+  /** Safe tenant-scoped display name; only payer/admin projections expose it. */
+  bowlerName?: string | null;
   amountMinor: number;
   /** Original allocation remains immutable; these fields describe its refund effect. */
   refundedMinor?: number;
@@ -89,6 +93,8 @@ export interface CanonicalPaymentAppliedToRow {
   plannedOrdinal: number | null;
   occurrenceLocalDate: string | null;
   amountMinor: number;
+  /** Present only when the viewer is the initiating payer. */
+  bowlerName?: string | null;
   refundedMinor?: number;
   effectiveAmountMinor?: number;
   refundDisposition?: "still_owed" | "waived" | null;
@@ -132,6 +138,8 @@ export interface CanonicalPaymentRow {
   collectionEvidence?: CanonicalCollectionEvidence;
   /** Internal role projection hint; ordinary responses remove it. */
   initiatingPayerBowlerId?: number | null;
+  /** Safe display-only actor name; never includes email or provider identity. */
+  paidByName?: string | null;
 }
 
 export interface CanonicalPaymentTransactionGroup {

@@ -246,6 +246,12 @@
       "tag": "0040_remove_league_public_signup",
       "createdAt": 1789311087511,
       "hash": "9a4ea8867032497cff3dd402ba6b132ede5ed4f6eefe676e82c313ebcf663b5e"
+    },
+    {
+      "idx": 41,
+      "tag": "0041_combined_partner_payment_snapshot",
+      "createdAt": 1789345803616,
+      "hash": "119f48c839774bcd3d0840999dfb6117f01dee8a3e564acb9692108bfab25aef"
     }
   ]
 }
