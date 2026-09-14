@@ -267,7 +267,10 @@ export async function throwIfResNotOk(res: Response) {
     if (isSessionExpiredError(error)) {
       redirectToLoginForExpiredSession();
     }
-    if (res.status === 403 && error.code === 'ADMIN_REQUIRED') {
+    const cachedRole = queryClient.getQueryData<ApiResponse<User>>(['/api/user'])?.data?.role;
+    const privilegedForbidden = error.code === 'FORBIDDEN'
+      && ['system_admin', 'org_admin', 'payment_manager'].includes(cachedRole ?? '');
+    if (res.status === 403 && (error.code === 'ADMIN_REQUIRED' || privilegedForbidden)) {
       await refreshSessionAfterAccessDenied();
     }
     throw error;

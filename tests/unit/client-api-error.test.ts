@@ -257,6 +257,37 @@ describe("administrator access revalidation", () => {
   });
   const denied = () => json({ error: { message: "Admin access required", code: "ADMIN_REQUIRED" } }, 403);
 
+  it.each(['system_admin', 'org_admin', 'payment_manager'])("revalidates FORBIDDEN for a cached %s and clears stale privileged data", async (role) => {
+    const reload = vi.fn();
+    vi.stubGlobal('window', { location: { reload } });
+    queryClient.setQueryData(['/api/user'], { success: true, data: { ...admin, role } });
+    queryClient.setQueryData(['/api/teams', 7], { data: [{ id: 1 }] });
+    const fetchMock = vi.fn(async () => json({ success: true, data: { ...admin, id: 10, role: 'user' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(throwIfResNotOk(json({ error: { code: 'FORBIDDEN' } }, 403))).rejects.toMatchObject({ status: 403, code: 'FORBIDDEN' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith('/api/user', expect.objectContaining({ credentials: 'include' }));
+    expect(queryClient.getQueryData(['/api/teams', 7])).toBeUndefined();
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it.each(['user', undefined])('does not revalidate FORBIDDEN for an unprivileged or absent cached role (%s)', async (role) => {
+    queryClient.setQueryData(['/api/user'], { success: true, data: { ...admin, role } });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(throwIfResNotOk(json({ error: { code: 'FORBIDDEN' } }, 403))).rejects.toMatchObject({ status: 403 });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['CSRF_ERROR', 'LEAGUE_CLOSED'])('does not revalidate a privileged session for a %s denial', async (code) => {
+    queryClient.setQueryData(['/api/user'], { success: true, data: admin });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(throwIfResNotOk(json({ error: { code } }, 403))).rejects.toMatchObject({ status: 403, code });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("deduplicates concurrent denials and discards the previous account's data on a session switch", async () => {
     const reload = vi.fn();
     vi.stubGlobal("window", { location: { pathname: "/admin/deletion-requests", search: "", reload } });
@@ -265,7 +296,7 @@ describe("administrator access revalidation", () => {
     let finish: (response: Response) => void = () => { throw new Error('Request has not started'); };
     const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
     vi.stubGlobal("fetch", fetchMock);
-    const requests = [throwIfResNotOk(denied()), throwIfResNotOk(denied())];
+    const requests = [throwIfResNotOk(denied()), throwIfResNotOk(json({ error: { code: 'FORBIDDEN' } }, 403))];
     const settled = Promise.allSettled(requests);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     finish(json({ success: true, data: { ...admin, id: 10, role: "user" } }));
