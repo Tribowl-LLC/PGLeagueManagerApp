@@ -53,6 +53,24 @@ const mocks = vi.hoisted(() => {
     }],
     totals: { collectiblePastDueMinor: 0 },
   });
+  const participantsData = () => ({
+    contractVersion: "interactive-payment-participants/3",
+    organizationId: 1,
+    leagueId: 17,
+    paymentMode,
+    participants: [{
+      bowlerId: 42,
+      name: "Bowler",
+      role: "self" as const,
+      remainingMinor: paidInFull ? 0 : remainingMinor,
+      pastDueMinor: 0,
+      weeklyOptions: paymentMode === "upfront"
+        ? (paidInFull ? [] : [{ weeks: 1, amountMinor: remainingMinor }])
+        : [1, 2, 3].map((weeks) => ({ weeks, amountMinor: weeks * 1_000 })),
+      eligible: !paidInFull,
+      reason: paidInFull ? "No remaining balance" : null,
+    }],
+  });
   const query = vi.fn(({ queryKey }: { queryKey: unknown[] }) => {
     const key = String(queryKey[0]);
     if (key.startsWith("/api/financials/leagues/") && key.includes("/standing-autopay/")) {
@@ -75,6 +93,25 @@ const mocks = vi.hoisted(() => {
         error: null,
         refetch: vi.fn(),
       };
+    }
+    if (key === "/api/financials/leagues" && queryKey[2] === "interactive-payment-participants/3") {
+      return { data: { success: true, data: participantsData() }, isLoading: false, error: null, refetch: vi.fn() };
+    }
+    if (key === "/api/financials/leagues" && queryKey[2] === "interactive-payment-quote/3") {
+      const recipientRows = queryKey[4] as Array<{ bowlerId: number; weeks: number }> | undefined;
+      const weeks = recipientRows?.[0]?.weeks ?? 1;
+      const amountMinor = paymentMode === "upfront" ? remainingMinor : weeks * 1_000;
+      const quote = {
+        contractVersion: "interactive-payment-quote/3" as const,
+        organizationId: 1,
+        leagueId: 17,
+        payerBowlerId: 42,
+        currency: "USD" as const,
+        amountMinor,
+        fingerprint: `quote-${amountMinor}`,
+        recipients: [{ bowlerId: 42, name: "Bowler", role: "self" as const, weeks, fullBalance: paymentMode === "upfront", subtotalMinor: amountMinor }],
+      };
+      return { data: { success: true, data: quote }, isLoading: false, isFetching: false, error: null, refetch: vi.fn(async () => ({ data: { success: true, data: quote }, error: null })) };
     }
     if (key.includes("canonical-due-past-due")) {
       return {
@@ -199,7 +236,6 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(mocks.standingQueryCalls).toHaveLength(0);
     expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
       fullBalanceOnly: true,
-      remainingBalance: 8_750,
       paymentAmountMinor: 8_750,
     });
   });
@@ -238,6 +274,35 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce();
   });
 
+  it("blocks card tokenization when the submit quote no longer matches the displayed quote", async () => {
+    const firstRender = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "stale-quote-request", outcome: "new" });
+    mocks.csrfFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-5750", amountMinor: 5_750 } }) });
+
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+    await act(async () => { await props.onSubmit(); });
+
+    expect(mocks.csrfFetch).toHaveBeenCalledOnce();
+    expect(mocks.tokenizeCard).not.toHaveBeenCalled();
+    expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment Failed" }));
+    firstRender.unmount();
+  });
+
+  it("marks the selected basket stale after a participant balance refetch instead of silently clamping it", async () => {
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+
+    mocks.setRemainingBalance(5_750);
+    view.rerender(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: true }));
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { recipientRows: Array<{ bowlerId: number; selected: boolean; remainingMinor: number }>; onSubmit: () => void };
+    expect(props.recipientRows).toEqual([expect.objectContaining({ bowlerId: 42, selected: true, remainingMinor: 5_750 })]);
+    expect(mocks.csrfFetch).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
   it("recovers a lost success on remount before a changed quote can charge again", async () => {
     const firstRender = render(<MakePaymentPage />);
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
@@ -246,7 +311,7 @@ describe("MakePaymentPage upfront payment mode", () => {
       .mockResolvedValueOnce({ requestKey: "stable-request", outcome: "new" })
       .mockResolvedValueOnce({ requestKey: "stable-request", outcome: "unresolved", status: "pending" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "first-quote", amountMinor: 8_750, payerBowlerId: 42 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750, payerBowlerId: 42 } }) })
       .mockRejectedValueOnce(new Error("response lost after provider success"));
     mocks.tokenizeCard.mockResolvedValue("source-token");
 
@@ -301,7 +366,7 @@ describe("MakePaymentPage upfront payment mode", () => {
       .mockResolvedValueOnce({ requestKey: "wallet-key", outcome: "new" })
       .mockResolvedValueOnce({ requestKey: "wallet-replacement", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "wallet-quote", payerBowlerId: 42 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750, payerBowlerId: 42 } }) })
       .mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ data: { status: "failed_terminal" } }) });
 
     render(<MakePaymentPage />);
@@ -324,36 +389,37 @@ describe("MakePaymentPage upfront payment mode", () => {
       .mockResolvedValueOnce({ requestKey: "prepared-wallet-request", outcome: "new" })
       .mockResolvedValue({ requestKey: "prepared-wallet-request", outcome: "unresolved", status: "pending" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "weekly-quote", payerBowlerId: 42, amountMinor: 2_000 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-2000", payerBowlerId: 42, amountMinor: 2_000 } }) })
       .mockResolvedValueOnce({ ok: true, status: 202, json: async () => ({ data: { status: "pending" } }) });
 
     const view = render(<MakePaymentPage />);
     await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
     expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce();
-    let props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { paymentWeekCount: number; paymentAmountMinor: number; onPaymentWeekCountChange: (value: number) => void };
-    expect(props).toMatchObject({ paymentWeekCount: 1, paymentAmountMinor: 1_000 });
+    let props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { recipientRows: Array<{ bowlerId: number; weeks: number }>; paymentAmountMinor: number; onRecipientWeeksChange: (bowlerId: number, value: number) => void };
+    expect(props).toMatchObject({ paymentAmountMinor: 1_000, recipientRows: [expect.objectContaining({ bowlerId: 42, weeks: 1 })] });
 
-    act(() => { props.onPaymentWeekCountChange(3); });
-    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentWeekCount: 3, paymentAmountMinor: 3_000 }));
+    act(() => { props.onRecipientWeeksChange(42, 3); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentAmountMinor: 3_000, recipientRows: [expect.objectContaining({ bowlerId: 42, weeks: 3 })] }));
     props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof props;
-    act(() => { props.onPaymentWeekCountChange(2); });
-    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentWeekCount: 2, paymentAmountMinor: 2_000 }));
+    act(() => { props.onRecipientWeeksChange(42, 2); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentAmountMinor: 2_000, recipientRows: [expect.objectContaining({ bowlerId: 42, weeks: 2 })] }));
     expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce();
     expect(mocks.walletOptions.onPaymentStarted?.()).toBe(true);
 
     await act(async () => { await mocks.walletOptions.onTokenReceived?.("wallet-source", walletType); });
     await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledTimes(2));
     const quoteRequest = mocks.csrfFetch.mock.calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(String(quoteRequest.body))).toMatchObject({ amountMinor: 2_000, payerBowlerId: 42 });
+    expect(JSON.parse(String(quoteRequest.body))).toMatchObject({ recipients: [{ bowlerId: 42, weeks: 2, fullBalance: false }] });
+    expect(JSON.parse(String(quoteRequest.body))).not.toHaveProperty("amountMinor");
+    expect(JSON.parse(String(quoteRequest.body))).not.toHaveProperty("payerBowlerId");
     const chargeRequest = mocks.csrfFetch.mock.calls[1]?.[1] as RequestInit;
     expect(chargeRequest.headers).toMatchObject({ "Idempotency-Key": "prepared-wallet-request" });
     expect(JSON.parse(String(chargeRequest.body))).toMatchObject({
-      amountMinor: 2_000,
-      payerBowlerId: 42,
+      recipients: [{ bowlerId: 42, weeks: 2, fullBalance: false }],
       sourceId: "wallet-source",
       sourceKind: "wallet",
       idempotencyKey: "prepared-wallet-request",
-      requestFingerprint: "weekly-quote",
+      requestFingerprint: "quote-2000",
     });
     expect(document.body).toHaveTextContent("Payment confirmation in progress");
     view.unmount();
