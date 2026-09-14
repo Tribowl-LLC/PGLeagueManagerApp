@@ -2083,7 +2083,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       inArray(occurrencePaymentResponsibilities.occurrenceId, fixtures.map((fixture) => fixture.occurrence.id)),
       inArray(occurrencePaymentResponsibilities.slotIndex, [1, 2]),
       eq(occurrencePaymentResponsibilities.state, "active"),
-    ));
+    )).orderBy(occurrencePaymentResponsibilities.id);
     const request = {
       commandKey: `batched-slot-replacement-${randomUUID()}`,
       requestFingerprint: "",
@@ -2126,7 +2126,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       inArray(occurrencePaymentResponsibilities.occurrenceId, fixtures.map((fixture) => fixture.occurrence.id)),
       inArray(occurrencePaymentResponsibilities.slotIndex, [1, 2]),
       eq(occurrencePaymentResponsibilities.state, "active"),
-    ));
+    )).orderBy(occurrencePaymentResponsibilities.id);
     expect(untouchedAfter).toEqual(untouchedBefore);
   });
 
