@@ -21,7 +21,10 @@ recipient-scoped allocations; recipient history exposes only that recipient's
 credited amount and “Paid by” context. Admin refund confirmation covers every
 allocation in the one charge, with existing still-owed/waived behavior and
 conservation checks. Provider receipt identifiers remain payer/admin-only; v3
-quote and charge responses use an explicit allowlist.
+quote and charge responses use an explicit allowlist. In ordinary history,
+`receipt.availability` reports whether a URL is cached, while
+`receipt.canOpenReceipt` carries viewer capability: the payer may lazily fetch
+an uncached receipt, and a recipient cannot open the shared provider receipt.
 
 Migration `0041_combined_partner_payment_snapshot.sql` is additive and extends
 the existing operation snapshot for v3 evidence. Deploy the application after
