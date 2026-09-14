@@ -140,6 +140,11 @@ const UNIT_NO_DB = [
   'tests/unit/roster-standing-autopay-contract.test.ts',
   'tests/unit/roster-standing-autopay-wake.test.ts',
   'tests/unit/roster-payment-route-boundaries.test.ts',
+  // This route suite mocks storage and the payment services and does not
+  // need a database or spawned app. Keeping it in the no-DB project also
+  // prevents its mocked route registry from affecting payment integration
+  // suites in the shared parallel project.
+  'tests/unit/interactive-partner-payment-routes.test.ts',
 ];
 
 const PARALLEL_ISOLATED = [
@@ -210,6 +215,9 @@ const PARALLEL_ISOLATED = [
   'tests/unit/payment-operations.test.ts',
   'tests/unit/roster-payment-finalizer-postgres.test.ts',
   'tests/unit/roster-standing-autopay-postgres.test.ts',
+  // The combined-payment provider mock closes over a file-local fake. It
+  // must retain module isolation from sibling payment/provider suites.
+  'tests/unit/interactive-partner-payment-postgres.test.ts',
   'tests/unit/canonical-league-schedule-edit-postgres.test.ts',
   'tests/unit/interactive-payment-operation-executor.test.ts',
   'tests/unit/refund-payment-operation-executor.test.ts',
