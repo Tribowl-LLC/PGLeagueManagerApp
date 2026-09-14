@@ -39,14 +39,19 @@ const DEFAULT_PAGE_SIZE = 50;
  * query family supports that scope, while still refreshing the admin-wide
  * payment and F5 projections used by this page.
  */
-export function invalidateRefundPaymentViews(leagueId: number, bowlerId: number): void {
+export function invalidateRefundPaymentViews(leagueId: number, bowlerId: number, affectedBowlerIds: readonly number[] = [bowlerId]): void {
+  const affectedIds = [...new Set([bowlerId, ...affectedBowlerIds])].filter((id) => Number.isSafeInteger(id) && id > 0);
   void queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "canonical-due-past-due/2"] });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1/quote`] });
-  void queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] });
+  for (const affectedId of affectedIds) {
+    void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "canonical-due-past-due/2", affectedId] });
+    void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`, affectedId] });
+    void queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${affectedId}/details`] });
+  }
   void queryClient.invalidateQueries({
     predicate: ({ queryKey }) => typeof queryKey[0] === "string" && queryKey[0].startsWith("/api/financials/due-past-due"),
   });
@@ -124,7 +129,7 @@ export default function PaymentsPage() {
     : null;
 
   const refundPaymentMutation = useMutation({
-    mutationFn: async ({ id, reason, disposition }: { id: number; reason?: string; disposition: "still_owed" | "waived"; leagueId: number; bowlerId: number }) => {
+    mutationFn: async ({ id, reason, disposition }: { id: number; reason?: string; disposition: "still_owed" | "waived"; leagueId: number; bowlerId: number; affectedBowlerIds: number[] }) => {
       const response = await apiRequest(`/api/payments/${id}/refund`, "POST", { reason, disposition });
       if (!response.success) {
         throw new Error(response.error?.message || "Failed to process refund");
@@ -132,7 +137,7 @@ export default function PaymentsPage() {
       return response.data;
     },
     onSuccess: (data, variables) => {
-      invalidateRefundPaymentViews(variables.leagueId, variables.bowlerId);
+      invalidateRefundPaymentViews(variables.leagueId, variables.bowlerId, variables.affectedBowlerIds);
       toast(refundOperationToast(data));
       setPaymentToRefund(null);
     },
@@ -228,6 +233,7 @@ export default function PaymentsPage() {
     ? financialReportData[0]?.rows ?? []
     : [];
   const orphanedFinancialRows = financialRows.filter((row) => row.paymentId === null);
+  const refundEvidence = paymentToRefund ? paymentCanonicalRows.get(paymentToRefund.id) ?? null : null;
 
   // The visible table is projection-owned. Raw payment rows are retained only
   // as optional action metadata; a canonical row is never hidden because the
@@ -400,10 +406,12 @@ export default function PaymentsPage() {
                   disposition,
                   leagueId: paymentToRefund.leagueId,
                   bowlerId: paymentToRefund.bowlerId,
+                  affectedBowlerIds: refundEvidence?.allocations.map((allocation) => allocation.bowlerId) ?? [],
                 });
               }
             }}
             isPending={refundPaymentMutation.isPending}
+            refundEvidence={refundEvidence}
           />
         </div>
       </ErrorBoundary>

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
 import { BowlerOneTimePaymentCard, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
 
-function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = []) {
+function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false) {
   const applePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const googlePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const onRecipientToggle = vi.fn();
@@ -47,7 +47,7 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     googlePayRef={googlePayRef}
     onApplePayClick={vi.fn(async () => undefined)}
     onGooglePayClick={vi.fn(async () => undefined)}
-    isWalletProcessing={false}
+    isWalletProcessing={isWalletProcessing}
     bowlerHasEmail
     receiptEmail=""
     onReceiptEmailChange={vi.fn()}
@@ -103,19 +103,47 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
       reason: null,
     };
     const { onRecipientToggle, onRecipientWeeksChange } = renderCard(false, { amountMinor: 3_000, weeks: 1 }, [partner], [
-      { bowlerId: 42, name: "Bowler", role: "self", amountMinor: 3_000, coveredWeeks: 1 },
-      { bowlerId: 84, name: "Alex Partner", role: "partner", amountMinor: 4_000, coveredWeeks: 2 },
+      {
+        bowlerId: 42,
+        name: "Bowler",
+        role: "self",
+        amountMinor: 3_000,
+        coveredWeeks: ["Week 1"],
+        allocations: [{ amountMinor: 3_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1" }],
+      },
+      {
+        bowlerId: 84,
+        name: "Alex Partner",
+        role: "partner",
+        amountMinor: 4_000,
+        coveredWeeks: ["Week 2", "Week 3"],
+        allocations: [
+          { amountMinor: 2_000, occurrenceLocalDate: "2026-09-08", plannedOrdinal: 2, label: "Week 2" },
+          { amountMinor: 2_000, occurrenceLocalDate: "2026-09-15", plannedOrdinal: 3, label: "Week 3" },
+        ],
+      },
     ]);
 
     expect(screen.getByText("Alex Partner (Partner)")).toBeInTheDocument();
     expect(screen.getByText("Remaining balance: $60.00")).toBeInTheDocument();
     expect(screen.getByText("Past due: $10.00")).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Pay Alex Partner" })).toBeChecked();
-    expect(screen.getByText("Alex Partner · 2 weeks")).toBeInTheDocument();
+    expect(screen.getByText("Alex Partner")).toBeInTheDocument();
+    expect(screen.getByText("Week 2 · 2026-09-08")).toBeInTheDocument();
+    expect(screen.getByText("Week 3 · 2026-09-15")).toBeInTheDocument();
     expect(screen.queryByText(/obligation-|allocation/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: "Pay Alex Partner" }));
     expect(onRecipientToggle).toHaveBeenCalledWith(84, false);
     fireEvent.click(screen.getByRole("button", { name: "Pay Alex Partner for one more week" }));
     expect(onRecipientWeeksChange).toHaveBeenCalledWith(84, 3);
+  });
+
+  it("locks recipient choices and card submission while a wallet sheet is processing", () => {
+    renderCard(false, { weeks: 2 }, [], [], true);
+
+    expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Pay Bowler for one fewer week" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Pay Bowler for one more week" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Pay $87.50" })).toBeDisabled();
   });
 });

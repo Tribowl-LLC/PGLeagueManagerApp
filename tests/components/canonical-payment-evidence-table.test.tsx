@@ -11,7 +11,7 @@ beforeEach(() => {
   csrfFetchMock.mockResolvedValue(new Response(JSON.stringify({ data: { receiptUrl: "https://receipt.example" } }), { status: 200 }));
 });
 
-const row = (overrides: Partial<CanonicalPaymentRow> = {}): CanonicalPaymentRow => ({
+const row = (overrides: Partial<CanonicalPaymentRow & { paidByName?: string | null }> = {}): CanonicalPaymentRow => ({
   paymentId: null,
   leagueId: 7,
   bowlerId: 42,
@@ -102,5 +102,10 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByRole("button", { name: "View payment details: Confirmed paid" })).toBeInTheDocument();
     expect(screen.getByText("Review required")).toBeInTheDocument();
     expect(screen.getByText("Voided")).toBeInTheDocument();
+  });
+
+  it("shows the server-provided payer name in history", () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({ status: "confirmed_paid", source: "canonical_allocation", unresolved: false, paidByName: "Alex Payer" })]} />);
+    expect(screen.getByText("Paid by Alex Payer")).toBeInTheDocument();
   });
 });

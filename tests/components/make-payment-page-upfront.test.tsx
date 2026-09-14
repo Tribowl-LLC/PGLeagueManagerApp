@@ -109,7 +109,16 @@ const mocks = vi.hoisted(() => {
         currency: "USD" as const,
         amountMinor,
         fingerprint: `quote-${amountMinor}`,
-        recipients: [{ bowlerId: 42, name: "Bowler", role: "self" as const, weeks, fullBalance: paymentMode === "upfront", subtotalMinor: amountMinor }],
+        recipients: [{
+          bowlerId: 42,
+          name: "Bowler",
+          role: "self" as const,
+          weeks,
+          fullBalance: paymentMode === "upfront",
+          subtotalMinor: amountMinor,
+          allocations: [{ obligationId: "obligation-1", amountMinor, occurrenceId: "occurrence-1", occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1" }],
+          coveredWeeks: ["Week 1"],
+        }],
       };
       return { data: { success: true, data: quote }, isLoading: false, isFetching: false, error: null, refetch: vi.fn(async () => ({ data: { success: true, data: quote }, error: null })) };
     }
@@ -422,6 +431,47 @@ describe("MakePaymentPage upfront payment mode", () => {
       requestFingerprint: "quote-2000",
     });
     expect(document.body).toHaveTextContent("Payment confirmation in progress");
+    view.unmount();
+  });
+
+  it("rejects a deferred wallet token when the basket changes after the native sheet opens", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "wallet-request", outcome: "new" });
+    mocks.csrfFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-3000", amountMinor: 3_000 } }) });
+
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
+    expect(mocks.walletOptions.onPaymentStarted?.()).toBe(true);
+
+    let props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { recipientRows: Array<{ bowlerId: number; weeks: number }>; onRecipientWeeksChange: (bowlerId: number, value: number) => void };
+    act(() => { props.onRecipientWeeksChange(42, 3); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentAmountMinor: 3_000, recipientRows: [expect.objectContaining({ bowlerId: 42, weeks: 3 })] }));
+
+    await act(async () => { await mocks.walletOptions.onTokenReceived?.("deferred-wallet-source", "apple_pay"); });
+    expect(mocks.csrfFetch).toHaveBeenCalledOnce();
+    expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment Failed" }));
+    view.unmount();
+  });
+
+  it("does not charge a card when the displayed quote changes during tokenization", async () => {
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "card-request", outcome: "new" });
+    mocks.csrfFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) });
+    let resolveToken!: (token: string) => void;
+    mocks.tokenizeCard.mockReturnValue(new Promise<string>((resolve) => { resolveToken = resolve; }));
+
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+    act(() => { props.onSubmit(); });
+    await waitFor(() => expect(mocks.tokenizeCard).toHaveBeenCalledOnce());
+
+    mocks.setRemainingBalance(5_750);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: true }));
+    await act(async () => { resolveToken("card-source"); });
+
+    await waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment Failed" })));
+    expect(mocks.csrfFetch).toHaveBeenCalledOnce();
     view.unmount();
   });
 });

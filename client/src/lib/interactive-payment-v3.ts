@@ -1,4 +1,7 @@
-import type { InteractivePaymentRecipientSelectionV3 } from "@shared/interactive-payment-v3-contract";
+import type {
+  InteractivePaymentQuoteAllocationV3,
+  InteractivePaymentRecipientSelectionV3,
+} from "@shared/interactive-payment-v3-contract";
 
 export type InteractivePaymentMode = "weekly" | "upfront";
 
@@ -26,6 +29,8 @@ export interface InteractivePaymentParticipantsResponse {
   participants: InteractivePaymentParticipant[];
 }
 
+export type InteractivePaymentQuoteAllocation = InteractivePaymentQuoteAllocationV3;
+
 export interface InteractivePaymentQuoteRecipient {
   bowlerId: number;
   name: string;
@@ -33,6 +38,8 @@ export interface InteractivePaymentQuoteRecipient {
   weeks: number;
   fullBalance: boolean;
   subtotalMinor: number;
+  allocations: InteractivePaymentQuoteAllocation[];
+  coveredWeeks: string[];
 }
 
 export interface InteractivePaymentQuote {

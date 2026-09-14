@@ -284,6 +284,11 @@ export default function MakePaymentPage() {
   recipientSelectionKeyRef.current = recipientSelectionKey;
   const displayedQuoteRef = useRef<{ fingerprint: string; amountMinor: number; selectionKey: string } | null>(null);
   displayedQuoteRef.current = quote ? { fingerprint: quote.fingerprint, amountMinor: quote.amountMinor, selectionKey: recipientSelectionKey } : null;
+  // A wallet sheet can remain open while participants or the quote refetch.
+  // Freeze the exact consented quote at the click that opened the sheet; a
+  // mutable "currently displayed" quote is not an acceptable authorization
+  // for the token returned later by the native wallet UI.
+  const walletStartQuoteRef = useRef<{ fingerprint: string; amountMinor: number; selectionKey: string } | null>(null);
   const selectedRecipientsRef = useRef(effectiveSelectedRecipients);
   selectedRecipientsRef.current = effectiveSelectedRecipients;
   const recipientWeeksRef = useRef(recipientWeeks);
@@ -482,7 +487,13 @@ export default function MakePaymentPage() {
 
   const handleWalletPayment = useCallback(async (token: string, walletType: "apple_pay" | "google_pay") => {
     if (!bowlerId || !leagueId || !league || paymentAmountMinor <= 0 || recipientSelections.length === 0) return;
-    const submittedSelectionKey = recipientSelectionKey;
+    const walletStartQuote = walletStartQuoteRef.current;
+    walletStartQuoteRef.current = null;
+    if (!walletStartQuote) {
+      toast({ title: "Payment unavailable", description: "Wallet payment choices changed. Review the payment and try again.", variant: "destructive" });
+      return;
+    }
+    const submittedSelectionKey = walletStartQuote.selectionKey;
     if (!bowlerEmail && !receiptEmail.trim()) { toast({ title: "Email required", description: "Enter an email for the receipt before paying with a wallet.", variant: "destructive" }); return; }
     const overrideEmail = !bowlerEmail && receiptEmail.trim() ? receiptEmail.trim() : undefined;
     try {
@@ -492,7 +503,7 @@ export default function MakePaymentPage() {
       if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Payment allocation is unavailable.");
       const quotedAmountMinor = quoteBody.data.amountMinor;
       if (!Number.isSafeInteger(quotedAmountMinor) || quotedAmountMinor <= 0) throw new Error("Payment allocation is unavailable.");
-      if (submittedSelectionKey !== recipientSelectionKeyRef.current || !isInteractivePaymentQuoteCurrent(displayedQuoteRef.current, quoteBody.data, submittedSelectionKey)) throw new Error("Payment quote changed. Review the recipients and try again.");
+      if (submittedSelectionKey !== recipientSelectionKeyRef.current || !isInteractivePaymentQuoteCurrent(walletStartQuote, quoteBody.data, submittedSelectionKey)) throw new Error("Payment quote changed. Review the recipients and try again.");
       if (!paymentIntentScope) throw new Error("Payment identity is unavailable. Refresh and try again.");
       const scope = paymentIntentScope;
       const requestKey = walletRequestKeyRef.current;
@@ -525,14 +536,32 @@ export default function MakePaymentPage() {
       toast(isProviderNotConfiguredError(error) ? providerNotConfiguredToast({ navigate, locationId: league.locationId }) : { title: "Payment Failed", description: sanitizePaymentErrorMessage(error, "Unable to process payment."), variant: "destructive" });
     }
     finally { setIsWalletProcessing(false); }
-  }, [bowlerId, leagueId, league, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, cleanupCard, paymentIntentScope, resetWalletRecovery, recipientSelections, recipientSelectionKey, resetRecipientSelection]);
-  const beginWalletPayment = useCallback(() => walletRecoveryReady, [walletRecoveryReady]);
+  }, [bowlerId, leagueId, league, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, cleanupCard, paymentIntentScope, resetWalletRecovery, recipientSelections, resetRecipientSelection]);
+  const beginWalletPayment = useCallback(() => {
+    const displayedQuote = displayedQuoteRef.current;
+    if (!walletRecoveryReady || selectionStale || recipientSelections.length === 0 || !displayedQuote || displayedQuote.selectionKey !== recipientSelectionKeyRef.current) {
+      walletStartQuoteRef.current = null;
+      return false;
+    }
+    walletStartQuoteRef.current = { ...displayedQuote };
+    return true;
+  }, [walletRecoveryReady, selectionStale, recipientSelections.length]);
   const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: savedCardReadState === "ready" && !!league?.locationId && paymentAmountMinor > 0 && supportsWallets && walletRecoveryReady && !selectionStale && !loadingQuote && !fetchingQuote && recipientSelections.length > 0, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
   const cleanupWallet = wallet.cleanup;
   useEffect(() => () => cleanupWallet(), [cleanupWallet]);
 
   const submitOneTimePayment = async () => {
     if (!bowlerId || !leagueId || !league || recipientSelections.length === 0 || quoteError || selectionStale) { toast({ title: "Payment unavailable", description: "Select at least one payable recipient and wait for an exact payment quote.", variant: "destructive" }); return; }
+    if (isWalletProcessing || wallet.isProcessing) return;
+    // Capture this before any awaited recovery/quote work. If a background
+    // refetch replaces the displayed quote while submit is in flight, the
+    // fresh quote must still match the quote the user actually accepted.
+    const acceptedQuote = displayedQuoteRef.current;
+    const submittedSelectionKey = recipientSelectionKeyRef.current;
+    if (!acceptedQuote || acceptedQuote.selectionKey !== submittedSelectionKey) {
+      toast({ title: "Payment unavailable", description: "Payment quote changed. Review the recipients and try again.", variant: "destructive" });
+      return;
+    }
     try {
       setIsSubmitting(true);
       if (!paymentIntentScope) throw new Error("Payment identity is unavailable. Refresh and try again.");
@@ -560,17 +589,16 @@ export default function MakePaymentPage() {
       if (cardMode === "new" && (!card || !isInitialized)) throw new Error("Card details required. Enter your card details before paying.");
       if (cardMode === "saved" && !selectedSavedCardId) throw new Error("Card required. Select a saved card before paying.");
       const requestKey = preparedIntent.requestKey;
-      const submittedSelectionKey = recipientSelectionKey;
       const latestQuoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-quote/3`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients: recipientSelections }) });
       const quoteBody = await latestQuoteResponse.json().catch(() => ({})) as ApiResponse<InteractivePaymentQuote>;
       if (!latestQuoteResponse.ok || !quoteBody?.data?.fingerprint || !Number.isSafeInteger(quoteBody.data.amountMinor) || quoteBody.data.amountMinor <= 0) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
-      if (submittedSelectionKey !== recipientSelectionKeyRef.current || !isInteractivePaymentQuoteCurrent(displayedQuoteRef.current, quoteBody.data, submittedSelectionKey)) {
+      if (submittedSelectionKey !== recipientSelectionKeyRef.current || !isInteractivePaymentQuoteCurrent(acceptedQuote, quoteBody.data, submittedSelectionKey)) {
         throw new Error("Payment quote changed. Review the recipients and try again.");
       }
       const cardToTokenize = card;
       if (cardMode === "new" && !cardToTokenize) throw new Error("A payment source is required.");
       const sourceId = cardMode === "saved" ? selectedSavedCardId : await tokenizeCard(cardToTokenize);
-      if (submittedSelectionKey !== recipientSelectionKeyRef.current) throw new Error("Payment selection changed. Review the recipients and try again.");
+      if (submittedSelectionKey !== recipientSelectionKeyRef.current || !isInteractivePaymentQuoteCurrent(acceptedQuote, displayedQuoteRef.current, submittedSelectionKey)) throw new Error("Payment quote changed. Review the recipients and try again.");
       const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-charge/3`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ recipients: recipientSelections, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: bowlerEmail || receiptEmail.trim() || null, storeCard: cardMode === "new" ? storeCard : false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw makeApiError(body, response.status, "Payment failed");
@@ -612,7 +640,13 @@ export default function MakePaymentPage() {
     name: row.name,
     role: row.role,
     amountMinor: row.subtotalMinor,
-    coveredWeeks: row.weeks,
+    coveredWeeks: row.coveredWeeks,
+    allocations: row.allocations.map((allocation) => ({
+      amountMinor: allocation.amountMinor,
+      occurrenceLocalDate: allocation.occurrenceLocalDate,
+      plannedOrdinal: allocation.plannedOrdinal,
+      label: allocation.label,
+    })),
   })) ?? [];
   return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId}>
     <div className="space-y-6">

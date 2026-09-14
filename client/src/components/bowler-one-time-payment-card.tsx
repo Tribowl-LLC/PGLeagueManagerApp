@@ -31,7 +31,13 @@ export interface PaymentBreakdownRow {
   name: string;
   role: "self" | "partner";
   amountMinor: number;
-  coveredWeeks: number;
+  coveredWeeks: string[];
+  allocations: Array<{
+    amountMinor: number;
+    occurrenceLocalDate: string;
+    plannedOrdinal: number | null;
+    label: string;
+  }>;
 }
 
 interface Props {
@@ -151,9 +157,19 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
           {breakdownRows && breakdownRows.length > 0 && !quoteLoading && (
             <div className="flex flex-col gap-2 border-t pt-3 text-sm">
               {breakdownRows.map((row) => (
-                <div key={row.bowlerId} className="flex items-center justify-between gap-3">
-                  <span className="min-w-0 truncate">{row.name} · {row.coveredWeeks} {row.coveredWeeks === 1 ? "week" : "weeks"}</span>
-                  <span className="shrink-0 font-medium">{formatCurrency(row.amountMinor)}</span>
+                <div key={row.bowlerId} className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="min-w-0 truncate font-medium">{row.name}</span>
+                    <span className="shrink-0 font-medium">{formatCurrency(row.amountMinor)}</span>
+                  </div>
+                  <div className="flex flex-col gap-1 pl-3 text-xs text-muted-foreground">
+                    {(row.allocations.length > 0 ? row.allocations : row.coveredWeeks.map((label) => ({ label, amountMinor: 0, occurrenceLocalDate: "", plannedOrdinal: null }))).map((allocation, index) => (
+                      <div key={`${row.bowlerId}-${allocation.plannedOrdinal ?? (allocation.occurrenceLocalDate || index)}`} className="flex items-center justify-between gap-3">
+                        <span>{allocation.label}{allocation.occurrenceLocalDate ? ` · ${allocation.occurrenceLocalDate}` : ""}</span>
+                        {allocation.amountMinor > 0 && <span>{formatCurrency(allocation.amountMinor)}</span>}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
