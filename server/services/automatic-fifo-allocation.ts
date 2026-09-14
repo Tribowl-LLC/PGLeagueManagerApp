@@ -15,6 +15,17 @@ export type FifoPaymentCandidate = {
   plannedOrdinal?: number | null;
 };
 
+/** Canonical tie-broken order for one-time FIFO collection. Callers that lock
+ * database rows must acquire those locks in their established order first and
+ * apply this comparator only to the projected candidate list. */
+export function comparePublishedCollectionOrder(a: FifoPaymentCandidate, b: FifoPaymentCandidate): number {
+  return a.effectiveCollectionAt.localeCompare(b.effectiveCollectionAt)
+    || a.memberOrdinal - b.memberOrdinal
+    || a.billingOrdinal - b.billingOrdinal
+    || a.occurrenceId.localeCompare(b.occurrenceId)
+    || a.id.localeCompare(b.id);
+}
+
 export class AutomaticFifoAllocationError extends Error {
   constructor(public readonly code: "INVALID_AMOUNT" | "OBLIGATION_RESERVED" | "FINANCIAL_EVIDENCE_INVALID" | "EXCESS_PAYMENT", message: string, public readonly status: number) {
     super(message);
@@ -27,9 +38,7 @@ export function allocateAutomaticFifoPayment(
   candidates: FifoPaymentCandidate[],
 ): Array<{ obligationId: string; amountMinor: number }> {
   if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) throw new AutomaticFifoAllocationError("INVALID_AMOUNT", "Payment amount must be a positive whole number of cents", 422);
-  const eligible = candidates.filter((row) => row.outstandingMinor > 0).sort((a, b) => {
-    return a.effectiveCollectionAt.localeCompare(b.effectiveCollectionAt) || a.memberOrdinal - b.memberOrdinal || a.billingOrdinal - b.billingOrdinal || a.occurrenceId.localeCompare(b.occurrenceId) || a.id.localeCompare(b.id);
-  });
+  const eligible = candidates.filter((row) => row.outstandingMinor > 0).sort(comparePublishedCollectionOrder);
   let remaining = amountMinor;
   const allocations: Array<{ obligationId: string; amountMinor: number }> = [];
   for (const candidate of eligible) {

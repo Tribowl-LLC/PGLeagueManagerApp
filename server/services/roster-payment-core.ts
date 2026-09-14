@@ -45,7 +45,7 @@ import { getProviderCustomerId } from "./payment-utils.js";
 import { decrypt } from "../utils/crypto.js";
 import { assertOpenRosterEvidenceCanBeReplaced, deriveRosterPaymentTimingInTransaction, materializeRosterPaymentOccurrencesInTransaction } from "./roster-payment-materializer.js";
 import { createLogger } from "../logger.js";
-import { allocateAutomaticFifoPayment as allocateFifo, type FifoPaymentCandidate as BaseFifoPaymentCandidate, AutomaticFifoAllocationError } from "./automatic-fifo-allocation.js";
+import { allocateAutomaticFifoPayment as allocateFifo, comparePublishedCollectionOrder, type FifoPaymentCandidate as BaseFifoPaymentCandidate, AutomaticFifoAllocationError } from "./automatic-fifo-allocation.js";
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 
 export { calculateRosterPaymentTiming };
@@ -795,6 +795,9 @@ export async function fifoCandidatesInTransaction(
   )).for("update");
   const reservedById = new Map<string, number>();
   for (const row of reservations) reservedById.set(row.obligationId, (reservedById.get(row.obligationId) ?? 0) + row.amountMinor);
+  // The query above deliberately keeps its dueAt order for row-lock
+  // acquisition. Sort only this projected candidate list by canonical
+  // published collection order for one-time allocation and option choices.
   return rows.map((row) => {
     const member = groupByOccurrence.get(row.occurrenceId);
     const triggerAt = member ? triggerAtByGroup.get(member.groupId) : undefined;
@@ -832,7 +835,7 @@ export async function fifoCandidatesInTransaction(
       occurrenceLocalDate: occurrenceById.get(row.occurrenceId)?.authoritativeLocalDate ?? null,
       plannedOrdinal: occurrenceById.get(row.occurrenceId)?.plannedOrdinal ?? null,
     };
-  });
+  }).sort(comparePublishedCollectionOrder);
 }
 
 export async function quoteInteractiveObligations(input: FifoQuoteInput & { organizationId: number; leagueId: number }) {
