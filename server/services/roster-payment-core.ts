@@ -45,7 +45,7 @@ import { getProviderCustomerId } from "./payment-utils.js";
 import { decrypt } from "../utils/crypto.js";
 import { assertOpenRosterEvidenceCanBeReplaced, deriveRosterPaymentTimingInTransaction, materializeRosterPaymentOccurrencesInTransaction } from "./roster-payment-materializer.js";
 import { createLogger } from "../logger.js";
-import { allocateAutomaticFifoPayment as allocateFifo, type FifoPaymentCandidate as BaseFifoPaymentCandidate, AutomaticFifoAllocationError } from "./automatic-fifo-allocation.js";
+import { allocateAutomaticFifoPayment as allocateFifo, comparePublishedCollectionOrder, type FifoPaymentCandidate as BaseFifoPaymentCandidate, AutomaticFifoAllocationError } from "./automatic-fifo-allocation.js";
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 
 export { calculateRosterPaymentTiming };
@@ -633,6 +633,8 @@ export type FifoPaymentCandidate = BaseFifoPaymentCandidate & {
   billingOrdinal: number;
   reservedMinor: number;
   reviewRequired: boolean;
+  /** Published pair evidence; FIFO uses the trigger's effective timestamp
+   * even before the trigger occurrence is due. */
   pairedCollectionReady: boolean;
   effectiveCollectionAt: string;
   /** Stored schedule labels; callers must not reconstruct them from dueAt. */
@@ -644,10 +646,8 @@ export type FifoPaymentCandidate = BaseFifoPaymentCandidate & {
 export function allocateAutomaticFifoPayment(
   amountMinor: number,
   candidates: FifoPaymentCandidate[],
-  paymentMode: "weekly" | "upfront",
-  nowIso = new Date().toISOString(),
 ): Array<{ obligationId: string; amountMinor: number }> {
-  try { return allocateFifo(amountMinor, candidates, paymentMode, nowIso); }
+  try { return allocateFifo(amountMinor, candidates); }
   catch (error) {
     if (error instanceof AutomaticFifoAllocationError) throw new RosterPaymentError(error.code, error.message, error.status);
     throw error;
@@ -662,7 +662,7 @@ type FifoQuoteInput = {
 
 export async function fifoCandidatesInTransaction(
   tx: RosterPaymentTransaction,
-  input: { organizationId: number; leagueId: number; payerBowlerId: number; now: string },
+  input: { organizationId: number; leagueId: number; payerBowlerId: number },
 ): Promise<FifoPaymentCandidate[]> {
   const rows = await tx.select().from(paymentObligations).where(and(
     eq(paymentObligations.organizationId, input.organizationId),
@@ -795,10 +795,17 @@ export async function fifoCandidatesInTransaction(
   )).for("update");
   const reservedById = new Map<string, number>();
   for (const row of reservations) reservedById.set(row.obligationId, (reservedById.get(row.obligationId) ?? 0) + row.amountMinor);
+  // The query above deliberately keeps its dueAt order for row-lock
+  // acquisition. Sort only this projected candidate list by canonical
+  // published collection order for one-time allocation and option choices.
   return rows.map((row) => {
     const member = groupByOccurrence.get(row.occurrenceId);
     const triggerAt = member ? triggerAtByGroup.get(member.groupId) : undefined;
-    const pairedCollectionReady = member?.role === "paired" && triggerAt !== undefined && triggerAt <= input.now;
+    // A published pair fixes the collection sequence before its trigger is
+    // due. The trigger timestamp is the paired occurrence's effective FIFO
+    // position; the published-pair marker remains in quote evidence, while
+    // ordering no longer depends on the actual clock.
+    const pairedCollectionReady = member?.role === "paired" && triggerAt !== undefined;
     return {
       id: row.id,
       responsibilityId: row.responsibilityId,
@@ -824,11 +831,11 @@ export async function fifoCandidatesInTransaction(
       reservedMinor: reservedById.get(row.id) ?? 0,
       reviewRequired: reviewById.get(row.id) ?? false,
       pairedCollectionReady,
-      effectiveCollectionAt: member?.role === "paired" && pairedCollectionReady && triggerAt !== undefined ? triggerAt : new Date(row.dueAt).toISOString(),
+      effectiveCollectionAt: member?.role === "paired" && triggerAt !== undefined ? triggerAt : new Date(row.dueAt).toISOString(),
       occurrenceLocalDate: occurrenceById.get(row.occurrenceId)?.authoritativeLocalDate ?? null,
       plannedOrdinal: occurrenceById.get(row.occurrenceId)?.plannedOrdinal ?? null,
     };
-  });
+  }).sort(comparePublishedCollectionOrder);
 }
 
 export async function quoteInteractiveObligations(input: FifoQuoteInput & { organizationId: number; leagueId: number }) {
@@ -839,12 +846,10 @@ export async function quoteInteractiveObligations(input: FifoQuoteInput & { orga
     const payerBowlerId = input.payerBowlerId;
     const [payer] = await tx.select({ id: bowlers.id }).from(bowlers).innerJoin(bowlerLeagues, and(eq(bowlerLeagues.bowlerId, bowlers.id), eq(bowlerLeagues.leagueId, input.leagueId), eq(bowlerLeagues.active, true))).where(and(eq(bowlers.id, payerBowlerId), eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true))).limit(1);
     if (!payer) throw new RosterPaymentError("PAYER_SCOPE_MISMATCH", "The payment payer is not an active member of this league", 403);
-    const nowResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS now`);
-    const now = (nowResult.rows[0] as { now?: string } | undefined)?.now ?? new Date().toISOString();
-    const allCandidates = await fifoCandidatesInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId, now: new Date(now).toISOString() });
+    const allCandidates = await fifoCandidatesInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId });
     const candidates = allCandidates;
     const amountMinor = input.amountMinor;
-    const allocations = allocateAutomaticFifoPayment(amountMinor, candidates, league.paymentMode, new Date(now).toISOString());
+    const allocations = allocateAutomaticFifoPayment(amountMinor, candidates);
     if (league.paymentMode === "upfront") {
       const allOutstanding = candidates.reduce((sum, row) => sum + row.outstandingMinor, 0);
       if (amountMinor !== allOutstanding) throw new RosterPaymentError("UPFRONT_FULL_BALANCE_REQUIRED", "Upfront checkout must collect the payer's full remaining balance", 422);

@@ -8,11 +8,23 @@ export type FifoPaymentCandidate = {
   effectiveCollectionAt: string;
   reservedMinor: number;
   reviewRequired: boolean;
+  /** Published pair evidence; effectiveCollectionAt controls FIFO order. */
   pairedCollectionReady: boolean;
   /** Stored schedule labels used by interactive checkout projections. */
   occurrenceLocalDate?: string | null;
   plannedOrdinal?: number | null;
 };
+
+/** Canonical tie-broken order for one-time FIFO collection. Callers that lock
+ * database rows must acquire those locks in their established order first and
+ * apply this comparator only to the projected candidate list. */
+export function comparePublishedCollectionOrder(a: FifoPaymentCandidate, b: FifoPaymentCandidate): number {
+  return a.effectiveCollectionAt.localeCompare(b.effectiveCollectionAt)
+    || a.memberOrdinal - b.memberOrdinal
+    || a.billingOrdinal - b.billingOrdinal
+    || a.occurrenceId.localeCompare(b.occurrenceId)
+    || a.id.localeCompare(b.id);
+}
 
 export class AutomaticFifoAllocationError extends Error {
   constructor(public readonly code: "INVALID_AMOUNT" | "OBLIGATION_RESERVED" | "FINANCIAL_EVIDENCE_INVALID" | "EXCESS_PAYMENT", message: string, public readonly status: number) {
@@ -24,19 +36,9 @@ export class AutomaticFifoAllocationError extends Error {
 export function allocateAutomaticFifoPayment(
   amountMinor: number,
   candidates: FifoPaymentCandidate[],
-  paymentMode: "weekly" | "upfront",
-  nowIso = new Date().toISOString(),
 ): Array<{ obligationId: string; amountMinor: number }> {
   if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) throw new AutomaticFifoAllocationError("INVALID_AMOUNT", "Payment amount must be a positive whole number of cents", 422);
-  const now = new Date(nowIso).getTime();
-  const eligible = candidates.filter((row) => row.outstandingMinor > 0).sort((a, b) => {
-    const rank = (row: FifoPaymentCandidate): number => {
-      if (paymentMode === "upfront") return 0;
-      if (new Date(row.dueAt).getTime() <= now) return 0;
-      return row.pairedCollectionReady ? 1 : 2;
-    };
-    return rank(a) - rank(b) || a.effectiveCollectionAt.localeCompare(b.effectiveCollectionAt) || a.memberOrdinal - b.memberOrdinal || a.billingOrdinal - b.billingOrdinal || a.occurrenceId.localeCompare(b.occurrenceId) || a.id.localeCompare(b.id);
-  });
+  const eligible = candidates.filter((row) => row.outstandingMinor > 0).sort(comparePublishedCollectionOrder);
   let remaining = amountMinor;
   const allocations: Array<{ obligationId: string; amountMinor: number }> = [];
   for (const candidate of eligible) {

@@ -399,7 +399,7 @@ describe("interactive partner payment PostgreSQL boundary", () => {
     });
     const paired = candidate("paired", "2039-01-02T19:00:00.000Z", now, true);
     const ordinaryFuture = candidate("future", "2039-01-01T19:00:00.000Z", "2039-01-01T19:00:00.000Z", false);
-    expect(allocateAutomaticFifoPayment(1_000, [ordinaryFuture, paired], "weekly", now)).toEqual([{ obligationId: "paired", amountMinor: 1_000 }]);
+    expect(allocateAutomaticFifoPayment(1_000, [ordinaryFuture, paired])).toEqual([{ obligationId: "paired", amountMinor: 1_000 }]);
   });
 
   it("charges self and accepted direct partner as one parent payment with recipient allocations", async () => {

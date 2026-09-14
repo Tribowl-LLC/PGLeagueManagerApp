@@ -16,13 +16,14 @@ finalization recomputes the candidate set under the same lock and rejects
 drift, stale reservations, review-required evidence, and amounts larger than
 the remaining eligible balance.
 
-For weekly leagues, FIFO order is effective collection order: older unpaid or
-past-due obligations, the current due occurrence, a paired final occurrence
-when its published trigger arrives, and then future occurrences. Stable
-member, billing, occurrence, and obligation identities break ties. Each
-oldest obligation is completed before the next is selected; a final remainder
-may partially settle the next obligation. Weekly payments may prepay future
-weeks. Upfront leagues require the complete remaining balance.
+For weekly leagues, FIFO order is the published effective collection order.
+Older unpaid obligations come first, and a paired final occurrence takes its
+published trigger position as soon as the group is published; collection does
+not wait for the trigger clock to arrive. Stable member, billing, occurrence,
+and obligation identities break ties. Each oldest obligation is completed
+before the next is selected; a final remainder may partially settle the next
+obligation. Weekly payments may prepay future weeks. Upfront leagues require
+the complete remaining balance.
 
 Standing automatic payment is current-point-only. It is blocked by any older
 open, partially settled, or reserved debt, which must be settled by a one-time
