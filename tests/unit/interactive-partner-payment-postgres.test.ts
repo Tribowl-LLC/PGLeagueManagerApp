@@ -25,6 +25,9 @@ import { deleteOrganization } from "../../server/storage/organizations";
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
 import type { PaymentProvider, PaymentResult } from "../../server/services/payment-provider";
 import { canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
+import { prepareInteractivePartnerPaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
+import { readCanonicalPaymentReport } from "../../server/services/roster-payment-archive-report";
+import { redactCanonicalPaymentRow } from "../../server/routes/financials-f5";
 
 const getProviderMock = vi.hoisted(() => vi.fn());
 vi.mock("../../server/services/payment-provider-factory.js", () => ({ getPaymentProvider: getProviderMock }));
@@ -274,6 +277,48 @@ async function expectRosterError(action: Promise<unknown>, code: string): Promis
   await expect(action).rejects.toMatchObject({ code });
 }
 
+async function prepareUnresolvedPartnerOperation(
+  scenario: Scenario,
+  recipients: ReturnType<typeof selection>[],
+) {
+  const quote = await quoteInteractivePartnerPayments({
+    organizationId,
+    leagueId: scenario.leagueId,
+    payerBowlerId: scenario.payerBowlerId,
+    recipients,
+  });
+  const operation = await prepareInteractivePartnerPaymentOperation({
+    organizationId,
+    authorizingUserId: actorUserId,
+    requestKey: `unresolved-partner-${suffix}-${randomUUID()}`,
+    amountMinor: quote.amountMinor,
+    currency: quote.currency,
+    providerName: "square",
+    leagueId: scenario.leagueId,
+    locationId: scenario.locationId,
+    providerLocationId: null,
+    payerBowlerId: scenario.payerBowlerId,
+    sourceId: "cnon:unresolved-partner",
+    customerId: null,
+    buyerEmail: `payer-${scenario.leagueId}@example.test`,
+    storeCard: false,
+    sourceKind: "new_card",
+    allocations: quote.allocations.map((allocation) => ({ ...allocation, paidByUserId: actorUserId })),
+    partnerEvidence: quote.partnerEvidence,
+    quoteFingerprint: quote.fingerprint,
+  });
+  await db.insert(paymentOperationRosterSnapshotItems).values(quote.allocations.map((allocation) => ({
+    operationId: operation.id,
+    organizationId,
+    leagueId: scenario.leagueId,
+    obligationId: allocation.obligationId,
+    allocationIndex: allocation.allocationIndex,
+    amountMinor: allocation.amountMinor,
+    state: "reserved" as const,
+  })));
+  return { quote, operation };
+}
+
 let provider: FakeInteractiveProvider;
 const providersByLocation = new Map<number, FakeInteractiveProvider>();
 
@@ -398,6 +443,81 @@ describe("interactive partner payment PostgreSQL boundary", () => {
     const replay = await chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: scenario.payerBowlerId, request });
     expect(replay).toMatchObject({ operationId: first.operationId, status: "succeeded", providerPaymentId: first.providerPaymentId });
     expect(provider.processCalls).toHaveLength(callsAfterFirstCharge);
+  });
+
+  it("scopes combined tender reports to the payer versus the recipient and retains history after unlink", async () => {
+    const scenario = await createScenario("report-scope", 5);
+    const recipients = [selection(scenario.payerBowlerId, 3), selection(scenario.partnerBowlerId, 2)];
+    const quote = await quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: scenario.payerBowlerId, recipients });
+    const result = await chargeInteractivePartnerPayments({
+      organizationId,
+      leagueId: scenario.leagueId,
+      actorUserId,
+      payerBowlerId: scenario.payerBowlerId,
+      request: {
+        recipients,
+        sourceId: "cnon:report-scope",
+        sourceKind: "new_card",
+        idempotencyKey: `report-scope-${suffix}`,
+        requestFingerprint: quote.fingerprint,
+      },
+    });
+    expect(result.status).toBe("succeeded");
+
+    const payerReport = await readCanonicalPaymentReport({ organizationId, leagueId: scenario.leagueId, bowlerId: scenario.payerBowlerId });
+    const partnerReport = await readCanonicalPaymentReport({ organizationId, leagueId: scenario.leagueId, bowlerId: scenario.partnerBowlerId });
+    expect(payerReport.rows).toHaveLength(1);
+    expect(partnerReport.rows).toHaveLength(1);
+    expect(payerReport.rows[0]).toMatchObject({ amountMinor: 5_000, allocatedMinor: 5_000, effectiveAllocatedMinor: 5_000 });
+    expect(payerReport.totals).toMatchObject({ grossConfirmedPaidMinor: 5_000, activeAllocatedMinor: 5_000, effectiveAllocatedMinor: 5_000 });
+    // The raw canonical row is the same tender for both authorized readers;
+    // the scoped aggregate and ordinary-reader projection carry recipient
+    // privacy and own-amount semantics.
+    expect(partnerReport.rows[0]).toMatchObject({ amountMinor: 5_000, allocatedMinor: 5_000 });
+    expect(partnerReport.totals).toMatchObject({ grossConfirmedPaidMinor: 2_000, activeAllocatedMinor: 2_000, effectiveAllocatedMinor: 2_000 });
+    const payerView = redactCanonicalPaymentRow(required(payerReport.rows[0], "payer report row"), scenario.payerBowlerId);
+    const partnerView = redactCanonicalPaymentRow(required(partnerReport.rows[0], "partner report row"), scenario.partnerBowlerId);
+    expect(payerView.amountMinor).toBe(5_000);
+    expect(payerView.appliedTo).toHaveLength(5);
+    expect(payerView.appliedTo?.some((row) => row.bowlerName === `Partner report-scope`)).toBe(true);
+    expect(partnerView.amountMinor).toBe(2_000);
+    expect(partnerView.appliedTo).toHaveLength(2);
+    expect(partnerView.appliedTo?.every((row) => row.bowlerName === undefined)).toBe(true);
+    expect(partnerView.allocations).toEqual([]);
+    expect(partnerView.providerPaymentId).toBeNull();
+    expect(partnerView.receipt.receiptUrl).toBeNull();
+    expect(partnerView.receipt.receiptNumber).toBeNull();
+
+    await db.update(bowlerPaymentLinks).set({ status: "retired" }).where(eq(bowlerPaymentLinks.id, scenario.acceptedLinkId));
+    const partnerHistoryAfterUnlink = await readCanonicalPaymentReport({ organizationId, leagueId: scenario.leagueId, bowlerId: scenario.partnerBowlerId });
+    expect(partnerHistoryAfterUnlink.rows).toHaveLength(1);
+    expect(partnerHistoryAfterUnlink.totals).toMatchObject({ grossConfirmedPaidMinor: 2_000, activeAllocatedMinor: 2_000, effectiveAllocatedMinor: 2_000 });
+  });
+
+  it("shows an unresolved partner-only snapshot to the payer while exposing only own amount to the recipient", async () => {
+    const scenario = await createScenario("report-unresolved", 2);
+    const recipients = [selection(scenario.partnerBowlerId, 2, true)];
+    const { operation } = await prepareUnresolvedPartnerOperation(scenario, recipients);
+    const payerReport = await readCanonicalPaymentReport({ organizationId, leagueId: scenario.leagueId, bowlerId: scenario.payerBowlerId });
+    const partnerReport = await readCanonicalPaymentReport({ organizationId, leagueId: scenario.leagueId, bowlerId: scenario.partnerBowlerId });
+    expect(payerReport.rows).toHaveLength(1);
+    expect(payerReport.rows[0]).toMatchObject({ paymentId: null, paymentOperationId: operation.id, amountMinor: 2_000, allocatedMinor: 0, effectiveAllocatedMinor: 0, unresolved: true });
+    expect(payerReport.totals).toMatchObject({ unresolvedOperationMinor: 2_000, activeAllocatedMinor: 0, effectiveAllocatedMinor: 0 });
+    expect(partnerReport.rows).toHaveLength(1);
+    expect(partnerReport.rows[0]).toMatchObject({ paymentId: null, paymentOperationId: operation.id, amountMinor: 2_000, allocatedMinor: 0, effectiveAllocatedMinor: 0, unresolved: true });
+    expect(partnerReport.totals).toMatchObject({ unresolvedOperationMinor: 2_000, activeAllocatedMinor: 0, effectiveAllocatedMinor: 0 });
+    const payerView = redactCanonicalPaymentRow(required(payerReport.rows[0], "payer unresolved report row"), scenario.payerBowlerId);
+    const partnerView = redactCanonicalPaymentRow(required(partnerReport.rows[0], "partner unresolved report row"), scenario.partnerBowlerId);
+    expect(payerView.amountMinor).toBe(2_000);
+    expect(payerView.appliedTo).toHaveLength(2);
+    expect(partnerView.amountMinor).toBe(2_000);
+    expect(partnerView.appliedTo).toHaveLength(2);
+    expect(partnerView.allocatedMinor).toBe(0);
+    expect(partnerView.effectiveAllocatedMinor).toBe(0);
+    expect(partnerView.allocations).toEqual([]);
+    expect(partnerView.providerPaymentId).toBeNull();
+    expect(partnerView.receipt.receiptUrl).toBeNull();
+    expect(partnerView.receipt.receiptNumber).toBeNull();
   });
 
   it("reserves every recipient atomically when a competing charge races the same oldest obligation", async () => {
