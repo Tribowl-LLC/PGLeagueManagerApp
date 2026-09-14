@@ -42,9 +42,23 @@ function partnerLinkFingerprint(link: Pick<Link, "id" | "bowlerAId" | "bowlerBId
   })).digest("hex")}`;
 }
 
+/** PostgreSQL's `timestamp::text` uses a space separator. Normalize it before
+ * comparing with the ISO trigger timestamps used by FIFO collection groups;
+ * malformed database evidence must fail closed instead of using app time. */
+export function normalizeInteractivePaymentTransactionTimestamp(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "The transaction timestamp evidence is missing", 503);
+  }
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "The transaction timestamp evidence is invalid", 503);
+  }
+  return parsed.toISOString();
+}
+
 function nowFromTransaction(rows: unknown): string {
   const row = (rows as { rows?: Array<{ now?: string }> })?.rows?.[0];
-  return row?.now ?? new Date().toISOString();
+  return normalizeInteractivePaymentTransactionTimestamp(row?.now);
 }
 
 async function activePayer(tx: RosterPaymentTransaction, organizationId: number, leagueId: number, bowlerId: number): Promise<{ id: number; name: string; email: string | null } | undefined> {

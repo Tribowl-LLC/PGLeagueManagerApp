@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   bowlers,
   bowlerLeagues,
@@ -29,7 +29,7 @@ import type { PaymentProvider, PaymentResult } from "../../server/services/payme
 import { canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
 import { prepareInteractivePartnerPaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
 import { readCanonicalPaymentReport } from "../../server/services/roster-payment-archive-report";
-import { readCanonicalDuePastDue } from "../../server/services/roster-payment-core";
+import { allocateAutomaticFifoPayment, readCanonicalDuePastDue } from "../../server/services/roster-payment-core";
 import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
 import { RefundPaymentOperationExecutor } from "../../server/services/refund-payment-operation-executor";
 import { redactCanonicalPaymentRow } from "../../server/routes/financials-f5";
@@ -41,6 +41,7 @@ import {
   chargeInteractivePartnerPayments,
   quoteInteractivePartnerPayments,
   readInteractivePaymentParticipants,
+  normalizeInteractivePaymentTransactionTimestamp,
 } from "../../server/services/interactive-partner-payment";
 
 const db = getTestDb();
@@ -370,6 +371,37 @@ afterAll(async () => {
 });
 
 describe("interactive partner payment PostgreSQL boundary", () => {
+  it("normalizes the PostgreSQL transaction clock before same-day paired FIFO ranking", async () => {
+    const result = await db.execute(sql`SELECT transaction_timestamp()::text AS now`);
+    const raw = (result.rows[0] as { now?: unknown } | undefined)?.now;
+    if (typeof raw !== "string") throw new Error("transaction clock fixture is missing");
+    const now = normalizeInteractivePaymentTransactionTimestamp(raw);
+    expect(now).toBe(new Date(raw).toISOString());
+    expect(raw).toContain(" ");
+
+    const candidate = (id: string, dueAt: string, effectiveCollectionAt: string, pairedCollectionReady: boolean) => ({
+      id,
+      responsibilityId: randomUUID(),
+      occurrenceId: randomUUID(),
+      amountMinor: 1_000,
+      state: "open" as const,
+      outstandingMinor: 1_000,
+      dueAt,
+      pastDueAt: dueAt,
+      payerBowlerId: 1,
+      currency: "USD" as const,
+      memberOrdinal: 1,
+      billingOrdinal: 1,
+      reservedMinor: 0,
+      reviewRequired: false,
+      pairedCollectionReady,
+      effectiveCollectionAt,
+    });
+    const paired = candidate("paired", "2039-01-02T19:00:00.000Z", now, true);
+    const ordinaryFuture = candidate("future", "2039-01-01T19:00:00.000Z", "2039-01-01T19:00:00.000Z", false);
+    expect(allocateAutomaticFifoPayment(1_000, [ordinaryFuture, paired], "weekly", now)).toEqual([{ obligationId: "paired", amountMinor: 1_000 }]);
+  });
+
   it("charges self and accepted direct partner as one parent payment with recipient allocations", async () => {
     const scenario = await createScenario("one-parent");
     const recipients = [selection(scenario.payerBowlerId), selection(scenario.partnerBowlerId)];
