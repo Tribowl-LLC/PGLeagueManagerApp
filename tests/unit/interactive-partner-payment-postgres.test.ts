@@ -539,6 +539,23 @@ describe("interactive partner payment PostgreSQL boundary", () => {
     expect(partnerView.receipt.receiptNumber).toBeNull();
   });
 
+  it("does not expose the payer tender as a recipient's pending unallocated amount", async () => {
+    const scenario = await createScenario("report-unresolved-combined", 5);
+    const recipients = [selection(scenario.payerBowlerId, 5, true), selection(scenario.partnerBowlerId, 2)];
+    const { operation } = await prepareUnresolvedPartnerOperation(scenario, recipients);
+    const partnerReport = await readCanonicalPaymentReport({ organizationId, leagueId: scenario.leagueId, bowlerId: scenario.partnerBowlerId });
+    const partnerRow = required(partnerReport.rows[0], "combined pending partner report row");
+    const partnerView = redactCanonicalPaymentRow(partnerRow, scenario.partnerBowlerId);
+
+    expect(operation.amountMinor).toBe(7_000);
+    expect(partnerRow.amountMinor).toBe(7_000);
+    expect(partnerView.amountMinor).toBe(2_000);
+    expect(partnerView.unallocatedMinor).toBe(2_000);
+    expect(partnerView.unallocatedMinor).not.toBe(operation.amountMinor);
+    expect(partnerView.allocatedMinor).toBe(0);
+    expect(partnerView.effectiveAllocatedMinor).toBe(0);
+  });
+
   it.each(["still_owed", "waived"] as const)("refunds the whole combined tender with %s conservation", async (disposition) => {
     const scenario = await createScenario(`refund-combined-${disposition}`, 5);
     const recipients = [selection(scenario.payerBowlerId, 3), selection(scenario.partnerBowlerId, 2)];

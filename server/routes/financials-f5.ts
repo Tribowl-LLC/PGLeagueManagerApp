@@ -39,12 +39,15 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     && row.initiatingPayerBowlerId !== undefined
     && row.initiatingPayerBowlerId === viewerBowlerId;
   const visibleAllocations = isInitiatingPayer ? row.allocations : ownAllocations;
-  const authorizedAmount = visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
-  const authorizedRefundedAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.refundedMinor ?? 0), 0);
-  const authorizedWaivedAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.refundDisposition === "waived" ? (allocation.refundedMinor ?? 0) : 0), 0);
-  const authorizedEffectiveAmount = visibleAllocations.reduce((sum, allocation) => sum + (allocation.effectiveAmountMinor ?? allocation.amountMinor), 0);
-  const hasCanonicalOwnership = visibleAllocations.length > 0;
-  const safeAmount = isInitiatingPayer ? row.amountMinor : (hasCanonicalOwnership ? authorizedAmount : row.amountMinor);
+  const nonVoidedVisibleAllocations = visibleAllocations.filter((allocation) => allocation.state !== "voided");
+  const activeVisibleAllocations = visibleAllocations.filter((allocation) => allocation.state === "active");
+  const authorizedAmount = activeVisibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+  const visibleTenderAmount = nonVoidedVisibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+  const authorizedRefundedAmount = activeVisibleAllocations.reduce((sum, allocation) => sum + (allocation.refundedMinor ?? 0), 0);
+  const authorizedWaivedAmount = activeVisibleAllocations.reduce((sum, allocation) => sum + (allocation.refundDisposition === "waived" ? (allocation.refundedMinor ?? 0) : 0), 0);
+  const authorizedEffectiveAmount = activeVisibleAllocations.reduce((sum, allocation) => sum + (allocation.effectiveAmountMinor ?? allocation.amountMinor), 0);
+  const hasCanonicalOwnership = activeVisibleAllocations.length > 0;
+  const safeAmount = isInitiatingPayer ? row.amountMinor : visibleTenderAmount;
   const safeRefundAmount = isInitiatingPayer ? row.refund.amountMinor : 0;
   const safeDisputeAmount = isInitiatingPayer ? row.dispute.amountMinor : 0;
   const { initiatingPayerBowlerId: _initiatingPayerBowlerId, ...safeRow } = row;
@@ -52,6 +55,7 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     plannedOrdinal: allocation.plannedOrdinal ?? null,
     occurrenceLocalDate: allocation.occurrenceLocalDate ?? null,
     amountMinor: allocation.amountMinor,
+    ...(isInitiatingPayer && allocation.bowlerName ? { bowlerName: allocation.bowlerName } : {}),
     refundedMinor: allocation.refundedMinor ?? 0,
     ...(allocation.effectiveAmountMinor === undefined ? {} : { effectiveAmountMinor: allocation.effectiveAmountMinor }),
     refundDisposition: allocation.refundDisposition ?? null,
@@ -67,7 +71,7 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     refundedAllocationMinor: authorizedRefundedAmount,
     waivedMinor: authorizedWaivedAmount,
     effectiveAllocatedMinor: authorizedEffectiveAmount,
-    unallocatedMinor: hasCanonicalOwnership ? 0 : row.unallocatedMinor,
+    unallocatedMinor: isInitiatingPayer ? row.unallocatedMinor : Math.min(row.unallocatedMinor, visibleTenderAmount),
     providerPaymentId: null,
     paymentOperationId: null,
     operationType: null,

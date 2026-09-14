@@ -9,6 +9,9 @@ export type FifoPaymentCandidate = {
   reservedMinor: number;
   reviewRequired: boolean;
   pairedCollectionReady: boolean;
+  /** Stored schedule labels used by interactive checkout projections. */
+  occurrenceLocalDate?: string | null;
+  plannedOrdinal?: number | null;
 };
 
 export class AutomaticFifoAllocationError extends Error {
