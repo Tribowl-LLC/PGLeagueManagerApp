@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   bowlers,
   bowlerLeagues,
@@ -13,9 +13,11 @@ import {
   organizations,
   paymentAllocations,
   paymentObligations,
+  paymentOperations,
   paymentOperationRosterSnapshotItems,
   paymentOperationRosterSnapshots,
   payments,
+  refundAllocationAdjustments,
   teamPaymentSlots,
   teams,
   users,
@@ -27,6 +29,9 @@ import type { PaymentProvider, PaymentResult } from "../../server/services/payme
 import { canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
 import { prepareInteractivePartnerPaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
 import { readCanonicalPaymentReport } from "../../server/services/roster-payment-archive-report";
+import { readCanonicalDuePastDue } from "../../server/services/roster-payment-core";
+import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
+import { RefundPaymentOperationExecutor } from "../../server/services/refund-payment-operation-executor";
 import { redactCanonicalPaymentRow } from "../../server/routes/financials-f5";
 
 const getProviderMock = vi.hoisted(() => vi.fn());
@@ -50,6 +55,7 @@ function required<T>(value: T | undefined, label: string): T {
 class FakeInteractiveProvider implements PaymentProvider {
   readonly providerName = "square" as const;
   readonly processCalls: Array<{ sourceId: string; amount: number; idempotencyKey?: unknown }> = [];
+  readonly refundCalls: Array<{ paymentId: string; amount: number; reason?: string; idempotencyKey?: string }> = [];
   private processStartedResolve: (() => void) | undefined;
   private processRelease: (() => void) | undefined;
   private blocked = false;
@@ -103,8 +109,9 @@ class FakeInteractiveProvider implements PaymentProvider {
     throw new Error("the partner v3 preparation is direct-only");
   }
 
-  async refundPayment(): Promise<{ refundId: string; status: string }> {
-    throw new Error("refunds are not part of this charge fixture");
+  async refundPayment(paymentId: string, amount: number, reason?: string, idempotencyKey?: string): Promise<{ refundId: string; status: string }> {
+    this.refundCalls.push({ paymentId, amount, reason, idempotencyKey });
+    return { refundId: `square-partner-refund-${this.refundCalls.length}`, status: "COMPLETED" };
   }
 
   async saveCardOnFile(): Promise<null> { return null; }
@@ -530,6 +537,116 @@ describe("interactive partner payment PostgreSQL boundary", () => {
     expect(partnerView.providerPaymentId).toBeNull();
     expect(partnerView.receipt.receiptUrl).toBeNull();
     expect(partnerView.receipt.receiptNumber).toBeNull();
+  });
+
+  it.each(["still_owed", "waived"] as const)("refunds the whole combined tender with %s conservation", async (disposition) => {
+    const scenario = await createScenario(`refund-combined-${disposition}`, 5);
+    const recipients = [selection(scenario.payerBowlerId, 3), selection(scenario.partnerBowlerId, 2)];
+    const quote = await quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: scenario.payerBowlerId, recipients });
+    const charged = await chargeInteractivePartnerPayments({
+      organizationId,
+      leagueId: scenario.leagueId,
+      actorUserId,
+      payerBowlerId: scenario.payerBowlerId,
+      request: {
+        recipients,
+        sourceId: `cnon:refund-combined-${disposition}`,
+        sourceKind: "new_card",
+        idempotencyKey: `refund-combined-${disposition}-${suffix}`,
+        requestFingerprint: quote.fingerprint,
+      },
+    });
+    expect(charged.status).toBe("succeeded");
+    const payment = required((await db.select().from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, scenario.leagueId),
+    )))[0], "combined refund payment");
+    expect(payment).toMatchObject({ amount: 5_000, status: "paid", type: "square" });
+    const processCallCount = provider.processCalls.length;
+
+    const prepared = await prepareRefundPaymentOperation({
+      paymentId: payment.id,
+      disposition,
+      requestedByUserId: actorUserId,
+      requestedByRole: "org_admin",
+      requestedByOrganizationId: organizationId,
+    });
+    if (prepared.snapshot.snapshotVersion !== 2) throw new Error("combined refund fixture did not persist a v2 snapshot");
+    expect(prepared.snapshot.allocations).toHaveLength(5);
+    const refundExecutor = new RefundPaymentOperationExecutor({
+      leaseOwner: `partner-refund-${disposition}-${suffix}`,
+      getProvider: getProviderMock,
+    });
+    const refunded = await refundExecutor.execute({ organizationId, operationId: prepared.operation.id });
+    expect(refunded).toMatchObject({ status: "succeeded", providerObjectId: expect.stringMatching(/^square-partner-refund-/) });
+    expect(provider.refundCalls).toHaveLength(1);
+    expect(provider.refundCalls[0]).toMatchObject({
+      paymentId: payment.providerPaymentId,
+      amount: 5_000,
+      reason: "Refund processed via LeagueVault",
+      idempotencyKey: prepared.operation.providerIdempotencyKey,
+    });
+    expect(provider.processCalls).toHaveLength(processCallCount);
+
+    const allocationRows = await db.select({
+      id: paymentAllocations.id,
+      obligationId: paymentAllocations.obligationId,
+      amountMinor: paymentAllocations.amountMinor,
+      payerBowlerId: paymentObligations.payerBowlerId,
+    }).from(paymentAllocations).innerJoin(paymentObligations, eq(paymentObligations.id, paymentAllocations.obligationId)).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, scenario.leagueId),
+      eq(paymentAllocations.paymentId, payment.id),
+      eq(paymentAllocations.state, "active"),
+    ));
+    expect(allocationRows).toHaveLength(5);
+    expect(allocationRows.filter((row) => row.payerBowlerId === scenario.payerBowlerId)).toHaveLength(3);
+    expect(allocationRows.filter((row) => row.payerBowlerId === scenario.partnerBowlerId)).toHaveLength(2);
+    expect(allocationRows.reduce((sum, row) => sum + row.amountMinor, 0)).toBe(5_000);
+    const adjustments = await db.select().from(refundAllocationAdjustments).where(and(
+      eq(refundAllocationAdjustments.organizationId, organizationId),
+      eq(refundAllocationAdjustments.leagueId, scenario.leagueId),
+      eq(refundAllocationAdjustments.refundOperationId, prepared.operation.id),
+      inArray(refundAllocationAdjustments.sourceAllocationId, allocationRows.map((row) => row.id)),
+    ));
+    expect(adjustments).toHaveLength(5);
+    expect([...new Set(adjustments.map((row) => row.sourceAllocationId))].sort()).toEqual(allocationRows.map((row) => row.id).sort());
+    expect(adjustments.every((row) => row.disposition === disposition && row.amountMinor === 1_000)).toBe(true);
+    expect(adjustments.reduce((sum, row) => sum + row.amountMinor, 0)).toBe(5_000);
+
+    const expectedDue = disposition === "still_owed"
+      ? { state: "open", allocatedMinor: 0, grossAllocatedMinor: 1_000, refundedMinor: 1_000, waivedMinor: 0, outstandingMinor: 1_000, stillOwed: true }
+      : { state: "settled", allocatedMinor: 0, grossAllocatedMinor: 1_000, refundedMinor: 1_000, waivedMinor: 1_000, outstandingMinor: 0, stillOwed: false };
+    const payerDue = await readCanonicalDuePastDue({ organizationId, leagueId: scenario.leagueId, payerBowlerId: scenario.payerBowlerId });
+    const partnerDue = await readCanonicalDuePastDue({ organizationId, leagueId: scenario.leagueId, payerBowlerId: scenario.partnerBowlerId });
+    for (const row of allocationRows) {
+      const due = required((row.payerBowlerId === scenario.payerBowlerId ? payerDue : partnerDue).rows.find((candidate) => candidate.id === row.obligationId), "refunded obligation");
+      expect(due).toMatchObject(expectedDue);
+    }
+    const payerHeld = payerDue.rows.filter((row) => row.stillOwed).map((row) => row.id);
+    const partnerHeld = partnerDue.rows.filter((row) => row.stillOwed).map((row) => row.id);
+    expect(payerHeld).toHaveLength(disposition === "still_owed" ? 3 : 0);
+    expect(partnerHeld).toHaveLength(disposition === "still_owed" ? 2 : 0);
+
+    const payerReport = await readCanonicalPaymentReport({ organizationId, leagueId: scenario.leagueId, bowlerId: scenario.payerBowlerId });
+    const partnerReport = await readCanonicalPaymentReport({ organizationId, leagueId: scenario.leagueId, bowlerId: scenario.partnerBowlerId });
+    const expectedWaived = disposition === "waived" ? 5_000 : 0;
+    expect(payerReport.totals).toMatchObject({ grossConfirmedPaidMinor: 5_000, activeAllocatedMinor: 5_000, refundedMinor: 5_000, refundedAllocationMinor: 5_000, waivedMinor: expectedWaived, effectiveAllocatedMinor: 0 });
+    expect(partnerReport.totals).toMatchObject({ grossConfirmedPaidMinor: 2_000, activeAllocatedMinor: 2_000, refundedMinor: 2_000, refundedAllocationMinor: 2_000, waivedMinor: disposition === "waived" ? 2_000 : 0, effectiveAllocatedMinor: 0 });
+
+    const retried = await new RefundPaymentOperationExecutor({
+      leaseOwner: `partner-refund-retry-${disposition}-${suffix}`,
+      getProvider: getProviderMock,
+    }).execute({ organizationId, operationId: prepared.operation.id });
+    expect(retried?.status).toBe("succeeded");
+    expect(provider.refundCalls).toHaveLength(1);
+    const operations = await db.select({ operationType: paymentOperations.operationType }).from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, organizationId),
+      eq(paymentOperations.leagueId, scenario.leagueId),
+    ));
+    expect(operations.filter((row) => row.operationType === "interactive_charge")).toHaveLength(1);
+    expect(operations.filter((row) => row.operationType === "refund")).toHaveLength(1);
+    expect(operations.filter((row) => row.operationType === "standing_autopay_charge")).toHaveLength(0);
   });
 
   it("reserves every recipient atomically when a competing charge races the same oldest obligation", async () => {
