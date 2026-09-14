@@ -47,6 +47,8 @@ import { getNextStandingAutopayWake, recordStandingAutopayPreparationFailure } f
 import { canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
 import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
 import { RefundPaymentOperationExecutor } from "../../server/services/refund-payment-operation-executor";
+import { fifoCandidatesInTransaction, quoteInteractiveObligations, recordCanonicalManualPayment } from "../../server/services/roster-payment-core";
+import { quoteInteractivePartnerPayments } from "../../server/services/interactive-partner-payment";
 
 // This suite deliberately enables only the standing runtime in the isolated
 // test process. It never supplies provider credentials and never calls a
@@ -355,6 +357,54 @@ async function createDoublePayGroup(trigger: Awaited<ReturnType<typeof publishOc
   ]);
   return groupId;
 }
+
+it("uses published pair order for v2, v3, and manual FIFO before the trigger arrives", async () => {
+  const trigger = await publishOccurrence("2039-07-10T19:00:00.000Z");
+  const ordinary = await publishOccurrence("2039-07-17T19:00:00.000Z");
+  const paired = await publishOccurrence("2039-07-24T19:00:00.000Z");
+  await createDoublePayGroup(trigger, paired);
+
+  const candidates = await db.transaction((tx) => fifoCandidatesInTransaction(tx, { organizationId, leagueId, payerBowlerId }));
+  const pairedCandidate = candidates.find((candidate) => candidate.id === paired.obligation.id);
+  expect(pairedCandidate).toMatchObject({
+    effectiveCollectionAt: new Date(trigger.occurrence.startAt).toISOString(),
+    pairedCollectionReady: true,
+  });
+
+  const v2Quote = await quoteInteractiveObligations({
+    organizationId,
+    leagueId,
+    payerBowlerId,
+    amountMinor: 4_000,
+  });
+  const v2Ids = v2Quote.allocations.map((allocation) => allocation.obligationId);
+  expect(v2Ids).toEqual([trigger.obligation.id, paired.obligation.id]);
+  expect(v2Ids).not.toContain(ordinary.obligation.id);
+
+  const v3Quote = await quoteInteractivePartnerPayments({
+    organizationId,
+    leagueId,
+    payerBowlerId,
+    recipients: [{ bowlerId: payerBowlerId, weeks: 2, fullBalance: false }],
+  });
+  expect(v3Quote.allocations.map((allocation) => allocation.obligationId)).toEqual(v2Ids);
+  expect(v3Quote.allocations.map((allocation) => allocation.amountMinor)).toEqual(v2Quote.allocations.map((allocation) => allocation.amountMinor));
+
+  const manual = await recordCanonicalManualPayment({
+    organizationId,
+    leagueId,
+    actorUserId,
+    request: {
+      amountMinor: 4_000,
+      payerBowlerId,
+      type: "cash",
+      idempotencyKey: `published-pair-order-${randomUUID()}`,
+      requestFingerprint: v2Quote.fingerprint,
+    },
+  });
+  expect(manual.records.map((record) => record.allocation.obligationId)).toEqual(v2Ids);
+  expect(manual.records.map((record) => record.allocation.amountMinor)).toEqual(v2Quote.allocations.map((allocation) => allocation.amountMinor));
+});
 
 async function createRefundableCardPayment(obligation: typeof paymentObligations.$inferSelect) {
   const providerPaymentId = `standing-refund-payment-${randomUUID()}`;

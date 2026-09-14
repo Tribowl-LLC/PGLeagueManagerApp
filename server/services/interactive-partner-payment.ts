@@ -87,7 +87,7 @@ async function resolveParticipantsInTransaction(tx: RosterPaymentTransaction, in
   )).where(and(eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true), inArray(bowlers.id, ids))).orderBy(asc(bowlers.id)).for("share");
   const result = [];
   for (const member of members) {
-    const candidates = await fifoCandidatesInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: member.id, now: input.now });
+    const candidates = await fifoCandidatesInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: member.id });
     const payableCandidates = candidates.filter((row) => row.outstandingMinor > 0);
     const remainingMinor = payableCandidates.reduce((sum, row) => sum + row.outstandingMinor, 0);
     const payableOccurrenceCount = new Set(payableCandidates.map((row) => row.occurrenceId)).size;
@@ -163,7 +163,7 @@ export async function quoteInteractivePartnerPayments(input: { organizationId: n
       // Always pass the complete recipient candidate set to FIFO. A scheduled
       // weekly amount can exceed an already-partially-settled oldest week and
       // must spill into the next oldest occurrence.
-      const allocations = allocateAutomaticFifoPayment(subtotal, participant.candidates, resolved.league.paymentMode, now);
+      const allocations = allocateAutomaticFifoPayment(subtotal, participant.candidates);
       const byId = new Map(participant.candidates.map((row) => [row.id, row]));
       const rows = allocations.map((allocation) => {
         const candidate = byId.get(allocation.obligationId);
