@@ -1,9 +1,9 @@
 import { FC, ReactNode, useEffect, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { z } from "zod";
-import { apiRequest, parseRetryAfterSeconds } from "@/lib/queryClient";
-import { getApiErrorCode, getApiErrorStatus } from "@/lib/api-error";
+import { apiRequest, clearCsrfToken, parseRetryAfterSeconds, throwIfResNotOk } from "@/lib/queryClient";
+import { classifyApiError, getApiErrorCode, getApiErrorStatus, getApiRetryDelay, shouldRetryApiQuery } from "@/lib/api-error";
 import {
   DEFAULT_THROTTLE_FALLBACK_SECONDS,
   formatCountdown,
@@ -58,6 +58,38 @@ const registrationStatusSchema = z.object({
 }).passthrough();
 
 type RegistrationStatus = z.infer<typeof registrationStatusSchema>;
+
+type RegistrationStatusResult =
+  | { kind: 'status'; registration: RegistrationStatus }
+  | { kind: 'missing' }
+  | { kind: 'signed-in' };
+
+async function loadRegistrationStatus(signal: AbortSignal): Promise<RegistrationStatusResult> {
+  const response = await fetch('/api/auth/registration/status', { credentials: 'include', signal });
+  if (response.status === 404 || response.status === 401) {
+    const body = await response.clone().json().catch(() => null);
+    const missing = (response.status === 404 && body?.error?.code === 'NOT_FOUND')
+      || (response.status === 401 && body?.error?.code === 'AUTH_REQUIRED');
+    if (missing) {
+      // Completing the email link in another tab clears the anonymous signup
+      // capability. Check the current session before offering signup again.
+      const sessionResponse = await fetch('/api/user', { credentials: 'include', signal });
+      if (sessionResponse.status === 401) {
+        const sessionBody = await sessionResponse.clone().json().catch(() => null);
+        if (sessionBody?.error?.code === 'AUTH_REQUIRED') return { kind: 'missing' };
+      }
+      await throwIfResNotOk(sessionResponse);
+      z.object({
+        success: z.literal(true), data: z.object({ id: z.number().int().positive() }),
+      }).parse(await sessionResponse.json());
+      return { kind: 'signed-in' };
+    }
+  }
+  await throwIfResNotOk(response);
+  const body = await response.json();
+  if (!body.success) throw new Error('Unable to verify registration status.');
+  return { kind: 'status', registration: registrationStatusSchema.parse(body.data) };
+}
 
 type DeliveryPresentation = {
   label: string;
@@ -160,6 +192,7 @@ function expiryLabel(expiresAt: string | null | undefined): string | null {
 
 const RegistrationEmailPage: FC = () => {
   const [, setLocation] = useLocation();
+  const queryClient = useQueryClient();
   const [isVisible, setIsVisible] = useState(
     () => typeof document === "undefined" || document.visibilityState !== "hidden",
   );
@@ -168,23 +201,30 @@ const RegistrationEmailPage: FC = () => {
   const [resendNotice, setResendNotice] = useState<string | null>(null);
   const { isThrottled, remainingSeconds, throttle, clear: clearThrottle } = useThrottleCountdown();
 
-  const statusQuery = useQuery<RegistrationStatus>({
+  const statusQuery = useQuery<RegistrationStatusResult>({
     queryKey: ["/api/auth/registration/status"],
-    queryFn: async () => {
-      const response = await apiRequest<unknown>("/api/auth/registration/status", "GET");
-      if (!response.success) throw new Error(response.error?.message || "Unable to verify registration status.");
-      const parsed = registrationStatusSchema.safeParse(response.data);
-      if (!parsed.success) throw new Error("Unable to verify registration status.");
-      return parsed.data;
-    },
-    retry: false,
+    queryFn: ({ signal }) => loadRegistrationStatus(signal),
+    retry: shouldRetryApiQuery,
+    retryDelay: getApiRetryDelay,
     staleTime: 0,
     refetchOnMount: "always",
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
-    refetchInterval: isVisible ? 30_000 : false,
+    refetchInterval: (query) => isVisible && !forcedMissing
+      && query.state.data?.kind === 'status'
+      && query.state.data.registration.status === 'pending' ? 30_000 : false,
   });
   const refetchStatus = statusQuery.refetch;
+
+  useEffect(() => {
+    if (statusQuery.data?.kind === 'signed-in' && !statusQuery.isFetching && !statusQuery.isError) {
+      // The shared session may now belong to a different account. Let the
+      // root auth boundary choose its destination from a fresh user read.
+      queryClient.clear();
+      clearCsrfToken();
+      setLocation('/', { replace: true });
+    }
+  }, [queryClient, setLocation, statusQuery.data, statusQuery.isError, statusQuery.isFetching]);
 
   useEffect(() => {
     if (statusQuery.data) setForcedMissing(false);
@@ -244,9 +284,8 @@ const RegistrationEmailPage: FC = () => {
     },
   });
 
-  const statusErrorIsMissing = statusQuery.isError && isMissingRegistration(statusQuery.error);
-  const missing = forcedMissing || statusErrorIsMissing;
-  const status = statusQuery.data;
+  const missing = forcedMissing || statusQuery.data?.kind === 'missing';
+  const status = statusQuery.data?.kind === 'status' ? statusQuery.data.registration : undefined;
   const expiry = expiryLabel(status?.expiresAt);
 
   const shell = (content: ReactNode) => (
@@ -259,7 +298,7 @@ const RegistrationEmailPage: FC = () => {
     </ErrorBoundary>
   );
 
-  if (statusQuery.isLoading && !status) {
+  if ((statusQuery.isLoading && !status) || statusQuery.data?.kind === 'signed-in') {
     return shell(<CardContent><PageLoadingState message="Checking your registration…" fullPage={false} /></CardContent>);
   }
 
@@ -284,11 +323,13 @@ const RegistrationEmailPage: FC = () => {
       <>
         <CardHeader className="space-y-2 text-center">
           <CardTitle>Continue registration</CardTitle>
-          <CardDescription>We couldn't verify this sign-up session right now. Try again, sign in, or reset your password. Otherwise, start registration again with the same email address.</CardDescription>
+          <CardDescription>{classifyApiError(statusQuery.error) === 'transport'
+            ? "We couldn't connect to check your registration. Check your internet connection and try again."
+            : "We couldn't verify this sign-up session right now. Try again, sign in, or reset your password. Otherwise, start registration again with the same email address."}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>We couldn't verify your registration</AlertTitle><AlertDescription>Please try again or start a new sign-up.</AlertDescription></Alert>
-          <Button className="w-full" onClick={() => void statusQuery.refetch()} data-testid="button-registration-status-retry">Try again</Button>
+          <Button className="w-full" disabled={statusQuery.isFetching} onClick={() => void statusQuery.refetch()} data-testid="button-registration-status-retry">{statusQuery.isFetching ? 'Checking…' : 'Try again'}</Button>
         </CardContent>
         <CardFooter className="flex flex-col gap-3">
           <Button asChild variant="outline" className="w-full" data-testid="link-registration-sign-in"><Link href="/login">Sign in</Link></Button>
