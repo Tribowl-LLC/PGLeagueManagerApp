@@ -13,7 +13,7 @@ export function LeagueActionCards({
 }) {
   return (
     <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-      <Link href={`/leagues/${leagueId}/teams`} className="block">
+      {(canManageRoster || canManagePayments) && <Link href={`/leagues/${leagueId}/teams`} className="block">
         <Card className="hover:bg-accent transition-colors">
           <CardHeader>
             <div className="flex justify-center mb-2">
@@ -27,7 +27,7 @@ export function LeagueActionCards({
           <CardContent>
           </CardContent>
         </Card>
-      </Link>
+      </Link>}
 
       {canManagePayments && (
         <Link href={`/leagues/${leagueId}/payments/manage`} className="block">

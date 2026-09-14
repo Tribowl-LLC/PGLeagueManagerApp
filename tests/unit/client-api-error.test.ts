@@ -21,7 +21,7 @@ import {
   isSessionExpiredError,
 } from "@/lib/api-error";
 import { logger } from "@/lib/logger";
-import { queryClient, resetSessionExpiryRedirect, throwIfResNotOk } from "@/lib/queryClient";
+import { apiRequest, queryClient, resetSessionExpiryRedirect, throwIfResNotOk } from "@/lib/queryClient";
 import { financialReadErrorMessage } from "@/lib/financial-utils";
 
 afterEach(() => {
@@ -246,5 +246,93 @@ describe("client API error classification", () => {
     })).rejects.toMatchObject({ status: 503 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(captureException).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe("administrator access revalidation", () => {
+  const admin = { id: 9, role: "system_admin", organizationId: 1, locationId: null, bowlerId: null };
+  const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+    status, headers: { "content-type": "application/json" },
+  });
+  const denied = () => json({ error: { message: "Admin access required", code: "ADMIN_REQUIRED" } }, 403);
+
+  it("deduplicates concurrent denials and discards the previous account's data on a session switch", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("window", { location: { pathname: "/admin/deletion-requests", search: "", reload } });
+    queryClient.setQueryData(["/api/user"], { success: true, data: admin });
+    queryClient.setQueryData(["/api/system-admin/deletion-requests"], { data: [{ id: 1 }] });
+    let finish: (response: Response) => void = () => { throw new Error('Request has not started'); };
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    const requests = [throwIfResNotOk(denied()), throwIfResNotOk(denied())];
+    const settled = Promise.allSettled(requests);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    finish(json({ success: true, data: { ...admin, id: 10, role: "user" } }));
+    const results = await settled;
+    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    expect(queryClient.getQueryData(["/api/system-admin/deletion-requests"])).toBeUndefined();
+    expect(queryClient.getQueryData(["/api/user"])).toBeUndefined();
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes an unchanged account without reloading or retrying a forbidden operation", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("window", { location: { reload } });
+    queryClient.setQueryData(["/api/user"], { success: true, data: admin });
+    const fetchMock = vi.fn(async (url: string) => url === '/api/user'
+      ? json({ success: true, data: admin }) : denied());
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(apiRequest('/api/system-admin/deletion-requests', 'GET')).rejects.toMatchObject({ status: 403, code: 'ADMIN_REQUIRED' });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/api/system-admin/deletion-requests', '/api/user']);
+    expect(reload).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it("clears cached data when the current user's role is revoked", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("window", { location: { reload } });
+    queryClient.setQueryData(["/api/user"], { success: true, data: admin });
+    vi.stubGlobal("fetch", vi.fn(async () => json({ success: true, data: { ...admin, role: "user" } })));
+    await expect(throwIfResNotOk(denied())).rejects.toMatchObject({ status: 403 });
+    expect(reload).toHaveBeenCalledOnce();
+    expect(queryClient.getQueryData(["/api/user"])).toBeUndefined();
+  });
+
+  it("keeps the original denial when session revalidation is unavailable", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("window", { location: { reload } });
+    queryClient.setQueryData(["/api/user"], { success: true, data: admin });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("offline")));
+    await expect(throwIfResNotOk(denied())).rejects.toMatchObject({ status: 403, code: "ADMIN_REQUIRED" });
+    expect(reload).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(["/api/user"])).toEqual({ success: true, data: admin });
+  });
+
+  it("redirects an expired session found during access revalidation", async () => {
+    resetSessionExpiryRedirect();
+    const replace = vi.fn();
+    vi.stubGlobal("window", { location: { pathname: "/admin/deletion-requests", search: "", replace } });
+    queryClient.setQueryData(["/api/user"], { success: true, data: admin });
+    vi.stubGlobal("fetch", vi.fn(async () => json({ error: { code: "AUTH_REQUIRED", message: "Authentication required" } }, 401)));
+    await expect(throwIfResNotOk(denied())).rejects.toMatchObject({ status: 403 });
+    expect(replace).toHaveBeenCalledWith('/login?reason=session-expired');
+  });
+
+  it("does not replace a newer login that completes during revalidation", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("window", { location: { reload } });
+    queryClient.setQueryData(["/api/user"], { success: true, data: admin });
+    let finish: (response: Response) => void = () => { throw new Error('Request has not started'); };
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    const request = expect(throwIfResNotOk(denied())).rejects.toMatchObject({ status: 403 });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const newerLogin = { success: true, data: { ...admin, id: 11 } };
+    queryClient.setQueryData(["/api/user"], newerLogin);
+    finish(json({ success: true, data: { ...admin, id: 10, role: "user" } }));
+    await request;
+    expect(reload).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(["/api/user"])).toEqual(newerLogin);
   });
 });
