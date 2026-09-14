@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-non-null-assertion, @typescript-eslint/no-unnecessary-type-assertion */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -39,6 +38,11 @@ import {
 const db = getTestDb();
 const suffix = process.env.VITEST_POOL_ID ?? "0";
 const organizationSlug = `interactive-partner-payment-${suffix}`;
+
+function required<T>(value: T | undefined, label: string): T {
+  if (value === undefined) throw new Error(`${label} fixture row was not created`);
+  return value;
+}
 
 class FakeInteractiveProvider implements PaymentProvider {
   readonly providerName = "square" as const;
@@ -133,14 +137,14 @@ function linkFingerprint(link: { id: number; bowlerAId: number; bowlerBId: numbe
 }
 
 async function createScenario(label: string, occurrenceCount = 1): Promise<Scenario> {
-  const [location] = await db.insert(locations).values({
+  const location = required((await db.insert(locations).values({
     organizationId,
     name: `Partner payment location ${label}`,
-  }).returning({ id: locations.id });
-  const [league] = await db.insert(leagues).values({
+  }).returning({ id: locations.id }))[0], "location");
+  const league = required((await db.insert(leagues).values({
     name: `Partner payment league ${label}`,
     organizationId,
-    locationId: location!.id,
+    locationId: location.id,
     paymentMode: "weekly",
     payingLineupSize: 3,
     substituteAccess: "team_only",
@@ -152,32 +156,32 @@ async function createScenario(label: string, occurrenceCount = 1): Promise<Scena
     seasonEnd: "2039-12-31T23:59:59.000Z",
     weekDay: "Monday",
     timezone: "UTC",
-  }).returning({ id: leagues.id });
-  const [team] = await db.insert(teams).values({ name: `Partner payment team ${label}`, number: 1, leagueId: league!.id }).returning({ id: teams.id });
-  const [payer] = await db.insert(bowlers).values({ name: `Payer ${label}`, email: `payer-${label}@example.test`, organizationId }).returning({ id: bowlers.id });
-  const [partner] = await db.insert(bowlers).values({ name: `Partner ${label}`, organizationId }).returning({ id: bowlers.id });
-  const [pending] = await db.insert(bowlers).values({ name: `Pending ${label}`, organizationId }).returning({ id: bowlers.id });
+  }).returning({ id: leagues.id }))[0], "league");
+  const team = required((await db.insert(teams).values({ name: `Partner payment team ${label}`, number: 1, leagueId: league.id }).returning({ id: teams.id }))[0], "team");
+  const payer = required((await db.insert(bowlers).values({ name: `Payer ${label}`, email: `payer-${label}@example.test`, organizationId }).returning({ id: bowlers.id }))[0], "payer");
+  const partner = required((await db.insert(bowlers).values({ name: `Partner ${label}`, organizationId }).returning({ id: bowlers.id }))[0], "partner");
+  const pending = required((await db.insert(bowlers).values({ name: `Pending ${label}`, organizationId }).returning({ id: bowlers.id }))[0], "pending");
   await db.insert(bowlerLeagues).values([
-    { bowlerId: payer!.id, leagueId: league!.id, teamId: team!.id, active: true },
-    { bowlerId: partner!.id, leagueId: league!.id, teamId: team!.id, active: true },
-    { bowlerId: pending!.id, leagueId: league!.id, teamId: team!.id, active: true },
+    { bowlerId: payer.id, leagueId: league.id, teamId: team.id, active: true },
+    { bowlerId: partner.id, leagueId: league.id, teamId: team.id, active: true },
+    { bowlerId: pending.id, leagueId: league.id, teamId: team.id, active: true },
   ]);
   await db.insert(teamPaymentSlots).values([
-    { organizationId, leagueId: league!.id, teamId: team!.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: payer!.id, recordedByUserId: actorUserId },
-    { organizationId, leagueId: league!.id, teamId: team!.id, slotIndex: 1, lineupSize: 3, occupant: "main", mainBowlerId: partner!.id, recordedByUserId: actorUserId },
-    { organizationId, leagueId: league!.id, teamId: team!.id, slotIndex: 2, lineupSize: 3, occupant: "main", mainBowlerId: pending!.id, recordedByUserId: actorUserId },
+    { organizationId, leagueId: league.id, teamId: team.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: payer.id, recordedByUserId: actorUserId },
+    { organizationId, leagueId: league.id, teamId: team.id, slotIndex: 1, lineupSize: 3, occupant: "main", mainBowlerId: partner.id, recordedByUserId: actorUserId },
+    { organizationId, leagueId: league.id, teamId: team.id, slotIndex: 2, lineupSize: 3, occupant: "main", mainBowlerId: pending.id, recordedByUserId: actorUserId },
   ]);
-  const [acceptedLink] = await db.insert(bowlerPaymentLinks).values({
-    bowlerAId: Math.min(payer!.id, partner!.id),
-    bowlerBId: Math.max(payer!.id, partner!.id),
+  const acceptedLink = required((await db.insert(bowlerPaymentLinks).values({
+    bowlerAId: Math.min(payer.id, partner.id),
+    bowlerBId: Math.max(payer.id, partner.id),
     organizationId,
     status: "accepted",
     createdByUserId: actorUserId,
     respondedAt: "2039-01-01T00:00:00.000Z",
-  }).returning();
+  }).returning())[0], "accepted link");
   await db.insert(bowlerPaymentLinks).values({
-    bowlerAId: Math.min(payer!.id, pending!.id),
-    bowlerBId: Math.max(payer!.id, pending!.id),
+    bowlerAId: Math.min(payer.id, pending.id),
+    bowlerBId: Math.max(payer.id, pending.id),
     organizationId,
     status: "pending",
     createdByUserId: actorUserId,
@@ -191,16 +195,16 @@ async function createScenario(label: string, occurrenceCount = 1): Promise<Scena
     await db.insert(leagueScheduleCommands).values({
       id: commandId,
       organizationId,
-      leagueId: league!.id,
+      leagueId: league.id,
       actorUserId,
       commandType: "publish",
       idempotencyKey: `partner-payment-publish-${suffix}-${occurrenceOrdinal}`,
       requestFingerprint: `partner-payment-fingerprint-${occurrenceOrdinal}`,
     });
-    const [occurrence] = await db.insert(leagueOccurrences).values({
+    const occurrence = required((await db.insert(leagueOccurrences).values({
       organizationId,
-      leagueId: league!.id,
-      locationId: location!.id,
+      leagueId: league.id,
+      locationId: location.id,
       generationKey: `partner-payment-occurrence-${suffix}-${label}-${index}`,
       kind: "regular",
       status: "scheduled",
@@ -219,11 +223,11 @@ async function createScenario(label: string, occurrenceCount = 1): Promise<Scena
       publishedAt: startAt,
       publishedByUserId: actorUserId,
       publicationCommandId: commandId,
-    }).returning({ id: leagueOccurrences.id });
+    }).returning({ id: leagueOccurrences.id }))[0], "occurrence");
     await db.insert(leagueOccurrenceBillingTerms).values({
       organizationId,
-      leagueId: league!.id,
-      occurrenceId: occurrence!.id,
+      leagueId: league.id,
+      occurrenceId: occurrence.id,
       purpose: "league_weekly_fee",
       obligationPolicy: "eligible_bowlers",
       defaultAmountMinor: 1_000,
@@ -237,27 +241,27 @@ async function createScenario(label: string, occurrenceCount = 1): Promise<Scena
     });
     await db.transaction((tx) => materializeRosterPaymentOccurrenceInTransaction(tx, {
       organizationId,
-      leagueId: league!.id,
-      occurrenceId: occurrence!.id,
+      leagueId: league.id,
+      occurrenceId: occurrence.id,
       actorUserId,
     }));
   }
   const rows = await db.select({ payerBowlerId: paymentObligations.payerBowlerId, id: paymentObligations.id })
     .from(paymentObligations)
-    .where(and(eq(paymentObligations.organizationId, organizationId), eq(paymentObligations.leagueId, league!.id)))
+    .where(and(eq(paymentObligations.organizationId, organizationId), eq(paymentObligations.leagueId, league.id)))
     .orderBy(paymentObligations.createdAt);
-  obligations.payer = rows.find((row) => row.payerBowlerId === payer!.id)?.id ?? "";
-  obligations.partner = rows.find((row) => row.payerBowlerId === partner!.id)?.id ?? "";
-  obligations.pending = rows.find((row) => row.payerBowlerId === pending!.id)?.id ?? "";
+  obligations.payer = rows.find((row) => row.payerBowlerId === payer.id)?.id ?? "";
+  obligations.partner = rows.find((row) => row.payerBowlerId === partner.id)?.id ?? "";
+  obligations.pending = rows.find((row) => row.payerBowlerId === pending.id)?.id ?? "";
   return {
-    leagueId: league!.id,
-    locationId: location!.id,
+    leagueId: league.id,
+    locationId: location.id,
     actorUserId,
-    payerBowlerId: payer!.id,
-    partnerBowlerId: partner!.id,
-    pendingBowlerId: pending!.id,
-    acceptedLinkId: acceptedLink!.id,
-    acceptedLinkFingerprint: linkFingerprint(acceptedLink!),
+    payerBowlerId: payer.id,
+    partnerBowlerId: partner.id,
+    pendingBowlerId: pending.id,
+    acceptedLinkId: acceptedLink.id,
+    acceptedLinkFingerprint: linkFingerprint(acceptedLink),
     obligations,
   };
 }
@@ -277,15 +281,15 @@ beforeAll(async () => {
   const [leftover] = await db.select({ id: organizations.id }).from(organizations).where(eq(organizations.slug, organizationSlug));
   if (leftover) await deleteOrganization(leftover.id);
   const [organization] = await db.insert(organizations).values({ name: "Interactive partner payment test", slug: organizationSlug }).returning({ id: organizations.id });
-  organizationId = organization!.id;
-  const [actor] = await db.insert(users).values({
+  organizationId = required(organization, "organization").id;
+  const actor = required((await db.insert(users).values({
     email: `interactive-partner-payment-${suffix}@example.test`,
     password: "deterministic-test-password-hash",
     name: "Interactive partner payment actor",
     role: "org_admin",
     organizationId,
-  }).returning({ id: users.id });
-  actorUserId = actor!.id;
+  }).returning({ id: users.id }))[0], "actor");
+  actorUserId = actor.id;
   provider = new FakeInteractiveProvider(0);
   providersByLocation.set(0, provider);
   getProviderMock.mockImplementation(async (locationId: number | null) => {
@@ -325,8 +329,9 @@ describe("interactive partner payment PostgreSQL boundary", () => {
     expect(provider.processCalls[0]).toMatchObject({ amount: 2_000, sourceId: "cnon:partner-one-parent" });
     const rows = await db.select().from(payments).where(and(eq(payments.organizationId, organizationId), eq(payments.leagueId, scenario.leagueId)));
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ bowlerId: scenario.payerBowlerId, amount: 2_000, providerPaymentId: "square-partner-payment-1" });
-    const allocations = await db.select().from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, organizationId), eq(paymentAllocations.leagueId, scenario.leagueId), eq(paymentAllocations.paymentId, rows[0]!.id), eq(paymentAllocations.state, "active")));
+    const payment = required(rows[0], "payment");
+    expect(payment).toMatchObject({ bowlerId: scenario.payerBowlerId, amount: 2_000, providerPaymentId: "square-partner-payment-1" });
+    const allocations = await db.select().from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, organizationId), eq(paymentAllocations.leagueId, scenario.leagueId), eq(paymentAllocations.paymentId, payment.id), eq(paymentAllocations.state, "active")));
     expect(allocations).toHaveLength(2);
     expect(new Set(allocations.map((row) => row.obligationId)).size).toBe(2);
     expect(allocations.reduce((sum, row) => sum + row.amountMinor, 0)).toBe(2_000);
@@ -340,8 +345,8 @@ describe("interactive partner payment PostgreSQL boundary", () => {
 
     await expectRosterError(quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: scenario.payerBowlerId, recipients: [selection(scenario.pendingBowlerId)] }), "PARTNER_AUTHORIZATION_REQUIRED");
 
-    const [crossLeague] = await db.insert(bowlers).values({ name: "Cross league target", organizationId }).returning({ id: bowlers.id });
-    const [otherLeague] = await db.insert(leagues).values({
+    const crossLeague = required((await db.insert(bowlers).values({ name: "Cross league target", organizationId }).returning({ id: bowlers.id }))[0], "cross-league bowler");
+    const otherLeague = required((await db.insert(leagues).values({
       name: "Cross league only target",
       organizationId,
       locationId: scenario.locationId,
@@ -354,17 +359,17 @@ describe("interactive partner payment PostgreSQL boundary", () => {
       seasonEnd: "2039-12-31T23:59:59.000Z",
       weekDay: "Monday",
       timezone: "UTC",
-    }).returning({ id: leagues.id });
-    const [otherTeam] = await db.insert(teams).values({ name: "Cross league target team", number: 1, leagueId: otherLeague!.id }).returning({ id: teams.id });
-    await db.insert(bowlerLeagues).values({ bowlerId: crossLeague!.id, leagueId: otherLeague!.id, teamId: otherTeam!.id, active: true });
-    await db.insert(bowlerPaymentLinks).values({ bowlerAId: Math.min(scenario.payerBowlerId, crossLeague!.id), bowlerBId: Math.max(scenario.payerBowlerId, crossLeague!.id), organizationId, status: "accepted", createdByUserId: actorUserId, respondedAt: "2039-01-01T00:00:00.000Z" });
-    await expectRosterError(quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: scenario.payerBowlerId, recipients: [selection(crossLeague!.id)] }), "PARTNER_AUTHORIZATION_REQUIRED");
+    }).returning({ id: leagues.id }))[0], "cross-league");
+    const otherTeam = required((await db.insert(teams).values({ name: "Cross league target team", number: 1, leagueId: otherLeague.id }).returning({ id: teams.id }))[0], "cross-league team");
+    await db.insert(bowlerLeagues).values({ bowlerId: crossLeague.id, leagueId: otherLeague.id, teamId: otherTeam.id, active: true });
+    await db.insert(bowlerPaymentLinks).values({ bowlerAId: Math.min(scenario.payerBowlerId, crossLeague.id), bowlerBId: Math.max(scenario.payerBowlerId, crossLeague.id), organizationId, status: "accepted", createdByUserId: actorUserId, respondedAt: "2039-01-01T00:00:00.000Z" });
+    await expectRosterError(quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: scenario.payerBowlerId, recipients: [selection(crossLeague.id)] }), "PARTNER_AUTHORIZATION_REQUIRED");
 
-    const [foreignOrganization] = await db.insert(organizations).values({ name: "Foreign partner target", slug: `interactive-partner-foreign-${suffix}` }).returning({ id: organizations.id });
-    foreignOrganizationIds.push(foreignOrganization!.id);
-    const [foreignBowler] = await db.insert(bowlers).values({ name: "Foreign target", organizationId: foreignOrganization!.id }).returning({ id: bowlers.id });
-    await db.insert(bowlerPaymentLinks).values({ bowlerAId: Math.min(scenario.payerBowlerId, foreignBowler!.id), bowlerBId: Math.max(scenario.payerBowlerId, foreignBowler!.id), organizationId, status: "accepted", createdByUserId: actorUserId, respondedAt: "2039-01-01T00:00:00.000Z" });
-    await expectRosterError(quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: scenario.payerBowlerId, recipients: [selection(foreignBowler!.id)] }), "PARTNER_AUTHORIZATION_REQUIRED");
+    const foreignOrganization = required((await db.insert(organizations).values({ name: "Foreign partner target", slug: `interactive-partner-foreign-${suffix}` }).returning({ id: organizations.id }))[0], "foreign organization");
+    foreignOrganizationIds.push(foreignOrganization.id);
+    const foreignBowler = required((await db.insert(bowlers).values({ name: "Foreign target", organizationId: foreignOrganization.id }).returning({ id: bowlers.id }))[0], "foreign bowler");
+    await db.insert(bowlerPaymentLinks).values({ bowlerAId: Math.min(scenario.payerBowlerId, foreignBowler.id), bowlerBId: Math.max(scenario.payerBowlerId, foreignBowler.id), organizationId, status: "accepted", createdByUserId: actorUserId, respondedAt: "2039-01-01T00:00:00.000Z" });
+    await expectRosterError(quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: scenario.payerBowlerId, recipients: [selection(foreignBowler.id)] }), "PARTNER_AUTHORIZATION_REQUIRED");
   });
 
   it("permits partner-only payment when the payer has no debt and stores no synthetic self evidence", async () => {
@@ -377,8 +382,8 @@ describe("interactive partner payment PostgreSQL boundary", () => {
     expect(quote.partnerEvidence.some((row) => row.role === "self")).toBe(false);
     const result = await chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: scenario.payerBowlerId, request: { recipients, sourceId: "cnon:partner-only", sourceKind: "new_card", idempotencyKey: `partner-only-${suffix}`, requestFingerprint: quote.fingerprint } });
     expect(result.status).toBe("succeeded");
-    const [snapshot] = await db.select({ partnerEvidence: paymentOperationRosterSnapshots.partnerEvidence }).from(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.leagueId, scenario.leagueId));
-    expect(snapshot!.partnerEvidence).toEqual([expect.objectContaining({ recipientBowlerId: scenario.partnerBowlerId, role: "partner" })]);
+    const snapshot = required((await db.select({ partnerEvidence: paymentOperationRosterSnapshots.partnerEvidence }).from(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.leagueId, scenario.leagueId)))[0], "partner snapshot");
+    expect(snapshot.partnerEvidence).toEqual([expect.objectContaining({ recipientBowlerId: scenario.partnerBowlerId, role: "partner" })]);
   });
 
   it("replays the frozen authorized operation after unlink without a second provider charge", async () => {
@@ -398,19 +403,19 @@ describe("interactive partner payment PostgreSQL boundary", () => {
   it("reserves every recipient atomically when a competing charge races the same oldest obligation", async () => {
     const scenario = await createScenario("reservation-race");
     provider = await getProviderMock(scenario.locationId);
-    const [competingPayer] = await db.insert(bowlers).values({ name: "Competing payer", email: "competing-payer@example.test", organizationId }).returning({ id: bowlers.id });
-    const [competingTeam] = await db.insert(teams).values({ name: "Competing payer team", number: 2, leagueId: scenario.leagueId }).returning({ id: teams.id });
-    await db.insert(bowlerLeagues).values({ bowlerId: competingPayer!.id, leagueId: scenario.leagueId, teamId: competingTeam!.id, active: true });
-    await db.insert(teamPaymentSlots).values([0, 1, 2].map((slotIndex) => ({ organizationId, leagueId: scenario.leagueId, teamId: competingTeam!.id, slotIndex, lineupSize: 3, occupant: "vacant" as const, mainBowlerId: null, recordedByUserId: actorUserId })));
-    await db.insert(bowlerPaymentLinks).values({ bowlerAId: Math.min(competingPayer!.id, scenario.partnerBowlerId), bowlerBId: Math.max(competingPayer!.id, scenario.partnerBowlerId), organizationId, status: "accepted", createdByUserId: actorUserId, respondedAt: "2039-01-01T00:00:00.000Z" });
+    const competingPayer = required((await db.insert(bowlers).values({ name: "Competing payer", email: "competing-payer@example.test", organizationId }).returning({ id: bowlers.id }))[0], "competing payer");
+    const competingTeam = required((await db.insert(teams).values({ name: "Competing payer team", number: 2, leagueId: scenario.leagueId }).returning({ id: teams.id }))[0], "competing team");
+    await db.insert(bowlerLeagues).values({ bowlerId: competingPayer.id, leagueId: scenario.leagueId, teamId: competingTeam.id, active: true });
+    await db.insert(teamPaymentSlots).values([0, 1, 2].map((slotIndex) => ({ organizationId, leagueId: scenario.leagueId, teamId: competingTeam.id, slotIndex, lineupSize: 3, occupant: "vacant" as const, mainBowlerId: null, recordedByUserId: actorUserId })));
+    await db.insert(bowlerPaymentLinks).values({ bowlerAId: Math.min(competingPayer.id, scenario.partnerBowlerId), bowlerBId: Math.max(competingPayer.id, scenario.partnerBowlerId), organizationId, status: "accepted", createdByUserId: actorUserId, respondedAt: "2039-01-01T00:00:00.000Z" });
     const firstRecipients = [selection(scenario.payerBowlerId), selection(scenario.partnerBowlerId)];
     const firstQuote = await quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: scenario.payerBowlerId, recipients: firstRecipients });
     const competingRecipients = [selection(scenario.partnerBowlerId)];
-    const competingQuote = await quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: competingPayer!.id, recipients: competingRecipients });
+    const competingQuote = await quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: competingPayer.id, recipients: competingRecipients });
     const release = provider.blockNextProcess();
     const firstCharge = chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: scenario.payerBowlerId, request: { recipients: firstRecipients, sourceId: "cnon:reservation-first", sourceKind: "new_card", idempotencyKey: `reservation-first-${suffix}`, requestFingerprint: firstQuote.fingerprint } });
     await provider.waitForProcessStart();
-    const competing = chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: competingPayer!.id, request: { recipients: competingRecipients, sourceId: "cnon:reservation-competing", sourceKind: "new_card", idempotencyKey: `reservation-competing-${suffix}`, requestFingerprint: competingQuote.fingerprint } });
+    const competing = chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: competingPayer.id, request: { recipients: competingRecipients, sourceId: "cnon:reservation-competing", sourceKind: "new_card", idempotencyKey: `reservation-competing-${suffix}`, requestFingerprint: competingQuote.fingerprint } });
     await expectRosterError(competing, "OBLIGATION_RESERVED");
     const reserved = await db.select({ bowlerId: paymentObligations.payerBowlerId }).from(paymentOperationRosterSnapshotItems).innerJoin(paymentObligations, eq(paymentObligations.id, paymentOperationRosterSnapshotItems.obligationId)).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, scenario.leagueId), eq(paymentOperationRosterSnapshotItems.state, "reserved")));
     expect(reserved.map((row) => row.bowlerId).sort()).toEqual([scenario.payerBowlerId, scenario.partnerBowlerId].sort());
@@ -428,9 +433,9 @@ describe("interactive partner payment PostgreSQL boundary", () => {
     expect(quote.amountMinor).toBe(26_000);
     const result = await chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: scenario.payerBowlerId, request: { recipients, sourceId: "cnon:over-twenty-five", sourceKind: "new_card", idempotencyKey: `over-twenty-five-${suffix}`, requestFingerprint: quote.fingerprint } });
     expect(result.status).toBe("succeeded");
-    const [payment] = await db.select({ id: payments.id, amount: payments.amount }).from(payments).where(and(eq(payments.organizationId, organizationId), eq(payments.leagueId, scenario.leagueId)));
+    const payment = required((await db.select({ id: payments.id, amount: payments.amount }).from(payments).where(and(eq(payments.organizationId, organizationId), eq(payments.leagueId, scenario.leagueId))))[0], "over-25 payment");
     expect(payment).toMatchObject({ amount: 26_000 });
-    const allocations = await db.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, organizationId), eq(paymentAllocations.leagueId, scenario.leagueId), eq(paymentAllocations.paymentId, payment!.id), eq(paymentAllocations.state, "active")));
+    const allocations = await db.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, organizationId), eq(paymentAllocations.leagueId, scenario.leagueId), eq(paymentAllocations.paymentId, payment.id), eq(paymentAllocations.state, "active")));
     expect(allocations).toHaveLength(26);
   });
 });
