@@ -1,4 +1,4 @@
-import { FC, useRef, type CSSProperties, type RefObject } from "react";
+import { FC, useRef, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -9,8 +9,6 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { CreditCard, Loader2, Minus, Plus, Wallet } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import type { SavedCard } from "@shared/schema";
-
-const WALLET_STYLE: CSSProperties = { WebkitAppearance: "none", appearance: "none", backgroundColor: "#000", border: "none", borderRadius: "5px", width: "100%", height: "48px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 };
 
 export interface PaymentRecipientRow {
   bowlerId: number;
@@ -104,7 +102,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
         <CardTitle>One-Time Payment</CardTitle>
         {!fullBalanceOnly && <CardDescription>Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.</CardDescription>}
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent spacing="normal">
         <fieldset className="flex flex-col gap-3" aria-label="Payment recipients">
               <legend className="text-sm font-medium">Who would you like to pay?</legend>
               {recipientRows.map((row) => (
@@ -118,7 +116,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
                       aria-label={`Pay ${row.name}`}
                     />
                     <div className="min-w-0 flex-1">
-                      <Label htmlFor={`payment-recipient-${row.bowlerId}-checkbox`} className="cursor-pointer text-sm font-semibold">
+                      <Label htmlFor={`payment-recipient-${row.bowlerId}-checkbox`} size="sm" weight="semibold" className="cursor-pointer">
                         {row.name}{row.role === "self" ? " (You)" : " (Partner)"}
                       </Label>
                       <div className="mt-1 flex flex-col gap-1 text-xs text-muted-foreground sm:flex-row sm:gap-4">
@@ -177,16 +175,16 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
           )}
         </div>
 
-        {!applePayTokenizeOnly && applePayRef && <div ref={applePayRef} className={applePayAvailable ? "min-h-[48px] overflow-hidden rounded-md bg-black" : undefined} style={applePayAvailable ? undefined : { display: "none" }} />}
-        {applePayAvailable && applePayTokenizeOnly && <button type="button" aria-label="Pay with Apple Pay" onClick={() => void onApplePayClick()} disabled={isWalletProcessing} style={{ ...WALLET_STYLE, opacity: isWalletProcessing ? 0.5 : 1 }}><span className="text-xl font-medium text-white"> Pay</span></button>}
-        {!googlePayTokenizeOnly && googlePayRef && <div ref={googlePayRef} className={googlePayAvailable ? "min-h-[48px] overflow-hidden rounded-md bg-black" : undefined} style={googlePayAvailable ? undefined : { display: "none" }} />}
-        {googlePayAvailable && googlePayTokenizeOnly && <button type="button" aria-label="Pay with Google Pay" onClick={() => void onGooglePayClick()} disabled={isWalletProcessing} style={{ ...WALLET_STYLE, opacity: isWalletProcessing ? 0.5 : 1 }}><span className="text-sm font-medium text-white">Google Pay</span></button>}
+        {!applePayTokenizeOnly && applePayRef && <div ref={applePayRef} className={applePayAvailable ? "min-h-12 overflow-hidden rounded-md bg-black" : "hidden"} />}
+        {applePayAvailable && applePayTokenizeOnly && <button type="button" aria-label="Pay with Apple Pay" onClick={() => void onApplePayClick()} disabled={isWalletProcessing} className="wallet-button h-12 disabled:opacity-50"><span className="text-xl font-medium text-white"> Pay</span></button>}
+        {!googlePayTokenizeOnly && googlePayRef && <div ref={googlePayRef} className={googlePayAvailable ? "min-h-12 overflow-hidden rounded-md bg-black" : "hidden"} />}
+        {googlePayAvailable && googlePayTokenizeOnly && <button type="button" aria-label="Pay with Google Pay" onClick={() => void onGooglePayClick()} disabled={isWalletProcessing} className="wallet-button h-12 disabled:opacity-50"><span className="text-sm font-medium text-white">Google Pay</span></button>}
         {isWalletProcessing && <div className="flex items-center justify-center gap-2 py-2"><Loader2 className="size-4 animate-spin" /><span className="text-sm text-muted-foreground">Processing wallet payment…</span></div>}
         {showWallet && <div className="relative flex items-center gap-4 py-2"><div className="flex-1 border-t" /><span className="text-xs text-muted-foreground">or pay with card</span><div className="flex-1 border-t" /></div>}
 
         {savedCards.length > 0 && <div className="flex gap-2"><Button type="button" variant={cardMode === "saved" ? "default" : "outline"} size="sm" onClick={() => { cleanupCard(); onCardEditorModeChange(null); setCardMode("saved"); }}><Wallet className="mr-2 size-4" />Saved Card</Button><Button type="button" variant={cardMode === "new" ? "default" : "outline"} size="sm" onClick={() => { cleanupCard(); setCardMode("new"); onCardEditorModeChange("one-time"); }}><CreditCard className="mr-2 size-4" />New Card</Button></div>}
-        {cardMode === "saved" && savedCards.length > 0 ? <Select value={selectedSavedCardId} onValueChange={setSelectedSavedCardId}><SelectTrigger><SelectValue placeholder="Select a saved card" /></SelectTrigger><SelectContent>{savedCards.map((card) => <SelectItem key={card.id} value={card.id}>{card.brand} ending in {card.last4} (exp {card.expMonth}/{card.expYear})</SelectItem>)}</SelectContent></Select> : <div className="space-y-3"><span className="text-sm font-medium">Card Details</span><div ref={(element) => cardCallbackRef.current(element)} className="min-h-[80px] rounded-md border p-3" style={cardEditorMode === "one-time" ? undefined : { display: "none" }} /><div className="flex items-center gap-x-3"><Checkbox id="store-card-make-payment" checked={storeCard} onCheckedChange={(checked) => setStoreCard(checked === true)} /><Label htmlFor="store-card-make-payment" className="text-sm cursor-pointer">Save this card for future payments</Label></div></div>}
-        {!bowlerHasEmail && <div className="space-y-2 rounded-md border bg-muted/30 p-3"><Label htmlFor="make-payment-receipt-email" className="text-sm font-medium">Email for receipt <span className="text-destructive">*</span></Label><Input id="make-payment-receipt-email" type="email" placeholder="you@example.com" value={receiptEmail} onChange={(event) => onReceiptEmailChange(event.target.value)} /><p className="text-xs text-muted-foreground">We don't have an email on file for you. Add one to get a Square receipt for this payment.</p></div>}
+        {cardMode === "saved" && savedCards.length > 0 ? <Select value={selectedSavedCardId} onValueChange={setSelectedSavedCardId}><SelectTrigger><SelectValue placeholder="Select a saved card" /></SelectTrigger><SelectContent>{savedCards.map((card) => <SelectItem key={card.id} value={card.id}>{card.brand} ending in {card.last4} (exp {card.expMonth}/{card.expYear})</SelectItem>)}</SelectContent></Select> : <div className="space-y-3"><span className="text-sm font-medium">Card Details</span><div ref={(element) => cardCallbackRef.current(element)} className={cardEditorMode === "one-time" ? "min-h-20 rounded-md border p-3" : "min-h-20 rounded-md border p-3 hidden"} /><div className="flex items-center gap-x-3"><Checkbox id="store-card-make-payment" checked={storeCard} onCheckedChange={(checked) => setStoreCard(checked === true)} /><Label htmlFor="store-card-make-payment" size="sm" className="cursor-pointer">Save this card for future payments</Label></div></div>}
+        {!bowlerHasEmail && <div className="space-y-2 rounded-md border bg-muted/30 p-3"><Label htmlFor="make-payment-receipt-email" size="sm">Email for receipt <span className="text-destructive">*</span></Label><Input id="make-payment-receipt-email" type="email" placeholder="you@example.com" value={receiptEmail} onChange={(event) => onReceiptEmailChange(event.target.value)} /><p className="text-xs text-muted-foreground">We don't have an email on file for you. Add one to get a Square receipt for this payment.</p></div>}
         <Button onClick={onSubmit} disabled={(cardMode === "new" && !isInitialized) || (cardMode === "saved" && !selectedSavedCardId) || isSubmitting || isWalletProcessing || paymentAmountMinor <= 0 || !hasSelectedRecipient || quoteLoading || Boolean(quoteError) || selectionStale || (!bowlerHasEmail && !receiptEmail.trim())} className="w-full">{isSubmitting ? <><Loader2 className="mr-2 size-4 animate-spin" />Processing…</> : <><CreditCard className="mr-2 size-4" />Pay {formatCurrency(paymentAmountMinor)}</>}</Button>
       </CardContent>
     </Card>

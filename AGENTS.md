@@ -331,6 +331,11 @@ Tenant isolation is a security boundary, not merely a filtering convention.
   authorization.
 - Avoid duplicating server-derived business rules in the client when the
   server can remain authoritative.
+- Run the uncached `npm run lint` after changing shared components, variants,
+  theme values, or dependencies. See `docs/lint.md` for design-system rules.
+- Use typed component variants and declared theme tokens for appearance changes;
+  keep call-site classes for layout. Do not add broad design-rule exceptions or
+  a new suppression baseline to silence existing findings.
 - Verify responsive behavior for affected screens.
 - Treat payment and refund confirmation flows as high-risk user interactions.
 

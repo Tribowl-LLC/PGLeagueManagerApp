@@ -1,7 +1,7 @@
 # Lint
 
 This project uses ESLint to catch silent type-escape hatches. The
-configuration lives in `eslint.config.js` (flat config, ESLint 9).
+configuration lives in `eslint.config.js` (flat config, ESLint 10).
 
 Five rules carry the contract — together they cover the ladder of
 ways code can hide an unsafe type from the checker without leaving an
@@ -41,38 +41,73 @@ the checker cannot infer also fails `npm run check`.
 
 `no-unnecessary-type-assertion` needs the type checker, so the TS/TSX
 block in `eslint.config.js` enables typescript-eslint's modern
-`projectService` parser option. `scripts/*.ts` files are not part of
-`tsconfig.json`'s include set; they fall back to a default inferred
-program via `allowDefaultProject`.
+`projectService` parser option. `scripts/*.ts` files are included in `tsconfig.json`, so the same
+Project Service handles application code, scripts, and tests.
 
 ## Running
 
 ```bash
-npm run lint
-# or, equivalently:
-npx eslint . --cache --cache-location .eslintcache
+npm run lint          # authoritative, uncached check
+npm run lint:cached   # optional faster iteration
 ```
 
-The normal command uses ESLint's local result cache, which is ignored by Git.
-This makes repeat runs and targeted follow-up work much faster while keeping
-the same type-aware rules and diagnostics. A clean uncached run is available
-when needed:
+The authoritative command does not cache ESLint results. Design-system rules
+read shared components, variants, and theme CSS: changing one of those files can
+change findings in consumers whose own source did not change. Use the uncached
+command before handing off work and after changing shared styling or dependencies.
+The optional cached command is for local iteration only.
 
-```bash
-npm run lint -- --no-cache
-```
+The type-aware check can take several minutes. A nonzero exit code means a lint
+error remains; existing reviewed TypeScript suppressions retain their own ratchet.
 
-The first clean or type-aware run can take several minutes on a developer
-machine. Use a local command timeout of at least five minutes; CI allows ten
-minutes for the combined type-check and lint job. Exit code is non-zero on any
-new violation.
+## Design-system rules
+
+`@shadcn/lint` checks `client/src/**/*.{ts,tsx}` alongside the existing correctness
+rules. All six rules are errors, with no design-system suppression baseline:
+
+- `no-restyle`: shared components own their appearance. Use their typed variants
+  and sizes; call-site `className` controls layout.
+- `no-raw-colors`: use declared theme colors, including inside shared components.
+- `no-arbitrary-values`: use exact scale values or named design tokens.
+- `no-inline-styles`: use classes, with CSS custom properties for dynamic values.
+- `no-unknown-classes`: classes must exist in the actual Tailwind build.
+- `require-static-classes`: pass complete, statically readable class strings to
+  shared components. Conditional choices between complete strings are supported.
+
+Shared implementations under `client/src/components/ui` are exempt from
+`no-restyle`, `no-arbitrary-values`, and `require-static-classes`, because they
+implement component appearance and compose variant functions. Color, inline-style,
+and unknown-class rules still apply there. This boundary is not an invitation to
+move page code into the UI directory to evade a rule.
+
+The theme lives in `client/src/index.css`; UI components resolve through the
+existing `@/components/ui`, `@components/ui`, and `@ui` imports. Purpose-based tone
+scales preserve existing status and navigation colors. A redesign should update
+these tokens and shared variants deliberately, with browser verification; the
+linter does not freeze the current design.
+
+Do not replace a value with a merely nearby color or size to silence a diagnostic.
+Use the exact existing value when adding a token or variant. Keep light/dark states,
+responsive modifiers, focus/hover behavior, and payment-provider branding intact.
+Do not bypass component contracts with parent selectors, opaque class helpers,
+raw CSS-variable aliases, or broad lint exceptions.
+
+A narrowly justified provider or external-stylesheet exception must identify the
+component/class/property and why normal tokens or variants cannot express it.
+Never blanket-disable rules for a payment page, allow whole palettes, or grow the
+existing suppression baseline. Unresolved component/theme discovery warnings are
+verification failures, even if ESLint exits successfully using fallback analysis.
+
+The linter complements browser and interaction tests; it cannot verify visual
+parity, contrast, application behavior, arbitrary parent selectors, or plain CSS.
+See the [upstream rules](https://github.com/shadcn-ui/lint/blob/main/docs/rules.md)
+and [analysis limits](https://github.com/shadcn-ui/lint/blob/main/docs/how-it-works.md).
 
 ## CI integration
 
 Lint is **enforced** in CI. The `check-and-lint` job in
 `.github/workflows/ci.yml` runs `npm run check` followed by
-`npm run lint` on every pull request to `main` (and on every push
-to `main`); the build fails on a non-zero exit code from either
+`npm run lint` on every pull request to `main`; the build fails on a non-zero exit code from either
 step.
 
 The vitest suite (which includes the eslint-suppressions ratchet's

@@ -1,23 +1,5 @@
-import { type CSSProperties, type RefObject } from "react";
+import { type RefObject } from "react";
 import { Loader2 } from "lucide-react";
-
-// Apple Pay button uses pure black (#000) by brand requirement. Hoisted to
-// module scope so the exhaustive style object isn't reallocated per render;
-// the dynamic `height` / `opacity` are merged in at the call site.
-const APPLE_PAY_BUTTON_BASE_STYLE: CSSProperties = {
-  WebkitAppearance: "none",
-  appearance: "none",
-  backgroundColor: "#000",
-  border: "none",
-  borderRadius: "5px",
-  width: "100%",
-  cursor: "pointer",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  gap: "2px",
-  padding: 0,
-};
 
 // The admin record-payment dialog and the bowler setup card input render the
 // same wallet buttons with slightly different sizing. Capture only those
@@ -26,34 +8,31 @@ const APPLE_PAY_BUTTON_BASE_STYLE: CSSProperties = {
 interface WalletVariantConfig {
   /** className applied to the always-mounted Apple Pay div when available. */
   applePayContainerClassName: string;
-  /** Height (px) of the tokenize-only fallback Apple Pay <button>. */
-  applePayButtonHeight: number;
+  /** Height class of the tokenize-only fallback Apple Pay <button>. */
+  applePayButtonClassName: string;
   applePaySvgWidth: number;
   applePaySvgHeight: number;
-  applePayFontSize: number;
+  applePayLabelClassName: string;
   /** className applied to the always-mounted Google Pay div when available. */
   googlePayContainerClassName: string;
-  /** Inline style for the Google Pay div when available (admin pins size). */
-  googlePayContainerStyle?: CSSProperties;
 }
 
 const VARIANTS: Record<"admin" | "bowler", WalletVariantConfig> = {
   admin: {
-    applePayContainerClassName: "min-h-[40px]",
-    applePayButtonHeight: 44,
+    applePayContainerClassName: "min-h-10",
+    applePayButtonClassName: "h-11",
     applePaySvgWidth: 17,
     applePaySvgHeight: 21,
-    applePayFontSize: 20,
-    googlePayContainerClassName: "w-full",
-    googlePayContainerStyle: { width: "100%", height: "44px" },
+    applePayLabelClassName: "wallet-label-admin",
+    googlePayContainerClassName: "w-full h-11",
   },
   bowler: {
-    applePayContainerClassName: "min-h-[48px] cursor-pointer",
-    applePayButtonHeight: 48,
+    applePayContainerClassName: "min-h-12 cursor-pointer",
+    applePayButtonClassName: "h-12",
     applePaySvgWidth: 19,
     applePaySvgHeight: 24,
-    applePayFontSize: 22,
-    googlePayContainerClassName: "min-h-[48px] cursor-pointer",
+    applePayLabelClassName: "wallet-label-bowler",
+    googlePayContainerClassName: "min-h-12 cursor-pointer",
   },
 };
 
@@ -106,8 +85,7 @@ export function WalletPaymentButtons({
           tabIndex={0}
           aria-label="Pay with Apple Pay"
           data-testid="wallet-apple-pay"
-          className={applePayAvailable ? cfg.applePayContainerClassName : undefined}
-          style={applePayAvailable ? undefined : { display: "none" }}
+          className={applePayAvailable ? cfg.applePayContainerClassName : "hidden"}
           onClick={applePayAvailable ? onApplePayClick : undefined}
           onKeyDown={
             applePayAvailable
@@ -127,31 +105,20 @@ export function WalletPaymentButtons({
           data-testid="wallet-apple-pay-tokenize"
           onClick={onApplePayClick}
           disabled={isWalletProcessing}
-          style={{
-            ...APPLE_PAY_BUTTON_BASE_STYLE,
-            height: `${cfg.applePayButtonHeight}px`,
-            opacity: isWalletProcessing ? 0.5 : 1,
-          }}
+          className={`wallet-button gap-0.5 disabled:opacity-50 ${cfg.applePayButtonClassName}`}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
             width={cfg.applePaySvgWidth}
             height={cfg.applePaySvgHeight}
             viewBox="0 0 17 20"
-            fill="white"
-            style={{ position: "relative", top: "-1px" }}
+            fill="currentColor"
+            className="relative -top-px text-white"
           >
             <path d="M13.55 10.63a4.27 4.27 0 0 1 2.04-3.59 4.4 4.4 0 0 0-3.46-1.87c-1.46-.15-2.88.87-3.63.87s-1.91-.85-3.15-.83a4.65 4.65 0 0 0-3.91 2.38c-1.68 2.91-.43 7.2 1.19 9.56.8 1.15 1.74 2.44 2.98 2.4 1.2-.05 1.65-.77 3.1-.77s1.86.77 3.12.74c1.29-.02 2.1-1.16 2.88-2.32a10.4 10.4 0 0 0 1.31-2.69 4.13 4.13 0 0 1-2.47-3.88zM11.17 3.46A4.17 4.17 0 0 0 12.14 0a4.25 4.25 0 0 0-2.75 1.42 3.98 3.98 0 0 0-1 2.89 3.52 3.52 0 0 0 2.78-0.85z" />
           </svg>
           <span
-            style={{
-              color: "#fff",
-              fontFamily:
-                '-apple-system, "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif',
-              fontSize: `${cfg.applePayFontSize}px`,
-              fontWeight: 400,
-              letterSpacing: "0.4px",
-            }}
+            className={`wallet-label ${cfg.applePayLabelClassName}`}
           >
             Pay
           </span>
@@ -165,12 +132,7 @@ export function WalletPaymentButtons({
           tabIndex={0}
           aria-label="Pay with Google Pay"
           data-testid="wallet-google-pay"
-          className={googlePayAvailable ? cfg.googlePayContainerClassName : undefined}
-          style={
-            googlePayAvailable
-              ? cfg.googlePayContainerStyle
-              : { display: "none" }
-          }
+          className={googlePayAvailable ? cfg.googlePayContainerClassName : "hidden"}
           onClick={googlePayAvailable ? onGooglePayClick : undefined}
           onKeyDown={
             googlePayAvailable

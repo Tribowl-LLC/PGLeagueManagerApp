@@ -55,15 +55,15 @@ describe('<WalletPaymentButtons /> (#761)', () => {
     expect(google).toBeInTheDocument();
 
     // ...but they're hidden until the *Available flag flips.
-    expect(apple).toHaveStyle({ display: 'none' });
-    expect(google).toHaveStyle({ display: 'none' });
+    expect(apple).toHaveClass('hidden');
+    expect(google).toHaveClass('hidden');
   });
 
   it('reveals the attach nodes once the wallets are available', () => {
     renderButtons({ applePayAvailable: true, googlePayAvailable: true });
 
-    expect(screen.getByTestId('wallet-apple-pay')).not.toHaveStyle({ display: 'none' });
-    expect(screen.getByTestId('wallet-google-pay')).not.toHaveStyle({ display: 'none' });
+    expect(screen.getByTestId('wallet-apple-pay')).not.toHaveClass('hidden');
+    expect(screen.getByTestId('wallet-google-pay')).not.toHaveClass('hidden');
   });
 
   it('invokes the handlers on click and on Enter/Space only when available', async () => {
