@@ -287,35 +287,39 @@ async function prepareUnresolvedPartnerOperation(
     payerBowlerId: scenario.payerBowlerId,
     recipients,
   });
-  const operation = await prepareInteractivePartnerPaymentOperation({
-    organizationId,
-    authorizingUserId: actorUserId,
-    requestKey: `unresolved-partner-${suffix}-${randomUUID()}`,
-    amountMinor: quote.amountMinor,
-    currency: quote.currency,
-    providerName: "square",
-    leagueId: scenario.leagueId,
-    locationId: scenario.locationId,
-    providerLocationId: null,
-    payerBowlerId: scenario.payerBowlerId,
-    sourceId: "cnon:unresolved-partner",
-    customerId: null,
-    buyerEmail: `payer-${scenario.leagueId}@example.test`,
-    storeCard: false,
-    sourceKind: "new_card",
-    allocations: quote.allocations.map((allocation) => ({ ...allocation, paidByUserId: actorUserId })),
-    partnerEvidence: quote.partnerEvidence,
-    quoteFingerprint: quote.fingerprint,
+  const operation = await db.transaction(async (tx) => {
+    const operation = await prepareInteractivePartnerPaymentOperation({
+      organizationId,
+      authorizingUserId: actorUserId,
+      requestKey: `unresolved-partner-${suffix}-${randomUUID()}`,
+      amountMinor: quote.amountMinor,
+      currency: quote.currency,
+      providerName: "square",
+      leagueId: scenario.leagueId,
+      locationId: scenario.locationId,
+      providerLocationId: null,
+      payerBowlerId: scenario.payerBowlerId,
+      sourceId: "cnon:unresolved-partner",
+      customerId: null,
+      buyerEmail: `payer-${scenario.leagueId}@example.test`,
+      storeCard: false,
+      sourceKind: "new_card",
+      allocations: quote.allocations.map((allocation) => ({ ...allocation, paidByUserId: actorUserId })),
+      partnerEvidence: quote.partnerEvidence,
+      quoteFingerprint: quote.fingerprint,
+      transaction: tx,
+    });
+    await tx.insert(paymentOperationRosterSnapshotItems).values(quote.allocations.map((allocation) => ({
+      operationId: operation.id,
+      organizationId,
+      leagueId: scenario.leagueId,
+      obligationId: allocation.obligationId,
+      allocationIndex: allocation.allocationIndex,
+      amountMinor: allocation.amountMinor,
+      state: "reserved" as const,
+    })));
+    return operation;
   });
-  await db.insert(paymentOperationRosterSnapshotItems).values(quote.allocations.map((allocation) => ({
-    operationId: operation.id,
-    organizationId,
-    leagueId: scenario.leagueId,
-    obligationId: allocation.obligationId,
-    allocationIndex: allocation.allocationIndex,
-    amountMinor: allocation.amountMinor,
-    state: "reserved" as const,
-  })));
   return { quote, operation };
 }
 
@@ -458,7 +462,7 @@ describe("interactive partner payment PostgreSQL boundary", () => {
         recipients,
         sourceId: "cnon:report-scope",
         sourceKind: "new_card",
-        idempotencyKey: `report-scope-${suffix}`,
+        idempotencyKey: `interactive-report-scope-${suffix}`,
         requestFingerprint: quote.fingerprint,
       },
     });
