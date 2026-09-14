@@ -394,12 +394,12 @@ export default function SetPasswordPage() {
       <div className="min-h-screen flex items-center justify-center bg-background p-4" data-testid={`state-set-password-${state.kind}`}>
         <Card className="w-full max-w-md">
           <CardHeader className="text-center">
-            <CardTitle className="text-2xl">
+            <CardTitle size="2xl">
               {isTemporary ? 'Temporarily unavailable' : isThrottledValidation ? 'Too many attempts' : isTerminal ? (state.kind === 'used' ? 'Link already used' : 'This link is no longer available') : 'Password link'}
             </CardTitle>
             <CardDescription>{stateMessage}</CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col items-center gap-3">
+          <CardContent gap="3" className="flex flex-col items-center">
             {(isTemporary || isThrottledValidation) && retryButton}
             {!isTemporary && !isThrottledValidation && (
               <Button onClick={() => setLocation('/login')}>Go to Login</Button>
@@ -423,7 +423,7 @@ export default function SetPasswordPage() {
       <div className="min-h-screen flex items-center justify-center bg-background p-4" data-testid={`state-set-password-${formStateKind}`}>
         <Card className="w-full max-w-md">
           <CardHeader className="text-center">
-            <CardTitle className="text-2xl">
+            <CardTitle size="2xl">
               {action === 'password_reset'
                 ? 'Reset Your Password'
                 : action === 'account_registration'

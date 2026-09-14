@@ -13,7 +13,6 @@ import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { clearProviderConfigCache } from "@/hooks/use-payment-provider";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { cn } from "@/lib/utils";
 import { refreshSquarePaymentConfiguration } from "@/lib/square";
 
 interface SquareLocationConfig {
@@ -93,12 +92,12 @@ function SquareConfigForm({ location }: { location: Location }) {
         {isLoading ? (
           <div className="h-5 w-24 bg-muted animate-pulse rounded-full" />
         ) : isConfigured ? (
-          <Badge className="bg-green-100 text-green-700 border-green-200">
+          <Badge tone="positive">
             <CheckCircle2 className="size-3 mr-1" />
             Configured
           </Badge>
         ) : isPartial ? (
-          <Badge className="bg-amber-100 text-amber-800 border-amber-200" data-testid="badge-square-partial">
+          <Badge tone="warning" data-testid="badge-square-partial">
             <AlertTriangle className="size-3 mr-1" />
             Partial setup
           </Badge>
@@ -119,7 +118,7 @@ function SquareConfigForm({ location }: { location: Location }) {
       </div>
 
       {!isLoading && isPartial && !expanded && (
-        <p className="text-xs text-amber-700" data-testid="text-square-missing-fields">
+        <p className="text-xs text-warning-700" data-testid="text-square-missing-fields">
           Missing: {missingFields.map((field) => SQUARE_FIELD_LABELS[field]).join(', ')}.
           Card payments will be unavailable until every field is filled in.
         </p>
@@ -132,7 +131,7 @@ function SquareConfigForm({ location }: { location: Location }) {
           </p>
 
           {isPartial && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800" data-testid="alert-square-missing-fields-form">
+            <div className="rounded-md border border-warning-200 bg-warning-50 p-3 text-sm text-warning-800" data-testid="alert-square-missing-fields-form">
               <div className="flex items-start gap-2">
                 <AlertTriangle className="size-4 mt-0.5 shrink-0" />
                 <div>
@@ -165,7 +164,7 @@ function SquareConfigForm({ location }: { location: Location }) {
                 placeholder={config?.accessTokenConfigured ? "Configured — enter a new token to replace" : "EAAAEv..."}
                 value={accessToken}
                 onChange={(event) => setAccessToken(event.target.value)}
-                className="pr-10"
+                trailing="md"
               />
               <button
                 type="button"
@@ -219,18 +218,19 @@ function PaymentLocationCard({ location, highlighted }: { location: Location; hi
       ref={cardRef}
       data-testid={`payment-location-card-${location.id}`}
       data-highlighted={highlighted ? 'true' : undefined}
-      className={cn('transition-shadow', showRing && 'ring-2 ring-primary ring-offset-2')}
+      interaction="shadow"
+      selected={showRing}
     >
-      <CardHeader className="pb-3">
+      <CardHeader padding="normal">
         <div className="flex items-center gap-3">
           <div className="size-10 rounded-lg flex items-center justify-center shrink-0 bg-black">
             <SiSquare className="size-5 text-white" />
           </div>
-          <CardTitle className="text-base">{location.name}</CardTitle>
+          <CardTitle size="base">{location.name}</CardTitle>
         </div>
       </CardHeader>
       <Separator />
-      <CardContent className="pt-4"><SquareConfigForm location={location} /></CardContent>
+      <CardContent padding="top"><SquareConfigForm location={location} /></CardContent>
     </Card>
   );
 }
@@ -256,7 +256,7 @@ export function SquareSection({ orgId, highlightLocationId = null }: SquareSecti
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3 mb-1">
-        <div className="size-10 rounded-lg bg-gradient-to-br from-black to-blue-600 flex items-center justify-center shrink-0">
+        <div className="size-10 rounded-lg bg-gradient-to-br from-black to-info-600 flex items-center justify-center shrink-0">
           <SiSquare className="size-5 text-white" />
         </div>
         <div>
@@ -267,10 +267,10 @@ export function SquareSection({ orgId, highlightLocationId = null }: SquareSecti
 
       {isLoading ? (
         <div className="space-y-3">
-          {[1, 2].map((item) => <Card key={item}><CardHeader className="h-20 animate-pulse" /></Card>)}
+          {[1, 2].map((item) => <Card key={item}><CardHeader className="h-20" loading /></Card>)}
         </div>
       ) : locations.length === 0 ? (
-        <Card><CardContent className="pt-4"><p className="text-sm text-muted-foreground">No active locations found for this organization. Add a location first to configure payment processing.</p></CardContent></Card>
+        <Card><CardContent padding="top"><p className="text-sm text-muted-foreground">No active locations found for this organization. Add a location first to configure payment processing.</p></CardContent></Card>
       ) : (
         <div className="space-y-3">
           {locations.map((location) => (

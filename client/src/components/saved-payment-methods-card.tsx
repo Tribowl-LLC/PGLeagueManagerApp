@@ -76,8 +76,8 @@ export function SavedPaymentMethodsCard({ bowlerId, locationId }: SavedPaymentMe
   return (
     <>
       <Card>
-        <CardHeader className="pb-4">
-          <CardTitle className="flex items-center gap-2">
+      <CardHeader padding="standard">
+        <CardTitle iconSpacing>
             <CreditCard className="size-5" />
             Saved Payment Methods
           </CardTitle>
@@ -105,9 +105,8 @@ export function SavedPaymentMethodsCard({ bowlerId, locationId }: SavedPaymentMe
                     </div>
                   </div>
                   <Button
-                    variant="ghost"
+                    variant="destructiveGhost"
                     size="sm"
-                    className="text-destructive hover:text-destructive hover:bg-destructive/10"
                     onClick={() => setCardToDelete(card)}
                     disabled={isDeleting}
                   >
@@ -133,7 +132,7 @@ export function SavedPaymentMethodsCard({ bowlerId, locationId }: SavedPaymentMe
             <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               disabled={isDeleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              variant="destructive"
               onClick={() => { if (cardToDelete) handleDelete(cardToDelete); }}
             >
               {isDeleting ? (

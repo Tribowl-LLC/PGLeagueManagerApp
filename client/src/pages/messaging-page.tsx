@@ -19,7 +19,7 @@ function StatusBadge({ connected }: { connected: boolean }) {
   return (
     <Badge
       variant={connected ? "default" : "outline"}
-      className={connected ? "bg-emerald-500 hover:bg-emerald-600" : ""}
+      tone={connected ? "successSolid" : undefined}
       data-testid={connected ? "badge-connected" : "badge-not-connected"}
     >
       {connected ? "Connected" : "Not connected"}
@@ -67,7 +67,7 @@ function MessagingContent() {
     <>
       <div className="mb-6">
         <div className="flex items-center gap-3 mb-2">
-          <div className="size-10 rounded-lg bg-indigo-500 flex items-center justify-center">
+          <div className="size-10 rounded-lg bg-brand-accent-500 flex items-center justify-center">
             <MessageSquare className="text-white size-5" />
           </div>
           <div>
@@ -99,21 +99,21 @@ function MessagingContent() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="size-10 rounded-lg bg-slate-900 flex items-center justify-center">
+                <div className="size-10 rounded-lg bg-navigation-900 flex items-center justify-center">
                   <CreditCard className="text-white size-5" />
                 </div>
-                <CardTitle className="text-base">Square Marketing</CardTitle>
+                <CardTitle size="base">Square Marketing</CardTitle>
               </div>
               <StatusBadge connected={squareConnected} />
             </div>
           </CardHeader>
-          <CardContent className="text-sm space-y-4">
+          <CardContent size="sm" spacing="normal">
             <p className="text-muted-foreground">
               When you assign a bowler to a league, we automatically tag their
               Square customer record with two filters you can use to build
               Smart Lists in Square Marketing.
             </p>
-            <div className="rounded-md border bg-slate-50 p-4 space-y-2">
+            <div className="rounded-md border bg-navigation-50 p-4 space-y-2">
               <div className="flex items-baseline gap-2">
                 <span className="font-mono text-xs bg-white border px-1.5 py-0.5 rounded">
                   League Name
@@ -154,7 +154,7 @@ function MessagingContent() {
                 href="https://app.squareup.com/dashboard/customers/directory"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-indigo-600 hover:text-indigo-700 font-medium"
+                className="inline-flex items-center gap-1.5 text-brand-accent-600 hover:text-brand-accent-700 font-medium"
                 data-testid="link-square-dashboard"
               >
                 Open Square Dashboard

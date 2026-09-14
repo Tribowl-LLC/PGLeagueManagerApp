@@ -77,11 +77,11 @@ const DeleteAccountPage: FC = () => {
     return (
       <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
         <Card className="w-full max-w-md mt-4 sm:mt-0">
-          <CardHeader className="text-center space-y-2">
+          <CardHeader spacing="relaxed" className="text-center">
             <div className="flex justify-center">
-              <CheckCircle className="size-12 text-green-500" />
+              <CheckCircle className="size-12 text-success-500" />
             </div>
-            <CardTitle className="text-xl">Request Received</CardTitle>
+            <CardTitle size="xl">Request Received</CardTitle>
             <CardDescription>
               Your account deletion request has been submitted. If an account exists with the provided email, we will process your request within 30 days.{" "}
               {notifyOnCompletion
@@ -102,14 +102,14 @@ const DeleteAccountPage: FC = () => {
   return (
     <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
       <Card className="w-full max-w-md mt-4 sm:mt-0">
-        <CardHeader className="space-y-1 pb-4">
+        <CardHeader spacing="tight" padding="standard">
           <div className="flex items-center gap-2 mb-2">
-            <Button variant="ghost" size="sm" className="gap-1" onClick={handleBack}>
+            <Button variant="ghost" size="sm" spacing="tight" onClick={handleBack}>
               <ArrowLeft className="size-4" />
               Back
             </Button>
           </div>
-          <CardTitle className="text-xl font-bold flex items-center gap-2">
+          <CardTitle size="xl" weight="bold" iconSpacing>
             <Trash2 className="size-5 text-destructive" />
             Request Account Deletion
           </CardTitle>
@@ -166,7 +166,7 @@ const DeleteAccountPage: FC = () => {
               <div className="space-y-1">
                 <Label
                   htmlFor="notify-on-completion"
-                  className="font-medium cursor-pointer"
+                  className="cursor-pointer"
                 >
                   Email me a confirmation when my data is deleted
                 </Label>

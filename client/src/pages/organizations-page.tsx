@@ -147,7 +147,7 @@ export default function OrganizationsPage() {
               </div>
               {archivedCount > 0 && (
                 <div className="flex items-center gap-2">
-                  <Label htmlFor="show-archived" className="text-sm text-muted-foreground cursor-pointer">
+                  <Label htmlFor="show-archived" size="sm" tone="muted" className="cursor-pointer">
                     Show archived ({archivedCount})
                   </Label>
                   <Switch
@@ -159,7 +159,7 @@ export default function OrganizationsPage() {
               )}
             </div>
           </CardHeader>
-          <CardContent className="px-0 sm:px-6">
+          <CardContent padding="horizontalResponsive">
             <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -181,8 +181,8 @@ export default function OrganizationsPage() {
                   </TableRow>
                 ) : (
                   organizations.map((org: Organization) => (
-                    <TableRow key={org.id} className={org.active === false ? 'opacity-60' : ''}>
-                      <TableCell className="font-medium">
+                    <TableRow key={org.id} state={org.active === false ? "muted" : "default"}>
+                      <TableCell weight="medium">
                         {org.active !== false ? (
                           <button type="button"
                             className="inline-flex items-center gap-1.5 text-left hover:text-primary hover:underline transition-colors cursor-pointer"

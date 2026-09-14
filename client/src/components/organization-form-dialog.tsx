@@ -11,7 +11,7 @@ interface OrganizationFormDialogProps {
 export function OrganizationFormDialog({ open, onClose, editOrg }: OrganizationFormDialogProps) {
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
-      <DialogContent className="sm:max-w-[525px] max-h-[90vh] overflow-y-auto">
+      <DialogContent viewport="dialog" className="sm:max-w-131.25 overflow-y-auto">
         {/* Keying by edit-target id resets the inner form when the dialog
             switches which org it edits. DialogContent unmounts on close,
             so the body also re-initializes fresh from props on each open. */}

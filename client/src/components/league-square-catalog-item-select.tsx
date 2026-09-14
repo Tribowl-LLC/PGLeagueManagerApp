@@ -49,18 +49,20 @@ export function LeagueSquareCatalogItemSelect({
 }: LeagueSquareCatalogItemSelectProps) {
   return (
     <FormItem>
-      <FormLabel className="flex items-center gap-2">
-        <span>{label}</span>
-        {missingFromCatalog && (
-          <output
-            className="inline-flex items-center gap-1 rounded-md bg-destructive/10 px-1.5 py-0.5 text-xs font-medium text-destructive"
-            title="This item is no longer in your Square catalog. Re-pick a live item before bowlers check out."
-            data-testid={missingTestId}
-          >
-            <AlertTriangle className="size-3" aria-hidden="true" />
-            Not in Square catalog
-          </output>
-        )}
+      <FormLabel>
+        <span className="flex items-center gap-2">
+          <span>{label}</span>
+          {missingFromCatalog && (
+            <output
+              className="inline-flex items-center gap-1 rounded-md bg-destructive/10 px-1.5 py-0.5 text-xs font-medium text-destructive"
+              title="This item is no longer in your Square catalog. Re-pick a live item before bowlers check out."
+              data-testid={missingTestId}
+            >
+              <AlertTriangle className="size-3" aria-hidden="true" />
+              Not in Square catalog
+            </output>
+          )}
+        </span>
       </FormLabel>
       <Select
         value={

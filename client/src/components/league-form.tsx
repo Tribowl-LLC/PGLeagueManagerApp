@@ -202,8 +202,8 @@ export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }:
   return (
     <>
       <Dialog open={open} onOpenChange={onClose}>
-        <DialogContent className="max-h-[90vh] flex flex-col p-0 gap-0">
-          <DialogHeader className="px-6 pt-6 pb-4 shrink-0">
+        <DialogContent viewport="dialog" variant="flush" className="flex flex-col">
+          <DialogHeader variant="inset" className="shrink-0">
             <DialogTitle>{league ? "Edit League" : "Add New League"}</DialogTitle>
           </DialogHeader>
 
@@ -326,11 +326,11 @@ export function LeagueForm({ open, onClose, league, systemAdminOrganizationId }:
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction
+              variant="destructive"
               onClick={() => {
                 setShowDeleteConfirm(false);
                 deleteMutation.mutate();
               }}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete League
             </AlertDialogAction>

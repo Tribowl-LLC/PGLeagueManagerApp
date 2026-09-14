@@ -63,7 +63,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             <AlertTriangle className="size-4 shrink-0" />
             <span>Something went wrong</span>
-            <Button variant="ghost" size="sm" onClick={this.handleReset} className="ml-auto h-7 px-2">
+            <Button variant="ghost" size="iconXs" onClick={this.handleReset} className="ml-auto h-7 w-7">
               <RefreshCw className="size-3" />
             </Button>
           </div>
@@ -73,13 +73,13 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       if (level === "page") {
         const assetFailure = this.state.error !== null && isAssetLoadError(this.state.error);
         return (
-          <div className="flex min-h-[60vh] items-center justify-center p-8">
+          <div className="flex min-h-error-viewport items-center justify-center p-8">
             <Card className="max-w-md w-full">
               <CardHeader className="text-center">
                 <AlertTriangle className="size-10 text-destructive mx-auto mb-2" />
                 <CardTitle>Something went wrong</CardTitle>
               </CardHeader>
-              <CardContent className="text-center space-y-4">
+              <CardContent className="text-center" spacing="normal">
                 <p className="text-sm text-muted-foreground">
                   {assetFailure
                     ? "A new version of LeagueVault is available, but this page could not load it. Please refresh and try again."
@@ -106,8 +106,8 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       }
 
       return (
-        <Card className="border-destructive/30 bg-destructive/5">
-          <CardContent className="flex items-center gap-3 p-4">
+        <Card tone="danger">
+          <CardContent className="flex items-center" gap="3" padding="compact">
             <AlertTriangle className="size-5 text-destructive shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium">

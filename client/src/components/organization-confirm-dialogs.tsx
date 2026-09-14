@@ -80,9 +80,9 @@ export function OrganizationConfirmDialogs({
       </AlertDialog>
 
       <AlertDialog open={!!deleteConfirmId} onOpenChange={(open) => { if (!open) { setDeleteConfirmId(null); setDeleteConfirmName(''); } }}>
-        <AlertDialogContent className="max-h-[90vh] overflow-y-auto">
+      <AlertDialogContent viewport="dialog" className="overflow-y-auto">
           <AlertDialogHeader>
-            <AlertDialogTitle className="flex items-center gap-2 text-destructive">
+            <AlertDialogTitle tone="destructive" iconSpacing>
               <AlertTriangle className="size-5" />
               Permanently Delete Organization
             </AlertDialogTitle>
@@ -105,7 +105,7 @@ export function OrganizationConfirmDialogs({
                 </ul>
                 <p className="text-sm">Consider archiving instead if you may need this data in the future.</p>
                 <div className="pt-2">
-                  <Label htmlFor="confirm-name" className="text-sm font-medium">
+                  <Label htmlFor="confirm-name" size="sm">
                     Type the organization name to confirm: <span className="font-bold">{organizations.find(o => o.id === deleteConfirmId)?.name}</span>
                   </Label>
                   <Input
@@ -122,7 +122,7 @@ export function OrganizationConfirmDialogs({
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setDeleteConfirmName('')}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              variant="destructive"
               onClick={() => deleteConfirmId && deleteMutation.mutate(deleteConfirmId)}
               disabled={
                 deleteMutation.isPending ||

@@ -294,7 +294,7 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
                 control={form.control}
                 name="active"
                 render={({ field }) => (
-                  <FormItem className="flex items-center justify-between rounded-lg border p-3">
+                  <FormItem variant="boxed" className="flex items-center justify-between">
                     <div className="space-y-0.5">
                       <FormLabel>Active</FormLabel>
                     </div>
@@ -320,7 +320,7 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
                 <Button 
                   type="submit" 
                   disabled={mutation.isPending || isLoading}
-                  className="min-w-[120px]"
+                  className="min-w-30"
                 >
                   {mutation.isPending ? (
                     <>
@@ -342,7 +342,7 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
                       variant="destructive"
                       onClick={() => deleteMutation.mutate()}
                       disabled={deleteMutation.isPending}
-                      className="min-w-[120px]"
+                      className="min-w-30"
                     >
                       {deleteMutation.isPending ? (
                         <>

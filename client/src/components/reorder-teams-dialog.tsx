@@ -127,7 +127,7 @@ export function ReorderTeamsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-h-[85vh] flex flex-col">
+      <DialogContent viewport="tall" className="flex flex-col">
         <DialogHeader>
           <DialogTitle>Reorder Teams</DialogTitle>
         </DialogHeader>
@@ -137,7 +137,7 @@ export function ReorderTeamsDialog({
         </p>
 
         <div className="space-y-4">
-          <div className="border rounded-md divide-y max-h-[60vh] overflow-y-auto">
+          <div className="border rounded-md divide-y max-h-reorder-viewport overflow-y-auto">
             {orderedTeams.map((team, index) => (
               <div
                 key={team.id}
@@ -157,7 +157,8 @@ export function ReorderTeamsDialog({
                   max={orderedTeams.length}
                   defaultValue={index + 1}
                   key={`${team.id}-${index}`}
-                  className="w-14 h-8 text-center text-sm px-1"
+                  padding="compact"
+                  className="w-14 h-8 text-center"
                   onBlur={(e) => handlePositionChange(index, e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
@@ -182,7 +183,7 @@ export function ReorderTeamsDialog({
             <Button
               onClick={handleSave}
               disabled={isSubmitting}
-              className="min-w-[80px]"
+              className="min-w-20"
             >
               {isSubmitting ? (
                 <>

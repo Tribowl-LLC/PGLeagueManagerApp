@@ -49,7 +49,8 @@ export function LeagueSquareCatalogFilterFields({
             value={searchInput}
             onChange={(e) => onSearchChange(e.target.value)}
             disabled={!hasCatalogItems}
-            className="pl-8 pr-8"
+            leading="sm"
+            trailing="sm"
             data-testid="input-catalog-search"
           />
           {searchInput && (

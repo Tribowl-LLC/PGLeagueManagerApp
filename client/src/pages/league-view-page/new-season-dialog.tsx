@@ -176,7 +176,7 @@ export function NewSeasonDialog({
         if (!open) closeDialog();
       }}
     >
-      <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+      <DialogContent viewport="dialog" className="max-w-lg overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Start New Season</DialogTitle>
           <DialogDescription>
@@ -211,7 +211,7 @@ export function NewSeasonDialog({
                 value={computedSeasonEnd ? toIsoDateStr(computedSeasonEnd) : ""}
                 readOnly
                 aria-describedby="new-season-end-help"
-                className="mt-1 bg-muted/50"
+                tone="muted" className="mt-1"
               />
               <p id="new-season-end-help" className="mt-1 text-xs text-muted-foreground">
                 Auto-calculated from the bowling weeks and schedule.
@@ -296,7 +296,7 @@ export function NewSeasonDialog({
               <p className="text-sm text-destructive" role="alert">Carried configuration could not be verified. Close and retry the rollover.</p>
             )}
             {carriedSource && (
-              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+              <dl className="grid grid-cols-label-control gap-x-3 gap-y-1 text-sm">
                 <dt className="font-medium">League</dt><dd>{carriedSource.carriedConfiguration.name}</dd>
                 <dt className="font-medium">Description</dt><dd>{carriedSource.carriedConfiguration.description ?? "Not set"}</dd>
                 <dt className="font-medium">League lineup size</dt><dd>{carriedSource.carriedConfiguration.payingLineupSize === 3 ? "Three Bowlers" : "Four Bowlers"}</dd>

@@ -186,7 +186,7 @@ export default function ReportsPage() {
             </Card>
 
             <Link href="/reports/past-due">
-              <Card className="transition-colors hover:bg-accent/50 cursor-pointer">
+              <Card interaction="subtle" className="cursor-pointer">
                 <CardHeader>
                   <CardTitle>Total Past Due</CardTitle>
                   <CardDescription>Total amount past due to date</CardDescription>
@@ -242,7 +242,7 @@ export default function ReportsPage() {
                     <TableCell>{league.activeBowlerCount}</TableCell>
                     <TableCell>{league.teamCount}</TableCell>
                     <TableCell>${(league.collected / 100).toFixed(2)}</TableCell>
-                    <TableCell className="text-destructive">
+                    <TableCell tone="destructive">
                       ${(league.pastDueBalance / 100).toFixed(2)}
                     </TableCell>
                     <TableCell>{league.reviewCount > 0 ? `${league.reviewCount} required` : "—"}</TableCell>

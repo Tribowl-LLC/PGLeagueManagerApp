@@ -175,20 +175,20 @@ const SignUpPage: FC = () => {
     <ErrorBoundary level="section">
       <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
         <Card className="w-full max-w-md mt-4 sm:mt-0">
-          <CardHeader className="space-y-1 pb-4 sm:pb-6">
+          <CardHeader spacing="tight" padding="comfortable">
             {orgInfo?.logo && (
               <div className="flex justify-center mb-2">
                 <img src={orgInfo.logo} alt={orgInfo.name} className="h-16 w-auto object-contain" />
               </div>
             )}
-            <CardTitle className="text-2xl font-bold text-center">
+            <CardTitle size="2xl" weight="bold" className="text-center">
               {orgInfo ? `Welcome to ${orgInfo.name}` : "Create your LeagueVault account"}
             </CardTitle>
             <CardDescription className="text-center">
               Sign up to manage your league payments
             </CardDescription>
           </CardHeader>
-          <CardContent className="pb-4 sm:pb-6">
+          <CardContent padding="responsive">
             {registrationAvailability.isPending ? (
               <Alert data-testid="alert-signup-availability-loading">
                 <Loader2 className="size-4 animate-spin" />
@@ -199,7 +199,7 @@ const SignUpPage: FC = () => {
               <Alert variant="destructive" data-testid="alert-signup-availability-unavailable">
                 <AlertCircle className="size-4" />
                 <AlertTitle>Sign-up unavailable</AlertTitle>
-                <AlertDescription className="flex flex-wrap items-center gap-2">
+                  <AlertDescription gap="2" className="flex flex-wrap items-center">
                   <span>Use the registration link provided by your league administrator, or contact them for help.</span>
                   <Button
                     type="button"
@@ -219,7 +219,7 @@ const SignUpPage: FC = () => {
                     control={form.control}
                     name="name"
                     render={({ field }) => (
-                      <FormItem className="space-y-1 sm:space-y-2">
+                      <FormItem spacing="responsive">
                         <FormLabel>Full Name</FormLabel>
                         <FormControl><Input placeholder="John Doe" {...field} /></FormControl>
                         <FormMessage />
@@ -230,7 +230,7 @@ const SignUpPage: FC = () => {
                     control={form.control}
                     name="email"
                     render={({ field }) => (
-                      <FormItem className="space-y-1 sm:space-y-2">
+                      <FormItem spacing="responsive">
                         <FormLabel>Email Address</FormLabel>
                         <FormControl>
                           <Input type="email" placeholder="john@example.com" {...field} />
@@ -243,7 +243,7 @@ const SignUpPage: FC = () => {
                     control={form.control}
                     name="phone"
                     render={({ field }) => (
-                      <FormItem className="space-y-1 sm:space-y-2">
+                      <FormItem spacing="responsive">
                         <FormLabel>Phone Number</FormLabel>
                         <FormControl>
                           <Input type="tel" placeholder="(555) 123-4567" {...field} />
@@ -275,7 +275,7 @@ const SignUpPage: FC = () => {
               </Form>
             )}
           </CardContent>
-          <CardFooter className="flex flex-col items-center gap-2 pt-0">
+          <CardFooter spacing="tight" className="flex flex-col items-center">
             <p className="text-sm text-muted-foreground">
               Already have an account? <Link href="/login" className="text-primary hover:underline">Sign in</Link>
             </p>

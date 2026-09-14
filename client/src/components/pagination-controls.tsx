@@ -51,7 +51,7 @@ export function PaginationControls({
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <span>Showing {startItem}–{endItem} of {total} {itemLabel}</span>
         <Select value={String(pageSize)} onValueChange={(v) => onPageSizeChange(parseInt(v))}>
-          <SelectTrigger className="h-8 w-[70px]"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="h-8 w-17.5"><SelectValue /></SelectTrigger>
           <SelectContent>
             {pageSizeOptions.map((size) => (
               <SelectItem key={size} value={String(size)}>{size}</SelectItem>
@@ -73,7 +73,7 @@ export function PaginationControls({
               key={p}
               variant={p === page ? "default" : "outline"}
               size="sm"
-              className="min-w-[36px]"
+              className="min-w-9"
               onClick={() => onPageChange(p as number)}
             >
               {p}

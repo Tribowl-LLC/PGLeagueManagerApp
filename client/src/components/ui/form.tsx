@@ -1,6 +1,7 @@
 import * as React from "react"
 import * as LabelPrimitive from "@radix-ui/react-label"
 import { Slot } from "@radix-ui/react-slot"
+import { cva, type VariantProps } from "class-variance-authority"
 import {
   Controller,
   ControllerProps,
@@ -71,16 +72,43 @@ const FormItemContext = React.createContext<FormItemContextValue>(
   {} as FormItemContextValue
 )
 
+const formItemVariants = cva("space-y-2", {
+  variants: {
+    variant: {
+      default: "",
+      boxed: "rounded-lg border p-3",
+    },
+    layout: {
+      default: "",
+      row: "gap-x-2 gap-y-0",
+    },
+    spacing: {
+      default: "",
+      tight: "space-y-1",
+      responsive: "space-y-1 sm:space-y-2",
+    },
+  },
+  defaultVariants: {
+    variant: "default",
+    layout: "default",
+    spacing: "default",
+  },
+})
+
 const FormItem = React.forwardRef<
   HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => {
+  React.HTMLAttributes<HTMLDivElement> & VariantProps<typeof formItemVariants>
+>(({ className, variant, layout, spacing, ...props }, ref) => {
   const id = React.useId()
   const contextValue = React.useMemo(() => ({ id }), [id])
 
   return (
     <FormItemContext.Provider value={contextValue}>
-      <div ref={ref} className={cn("space-y-2", className)} {...props} />
+      <div
+        ref={ref}
+        className={cn(formItemVariants({ variant, layout, spacing }), className)}
+        {...props}
+      />
     </FormItemContext.Provider>
   )
 })
@@ -174,4 +202,5 @@ export {
   FormDescription,
   FormMessage,
   FormField,
+  formItemVariants,
 }

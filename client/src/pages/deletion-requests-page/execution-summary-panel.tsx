@@ -128,11 +128,11 @@ export function ExecutionSummaryPanel({
         <div>
           <span className="text-muted-foreground">User account: </span>
           {summary.user.deleted ? (
-            <span className="inline-flex items-center gap-1 text-green-700 dark:text-green-400">
+            <span className="inline-flex items-center gap-1 text-success-700 dark:text-success-400">
               <CheckCircle2 className="size-3.5" /> deleted (id {summary.user.userId})
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400">
+            <span className="inline-flex items-center gap-1 text-warning-700 dark:text-warning-400">
               <AlertTriangle className="size-3.5" />
               {summary.user.reason || 'not deleted'}
             </span>
@@ -162,7 +162,7 @@ export function ExecutionSummaryPanel({
               <CheckCircle2 className="size-3.5" /> suppressed by user choice
             </span>
           ) : summary.confirmationEmail.sent ? (
-            <span className="inline-flex items-center gap-1 text-green-700 dark:text-green-400">
+            <span className="inline-flex items-center gap-1 text-success-700 dark:text-success-400">
               <CheckCircle2 className="size-3.5" /> sent
             </span>
           ) : (
@@ -243,7 +243,7 @@ export function ExecutionSummaryPanel({
           </ul>
         )}
         {providersFailed.length > 0 && (
-          <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+          <p className="mt-2 text-xs text-warning-700 dark:text-warning-400">
             Follow up manually with the listed payment processor(s) to confirm the customer
             record is gone.
           </p>

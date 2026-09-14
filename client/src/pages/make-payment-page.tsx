@@ -677,10 +677,10 @@ export default function MakePaymentPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold mb-1">Make a Payment</h1>
-        {hasMultipleLeagues ? <button type="button" onClick={() => setLeagueSheetOpen(true)} className="flex items-center gap-1 text-slate-500 hover:text-slate-700 transition-colors">{league.name}<span aria-hidden="true">⌄</span></button> : <p className="text-muted-foreground">{league.name}</p>}
+        {hasMultipleLeagues ? <button type="button" onClick={() => setLeagueSheetOpen(true)} className="flex items-center gap-1 text-navigation-500 hover:text-navigation-700 transition-colors">{league.name}<span aria-hidden="true">⌄</span></button> : <p className="text-muted-foreground">{league.name}</p>}
       </div>
       <ErrorBoundary level="section">
-        {isRecoveryBlocked ? <div role="status" className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-6 text-center"><h2 className="text-lg font-semibold">Payment confirmation in progress</h2><p className="mt-1 text-sm text-muted-foreground">Your previous payment is still being confirmed. Check its status before trying another card.</p><button type="button" className="mt-3 text-sm underline" onClick={() => setRecoveryRetry((value) => value + 1)}>Check payment status again</button></div> : isNoBalanceAvailable ? <div role="status" className="rounded-lg border bg-muted/30 p-6 text-center"><h2 className="text-lg font-semibold">No one-time balance available</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
+        {isRecoveryBlocked ? <div role="status" className="rounded-lg border border-warning-500/50 bg-warning-500/5 p-6 text-center"><h2 className="text-lg font-semibold">Payment confirmation in progress</h2><p className="mt-1 text-sm text-muted-foreground">Your previous payment is still being confirmed. Check its status before trying another card.</p><button type="button" className="mt-3 text-sm underline" onClick={() => setRecoveryRetry((value) => value + 1)}>Check payment status again</button></div> : isNoBalanceAvailable ? <div role="status" className="rounded-lg border bg-muted/30 p-6 text-center"><h2 className="text-lg font-semibold">No one-time balance available</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
           key={oneTimeCardEditorKey}
           paymentAmountMinor={paymentAmountMinor}
           fullBalanceOnly={fullBalanceOnly}

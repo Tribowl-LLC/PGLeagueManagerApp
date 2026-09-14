@@ -85,11 +85,11 @@ export function LeagueSchedulePreview({
                   onClick={() => toggleDateType(week.isoDate, week.type)}
                   className={`flex w-full items-center justify-between px-3 py-1.5 text-sm hover:bg-muted/50 transition-colors ${
                     week.type === 'skip'
-                      ? 'bg-yellow-50 dark:bg-yellow-950/20'
+                      ? 'bg-caution-50 dark:bg-caution-950/20'
                       : week.type === 'cancelled'
-                      ? 'bg-red-50 dark:bg-red-950/20'
+                      ? 'bg-danger-50 dark:bg-danger-950/20'
                       : week.type === 'double-pay'
-                      ? 'bg-emerald-50 dark:bg-emerald-950/20'
+                      ? 'bg-positive-50 dark:bg-positive-950/20'
                       : ''
                   }`}
                   data-testid={`schedule-week-${week.isoDate}`}
@@ -99,15 +99,16 @@ export function LeagueSchedulePreview({
                   </span>
                   <Badge
                     variant={week.type === 'normal' ? 'outline' : 'secondary'}
-                    className={`ml-2 text-xs shrink-0 ${
+                    tone={
                       week.type === 'skip'
-                        ? 'border-yellow-400 text-yellow-700 dark:text-yellow-400'
+                        ? 'pending'
                         : week.type === 'cancelled'
-                        ? 'border-red-400 text-red-700 dark:text-red-400'
+                        ? 'danger'
                         : week.type === 'double-pay'
-                        ? 'border-emerald-500 text-emerald-700 dark:text-emerald-400'
-                        : ''
-                    }`}
+                        ? 'success'
+                        : undefined
+                    }
+                    className="ml-2 shrink-0"
                   >
                     {week.type === 'skip' && <SkipForward className="mr-1 size-3" />}
                     {week.type === 'cancelled' && <CalendarX className="mr-1 size-3" />}

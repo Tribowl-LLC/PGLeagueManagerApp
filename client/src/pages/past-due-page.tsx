@@ -133,7 +133,7 @@ export default function PastDuePage() {
             <TableBody>
               {pastDueBowlers.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-4">
+                  <TableCell colSpan={5} className="text-center" density="normal">
                     No past due balances found
                   </TableCell>
                 </TableRow>
@@ -142,7 +142,7 @@ export default function PastDuePage() {
                   <TableRow key={`${item.bowler.id}-${item.league.id}`}>
                     <TableCell>
                       <div className="flex items-center gap-1.5">
-                        <CheckCircle2 className={`size-4 ${item.bowler.hasAccount ? "text-green-500" : "text-muted-foreground/40"}`} />
+                        <CheckCircle2 className={`size-4 ${item.bowler.hasAccount ? "text-success-500" : "text-muted-foreground/40"}`} />
                         <Link href={`/bowlers/${item.bowler.id}?from=past-due`} className="hover:underline">
                           {item.bowler.name}
                         </Link>
@@ -151,7 +151,7 @@ export default function PastDuePage() {
                     <TableCell>{item.league.name}</TableCell>
                     <TableCell>{item.team.name}</TableCell>
                     <TableCell>{item.reviewRequired ? "Review required" : item.pastDueObligations}</TableCell>
-                    <TableCell className="text-destructive">
+                    <TableCell tone="destructive">
                     {`$${(item.pastDueAmount / 100).toFixed(2)}`}
                     </TableCell>
                   </TableRow>

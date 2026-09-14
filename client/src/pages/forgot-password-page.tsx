@@ -76,16 +76,16 @@ const ForgotPasswordPage: FC = () => {
       <ErrorBoundary level="section">
         <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
           <Card className="w-full max-w-md mt-4 sm:mt-0">
-            <CardHeader className="space-y-1 pb-4 sm:pb-6 text-center">
+            <CardHeader spacing="tight" padding="comfortable" className="text-center">
               <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10">
                 <Mail className="size-6 text-primary" />
               </div>
-              <CardTitle className="text-2xl font-bold">Check your email</CardTitle>
+              <CardTitle size="2xl" weight="bold">Check your email</CardTitle>
               <CardDescription>
                 If an account exists for <strong>{email}</strong>, we've sent a password reset link. Please check your inbox and spam folder.
               </CardDescription>
             </CardHeader>
-            <CardFooter className="flex flex-col items-center gap-2 pt-0">
+            <CardFooter spacing="tight" className="flex flex-col items-center">
               <Link href="/login" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">
                 <ArrowLeft className="size-3.5" />
                 Back to login
@@ -101,24 +101,24 @@ const ForgotPasswordPage: FC = () => {
     <ErrorBoundary level="section">
       <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
         <Card className="w-full max-w-md mt-4 sm:mt-0">
-          <CardHeader className="space-y-1 pb-4 sm:pb-6">
+          <CardHeader spacing="tight" padding="comfortable">
             {subdomainOrg?.logo && (
               <div className="flex justify-center mb-4">
                 <img
                   src={subdomainOrg.logo}
                   alt={subdomainOrg.name}
-                  className="h-14 w-auto max-w-[200px] object-contain"
+                  className="h-14 w-auto max-w-50 object-contain"
                 />
               </div>
             )}
-            <CardTitle className="text-2xl font-bold text-center">
+            <CardTitle size="2xl" weight="bold" className="text-center">
               Reset your password
             </CardTitle>
             <CardDescription className="text-center">
               Enter your email address and we'll send you a link to reset your password.
             </CardDescription>
           </CardHeader>
-          <CardContent className="pb-4 sm:pb-6">
+          <CardContent padding="responsive">
             <form onSubmit={handleSubmit} className="space-y-3 sm:space-y-4">
               <div className="space-y-1 sm:space-y-2">
                 <Label htmlFor="email">Email Address</Label>
@@ -172,7 +172,7 @@ const ForgotPasswordPage: FC = () => {
               </Button>
             </form>
           </CardContent>
-          <CardFooter className="flex flex-col items-center gap-2 pt-0">
+          <CardFooter spacing="tight" className="flex flex-col items-center">
             <Link href="/login" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">
               <ArrowLeft className="size-3.5" />
               Back to login

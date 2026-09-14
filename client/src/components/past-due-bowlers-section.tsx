@@ -57,7 +57,7 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
   });
   if (!enabled) return null;
   if (financialLoading) return <div className="text-sm text-muted-foreground">Loading server financial evidence…</div>;
-  if (financialError) return <div className="text-sm text-amber-700">{financialReadErrorMessage(financialError)}</div>;
+  if (financialError) return <div className="text-sm text-warning-700">{financialReadErrorMessage(financialError)}</div>;
   const financialRows = financialReportResponse?.data?.leagues?.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId }))) ?? [];
 
   const groupedFinancialRows = [...financialRows.reduce((map, row) => {
@@ -105,7 +105,7 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
           <TableBody>
             {pastDueBowlers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={isMobile ? 3 : 5} className="text-center py-4">
+                <TableCell colSpan={isMobile ? 3 : 5} density="normal" className="text-center">
                   No past due balances found
                 </TableCell>
               </TableRow>
@@ -114,7 +114,7 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
                 <TableRow key={`${item.bowler.id}-${item.league.id}`}>
                   <TableCell>
                     <div className="flex items-center gap-1.5">
-                      <CheckCircle2 className={`size-4 ${item.bowler.hasAccount ? "text-green-500" : "text-muted-foreground/40"}`} />
+                      <CheckCircle2 className={`size-4 ${item.bowler.hasAccount ? "text-success-500" : "text-muted-foreground/40"}`} />
                       <Link href={`/bowlers/${item.bowler.id}?from=home`} className="hover:underline">
                         {item.bowler.name}
                       </Link>
@@ -123,8 +123,10 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
                   <TableCell>{item.league.name}</TableCell>
                   <TableCell className={cn("hidden md:table-cell")}>{item.team.name}</TableCell>
                   <TableCell className={cn("hidden md:table-cell")}>{item.weeksPastDueDisplay}</TableCell>
-                  <TableCell className="text-destructive">
-                    {`$${(item.pastDueAmount / 100).toFixed(2)}`}
+                  <TableCell>
+                    <span className="text-destructive">
+                      {`$${(item.pastDueAmount / 100).toFixed(2)}`}
+                    </span>
                   </TableCell>
                 </TableRow>
               ))

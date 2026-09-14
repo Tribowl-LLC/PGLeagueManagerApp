@@ -40,7 +40,7 @@ export function JobItemsTable({ items, canRetry, itemRetryMutation }: JobItemsTa
         <TableBody>
           {items.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={5} className="text-center text-muted-foreground py-6">
+              <TableCell colSpan={5} className="text-center" tone="muted" density="comfortable">
                 No items recorded for this job.
               </TableCell>
             </TableRow>
@@ -54,7 +54,7 @@ export function JobItemsTable({ items, canRetry, itemRetryMutation }: JobItemsTa
               const isThisItemRetrying = itemRetryMutation.isPending && itemRetryMutation.variables === item.id;
               return (
                 <TableRow key={item.id}>
-                  <TableCell className="font-medium">{item.domain}</TableCell>
+                  <TableCell weight="medium">{item.domain}</TableCell>
                   <TableCell>
                     <Badge variant={meta.variant}>{meta.label}</Badge>
                   </TableCell>
@@ -63,7 +63,7 @@ export function JobItemsTable({ items, canRetry, itemRetryMutation }: JobItemsTa
                       {item.message || '—'}
                     </span>
                   </TableCell>
-                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                  <TableCell className="whitespace-nowrap" size="sm" tone="muted">
                     {formatDate(item.processedAt)}
                   </TableCell>
                   <TableCell className="text-right">

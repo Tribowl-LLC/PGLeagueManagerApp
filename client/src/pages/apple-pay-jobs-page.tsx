@@ -63,7 +63,7 @@ export default function ApplePayJobsPage() {
             </p>
             {filteredJobIds && (
               <div
-                className="mt-3 inline-flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-900 dark:text-amber-200"
+                className="mt-3 inline-flex items-center gap-2 rounded-md border border-warning-500/40 bg-warning-500/10 px-3 py-1.5 text-xs text-warning-900 dark:text-warning-200"
                 data-testid="banner-jobs-filter-active"
               >
                 <span>
@@ -126,14 +126,14 @@ export default function ApplePayJobsPage() {
                         const meta = JOB_STATUS_META[job.status as ApplePayJobStatus] ?? { label: job.status, variant: 'outline' as const };
                         return (
                           <TableRow key={job.id}>
-                            <TableCell className="font-medium">#{job.id}</TableCell>
+                            <TableCell weight="medium">#{job.id}</TableCell>
                             <TableCell>
                               <div className="flex flex-wrap items-center gap-1">
                                 <Badge variant={meta.variant}>{meta.label}</Badge>
                                 {(job.recoveredItemCount ?? 0) > 0 && (
                                   <Badge
                                     variant="outline"
-                                    className="border-amber-500/50 bg-amber-500/10 text-amber-900 dark:text-amber-200"
+                                    tone="warningSubtle"
                                     title={`${job.recoveredItemCount} item${job.recoveredItemCount === 1 ? '' : 's'} were recovered after stalling mid-call`}
                                     data-testid={`badge-lease-anomaly-${job.id}`}
                                   >
@@ -143,13 +143,13 @@ export default function ApplePayJobsPage() {
                               </div>
                             </TableCell>
                             <TableCell className="text-right">{job.totalDomains}</TableCell>
-                            <TableCell className="text-right text-emerald-600">{job.succeededCount}</TableCell>
-                            <TableCell className="text-right text-destructive">{job.failedCount}</TableCell>
+                            <TableCell className="text-right" tone="success">{job.succeededCount}</TableCell>
+                            <TableCell className="text-right" tone="destructive">{job.failedCount}</TableCell>
                             <TableCell className="text-right">{job.skippedCount}</TableCell>
-                            <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                            <TableCell className="whitespace-nowrap" size="sm" tone="muted">
                               {formatDate(job.startedAt)}
                             </TableCell>
-                            <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                            <TableCell className="whitespace-nowrap" size="sm" tone="muted">
                               {formatDate(job.completedAt)}
                             </TableCell>
                             <TableCell className="text-right">

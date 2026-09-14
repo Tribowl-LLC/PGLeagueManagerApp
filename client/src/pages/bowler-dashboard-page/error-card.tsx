@@ -14,7 +14,7 @@ export function ErrorCard({ title, description, onRetry }: { title: string; desc
       </CardHeader>
       {onRetry && (
         <CardContent>
-          <Button variant="outline" onClick={onRetry} className="w-full flex items-center gap-2">
+          <Button variant="outline" onClick={onRetry} className="w-full flex items-center">
             <RefreshCw className="size-4" />
             Try Again
           </Button>

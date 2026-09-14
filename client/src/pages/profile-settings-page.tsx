@@ -75,7 +75,7 @@ const ProfileSettingsPage: FC = () => {
       <ErrorBoundary level="section">
         {isSystemAdmin && (
           <div className="mb-6">
-            <Button asChild variant="outline" className="flex items-center gap-2">
+            <Button asChild variant="outline" className="flex items-center">
               <Link href="/">
                 <ArrowRight className="size-4 rotate-180" />
                 Back to Dashboard
@@ -95,7 +95,7 @@ const ProfileSettingsPage: FC = () => {
           <Separator />
 
           <Card>
-            <CardHeader className="pb-4">
+            <CardHeader padding="standard">
               <CardTitle>Sign Out</CardTitle>
               <CardDescription className="mt-1.5">Log out of your account on this device</CardDescription>
             </CardHeader>
@@ -104,7 +104,7 @@ const ProfileSettingsPage: FC = () => {
                 variant="destructive"
                 onClick={handleLogout}
                 disabled={isLoggingOut}
-                className="flex items-center gap-2"
+                className="flex items-center"
               >
                 {isLoggingOut ? (
                   <><Loader2 className="size-4 animate-spin" />Signing out…</>
@@ -118,15 +118,15 @@ const ProfileSettingsPage: FC = () => {
           <Separator />
 
           <Card>
-            <CardHeader className="pb-4">
-              <CardTitle className="flex items-center gap-2">
+            <CardHeader padding="standard">
+              <CardTitle iconSpacing>
                 <Trash2 className="size-5 text-destructive" />
                 Delete Account
               </CardTitle>
               <CardDescription className="mt-1.5">Permanently delete your account and all associated data</CardDescription>
             </CardHeader>
             <CardContent>
-              <Button asChild variant="outline" className="text-destructive border-destructive hover:bg-destructive/10 flex items-center gap-2">
+              <Button asChild variant="destructiveOutline" className="flex items-center">
                 <Link href="/delete-account">
                   <Trash2 className="size-4" />
                   Request Account Deletion

@@ -305,11 +305,11 @@ const RegistrationEmailPage: FC = () => {
   if (missing) {
     return shell(
       <>
-        <CardHeader className="space-y-2 text-center">
+        <CardHeader spacing="relaxed" className="text-center">
           <CardTitle>Continue registration</CardTitle>
           <CardDescription>We couldn't find an active registration session in this browser. If you already have an account, sign in or reset your password. Otherwise, start registration again with the same email address.</CardDescription>
         </CardHeader>
-        <CardFooter className="flex flex-col gap-3">
+        <CardFooter spacing="normal" className="flex flex-col">
           <Button asChild className="w-full" data-testid="link-registration-continue"><Link href="/sign-up">Continue sign-up</Link></Button>
           <Button asChild variant="outline" className="w-full" data-testid="link-registration-sign-in"><Link href="/login">Sign in</Link></Button>
           <Button asChild variant="ghost" className="w-full" data-testid="link-registration-forgot-password"><Link href="/forgot-password">Forgot password?</Link></Button>
@@ -321,17 +321,17 @@ const RegistrationEmailPage: FC = () => {
   if ((statusQuery.isError && !status) || !status || status.status !== "pending") {
     return shell(
       <>
-        <CardHeader className="space-y-2 text-center">
+        <CardHeader spacing="relaxed" className="text-center">
           <CardTitle>Continue registration</CardTitle>
           <CardDescription>{classifyApiError(statusQuery.error) === 'transport'
             ? "We couldn't connect to check your registration. Check your internet connection and try again."
             : "We couldn't verify this sign-up session right now. Try again, sign in, or reset your password. Otherwise, start registration again with the same email address."}</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent spacing="tight">
           <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>We couldn't verify your registration</AlertTitle><AlertDescription>Please try again or start a new sign-up.</AlertDescription></Alert>
           <Button className="w-full" disabled={statusQuery.isFetching} onClick={() => void statusQuery.refetch()} data-testid="button-registration-status-retry">{statusQuery.isFetching ? 'Checking…' : 'Try again'}</Button>
         </CardContent>
-        <CardFooter className="flex flex-col gap-3">
+        <CardFooter spacing="normal" className="flex flex-col">
           <Button asChild variant="outline" className="w-full" data-testid="link-registration-sign-in"><Link href="/login">Sign in</Link></Button>
           <Button asChild variant="ghost" className="w-full" data-testid="link-registration-forgot-password"><Link href="/forgot-password">Forgot password?</Link></Button>
           <Button asChild variant="ghost" className="w-full" data-testid="link-registration-continue"><Link href="/sign-up">Continue sign-up</Link></Button>
@@ -353,16 +353,16 @@ const RegistrationEmailPage: FC = () => {
     : "Use the link in that email to set your password and finish creating your account.";
   return shell(
     <>
-      <CardHeader className="space-y-2 text-center">
+      <CardHeader spacing="relaxed" className="text-center">
         <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10">
           <Mail className="size-6 text-primary" />
         </div>
-        <CardTitle className="text-2xl font-bold">Check your email</CardTitle>
+        <CardTitle size="2xl" weight="bold">Check your email</CardTitle>
         <CardDescription>
           {setupDescription} <strong>{status.email || "your email address"}</strong>. {setupGuidance}
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent spacing="normal">
         <Alert variant={delivery.tone === "destructive" ? "destructive" : "default"} data-testid="registration-delivery-status" aria-live="polite">
           {delivery.tone === "destructive" ? <AlertCircle className="size-4" /> : <CheckCircle2 className="size-4" />}
           <AlertTitle>{delivery.label}</AlertTitle>
@@ -381,7 +381,7 @@ const RegistrationEmailPage: FC = () => {
           {resendMutation.isPending ? <><Loader2 className="mr-2 size-4 animate-spin" />Requesting…</> : <><RefreshCw className="mr-2 size-4" />Resend setup email</>}
         </Button>
       </CardContent>
-      <CardFooter className="flex flex-col gap-3 pt-0">
+      <CardFooter spacing="normal" className="flex flex-col">
         <Button variant="ghost" className="w-full" onClick={() => abandonMutation.mutate()} disabled={abandonMutation.isPending} data-testid="button-registration-correct-email">
           {abandonMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
           Use a different email

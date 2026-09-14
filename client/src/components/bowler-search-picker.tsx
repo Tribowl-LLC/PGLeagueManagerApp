@@ -133,7 +133,7 @@ export const BowlerSearchPicker: FC<BowlerSearchPickerProps> = ({
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           disabled={disabled}
-          className="pl-8"
+          leading="sm"
           data-testid={`${testIdPrefix}-input`}
           autoComplete="off"
         />
@@ -182,4 +182,3 @@ export const BowlerSearchPicker: FC<BowlerSearchPickerProps> = ({
     </div>
   );
 };
-

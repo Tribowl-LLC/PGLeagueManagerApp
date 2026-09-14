@@ -146,7 +146,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
               ))}
         </fieldset>
         {!hasSelectedRecipient && <Alert><AlertDescription>Select at least one recipient to continue.</AlertDescription></Alert>}
-        {selectionStale && <Alert variant="destructive"><AlertDescription className="flex flex-wrap items-center justify-between gap-3"><span>The payment choices changed while this page was open. Review the recipients and week counts before paying.</span>{onResetRecipientSelection && <Button type="button" variant="outline" size="sm" onClick={onResetRecipientSelection}>Reset choices</Button>}</AlertDescription></Alert>}
+        {selectionStale && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>The payment choices changed while this page was open. Review the recipients and week counts before paying.</span>{onResetRecipientSelection && <Button type="button" variant="outline" size="sm" onClick={onResetRecipientSelection}>Reset choices</Button>}</AlertDescription></Alert>}
         {quoteError && <Alert variant="destructive"><AlertDescription>{quoteError}</AlertDescription></Alert>}
         <div className="flex flex-col gap-2 rounded-md border bg-muted/50 p-4" aria-live="polite" data-testid="payment-breakdown">
           <div className="flex items-center justify-between">

@@ -219,7 +219,7 @@ export function OrganizationFormBody({ editOrg, onClose }: { editOrg?: Organizat
             preview={darkLogoPreview}
             inputRef={darkFileInputRef}
             containerClassName="grid grid-cols-1 md:grid-cols-4 items-start gap-2 md:gap-4"
-            previewWrapperClassName="relative size-40 rounded-md overflow-hidden border bg-slate-900"
+            previewWrapperClassName="relative size-40 rounded-md overflow-hidden border bg-navigation-900"
             toast={toast}
             setValue={setDarkLogo}
             setPreview={setDarkLogoPreview}

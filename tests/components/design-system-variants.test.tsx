@@ -46,7 +46,15 @@ describe('design-system appearance preservation', () => {
     render(<Button variant="destructiveOutline">Remove</Button>);
     expect(screen.getByRole('button', { name: 'Remove' })).toHaveClass(
       'bg-background', 'border-destructive', 'text-destructive',
-      'hover:bg-destructive/10', 'hover:text-destructive',
+      'hover:bg-destructive/10', 'hover:text-accent-foreground',
     );
+  });
+
+  it('retains ghost hover colors when only the resting text tone changes', () => {
+    render(<><Button variant="muted">Wait</Button><Button variant="warning">Resend</Button><Button variant="ghost" tone="destructive">Delete</Button></>);
+    for (const name of ['Wait', 'Resend']) {
+      expect(screen.getByRole('button', { name })).toHaveClass('hover:bg-accent', 'hover:text-accent-foreground');
+    }
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveClass('hover:bg-accent', 'hover:text-destructive');
   });
 });

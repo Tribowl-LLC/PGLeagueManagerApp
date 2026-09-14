@@ -189,7 +189,7 @@ export function LeagueFeeSection({
         control={form.control}
         name="active"
         render={({ field }) => (
-          <FormItem className="flex items-center justify-between rounded-lg border p-3">
+          <FormItem variant="boxed" className="flex items-center justify-between">
             <div className="space-y-0.5">
               <FormLabel>Active</FormLabel>
             </div>

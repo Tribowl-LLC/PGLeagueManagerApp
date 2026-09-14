@@ -165,7 +165,7 @@ export function JobDetailDialog({ jobId, onClose }: { jobId: number; onClose: ()
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+      <DialogContent viewport="tall" className="max-w-4xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Job #{jobId}</DialogTitle>
           <DialogDescription>
@@ -266,7 +266,7 @@ export function JobDetailDialog({ jobId, onClose }: { jobId: number; onClose: ()
 
             {recoveredItemCount > 0 && (
               <div
-                className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-900 dark:text-amber-200"
+                className="rounded-md border border-warning-500/40 bg-warning-500/10 p-3 text-sm text-warning-900 dark:text-warning-200"
                 data-testid="banner-recovered-items"
               >
                 <p className="font-medium">Anomaly: {recoveredItemCount} item{recoveredItemCount === 1 ? '' : 's'} recovered after stalling mid-call</p>

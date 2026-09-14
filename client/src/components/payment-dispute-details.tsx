@@ -60,7 +60,7 @@ function ResponseDeadline({ dispute }: { dispute: PaymentRowDisputeSummary }) {
   const overdue = remainingMs < 0;
   const soon = !overdue && remainingMs <= 72 * 60 * 60 * 1000;
   return (
-    <div className={overdue ? "text-destructive" : soon ? "text-amber-700" : ""}>
+    <div className={overdue ? "text-destructive" : soon ? "text-warning-700" : ""}>
       <div className="flex items-center gap-1.5 font-medium">
         {(overdue || soon) && <AlertTriangle className="size-4" aria-hidden="true" />}
         {formatDateTime(dispute.responseDueAt)}
@@ -93,7 +93,7 @@ export function PaymentDisputeDetails({ dispute }: { dispute: PaymentRowDisputeS
       </div>
 
       {dispute.sharedTransaction && (
-        <div className="mt-4 rounded-md border border-amber-400/60 bg-amber-50 p-3 text-sm text-amber-950">
+        <div className="mt-4 rounded-md border border-warning-400/60 bg-warning-50 p-3 text-sm text-warning-950">
           This disputed amount applies to the shared Square transaction. It is shown on every linked payment allocation and is not assigned to this bowler alone.
         </div>
       )}

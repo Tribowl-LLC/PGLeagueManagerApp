@@ -38,7 +38,7 @@ export function OrganizationImageField({
 }: OrganizationImageFieldProps) {
   return (
     <div className={containerClassName}>
-      <Label htmlFor={id} className="md:text-right pt-2">{label}</Label>
+      <Label htmlFor={id} spacing="offset" className="md:text-right">{label}</Label>
       <div className="md:col-span-3 space-y-2">
         {preview ? (
           <div className={previewWrapperClassName}>
@@ -46,8 +46,9 @@ export function OrganizationImageField({
             <Button
               type="button"
               variant="destructive"
-              size="icon"
-              className="absolute top-1 right-1 size-6 rounded-full"
+              size="iconXs"
+              shape="circular"
+              className="absolute top-1 right-1"
               onClick={() => {
                 setValue(null);
                 setPreview(null);

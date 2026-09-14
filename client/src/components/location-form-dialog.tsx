@@ -24,7 +24,7 @@ interface Props {
 export function LocationFormDialog({ open, onClose, location }: Props) {
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="sm:max-w-[525px]">
+      <DialogContent className="sm:max-w-131.25">
         {/* Keying by edit-target id resets the inner form's state when
             the dialog switches which location it edits. DialogContent
             unmounts on close, so the body also re-initializes fresh

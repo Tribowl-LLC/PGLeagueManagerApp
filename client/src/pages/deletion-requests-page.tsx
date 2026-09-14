@@ -196,7 +196,7 @@ export default function DeletionRequestsPage() {
                 />
                 <Label
                   htmlFor="filter-provider-failures"
-                  className="text-sm font-normal cursor-pointer"
+                  size="sm" weight="normal" className="cursor-pointer"
                 >
                   Only with provider failures
                 </Label>

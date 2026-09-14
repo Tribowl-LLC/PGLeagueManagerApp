@@ -147,19 +147,19 @@ export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onR
           <TableHead>Status</TableHead>
           <TableHead>Role</TableHead>
           <TableHead>Location</TableHead>
-          <TableHead className="w-[120px]"></TableHead>
+          <TableHead className="w-30"></TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {users.map((user) => (
           <TableRow key={user.id}>
-            <TableCell className="font-medium">{user.name || "—"}</TableCell>
+            <TableCell weight="medium">{user.name || "—"}</TableCell>
             <TableCell>{user.email}</TableCell>
             <TableCell>
               {user.invitation && user.invitation.status !== "consumed" && user.invitation.status !== "superseded" ? (
-                <Badge variant="outline" className="text-amber-600 border-amber-300">{invitationStatusLabel(user)}</Badge>
+                <Badge variant="outline" tone="warningMuted">{invitationStatusLabel(user)}</Badge>
               ) : (
-                <Badge variant="outline" className="text-green-600 border-green-300">Active</Badge>
+                <Badge variant="outline" tone="successMuted">Active</Badge>
               )}
             </TableCell>
             <TableCell>
@@ -178,7 +178,7 @@ export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onR
                 }}
                 disabled={user.id === currentUser?.id}
               >
-                <SelectTrigger className="w-[160px]">
+                <SelectTrigger className="w-40">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -216,7 +216,7 @@ export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onR
                     });
                   }}
                 >
-                  <SelectTrigger className="w-[180px]">
+                  <SelectTrigger className="w-45">
                     <SelectValue placeholder="Select location" />
                   </SelectTrigger>
                   <SelectContent>
@@ -270,10 +270,9 @@ export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onR
                 )}
                 {user.id !== currentUser?.id && (
                   <Button
-                    variant="ghost"
+                    variant="destructiveGhost"
                     size="icon"
                     onClick={() => onDeleteUser(user.id)}
-                    className="text-destructive hover:text-destructive hover:bg-destructive/10"
                   >
                     <Trash2 className="size-4" />
                   </Button>

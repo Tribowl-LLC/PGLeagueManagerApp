@@ -442,15 +442,15 @@ export default function ManagePaymentsPage() {
               </TableHeader>
               <TableBody>
                 {rows.length === 0 ? (
-                  <TableRow><TableCell colSpan={9} className="py-8 text-center text-muted-foreground">No active roster bowlers found.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={9} className="text-center" density="spacious" tone="muted">No active roster bowlers found.</TableCell></TableRow>
                 ) : [...grouped.values()].map((group) => (
                   group.rows.map((row, index) => {
                     const values = valuesFor(row.key);
                     const disabled = row.balanceMinor <= 0 || row.reviewRequired || values.result === "pending" || values.result === "success" || values.retryLocked;
                     return (
-                      <TableRow key={row.key} className={disabled && row.balanceMinor <= 0 ? "opacity-60" : undefined}>
-                        {index === 0 ? <TableCell rowSpan={group.rows.length} className="align-top font-medium">{group.number} · {group.name}</TableCell> : null}
-                        <TableCell className="font-medium">{row.bowlerName}</TableCell>
+                  <TableRow key={row.key} state={disabled && row.balanceMinor <= 0 ? "muted" : "default"}>
+                        {index === 0 ? <TableCell rowSpan={group.rows.length} className="align-top" weight="medium">{group.number} · {group.name}</TableCell> : null}
+                        <TableCell weight="medium">{row.bowlerName}</TableCell>
                         <TableCell>{row.reviewRequired ? "Review required" : formatDueDate(row.oldestDueAt, leagueQuery.data.data.timezone)}</TableCell>
                         <TableCell>{formatMoney(row.balanceMinor)}</TableCell>
                         <TableCell>
@@ -474,10 +474,10 @@ export default function ManagePaymentsPage() {
                         </TableCell>
                         <TableCell className="min-w-48">
                           {values.result === "pending" && <span className="flex items-center gap-1 text-muted-foreground" role="status"><Loader2 className="size-4 animate-spin" /> Recording…</span>}
-                          {values.result === "success" && <span className="flex items-center gap-1 text-green-600" role="status"><CheckCircle2 className="size-4" /> Recorded</span>}
+                          {values.result === "success" && <span className="flex items-center gap-1 text-success-600" role="status"><CheckCircle2 className="size-4" /> Recorded</span>}
                           {values.result === "failure" && <span className="flex flex-col items-start gap-1 text-destructive" role="alert">
                             <span className="flex items-start gap-1"><AlertCircle className="mt-0.5 size-4 shrink-0" /> <span>{values.error}</span></span>
-                            {values.retryLocked && <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={() => void submitPayments(new Set([row.key]))} disabled={isSubmitting}>Retry exact payment</Button>}
+                            {values.retryLocked && <Button type="button" variant="link" size="linkXs" onClick={() => void submitPayments(new Set([row.key]))} disabled={isSubmitting}>Retry exact payment</Button>}
                           </span>}
                           {values.result === "idle" && row.balanceMinor <= 0 && <span className="text-muted-foreground">No balance</span>}
                           {values.result === "idle" && row.balanceMinor > 0 && row.reviewRequired && <span className="text-muted-foreground">Review required</span>}

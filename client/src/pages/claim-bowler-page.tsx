@@ -140,22 +140,22 @@ const ClaimBowlerPage: FC = () => {
     <ErrorBoundary level="section">
     <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
       <Card className="w-full max-w-lg mt-4 sm:mt-0">
-        <CardHeader className="space-y-1 pb-4">
-          <CardTitle className="text-2xl font-bold text-center">
+        <CardHeader spacing="tight" padding="standard">
+          <CardTitle size="2xl" weight="bold" className="text-center">
             Find Your Name on the Roster
           </CardTitle>
           <CardDescription className="text-center">
             Select your name from the league roster below to link your account to your bowler profile.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent spacing="normal">
           {isLoading ? (
             <PageLoadingState fullPage={false} />
           ) : isError ? (
             <Alert variant="destructive" role="alert">
               <AlertCircle className="size-4" />
               <AlertTitle>Couldn&apos;t load your roster</AlertTitle>
-              <AlertDescription className="space-y-3">
+              <AlertDescription spacing="normal">
                 <p>
                   {error instanceof Error
                     ? error.message
@@ -185,11 +185,11 @@ const ClaimBowlerPage: FC = () => {
                   placeholder="Search by name..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10"
+                  leading="md"
                 />
               </div>
 
-              <div className="max-h-[400px] overflow-y-auto space-y-4 pr-1">
+              <div className="max-h-100 overflow-y-auto space-y-4 pr-1">
                 {filteredData.length === 0 ? (
                   <p className="text-center text-muted-foreground py-4">
                     No bowlers match your search.
@@ -228,9 +228,9 @@ const ClaimBowlerPage: FC = () => {
 
               <div className="pt-2 border-t">
                 <Button
-                  variant="ghost"
                   onClick={handleWaitForAdministrator}
-                  className="w-full text-muted-foreground"
+                  variant="muted"
+                  className="w-full"
                   disabled={claimMutation.isPending}
                 >
                   <Clock3 className="size-4 mr-2" />

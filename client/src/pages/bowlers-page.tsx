@@ -43,7 +43,7 @@ function BowlerTableSkeleton() {
             <TableCell><Skeleton className="h-4 w-32" /></TableCell>
             <TableCell><Skeleton className="h-4 w-32" /></TableCell>
             <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-            <TableCell><Skeleton className="h-6 w-16 rounded-full" /></TableCell>
+            <TableCell><Skeleton shape="circular" className="h-6 w-16" /></TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -93,7 +93,7 @@ export default function BowlersPage() {
             placeholder="Search bowlers..."
             value={searchQuery}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchQuery(e.target.value)}
-            className="pl-8"
+            leading="sm"
           />
         </div>
         <div className="flex items-center gap-x-2">
@@ -122,13 +122,13 @@ export default function BowlersPage() {
                 <TableHead className="hidden md:table-cell">Team Name</TableHead>
                 <TableHead className="hidden md:table-cell">Square Account</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead className="w-[60px]"></TableHead>
+                <TableHead className="w-15"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filteredBowlers.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-4">
+                  <TableCell colSpan={6} className="text-center" density="normal">
                     {isLoadingRelatedData ? (
                       <div className="flex items-center justify-center">
                         <Loader2 className="size-4 animate-spin mr-2" />
@@ -147,7 +147,7 @@ export default function BowlersPage() {
                     <TableRow key={bowler.id}>
                       <TableCell>
                         <div className="flex items-center gap-1.5">
-                          <CheckCircle2 className={`size-4 ${bowler.hasAccount ? "text-green-500" : "text-muted-foreground/40"}`} />
+                          <CheckCircle2 className={`size-4 ${bowler.hasAccount ? "text-success-500" : "text-muted-foreground/40"}`} />
                           <Link
                             href={`/bowlers/${bowler.id}?from=bowlers`}
                             className="hover:underline text-foreground"
@@ -170,7 +170,7 @@ export default function BowlersPage() {
                           teamName
                         )}
                       </TableCell>
-                      <TableCell className="hidden md:table-cell text-sm">
+                      <TableCell className="hidden md:table-cell" size="sm">
                         {bowler.paymentCustomerId ? (
                           <a
                             href={getSquareCustomerUrl(bowler.paymentCustomerId)}

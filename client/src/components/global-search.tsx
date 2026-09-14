@@ -93,9 +93,9 @@ export function GlobalSearch() {
 
   return (
     <div ref={containerRef} className="relative group hidden md:block">
-      <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
+      <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-navigation-400 group-focus-within:text-brand-accent-500 transition-colors" />
       {isLoading && (
-        <Loader2 className="size-3.5 absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 animate-spin" />
+        <Loader2 className="size-3.5 absolute right-3 top-1/2 -translate-y-1/2 text-navigation-400 animate-spin" />
       )}
       <input
         type="text"
@@ -105,33 +105,33 @@ export function GlobalSearch() {
         onChange={(e) => setQuery(e.target.value)}
         onFocus={() => { if (results && query.length >= 2) setIsOpen(true); }}
         onKeyDown={handleKeyDown}
-        className="pl-9 pr-4 py-2 text-sm bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:bg-white transition-all w-64"
+        className="pl-9 pr-4 py-2 text-sm bg-navigation-50 border border-navigation-200 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-accent-500/20 focus:border-brand-accent-500 focus:bg-white transition-all w-64"
       />
 
       {isOpen && query.length >= 2 && (
-        <div className="absolute right-0 top-full mt-1 w-80 bg-white rounded-lg shadow-lg border border-slate-200 z-50 overflow-hidden max-h-[400px] overflow-y-auto">
+        <div className="absolute right-0 top-full mt-1 w-80 bg-white rounded-lg shadow-lg border border-navigation-200 z-50 overflow-hidden max-h-100 overflow-y-auto">
           {!hasResults && !isLoading && (
-            <div className="p-4 text-center text-sm text-slate-500">
+            <div className="p-4 text-center text-sm text-navigation-500">
               No results found for "{query}"
             </div>
           )}
 
           {results && results.leagues.length > 0 && (
             <div>
-              <div className="px-3 py-2 bg-slate-50 border-b border-slate-100">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Leagues</span>
+              <div className="px-3 py-2 bg-navigation-50 border-b border-navigation-100">
+                <span className="text-xs font-semibold text-navigation-500 uppercase tracking-wider">Leagues</span>
               </div>
               {results.leagues.map((league) => (
                 <button type="button"
                   key={`league-${league.id}`}
                   onClick={() => navigate(`/leagues/${league.id}`)}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 transition-colors text-left"
+                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-navigation-50 transition-colors text-left"
                 >
-                  <Trophy className="size-4 text-indigo-500 shrink-0" />
+                  <Trophy className="size-4 text-brand-accent-500 shrink-0" />
                   <div className="min-w-0">
-                    <div className="text-sm font-medium text-slate-900 truncate">{league.name}</div>
+                    <div className="text-sm font-medium text-navigation-900 truncate">{league.name}</div>
                     {!league.active && (
-                      <span className="text-xs text-slate-400">Inactive</span>
+                      <span className="text-xs text-navigation-400">Inactive</span>
                     )}
                   </div>
                 </button>
@@ -141,19 +141,19 @@ export function GlobalSearch() {
 
           {results && results.teams.length > 0 && (
             <div>
-              <div className="px-3 py-2 bg-slate-50 border-b border-slate-100">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Teams</span>
+              <div className="px-3 py-2 bg-navigation-50 border-b border-navigation-100">
+                <span className="text-xs font-semibold text-navigation-500 uppercase tracking-wider">Teams</span>
               </div>
               {results.teams.map((team) => (
                 <button type="button"
                   key={`team-${team.id}`}
                   onClick={() => navigate(`/teams/${team.id}`)}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 transition-colors text-left"
+                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-navigation-50 transition-colors text-left"
                 >
-                  <Users className="size-4 text-emerald-500 shrink-0" />
+                  <Users className="size-4 text-positive-500 shrink-0" />
                   <div className="min-w-0">
-                    <div className="text-sm font-medium text-slate-900 truncate">{team.name}</div>
-                    <div className="text-xs text-slate-400 truncate">
+                    <div className="text-sm font-medium text-navigation-900 truncate">{team.name}</div>
+                    <div className="text-xs text-navigation-400 truncate">
                       Team #{team.number} · {team.leagueName}
                     </div>
                   </div>
@@ -164,20 +164,20 @@ export function GlobalSearch() {
 
           {results && results.bowlers.length > 0 && (
             <div>
-              <div className="px-3 py-2 bg-slate-50 border-b border-slate-100">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Bowlers</span>
+              <div className="px-3 py-2 bg-navigation-50 border-b border-navigation-100">
+                <span className="text-xs font-semibold text-navigation-500 uppercase tracking-wider">Bowlers</span>
               </div>
               {results.bowlers.map((bowler) => (
                 <button type="button"
                   key={`bowler-${bowler.id}`}
                   onClick={() => navigate(`/bowlers/${bowler.id}`)}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 transition-colors text-left"
+                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-navigation-50 transition-colors text-left"
                 >
-                  <UserCircle className="size-4 text-amber-500 shrink-0" />
+                  <UserCircle className="size-4 text-warning-500 shrink-0" />
                   <div className="min-w-0">
-                    <div className="text-sm font-medium text-slate-900 truncate">{bowler.name}</div>
+                    <div className="text-sm font-medium text-navigation-900 truncate">{bowler.name}</div>
                     {bowler.email && (
-                      <div className="text-xs text-slate-400 truncate">{bowler.email}</div>
+                      <div className="text-xs text-navigation-400 truncate">{bowler.email}</div>
                     )}
                   </div>
                 </button>

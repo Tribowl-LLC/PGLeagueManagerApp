@@ -4,7 +4,7 @@ import { Mail } from "lucide-react";
 export function InviteResultCard({ inviteResult }: { inviteResult: { sent: number; alreadyRegistered: number; noEmail: number } }) {
   return (
     <Card>
-      <CardContent className="pt-6">
+      <CardContent padding="topComfortable">
         <div className="flex items-center gap-2 mb-2">
           <Mail className="size-5 text-primary" />
           <h3 className="font-semibold">Invite Results</h3>

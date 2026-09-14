@@ -194,7 +194,7 @@ export const ProtectedRoute: FC<ProtectedRouteProps> = ({ requirement, children 
 
   if (isLoading || (error && isSessionExpiredError(error) && !preservePendingRouteOnError)) {
     return (
-      <div className="flex items-center justify-center h-[60vh]">
+      <div className="flex items-center justify-center h-error-viewport">
         <Loader2 className="size-8 animate-spin text-primary" />
       </div>
     );

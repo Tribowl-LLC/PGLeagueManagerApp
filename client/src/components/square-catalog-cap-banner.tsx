@@ -120,7 +120,7 @@ function SquareCatalogCapBannerBody({
 
   return (
     <div
-      className="rounded-md border border-amber-500/50 bg-amber-50 p-4 text-sm text-amber-900 dark:bg-amber-500/10 dark:text-amber-200 flex items-start gap-3"
+      className="rounded-md border border-warning-500/50 bg-warning-50 p-4 text-sm text-warning-900 dark:bg-warning-500/10 dark:text-warning-200 flex items-start gap-3"
       data-testid="banner-square-catalog-cap-alert"
       role="alert"
     >
@@ -142,7 +142,7 @@ function SquareCatalogCapBannerBody({
           writeDismissed(userId, newest.sentAt);
           setDismissed(true);
         }}
-        className="text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100"
+        className="text-warning-700 hover:text-warning-900 dark:text-warning-300 dark:hover:text-warning-100"
         aria-label="Dismiss Square catalog cap alert banner"
         data-testid="button-dismiss-square-catalog-cap-alert"
       >

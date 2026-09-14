@@ -94,7 +94,7 @@ export function PaymentsTable({
             <TableHead>Amount</TableHead>
             <TableHead>Status</TableHead>
             <TableHead className="hidden md:table-cell">Payment Type</TableHead>
-            <TableHead className="w-[140px]">Actions</TableHead>
+            <TableHead className="w-35">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -174,10 +174,9 @@ export function PaymentsTable({
                       {canResend && (
                         <Button
                           size="icon"
-                          variant="ghost"
                           title={payment.receiptEmailMissing ? "No receipt sent — resend now" : "Resend receipt"}
                           onClick={() => setResendTarget(payment)}
-                          className={payment.receiptEmailMissing ? "text-amber-600" : ""}
+                          variant={payment.receiptEmailMissing ? "warning" : "ghost"}
                         >
                           <Send className="size-4" />
                         </Button>
@@ -198,7 +197,7 @@ export function PaymentsTable({
                 </TableRow>
                 {expanded && (
                   <TableRow>
-                    <TableCell colSpan={6} className="bg-muted/20 p-4">
+                    <TableCell colSpan={6} tone="subtle">
                       <div className="space-y-3">
                         {disputes.map((dispute) => (
                           <PaymentDisputeDetails key={dispute.id} dispute={dispute} />

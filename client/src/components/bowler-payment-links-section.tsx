@@ -101,14 +101,14 @@ export const BowlerPaymentLinksSection: FC<{
   return (
     <Card data-testid="card-payment-partners" className="mt-4">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
+        <CardTitle size="base" iconSpacing>
           <Users className="size-4" /> Payment partners
         </CardTitle>
         <CardDescription>
           Linked bowlers can pay for each other from a saved card.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent spacing="normal">
         {accepted.length > 0 && (
           <div className="space-y-2">
             {accepted.map((l) => {
@@ -131,9 +131,8 @@ export const BowlerPaymentLinksSection: FC<{
                       role="presentation"
                     >
                       <Button
-                        variant="ghost"
                         size="sm"
-                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        variant="destructiveGhost"
                         onClick={() => setPartnerToRemove(l)}
                         disabled={unlink.isPending && partnerToRemove?.id === l.id}
                         data-testid={`button-remove-partner-${l.id}`}
@@ -240,7 +239,7 @@ export const BowlerPaymentLinksSection: FC<{
               </AlertDialogCancel>
               <AlertDialogAction
                 data-testid="button-confirm-remove-partner"
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                variant="destructive"
                 onClick={(e) => {
                   e.preventDefault();
                   if (partnerToRemove) unlink.mutate(partnerToRemove.id);
@@ -256,4 +255,3 @@ export const BowlerPaymentLinksSection: FC<{
     </Card>
   );
 };
-

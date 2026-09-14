@@ -146,7 +146,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !correctionBusy) onClose(); }}>
-      <DialogContent aria-describedby={undefined} className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent aria-describedby={undefined} viewport="dialog" className="overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Payment Details</DialogTitle>
         </DialogHeader>

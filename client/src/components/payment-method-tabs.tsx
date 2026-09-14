@@ -43,24 +43,23 @@ export const PaymentMethodTabs: FC<PaymentMethodTabsProps> = ({
           <TabsList className={`grid w-full ${allowCard ? "grid-cols-3" : "grid-cols-2"}`}>
             <TabsTrigger 
               value="cash" 
-              className="flex items-center gap-2"
             >
-              Cash
+              <span className="flex items-center gap-2">Cash</span>
             </TabsTrigger>
             <TabsTrigger 
               value="check" 
-              className="flex items-center gap-2"
             >
-              Check
+              <span className="flex items-center gap-2">Check</span>
             </TabsTrigger>
             {allowCard && (
               <TabsTrigger
                 disabled={squareLoadFailed}
                 value="credit"
-                className="flex items-center gap-2"
               >
-                <CreditCard className="size-4" />
-                Credit Card
+                <span className="flex items-center gap-2">
+                  <CreditCard className="size-4" />
+                  Credit Card
+                </span>
               </TabsTrigger>
             )}
           </TabsList>
