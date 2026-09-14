@@ -380,7 +380,7 @@ describe("interactive partner payment PostgreSQL boundary", () => {
     expect(quote.partnerEvidence).toEqual([expect.objectContaining({ recipientBowlerId: scenario.partnerBowlerId, role: "partner", paymentLinkId: scenario.acceptedLinkId })]);
     expect(quote.partnerEvidence[0]?.linkFingerprint).toBe(scenario.acceptedLinkFingerprint);
     expect(quote.partnerEvidence.some((row) => row.role === "self")).toBe(false);
-    const result = await chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: scenario.payerBowlerId, request: { recipients, sourceId: "cnon:partner-only", sourceKind: "new_card", idempotencyKey: `partner-only-${suffix}`, requestFingerprint: quote.fingerprint } });
+    const result = await chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: scenario.payerBowlerId, request: { recipients, sourceId: "cnon:partner-only", sourceKind: "new_card", idempotencyKey: `interactive-partner-only-${suffix}`, requestFingerprint: quote.fingerprint } });
     expect(result.status).toBe("succeeded");
     const snapshot = required((await db.select({ partnerEvidence: paymentOperationRosterSnapshots.partnerEvidence }).from(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.leagueId, scenario.leagueId)))[0], "partner snapshot");
     expect(snapshot.partnerEvidence).toEqual([expect.objectContaining({ recipientBowlerId: scenario.partnerBowlerId, role: "partner" })]);
@@ -390,7 +390,7 @@ describe("interactive partner payment PostgreSQL boundary", () => {
     const scenario = await createScenario("unlink-replay");
     const recipients = [selection(scenario.partnerBowlerId)];
     const quote = await quoteInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, payerBowlerId: scenario.payerBowlerId, recipients });
-    const request = { recipients, sourceId: "cnon:unlink-replay", sourceKind: "new_card" as const, idempotencyKey: `unlink-replay-${suffix}`, requestFingerprint: quote.fingerprint };
+    const request = { recipients, sourceId: "cnon:unlink-replay", sourceKind: "new_card" as const, idempotencyKey: `interactive-unlink-replay-${suffix}`, requestFingerprint: quote.fingerprint };
     const first = await chargeInteractivePartnerPayments({ organizationId, leagueId: scenario.leagueId, actorUserId, payerBowlerId: scenario.payerBowlerId, request });
     expect(first.status).toBe("succeeded");
     const callsAfterFirstCharge = provider.processCalls.length;
