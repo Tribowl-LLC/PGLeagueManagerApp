@@ -246,4 +246,33 @@ describe("PaymentDetailsDialog", () => {
     expect(open).toHaveBeenCalledWith("https://receipt.example.test", "_blank", "noopener,noreferrer");
     open.mockRestore();
   });
+
+  it("hides receipts when the evidence projection disallows opening them", () => {
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={{ ...evidence, receipt: { ...evidence.receipt, canOpenReceipt: false } }}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      onClose={() => {}}
+    />);
+
+    expect(screen.queryByRole("button", { name: "Receipt" })).not.toBeInTheDocument();
+  });
+
+  it("keeps payer receipt lookup available for lazy backfill", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    mocks.csrfFetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: { receiptUrl: "https://receipt.example.test" } }), { status: 200 }));
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={{ ...evidence, receipt: { ...evidence.receipt, availability: "unavailable", canOpenReceipt: true } }}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      onClose={() => {}}
+    />);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Receipt" }));
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt"));
+    expect(open).toHaveBeenCalledWith("https://receipt.example.test", "_blank", "noopener,noreferrer");
+    open.mockRestore();
+  });
 });

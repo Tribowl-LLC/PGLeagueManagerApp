@@ -19,8 +19,6 @@ type Props = {
   title?: string;
 };
 
-type DisplayPaymentRow = CanonicalPaymentRow & { paidByName?: string | null };
-
 function formatLocalDate(value: string, timezone = "UTC"): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
   if (match && value.length <= 10) {
@@ -89,7 +87,7 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
                 const displayStatus = paymentEvidenceDisplayStatus(row);
                 const reviewRequired = row.reviewRequired || row.dispute.reviewRequired === true;
                 const hasSeparateReviewIndicator = reviewRequired && displayStatus !== "Review required";
-                const paidByName = (row as DisplayPaymentRow).paidByName;
+                const paidByName = row.paidByName;
                 return (
                   <TableRow key={`${row.paymentOperationId ?? row.paymentId ?? "unresolved"}:${row.bowlerId}:${index}`}>
                     <TableCell className="whitespace-nowrap">

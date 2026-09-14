@@ -368,6 +368,7 @@ export default function MakePaymentPage() {
 
   useEffect(() => {
     participantSnapshotRef.current = null;
+    participantRefreshBaselineRef.current = null;
     setSelectionStale(false);
     setSelectedRecipients({});
     setRecipientWeeks({});
@@ -657,7 +658,7 @@ export default function MakePaymentPage() {
   if (!league || leagueId === undefined || !bowlerId) return <MakePaymentReadError message="Payment information is unavailable. Try again or view payment history." onRetry={() => { void refetchDetails(); void refetchParticipants(); }} leagueId={selectedLeagueId ?? undefined} />;
 
   const hasEligibleParticipant = participants.some((participant) => participant.eligible && participant.remainingMinor > 0);
-  const isPaidInFull = selfParticipant !== undefined && !hasEligibleParticipant && selfParticipant.remainingMinor <= 0;
+  const isNoBalanceAvailable = selfParticipant !== undefined && !hasEligibleParticipant && selfParticipant.remainingMinor <= 0;
   const breakdownRows: PaymentBreakdownRow[] = quote?.recipients?.map((row) => ({
     bowlerId: row.bowlerId,
     name: row.name,
@@ -679,7 +680,7 @@ export default function MakePaymentPage() {
         {hasMultipleLeagues ? <button type="button" onClick={() => setLeagueSheetOpen(true)} className="flex items-center gap-1 text-slate-500 hover:text-slate-700 transition-colors">{league.name}<span aria-hidden="true">⌄</span></button> : <p className="text-muted-foreground">{league.name}</p>}
       </div>
       <ErrorBoundary level="section">
-        {isRecoveryBlocked ? <div role="status" className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-6 text-center"><h2 className="text-lg font-semibold">Payment confirmation in progress</h2><p className="mt-1 text-sm text-muted-foreground">Your previous payment is still being confirmed. Check its status before trying another card.</p><button type="button" className="mt-3 text-sm underline" onClick={() => setRecoveryRetry((value) => value + 1)}>Check payment status again</button></div> : isPaidInFull ? <div className="rounded-lg border border-green-500/50 bg-green-500/5 p-6 text-center"><h2 className="text-lg font-semibold text-green-700">Season Paid in Full</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
+        {isRecoveryBlocked ? <div role="status" className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-6 text-center"><h2 className="text-lg font-semibold">Payment confirmation in progress</h2><p className="mt-1 text-sm text-muted-foreground">Your previous payment is still being confirmed. Check its status before trying another card.</p><button type="button" className="mt-3 text-sm underline" onClick={() => setRecoveryRetry((value) => value + 1)}>Check payment status again</button></div> : isNoBalanceAvailable ? <div role="status" className="rounded-lg border bg-muted/30 p-6 text-center"><h2 className="text-lg font-semibold">No one-time balance available</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
           key={oneTimeCardEditorKey}
           paymentAmountMinor={paymentAmountMinor}
           fullBalanceOnly={fullBalanceOnly}

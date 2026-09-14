@@ -255,12 +255,14 @@ describe("MakePaymentPage upfront payment mode", () => {
     });
   });
 
-  it("keeps the paid-in-full state free of one-time and automatic-payment cards", async () => {
+  it("shows a neutral no-balance state for a self participant with no obligations", async () => {
     mocks.setPaidInFull(true);
     render(<MakePaymentPage />);
 
     await waitFor(() => expect(mocks.query).toHaveBeenCalled());
-    expect(document.body).toHaveTextContent("Season Paid in Full");
+    expect(document.body).toHaveTextContent("No one-time balance available");
+    expect(document.body).toHaveTextContent("There is no remaining one-time balance.");
+    expect(document.body).not.toHaveTextContent("Season Paid in Full");
     expect(mocks.oneTimePaymentCard).not.toHaveBeenCalled();
     expect(mocks.standingAutopayCard).not.toHaveBeenCalled();
     expect(mocks.standingQueryCalls).toHaveLength(0);

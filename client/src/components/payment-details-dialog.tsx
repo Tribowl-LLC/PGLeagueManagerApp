@@ -21,19 +21,6 @@ type Props = {
   onClose: () => void;
 };
 
-// The ordinary-reader F5 response intentionally has a different shape from
-// the admin/payer allocation projection. Keep the UI permissive for the
-// server-added safe name fields without widening the shared contract locally.
-type DisplayAllocation = CanonicalPaymentRow["allocations"][number] & { bowlerName?: string | null };
-type DisplayAppliedTo = NonNullable<CanonicalPaymentRow["appliedTo"]>[number] & { bowlerName?: string | null };
-type DisplayReceipt = CanonicalPaymentRow["receipt"] & { canOpenReceipt?: boolean | null };
-type DisplayEvidence = Omit<CanonicalPaymentRow, "allocations" | "appliedTo"> & {
-  allocations: DisplayAllocation[];
-  appliedTo?: DisplayAppliedTo[];
-  receipt: DisplayReceipt;
-  paidByName?: string | null;
-};
-
 export function formatPaymentEvidenceStatus(status: CanonicalPaymentRow["status"]): string {
   switch (status) {
     case "confirmed_paid": return "Confirmed paid";
@@ -93,16 +80,15 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     && (evidence.paymentType === "cash" || evidence.paymentType === "check")
     && evidence.allocations.some((allocation) => allocation.state === "active");
   const displayStatus = paymentEvidenceDisplayStatus(evidence);
-  const displayEvidence = evidence as DisplayEvidence;
   // The server marks ordinary-reader partner rows with canOpenReceipt=false.
   // Do not infer permission from cached URL availability: payer/admin rows may
   // legitimately lazy-backfill a receipt when the URL is not cached yet.
   const canOpenReceipt = evidence.paymentId !== null
     && ["confirmed_paid", "refunded", "disputed"].includes(evidence.status)
-    && displayEvidence.receipt.canOpenReceipt !== false;
-  const appliedAllocations: Array<DisplayAllocation | DisplayAppliedTo> = displayEvidence.allocations.length > 0
-    ? displayEvidence.allocations
-    : (displayEvidence.appliedTo ?? []);
+    && evidence.receipt.canOpenReceipt !== false;
+  const appliedAllocations = evidence.allocations.length > 0
+    ? evidence.allocations
+    : (evidence.appliedTo ?? []);
   const hasRecipientNames = appliedAllocations.some((allocation) => Boolean(allocation.bowlerName?.trim()));
 
   const openReceipt = async () => {
@@ -169,7 +155,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
           <div><dt className="text-muted-foreground">Collected</dt><dd>{formatLocalDate(evidence.authoritativeLocalDate)}</dd></div>
           <div><dt className="text-muted-foreground">{hasRecipientNames ? "Payment total" : "Paid for"}</dt><dd>{formatCurrency(evidence.amountMinor, evidence.currency)}</dd></div>
           <div><dt className="text-muted-foreground">Payment type</dt><dd>{paymentTypeLabel(evidence.paymentType, payment?.checkNumber)}</dd></div>
-          {displayEvidence.paidByName && <div><dt className="text-muted-foreground">Paid by</dt><dd>{displayEvidence.paidByName}</dd></div>}
+          {evidence.paidByName && <div><dt className="text-muted-foreground">Paid by</dt><dd>{evidence.paidByName}</dd></div>}
           <div>
             <dt className="text-muted-foreground">Settlement</dt>
             <dd className="flex flex-wrap gap-1">
