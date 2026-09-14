@@ -106,7 +106,7 @@ describe("F5 canonical payment report route", () => {
       dispute: { present: false, amountMinor: 0, disputeId: null },
       unresolved: false,
       initiatingPayerBowlerId: 42,
-      receipt: { contractVersion: "payment-receipt/1", availability: "available", receiptUrl: "https://receipt.secret", receiptNumber: "R-21", deliveryEvidence: "delivery_not_recorded" },
+      receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded" },
       allocations: [{ allocationId: "allocation-secret", obligationId: "obligation-secret", occurrenceId: "occurrence-secret", bowlerId: 43, amountMinor: 3_000, currency: "USD", state: "active" }],
     };
     mocks.readReport.mockResolvedValue({
@@ -131,12 +131,12 @@ describe("F5 canonical payment report route", () => {
     const partnerResponse = await get("/payments?leagueId=7", user("user", 11, 43));
     expect(partnerResponse.status).toBe(200);
     const partnerReceipt = (await partnerResponse.json()).data.rows[0].receipt;
-    expect(partnerReceipt).toMatchObject({ availability: "unavailable", receiptUrl: null, receiptNumber: null });
+    expect(partnerReceipt).toMatchObject({ availability: "unavailable", canOpenReceipt: false, receiptUrl: null, receiptNumber: null });
 
     const payerResponse = await get("/payments?leagueId=7", user("user", 11, 42));
     expect(payerResponse.status).toBe(200);
     const payerReceipt = (await payerResponse.json()).data.rows[0].receipt;
-    expect(payerReceipt).toMatchObject({ availability: "available", receiptUrl: null, receiptNumber: null });
+    expect(payerReceipt).toMatchObject({ availability: "unavailable", canOpenReceipt: true, receiptUrl: null, receiptNumber: null });
   });
 
   it("returns stable incompatibility without falling back", async () => {

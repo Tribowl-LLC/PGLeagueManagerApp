@@ -18,6 +18,8 @@ export type CanonicalPaymentEvidenceStatus =
 export interface CanonicalPaymentReceiptSummary {
   contractVersion: "payment-receipt/1";
   availability: "available" | "unavailable";
+  /** Whether this viewer may open or lazily fetch the provider receipt. */
+  canOpenReceipt?: boolean;
   receiptUrl: string | null;
   receiptNumber: string | null;
   deliveryEvidence: "delivery_not_recorded";
