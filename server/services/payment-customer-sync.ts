@@ -83,13 +83,10 @@ export async function syncBowlerForUser(
   if (!contactEmail) return 'skipped';
 
   let resolvedSquareLocationId: number | null = null;
-  const hasRecordedProviderLocation = Boolean(
-    contactSource === 'bowler' &&
-    bowler.paymentCustomerId &&
-    bowler.paymentProviderLocationId,
-  );
-  if (hasRecordedProviderLocation) {
-    const recordedLocationId = bowler.paymentProviderLocationId!;
+  const recordedLocationId = contactSource === 'bowler'
+    ? bowler.paymentProviderLocationId
+    : null;
+  if (bowler.paymentCustomerId && recordedLocationId) {
     const locationCreds = await storage.getLocationSquareConfig(recordedLocationId);
     if ((locationCreds?.accessToken ?? '').trim().length === 0) {
       log.warn('Bowler payment sync: recorded provider location is not configured, skipping', {
