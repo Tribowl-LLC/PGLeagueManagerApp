@@ -333,7 +333,7 @@ export default function MakePaymentPage() {
   const participantRefreshBaselineRef = useRef<InteractivePaymentParticipant[] | null>(null);
   const recoveryRefreshKeyRef = useRef<string | null>(null);
   const quoteRefreshKeyRef = useRef<string | null>(null);
-  const pendingPaymentRefreshIdentityRef = useRef<{ scope: string; requestKey: string } | null>(null);
+  const pendingPaymentRefreshIdentityRef = useRef<{ scope: string; requestKey: string; affectedBowlerIds: number[] } | null>(null);
   const successfulPaymentUiCompletedKeyRef = useRef<string | null>(null);
   const paymentModeRef = useRef(paymentMode);
   paymentModeRef.current = paymentMode;
@@ -399,6 +399,13 @@ export default function MakePaymentPage() {
       return false;
     }
   }, [applyParticipantSelection, bowlerId, leagueId]);
+
+  useEffect(() => {
+    // A successful quote ends the stale quote episode. Keep the guard armed
+    // while the same stale response persists after a refresh, otherwise this
+    // effect would continuously refetch the same failing quote.
+    if (!quoteError && quote) quoteRefreshKeyRef.current = null;
+  }, [quote, quoteError]);
 
   useEffect(() => {
     if (participants.length === 0) return;
@@ -532,14 +539,19 @@ export default function MakePaymentPage() {
           }
         } else if (prepared.outcome === "succeeded") {
           setIsRecoveryBlocked(true);
-          const noticeKey = `${paymentIntentScope}:${prepared.requestKey}`;
+          const recoveredScope = prepared.scope ?? paymentIntentScope;
+          const noticeKey = `${recoveredScope}:${prepared.requestKey}`;
           if (recoveryRefreshKeyRef.current === noticeKey) return;
           recoveryRefreshKeyRef.current = noticeKey;
           if (recoveryNoticeRef.current !== noticeKey) {
             recoveryNoticeRef.current = noticeKey;
             toastRef.current({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
           }
-          const affectedIds = [...new Set([recoveryBowlerId, ...affectedBowlerIdsRef.current])];
+          const pending = pendingPaymentRefreshIdentityRef.current;
+          const affectedIds = pending?.scope === recoveredScope && pending.requestKey === prepared.requestKey
+            ? pending.affectedBowlerIds
+            : [...new Set([recoveryBowlerId, ...affectedBowlerIdsRef.current])];
+          pendingPaymentRefreshIdentityRef.current = { scope: recoveredScope, requestKey: prepared.requestKey, affectedBowlerIds: affectedIds };
           const refreshed = await refreshAfterPayment(affectedIds, { recovery: true });
           if (activeLeagueIdRef.current !== recoveryLeagueId) return;
           if (refreshed) {
@@ -548,6 +560,10 @@ export default function MakePaymentPage() {
             setWalletRecoveryReady(false);
             setIsRecoveryBlocked(false);
             recoveryRefreshKeyRef.current = null;
+            const pending = pendingPaymentRefreshIdentityRef.current;
+            if (pending?.scope === recoveredScope && pending.requestKey === prepared.requestKey) {
+              pendingPaymentRefreshIdentityRef.current = null;
+            }
           } else {
             recoveryRefreshKeyRef.current = null;
           }
@@ -634,13 +650,15 @@ export default function MakePaymentPage() {
   }, [participants, paymentMode]);
 
   const retryInteractivePaymentQuote = useCallback(() => {
+    quoteRefreshKeyRef.current = null;
     void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId ?? 0, "interactive-payment-quote/3"] });
   }, [leagueId]);
 
   const retryPaymentRefresh = useCallback(() => {
     const retryGeneration = pageGenerationRef.current;
     const pending = pendingPaymentRefreshIdentityRef.current;
-    void refreshAfterPayment([...new Set([bowlerId ?? 0, ...affectedBowlerIdsRef.current])].filter((id) => id > 0)).then((refreshed) => {
+    const affectedIds = pending?.affectedBowlerIds ?? [...new Set([bowlerId ?? 0, ...affectedBowlerIdsRef.current])].filter((id) => id > 0);
+    void refreshAfterPayment(affectedIds).then((refreshed) => {
       if (!refreshed || !pending || pendingPaymentRefreshIdentityRef.current !== pending || pageGenerationRef.current !== retryGeneration) return;
       clearPaymentIntent(pending.scope, pending.requestKey);
       pendingPaymentRefreshIdentityRef.current = null;
@@ -711,7 +729,7 @@ export default function MakePaymentPage() {
         throw error;
       }
       const affectedIds = [...new Set([bowlerId, ...recipientSelections.map((recipient) => recipient.bowlerId)])];
-      pendingPaymentRefreshIdentityRef.current = { scope, requestKey };
+      pendingPaymentRefreshIdentityRef.current = { scope, requestKey, affectedBowlerIds: affectedIds };
       recoveryRefreshKeyRef.current = `${scope}:${requestKey}`;
       completeSuccessfulPaymentUi({ identityKey: `${scope}:${requestKey}`, generation: paymentGeneration, leagueId: paymentLeagueId, description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.`, reinitializeEditor: false, refreshSavedCards: false });
       const refreshed = await refreshAfterPayment(affectedIds);
@@ -775,7 +793,7 @@ export default function MakePaymentPage() {
         toast({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
         const affectedIds = [...new Set([bowlerId, ...affectedBowlerIdsRef.current])];
         const recoveredScope = preparedIntent.scope ?? paymentIntentScope;
-        pendingPaymentRefreshIdentityRef.current = { scope: recoveredScope, requestKey: preparedIntent.requestKey };
+        pendingPaymentRefreshIdentityRef.current = { scope: recoveredScope, requestKey: preparedIntent.requestKey, affectedBowlerIds: affectedIds };
         recoveryRefreshKeyRef.current = `${recoveredScope}:${preparedIntent.requestKey}`;
         const refreshed = await refreshAfterPayment(affectedIds, { recovery: true });
         if (refreshed) {
@@ -815,7 +833,7 @@ export default function MakePaymentPage() {
       if (!response.ok) throw makeApiError(body, response.status, "Payment failed");
       assertRosterPaymentSucceeded(body.data?.status ?? body.status);
       const affectedIds = [...new Set([bowlerId, ...recipientSelections.map((recipient) => recipient.bowlerId)])];
-      pendingPaymentRefreshIdentityRef.current = { scope: paymentIntentScope, requestKey };
+      pendingPaymentRefreshIdentityRef.current = { scope: paymentIntentScope, requestKey, affectedBowlerIds: affectedIds };
       recoveryRefreshKeyRef.current = `${paymentIntentScope}:${requestKey}`;
       completeSuccessfulPaymentUi({
         identityKey: `${paymentIntentScope}:${requestKey}`,

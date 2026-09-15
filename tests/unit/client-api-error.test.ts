@@ -21,7 +21,7 @@ import {
   isSessionExpiredError,
 } from "@/lib/api-error";
 import { logger } from "@/lib/logger";
-import { apiRequest, queryClient, resetSessionExpiryRedirect, throwIfResNotOk } from "@/lib/queryClient";
+import { apiRequest, clearCsrfToken, csrfFetch, queryClient, resetSessionExpiryRedirect, throwIfResNotOk } from "@/lib/queryClient";
 import { financialReadErrorMessage } from "@/lib/financial-utils";
 
 afterEach(() => {
@@ -121,6 +121,31 @@ describe("client API error classification", () => {
     expect(isSessionExpiredError(new ApiError({ message: "provider rejected", status: 401 }))).toBe(false);
     expect(isSessionExpiredError(new ApiError({ message: "wrong password", status: 401, code: "INVALID_CREDENTIALS" }))).toBe(false);
     expect(isSessionExpiredError(new ApiError({ message: "auth required", status: 403, code: "AUTH_REQUIRED" }))).toBe(false);
+  });
+
+  it("preserves a worker network fallback while preventing a write without a CSRF token", async () => {
+    clearCsrfToken();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      success: false,
+      error: {
+        code: "NETWORK_UNAVAILABLE",
+        message: "Unable to connect. Check your connection and try again.",
+      },
+    }), { status: 503, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const failure = await csrfFetch("/api/payments", {
+      method: "POST",
+      body: JSON.stringify({ amountMinor: 100 }),
+    }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      status: 503,
+      code: "NETWORK_UNAVAILABLE",
+      message: "Unable to connect. Check your connection and try again.",
+    });
+    expect(classifyApiError(failure)).toBe("transport");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith("/api/csrf-token", { credentials: "include" });
   });
 
   it("preserves AUTH_REQUIRED details and redirects once per source location", async () => {

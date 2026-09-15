@@ -716,6 +716,7 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("replaces a wallet identity after a failed refresh before the next wallet payment", async () => {
     mocks.setParticipantRefreshMissing(true);
+    mocks.setIncludePartner(true);
     mocks.prepareRosterPaymentIntent
       .mockReset()
       .mockResolvedValueOnce({ requestKey: "wallet-old", outcome: "new" })
@@ -727,16 +728,22 @@ describe("MakePaymentPage upfront payment mode", () => {
       .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ data: { status: "succeeded" } }) });
 
     const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const selectionProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onRecipientToggle: (bowlerId: number, selected: boolean) => void };
+    act(() => { selectionProps.onRecipientToggle(84, true); });
     await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
     expect(mocks.walletOptions.onPaymentStarted?.()).toBe(true);
     await act(async () => { await mocks.walletOptions.onTokenReceived?.("wallet-source-1", "apple_pay"); });
     await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentRefreshState: "retry" }));
     expect(mocks.toast.mock.calls.filter(([value]) => (value as { title?: string }).title === "Payment Successful")).toHaveLength(1);
+    await waitFor(() => expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledWith(expect.anything(), 17, 84));
+    mocks.invalidatePaymentHistoryFinancials.mockClear();
 
     mocks.setParticipantRefreshMissing(false);
     const retryProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onRetryPaymentRefresh: () => void };
     await act(async () => { retryProps.onRetryPaymentRefresh(); });
     await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "wallet-old"));
+    expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledWith(expect.anything(), 17, 84);
     await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
     expect(mocks.walletOptions.onPaymentStarted?.()).toBe(true);
     await act(async () => { await mocks.walletOptions.onTokenReceived?.("wallet-source-2", "apple_pay"); });
@@ -777,5 +784,36 @@ describe("MakePaymentPage upfront payment mode", () => {
     }));
     expect(mocks.csrfFetch).not.toHaveBeenCalled();
     expect(mocks.tokenizeCard).not.toHaveBeenCalled();
+  });
+
+  it("bounds a persistent stale quote and re-arms after a successful quote", async () => {
+    const staleQuote = { code: "STALE_QUOTE", status: 409, message: "The quote is stale" };
+    mocks.setQuoteError(staleQuote);
+    const view = render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(1));
+    expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledWith(expect.anything(), 17, 42);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(1);
+
+    const quoteProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onRetryQuote: () => void };
+    act(() => { quoteProps.onRetryQuote(); });
+    // Model the refetch returning the same stale code after the explicit
+    // retry action; the changed error object reruns the page effect without
+    // changing the selection key.
+    mocks.setQuoteError({ ...staleQuote });
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(2);
+
+    mocks.setQuoteError(null);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ quoteError: null }));
+
+    mocks.setQuoteError(staleQuote);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(3));
+    view.unmount();
   });
 });
