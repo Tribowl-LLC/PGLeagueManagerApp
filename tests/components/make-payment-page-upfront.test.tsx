@@ -685,7 +685,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
 
     await act(async () => { resolveParticipants(); });
-    await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope"));
+    await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "refresh-request"));
   });
 
   it("fails closed when participant refresh returns no authoritative data", async () => {
@@ -736,6 +736,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setParticipantRefreshMissing(false);
     const retryProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onRetryPaymentRefresh: () => void };
     await act(async () => { retryProps.onRetryPaymentRefresh(); });
+    await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "wallet-old"));
     await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
     expect(mocks.walletOptions.onPaymentStarted?.()).toBe(true);
     await act(async () => { await mocks.walletOptions.onTokenReceived?.("wallet-source-2", "apple_pay"); });

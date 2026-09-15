@@ -718,7 +718,7 @@ export default function MakePaymentPage() {
       if (!refreshed) return;
       walletRequestKeyRef.current = null;
       setWalletRecoveryReady(false);
-      clearPaymentIntent(scope);
+      clearPaymentIntent(scope, requestKey);
       pendingPaymentRefreshIdentityRef.current = null;
       recoveryRefreshKeyRef.current = null;
     } catch (error) {
@@ -827,7 +827,7 @@ export default function MakePaymentPage() {
       });
       const refreshed = await refreshAfterPayment(affectedIds);
       if (!refreshed) return;
-      clearPaymentIntent(paymentIntentScope);
+      clearPaymentIntent(paymentIntentScope, requestKey);
       pendingPaymentRefreshIdentityRef.current = null;
       recoveryRefreshKeyRef.current = null;
     } catch (error) {

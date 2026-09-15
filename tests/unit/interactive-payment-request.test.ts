@@ -303,6 +303,20 @@ describe('interactive request-key recovery', () => {
     expect(csrfFetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('does not let delayed cleanup remove a replacement identity from the same scope', () => {
+    const values = installStorage();
+    const scope = interactivePaymentIntentScope({ actorUserId: 4, organizationId: 8, leagueId: 11, bowlerId: 42 });
+    const oldRequestKey = beginPaymentIntent(scope);
+    clearPaymentIntent(scope, oldRequestKey);
+    const newerRequestKey = beginPaymentIntent(scope);
+
+    // A late response from the first attempt must not clear a key that a
+    // second tab has already persisted for the same checkout scope.
+    clearPaymentIntent(scope, oldRequestKey);
+
+    expect(values.get(`leaguevault:payment-intent:v1:${scope}`)).toBe(newerRequestKey);
+  });
+
   it('exposes state-specific recovery messages and only accepts succeeded', () => {
     expect(rosterPaymentStatusMessage('provider_unknown')).toContain('still being confirmed');
     expect(rosterPaymentStatusMessage('action_required')).toContain('not completed');
