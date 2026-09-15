@@ -11,6 +11,7 @@ import {
   type Bowler,
 } from "@shared/schema";
 import { cacheInvalidate } from "../utils/cache.js";
+import { notifyPaymentSyncRetryChanged } from "./payment-sync-retry-scheduler";
 
 /** A transaction client accepted by the identity-link service. */
 export type IdentityLinkExecutor =
@@ -310,9 +311,16 @@ async function linkInTransaction(
 
   let linkedBowler = bowler;
   if (Object.keys(contactPatch).length > 0) {
+    const nowIso = new Date().toISOString();
     const [updatedBowler] = await executor
       .update(bowlers)
-      .set(contactPatch)
+      .set({
+        ...contactPatch,
+        paymentSyncPendingAt: nowIso,
+        paymentSyncAttempts: 0,
+        paymentSyncLastAttemptAt: null,
+        paymentSyncNextRetryAt: nowIso,
+      })
       .where(and(
         eq(bowlers.id, bowler.id),
         eq(bowlers.organizationId, input.organizationId),
@@ -358,6 +366,7 @@ export async function linkUserToBowler(
   if (!executor) {
     cacheInvalidate(`user:${result.user.id}`);
     cacheInvalidate("bowlers:");
+    notifyPaymentSyncRetryChanged();
   }
   return result;
 }

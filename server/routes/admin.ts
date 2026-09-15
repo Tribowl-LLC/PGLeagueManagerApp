@@ -22,6 +22,7 @@ import {
   IdentityLinkError,
   linkUserToBowler,
 } from '../services/identity-link.js';
+import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-scheduler';
 
 const log = createLogger("Admin");
 
@@ -475,6 +476,7 @@ router.post('/unclaimed-users/:userId/create-bowler', async (req, res) => {
 
     cacheInvalidate('bowlers:');
     cacheInvalidate(`user:${userId}`);
+    notifyPaymentSyncRetryChanged();
 
     const emailNotification = await notifyAccountReady({
       toEmail: result.user.email,
@@ -619,6 +621,7 @@ router.post('/unclaimed-users/:userId/link-existing', async (req, res) => {
 
     cacheInvalidate('bowlers:');
     cacheInvalidate(`user:${userId}`);
+    notifyPaymentSyncRetryChanged();
 
     const emailNotification = await notifyAccountReady({
       toEmail: result.user.email,

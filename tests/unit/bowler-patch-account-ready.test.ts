@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   getUserByEmail: vi.fn(),
   getOrganization: vi.fn(),
   getFirstSquareConfiguredLocation: vi.fn(),
+  getPaymentProvider: vi.fn(),
   linkUserToBowler: vi.fn(),
   sendAccountReadyEmail: vi.fn(),
 }));
@@ -76,7 +77,7 @@ vi.mock('../../server/services/bowler-deletion.js', () => ({
 }));
 
 vi.mock('../../server/services/payment-provider-factory', () => ({
-  getPaymentProvider: vi.fn(),
+  getPaymentProvider: mocks.getPaymentProvider,
   ProviderNotConfiguredError: class ProviderNotConfiguredError extends Error {},
 }));
 
@@ -264,5 +265,70 @@ describe('PATCH /api/bowlers/:id account-ready auto-link', () => {
     expect(response.status).toBe(200);
     expect(mocks.linkUserToBowler).toHaveBeenCalledTimes(1);
     expect(mocks.sendAccountReadyEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries the identity-link backfilled phone to the provider, the response, and the customer-id write', async () => {
+    const FRESH_PHONE = '+1-202-555-0142';
+    const QUEUE_PENDING_AT = '2026-09-15T12:00:00.000Z';
+    const linkedBowler = {
+      ...UPDATED_BOWLER,
+      phone: FRESH_PHONE,
+      // The identity-link service atomically resets the payment-sync queue
+      // when it backfills contact details; the route must carry those queue
+      // fields through to the provider sync and the customer-id write.
+      paymentSyncPendingAt: QUEUE_PENDING_AT,
+      paymentSyncAttempts: 0,
+      paymentSyncLastAttemptAt: null,
+      paymentSyncNextRetryAt: QUEUE_PENDING_AT,
+    };
+    const squareLocation = { id: 321 };
+    const createOrUpdateCustomer = vi.fn(async () => ({ id: 'sq_test_customer_1' }));
+    mocks.linkUserToBowler.mockResolvedValue({
+      user: { ...LINKED_USER },
+      bowler: linkedBowler,
+      oldBowler: null,
+      event: null,
+    });
+    mocks.getFirstSquareConfiguredLocation.mockResolvedValue(squareLocation);
+    mocks.getPaymentProvider.mockResolvedValue({ createOrUpdateCustomer });
+    // Model row updates like production: the persisted row carries what the
+    // route wrote, so the customer-id write returns the fresh contact details.
+    mocks.updateBowler.mockResolvedValueOnce({ ...UPDATED_BOWLER });
+    mocks.updateBowler.mockResolvedValueOnce({
+      ...linkedBowler,
+      paymentCustomerId: 'sq_test_customer_1',
+      paymentProviderLocationId: squareLocation.id,
+    });
+
+    const response = await patchEmail();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mocks.linkUserToBowler).toHaveBeenCalledTimes(1);
+    // The provider receives the backfilled phone, not the pre-link blank.
+    expect(createOrUpdateCustomer).toHaveBeenCalledTimes(1);
+    expect(createOrUpdateCustomer).toHaveBeenCalledWith(
+      UPDATED_BOWLER.name,
+      UPDATED_BOWLER.email,
+      FRESH_PHONE,
+      `bowler:${ORIGINAL_BOWLER.id}`,
+    );
+    // The PATCH response reflects the committed linked row.
+    expect(body).toEqual({
+      success: true,
+      data: expect.objectContaining({
+        id: ORIGINAL_BOWLER.id,
+        email: UPDATED_BOWLER.email,
+        phone: FRESH_PHONE,
+      }),
+    });
+    // The follow-up customer-id write spreads the fresh row (phone included)
+    // instead of the pre-link snapshot that would erase the backfill.
+    expect(mocks.updateBowler).toHaveBeenCalledTimes(2);
+    expect(mocks.updateBowler).toHaveBeenLastCalledWith(ORIGINAL_BOWLER.id, {
+      ...linkedBowler,
+      paymentCustomerId: 'sq_test_customer_1',
+      paymentProviderLocationId: squareLocation.id,
+    });
   });
 });

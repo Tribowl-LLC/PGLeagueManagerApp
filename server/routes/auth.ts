@@ -23,6 +23,7 @@ import {
   linkUserToBowler as linkIdentityUserToBowler,
   isIdentityLinkError,
 } from "../services/identity-link.js";
+import { notifyPaymentSyncRetryChanged } from "../services/payment-sync-retry-scheduler";
 import {
   type AccountActionWithUser,
 } from "../storage/account-action-requests.js";
@@ -873,6 +874,7 @@ export function registerAuthRoutes(app: Express): void {
                 // org/bowler association.
                 cacheInvalidate(`user:${authenticatedUser.id}`);
                 cacheInvalidate("bowlers:");
+                notifyPaymentSyncRetryChanged();
               }
             }
           }

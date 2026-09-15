@@ -269,6 +269,15 @@ describe("identity-link service", () => {
       const bowler = await createBowler("Contact Fill Bowler", organizationId, `contact-fill-bowler-${label}-${suffix}@example.com`);
       await db.update(bowlers).set({ email: blankEmail, phone: blankEmail }).where(eq(bowlers.id, bowler.id));
 
+      // Seed a stale payment-sync retry state so the link's atomic reset is
+      // proven: the link must clear it and re-stamp the queue.
+      const staleRetryAt = "2020-01-01T00:00:00.000Z";
+      await db.update(bowlers).set({
+        paymentSyncAttempts: 5,
+        paymentSyncLastAttemptAt: staleRetryAt,
+        paymentSyncNextRetryAt: null,
+      }).where(eq(bowlers.id, bowler.id));
+
       const result = await linkUserToBowler({
         organizationId,
         userId: user.id,
@@ -282,6 +291,18 @@ describe("identity-link service", () => {
       expect(result.bowler).not.toBeNull();
       expect(result.bowler?.email).toBe(filled.email);
       expect(result.bowler?.phone).toBe(filled.phone);
+      // The link's atomic reset re-queues the payment sync: the seeded
+      // stale retry state is cleared, and pending/next are stamped with the
+      // same nowIso on both the persisted and the returned row.
+      expect(filled.paymentSyncPendingAt).not.toBeNull();
+      expect(filled.paymentSyncNextRetryAt).not.toBeNull();
+      expect(filled.paymentSyncNextRetryAt).toBe(filled.paymentSyncPendingAt);
+      expect(filled.paymentSyncAttempts).toBe(0);
+      expect(filled.paymentSyncLastAttemptAt).toBeNull();
+      expect(result.bowler?.paymentSyncPendingAt).toBe(filled.paymentSyncPendingAt);
+      expect(result.bowler?.paymentSyncNextRetryAt).toBe(filled.paymentSyncNextRetryAt);
+      expect(result.bowler?.paymentSyncAttempts).toBe(0);
+      expect(result.bowler?.paymentSyncLastAttemptAt).toBeNull();
       const [linked] = await db.select({ bowlerId: users.bowlerId }).from(users).where(eq(users.id, user.id));
       expect(linked.bowlerId).toBe(bowler.id);
     },
@@ -307,6 +328,12 @@ describe("identity-link service", () => {
     expect(preserved.email).toBe(bowlerEmail);
     expect(preserved.phone).toBe(bowlerPhone);
     expect(preserved.name).toBe(`Contact Preserve Bowler ${suffix}`);
+    // Nothing was backfilled, so the payment-sync retry queue must be left
+    // untouched at its defaults (no atomic reset ran).
+    expect(preserved.paymentSyncPendingAt).toBeNull();
+    expect(preserved.paymentSyncAttempts).toBe(0);
+    expect(preserved.paymentSyncLastAttemptAt).toBeNull();
+    expect(preserved.paymentSyncNextRetryAt).toBeNull();
     const [linked] = await db.select({ bowlerId: users.bowlerId }).from(users).where(eq(users.id, user.id));
     expect(linked.bowlerId).toBe(bowler.id);
   });
@@ -363,6 +390,12 @@ describe("identity-link service", () => {
     const [bowlerRow] = await db.select().from(bowlers).where(eq(bowlers.id, bowler.id));
     expect(bowlerRow.email).toBe("");
     expect(bowlerRow.phone).toBeNull();
+    // The atomic reset that ran inside the transaction must roll back with
+    // the rest of the failed work, restoring the pre-link retry state.
+    expect(bowlerRow.paymentSyncPendingAt).toBeNull();
+    expect(bowlerRow.paymentSyncNextRetryAt).toBeNull();
+    expect(bowlerRow.paymentSyncAttempts).toBe(0);
+    expect(bowlerRow.paymentSyncLastAttemptAt).toBeNull();
     const userEvents = await db.select().from(identityLinkEvents).where(eq(identityLinkEvents.userId, user.id));
     expect(userEvents).toHaveLength(0);
     const bowlerEvents = await db.select().from(identityLinkEvents).where(eq(identityLinkEvents.bowlerId, bowler.id));

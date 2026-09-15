@@ -758,6 +758,12 @@ router.patch("/:id", async (req, res) => {
             if (!linked.user || !linked.bowler) {
               throw new Error('Identity link did not return the linked rows');
             }
+            // The identity service backfills contact details the matched
+            // account already carries (e.g. a phone) while both rows are
+            // locked. Adopt the committed row so the provider sync below and
+            // any follow-up storage write carry the fresh contact details
+            // instead of the pre-link `updated` snapshot.
+            updated = linked.bowler;
             const organization = await storage.getOrganization(linked.bowler.organizationId);
             try {
               await sendAccountReadyEmail({
@@ -779,7 +785,7 @@ router.patch("/:id", async (req, res) => {
       const nameChanged = bowler.name !== updated.name;
       const needsSquareSync = !updated.paymentCustomerId || emailChanged || nameChanged;
 
-      if (needsSquareSync) {
+      if (needsSquareSync && updated.email) {
         try {
           const patchOrgId = req.user?.organizationId;
           const patchSquareLocation = patchOrgId ? await storage.getFirstSquareConfiguredLocation(patchOrgId) : null;
