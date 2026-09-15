@@ -123,10 +123,25 @@ export const bowlerLeagues = pgTable("bowler_leagues", {
 const baseBowlerSchema = createInsertSchema(bowlers);
 const baseBowlerLeagueSchema = createInsertSchema(bowlerLeagues);
 
+// Bowler phone: optional leading '+', then digits, spaces, parentheses,
+// dots, and hyphens, with 9-16 digits total. Empty string clears the
+// value; anything else (emails, letters, other symbols) is rejected.
+const bowlerPhoneSchema = z
+  .string()
+  .trim()
+  .refine(
+    (value) =>
+      value === '' ||
+      (/^\+?[\d\s().-]+$/.test(value) &&
+        (value.match(/\d/g) ?? []).length >= 9 &&
+        (value.match(/\d/g) ?? []).length <= 16),
+    { message: 'Enter a valid phone number' }
+  );
+
 export const insertBowlerSchema = baseBowlerSchema.extend({
   name: nameSchema,
   email: z.union([emailSchema, z.literal("")]).optional().nullable(),
-  phone: z.string().nullable().optional(),
+  phone: bowlerPhoneSchema.nullable().optional(),
   active: z.boolean().default(true),
   order: z.number().min(0).default(0),
   // Server stamps this from the caller's org in every creation route;
@@ -155,7 +170,7 @@ export const insertBowlerLeagueSchema = baseBowlerLeagueSchema.extend({
 export const updateBowlerSchema = z.object({
   name: nameSchema,
   email: z.union([emailSchema, z.literal("")]).nullable(),
-  phone: z.string().nullable(),
+  phone: bowlerPhoneSchema.nullable(),
   active: z.boolean(),
   order: z.number().min(0),
   paymentCustomerId: z.string().nullable(),
