@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
   let paymentMode: "upfront" | "weekly" = "upfront";
   let paidInFull = false;
   let zeroParticipants = false;
+  let includePartner = false;
   let remainingMinor = 8_750;
   const csrfFetch = vi.fn();
   const tokenizeCard = vi.fn();
@@ -75,7 +76,16 @@ const mocks = vi.hoisted(() => {
         : [1, 2, 3].map((weeks) => ({ weeks, amountMinor: weeks * 1_000 })),
       eligible: !paidInFull,
       reason: paidInFull ? "No remaining balance" : null,
-    }],
+    }, ...(includePartner ? [{
+      bowlerId: 84,
+      name: "Partner",
+      role: "partner" as const,
+      remainingMinor: 6_000,
+      pastDueMinor: 0,
+      weeklyOptions: [{ weeks: 1, amountMinor: 6_000 }],
+      eligible: true,
+      reason: null,
+    }] : [])],
   });
   const query = vi.fn(({ queryKey }: { queryKey: unknown[] }) => {
     const key = String(queryKey[0]);
@@ -170,6 +180,7 @@ const mocks = vi.hoisted(() => {
     setPaymentMode: (mode: "upfront" | "weekly") => { paymentMode = mode; },
     setPaidInFull: (value: boolean) => { paidInFull = value; },
     setZeroParticipants: (value: boolean) => { zeroParticipants = value; },
+    setIncludePartner: (value: boolean) => { includePartner = value; },
     setRemainingBalance: (value: number) => { remainingMinor = value; },
     setQuoteFetching: (value: boolean) => { quoteFetching = value; },
     setQuoteError: (value: { code: string; message: string; status: number } | null) => { quoteError = value; },
@@ -254,6 +265,7 @@ afterEach(() => {
   mocks.setPaymentMode("upfront");
   mocks.setPaidInFull(false);
   mocks.setZeroParticipants(false);
+  mocks.setIncludePartner(false);
   mocks.setRemainingBalance(8_750);
   mocks.setQuoteFetching(false);
   mocks.setQuoteError(null);
@@ -272,6 +284,88 @@ afterEach(() => {
 });
 
 describe("MakePaymentPage upfront payment mode", () => {
+  it("passes a payable solo self participant as selected by default", async () => {
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      recipientRows: [expect.objectContaining({ bowlerId: 42, role: "self", selected: true })],
+    });
+  });
+
+  it("keeps the solo self selected after a selected partner is removed, while stale guard blocks charging", async () => {
+    mocks.setIncludePartner(true);
+    const view = render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    let props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
+      recipientRows: Array<{ bowlerId: number; selected: boolean }>;
+      onRecipientToggle: (bowlerId: number, selected: boolean) => void;
+      onResetRecipientSelection: () => void;
+    };
+    expect(props.recipientRows).toEqual([
+      expect.objectContaining({ bowlerId: 42, selected: true }),
+      expect.objectContaining({ bowlerId: 84, selected: false }),
+    ]);
+
+    act(() => {
+      props.onRecipientToggle(42, false);
+      props.onRecipientToggle(84, true);
+    });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      recipientRows: [
+        expect.objectContaining({ bowlerId: 42, selected: false }),
+        expect.objectContaining({ bowlerId: 84, selected: true }),
+      ],
+    }));
+
+    mocks.setIncludePartner(false);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: true }));
+    props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof props;
+    expect(props.recipientRows).toEqual([expect.objectContaining({ bowlerId: 42, selected: true })]);
+
+    act(() => { props.onResetRecipientSelection(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: false }));
+    expect((mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof props).recipientRows).toEqual([
+      expect.objectContaining({ bowlerId: 42, selected: true }),
+    ]);
+    view.unmount();
+  });
+
+  it("keeps the reselected solo self basket guarded when both recipients were unchecked", async () => {
+    mocks.setIncludePartner(true);
+    const view = render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    let props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
+      recipientRows: Array<{ bowlerId: number; selected: boolean }>;
+      onRecipientToggle: (bowlerId: number, selected: boolean) => void;
+    };
+    act(() => { props.onRecipientToggle(42, false); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      recipientRows: [
+        expect.objectContaining({ bowlerId: 42, selected: false }),
+        expect.objectContaining({ bowlerId: 84, selected: false }),
+      ],
+    }));
+
+    mocks.setIncludePartner(false);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      selectionStale: false,
+      recipientRows: [expect.objectContaining({ bowlerId: 42, selected: true })],
+    }));
+
+    mocks.setRemainingBalance(5_750);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: true }));
+    expect((mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof props).recipientRows).toEqual([
+      expect.objectContaining({ bowlerId: 42, selected: true, remainingMinor: 5_750 }),
+    ]);
+    view.unmount();
+  });
+
   it("does not mount StandingAutopayCard or issue standing-autopay queries", async () => {
     const view = render(<MakePaymentPage />);
 
