@@ -94,31 +94,33 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   cardCallbackRef.current = (el) => { if (el && cardMode === "new" && cardEditorMode === "one-time") void initializeCard(el); };
   const paymentInFlight = isSubmitting || isWalletProcessing;
   const showWallet = applePayAvailable || googlePayAvailable;
+  const hasPaymentPartner = recipientRows.some((row) => row.role === "partner");
   const hasSelectedRecipient = recipientRows.some((row) => row.selected);
+  const selectionStaleMessage = "The available bowler or payment details changed while this page was open. Review the available bowler and payment details before paying.";
 
   return (
     <Card data-testid="one-time-payment-card">
       <CardHeader>
         <CardTitle>One-Time Payment</CardTitle>
-        {!fullBalanceOnly && <CardDescription>Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.</CardDescription>}
+        {hasPaymentPartner && !fullBalanceOnly && <CardDescription>Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.</CardDescription>}
       </CardHeader>
       <CardContent spacing="normal">
         <fieldset className="flex flex-col gap-3" aria-label="Payment recipients">
-              <legend className="text-sm font-medium">Who would you like to pay?</legend>
+              {hasPaymentPartner && <legend className="text-sm font-medium">Who would you like to pay?</legend>}
               {recipientRows.map((row) => (
                 <div key={row.bowlerId} className="rounded-md border bg-muted/50 p-4" data-testid={`payment-recipient-${row.bowlerId}`}>
                   <div className="flex items-start gap-3">
-                    <Checkbox
-                      id={`payment-recipient-${row.bowlerId}-checkbox`}
-                      checked={row.selected}
-                      disabled={paymentInFlight || !row.eligible}
-                      onCheckedChange={(checked) => onRecipientToggle(row.bowlerId, checked === true)}
-                      aria-label={`Pay ${row.name}`}
-                    />
+                    {hasPaymentPartner && <Checkbox
+                        id={`payment-recipient-${row.bowlerId}-checkbox`}
+                        checked={row.selected}
+                        disabled={paymentInFlight || !row.eligible}
+                        onCheckedChange={(checked) => onRecipientToggle(row.bowlerId, checked === true)}
+                        aria-label={`Pay ${row.name}`}
+                      />}
                     <div className="min-w-0 flex-1">
-                      <Label htmlFor={`payment-recipient-${row.bowlerId}-checkbox`} size="sm" weight="semibold" className="cursor-pointer">
-                        {row.name}{row.role === "self" ? " (You)" : " (Partner)"}
-                      </Label>
+                      {hasPaymentPartner ? <Label htmlFor={`payment-recipient-${row.bowlerId}-checkbox`} size="sm" weight="semibold" className="cursor-pointer">
+                          {row.name}{row.role === "self" ? " (You)" : " (Partner)"}
+                        </Label> : <span className="text-sm font-semibold">{row.name}{row.role === "self" ? " (You)" : " (Partner)"}</span>}
                       <div className="mt-1 flex flex-col gap-1 text-xs text-muted-foreground sm:flex-row sm:gap-4">
                         <span>Remaining balance: {formatCurrency(row.remainingMinor)}</span>
                         <span>Past due: {formatCurrency(row.pastDueMinor)}</span>
@@ -145,8 +147,9 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
                 </div>
               ))}
         </fieldset>
-        {!hasSelectedRecipient && <Alert><AlertDescription>Select at least one recipient to continue.</AlertDescription></Alert>}
-        {selectionStale && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>The payment choices changed while this page was open. Review the recipients and week counts before paying.</span>{onResetRecipientSelection && <Button type="button" variant="outline" size="sm" onClick={onResetRecipientSelection}>Reset choices</Button>}</AlertDescription></Alert>}
+        {recipientRows.length === 0 && <Alert><AlertDescription>No payment recipients are available for this league.</AlertDescription></Alert>}
+        {hasPaymentPartner && !hasSelectedRecipient && <Alert><AlertDescription>Select at least one recipient to continue.</AlertDescription></Alert>}
+        {selectionStale && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{selectionStaleMessage}</span>{onResetRecipientSelection && <Button type="button" variant="outline" size="sm" onClick={onResetRecipientSelection}>Reset choices</Button>}</AlertDescription></Alert>}
         {quoteError && <Alert variant="destructive"><AlertDescription>{quoteError}</AlertDescription></Alert>}
         <div className="flex flex-col gap-2 rounded-md border bg-muted/50 p-4" aria-live="polite" data-testid="payment-breakdown">
           <div className="flex items-center justify-between">

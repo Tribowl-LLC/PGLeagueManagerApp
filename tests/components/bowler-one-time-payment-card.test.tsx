@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
 import { BowlerOneTimePaymentCard, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
 
-function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false) {
+function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[]) {
   const applePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const googlePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const onRecipientToggle = vi.fn();
@@ -51,8 +51,9 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     bowlerHasEmail
     receiptEmail=""
     onReceiptEmailChange={vi.fn()}
-    recipientRows={[recipient, ...additionalRows]}
+    recipientRows={recipientRowsOverride ?? [recipient, ...additionalRows]}
     breakdownRows={breakdownRows}
+    selectionStale={selectionStale}
     onRecipientToggle={onRecipientToggle}
     onRecipientWeeksChange={onRecipientWeeksChange}
   />);
@@ -60,10 +61,21 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
 }
 
 describe("BowlerOneTimePaymentCard payment mode", () => {
+  it("explains when the participant projection is empty without showing an impossible chooser action", () => {
+    renderCard(false, { amountMinor: 0 }, [], [], false, false, []);
+
+    expect(screen.getByText("No payment recipients are available for this league.")).toBeInTheDocument();
+    expect(screen.queryByText("Select at least one recipient to continue.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pay $0.00" })).toBeDisabled();
+  });
+
   it("shows the selected recipient full balance for an upfront league", () => {
     renderCard(true);
 
     expect(screen.getByText("Bowler (You)")).toBeInTheDocument();
+    expect(screen.queryByText("Who would you like to pay?")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Pay Bowler" })).not.toBeInTheDocument();
+    expect(document.querySelectorAll("label[for^='payment-recipient-']")).toHaveLength(0);
     expect(screen.getByText("Remaining balance: $87.50")).toBeInTheDocument();
     expect(screen.getByText("Past due: $25.00")).toBeInTheDocument();
     expect(screen.getByText("Full Season Remaining Balance")).toBeInTheDocument();
@@ -71,21 +83,25 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.queryByRole("button", { name: /one more week/i })).not.toBeInTheDocument();
     expect(screen.getByText("Full Season Remaining Balance").parentElement).toHaveTextContent("$87.50");
     expect(screen.getByRole("button", { name: "Pay $87.50" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Save this card for future payments" })).not.toBeChecked();
   });
 
-  it("keeps independent weekly selection controls in the shared recipient list", () => {
+  it("automatically selects a solo bowler while keeping independent weekly controls", () => {
     const { onRecipientToggle, onRecipientWeeksChange } = renderCard(false);
 
-    expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeChecked();
+    expect(screen.queryByText("Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Who would you like to pay?")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Pay Bowler" })).not.toBeInTheDocument();
+    expect(document.querySelectorAll("label[for^='payment-recipient-']")).toHaveLength(0);
     expect(screen.getByRole("button", { name: "Pay Bowler for one fewer week" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pay Bowler for one more week" })).toBeInTheDocument();
     expect(screen.getByRole("status", { name: "Number of weeks to pay for Bowler" })).toHaveTextContent("3");
     expect(screen.getByText("Remaining balance: $87.50")).toBeInTheDocument();
+    expect(screen.queryByText("Select at least one recipient to continue.")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Pay Bowler" }));
-    expect(onRecipientToggle).toHaveBeenCalledWith(42, false);
     fireEvent.click(screen.getByRole("button", { name: "Pay Bowler for one fewer week" }));
     expect(onRecipientWeeksChange).toHaveBeenCalledWith(42, 2);
+    expect(onRecipientToggle).not.toHaveBeenCalled();
   });
 
   it("shows partner identity and server-projected covered weeks without exposing allocation ids", () => {
@@ -138,8 +154,51 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(onRecipientWeeksChange).toHaveBeenCalledWith(84, 3);
   });
 
+  it("keeps the chooser when a partner is present but not payable", () => {
+    const partner: PaymentRecipientRow = {
+      bowlerId: 84,
+      name: "Alex Partner",
+      role: "partner",
+      remainingMinor: 0,
+      pastDueMinor: 0,
+      weeks: 1,
+      maximumWeekCount: 1,
+      amountMinor: 0,
+      selected: false,
+      eligible: false,
+      reason: "No remaining balance",
+    };
+    renderCard(false, {}, [partner]);
+
+    expect(screen.getByText("Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.")).toBeInTheDocument();
+    expect(screen.getByText("Who would you like to pay?")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Pay Alex Partner" })).toBeDisabled();
+    expect(screen.getByText("No remaining balance")).toBeInTheDocument();
+  });
+
+  it.each([false, true])("uses generic available-bowler/payment-detail language for stale %s payment choices", (fullBalanceOnly) => {
+    renderCard(fullBalanceOnly, {}, [], [], false, true);
+
+    expect(screen.getByText("The available bowler or payment details changed while this page was open. Review the available bowler and payment details before paying.")).toBeInTheDocument();
+    expect(screen.queryByText(/balance changed|week count/i)).not.toBeInTheDocument();
+  });
+
   it("locks recipient choices and card submission while a wallet sheet is processing", () => {
-    renderCard(false, { weeks: 2 }, [], [], true);
+    const partner: PaymentRecipientRow = {
+      bowlerId: 84,
+      name: "Alex Partner",
+      role: "partner",
+      remainingMinor: 6_000,
+      pastDueMinor: 1_000,
+      weeks: 2,
+      maximumWeekCount: 3,
+      amountMinor: 4_000,
+      selected: true,
+      eligible: true,
+      reason: null,
+    };
+    renderCard(false, { weeks: 2 }, [partner], [], true);
 
     expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Pay Bowler for one fewer week" })).toBeDisabled();
