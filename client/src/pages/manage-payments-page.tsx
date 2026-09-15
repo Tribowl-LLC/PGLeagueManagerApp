@@ -146,13 +146,23 @@ export function buildManagePaymentRows(
   }
 
   const teamNames = new Map((roster?.teams ?? []).map((team) => [team.id, team]));
-  const seenBowlerIds = new Set<number>();
-  return memberships
+  const seenBowlerIdsByTeam = new Map<number, Set<number>>();
+  const uniqueMemberships = memberships
     .filter((membership) => membership.active && membership.bowler?.active && membership.team?.active)
     .filter((membership) => {
       const team = membership.team;
       return !!team && teamNames.size > 0 ? teamNames.has(team.id) : !!team;
     })
+    .sort((left, right) => new Date(right.joinedAt).getTime() - new Date(left.joinedAt).getTime())
+    .filter((membership) => {
+      const bowlerIds = seenBowlerIdsByTeam.get(membership.teamId) ?? new Set<number>();
+      seenBowlerIdsByTeam.set(membership.teamId, bowlerIds);
+      if (bowlerIds.has(membership.bowlerId)) return false;
+      bowlerIds.add(membership.bowlerId);
+      return true;
+    });
+  const seenBowlerIds = new Set<number>();
+  return uniqueMemberships
     .sort((left, right) => {
       const leftTeam = left.team;
       const rightTeam = right.team;

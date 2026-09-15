@@ -178,6 +178,28 @@ describe("ManagePaymentsPage", () => {
     expect(rows.map((row) => row.bowlerName)).toEqual(["Zoe Bowler", "Amy Bowler"]);
   });
 
+  it("deduplicates same-team memberships by newest join before applying roster order", () => {
+    const memberships = [
+      membership(1, 1, "Alex Bowler", 10, true, 0, 0, "2030-01-01T00:00:00.000Z"),
+      membership(2, 1, "Alex Bowler", 10, true, 2, 0, "2030-02-01T00:00:00.000Z"),
+      membership(3, 2, "Casey Bowler", 10, true, 1, 0, "2030-01-15T00:00:00.000Z"),
+    ];
+
+    const rows = buildManagePaymentRows(memberships, undefined, roster);
+    expect(rows.map((row) => [row.bowlerId, row.bowlerName])).toEqual([
+      [2, "Casey Bowler"],
+      [1, "Alex Bowler"],
+    ]);
+
+    const client = createManageQueryClient();
+    seedManagePage(client, memberships, dueResponse([]));
+    renderManagePage(client);
+    expect(screen.getAllByRole("spinbutton").map((input) => input.getAttribute("aria-label"))).toEqual([
+      "Amount paid by Casey Bowler",
+      "Amount paid by Alex Bowler",
+    ]);
+  });
+
   it("renders blank cash/check controls and disables a row with no eligible balance", () => {
     const client = createManageQueryClient();
     seedManagePage(client, [membership(1, 1, "Alex Bowler", 10), membership(2, 2, "No Balance", 10)], dueResponse([dueRow(1, 2_000)]));
