@@ -72,6 +72,10 @@ interface Props {
   breakdownRows?: PaymentBreakdownRow[];
   quoteLoading?: boolean;
   quoteError?: string | null;
+  onRetryQuote?: () => void;
+  paymentRefreshState?: "idle" | "refreshing" | "retry";
+  paymentRefreshError?: string | null;
+  onRetryPaymentRefresh?: () => void;
   selectionStale?: boolean;
   onRecipientToggle: (bowlerId: number, selected: boolean) => void;
   onRecipientWeeksChange: (bowlerId: number, weeks: number) => void;
@@ -88,11 +92,12 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   onApplePayClick, onGooglePayClick, isWalletProcessing, bowlerHasEmail,
   receiptEmail, onReceiptEmailChange, recipientRows, breakdownRows, quoteLoading = false,
   quoteError = null, selectionStale = false, onRecipientToggle, onRecipientWeeksChange,
-  onResetRecipientSelection,
+  onResetRecipientSelection, paymentRefreshState = "idle", paymentRefreshError = null,
+  onRetryPaymentRefresh, onRetryQuote,
 }) => {
   const cardCallbackRef = useRef<(el: HTMLDivElement | null) => void>(() => undefined);
   cardCallbackRef.current = (el) => { if (el && cardMode === "new" && cardEditorMode === "one-time") void initializeCard(el); };
-  const paymentInFlight = isSubmitting || isWalletProcessing;
+  const paymentInFlight = isSubmitting || isWalletProcessing || paymentRefreshState !== "idle";
   const showWallet = applePayAvailable || googlePayAvailable;
   const hasPaymentPartner = recipientRows.some((row) => row.role === "partner");
   const hasSelectedRecipient = recipientRows.some((row) => row.selected);
@@ -149,8 +154,10 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
         </fieldset>
         {recipientRows.length === 0 && <Alert><AlertDescription>No payment recipients are available for this league.</AlertDescription></Alert>}
         {hasPaymentPartner && !hasSelectedRecipient && <Alert><AlertDescription>Select at least one recipient to continue.</AlertDescription></Alert>}
+        {paymentRefreshState === "refreshing" && <Alert><AlertDescription>Refreshing payment balances before continuing…</AlertDescription></Alert>}
+        {paymentRefreshState === "retry" && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{paymentRefreshError ?? "Payment balances could not be refreshed. Try again."}</span>{onRetryPaymentRefresh && <Button type="button" variant="outline" size="sm" onClick={onRetryPaymentRefresh}>Retry refresh</Button>}</AlertDescription></Alert>}
         {selectionStale && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{selectionStaleMessage}</span>{onResetRecipientSelection && <Button type="button" variant="outline" size="sm" onClick={onResetRecipientSelection}>Reset choices</Button>}</AlertDescription></Alert>}
-        {quoteError && <Alert variant="destructive"><AlertDescription>{quoteError}</AlertDescription></Alert>}
+        {quoteError && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{quoteError}</span>{onRetryQuote && <Button type="button" variant="outline" size="sm" onClick={onRetryQuote}>Retry quote</Button>}</AlertDescription></Alert>}
         <div className="flex flex-col gap-2 rounded-md border bg-muted/50 p-4" aria-live="polite" data-testid="payment-breakdown">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium">Payment total</span>
@@ -179,9 +186,9 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
         </div>
 
         {!applePayTokenizeOnly && applePayRef && <div ref={applePayRef} className={applePayAvailable ? "min-h-12 overflow-hidden rounded-md bg-black" : "hidden"} />}
-        {applePayAvailable && applePayTokenizeOnly && <button type="button" aria-label="Pay with Apple Pay" onClick={() => void onApplePayClick()} disabled={isWalletProcessing} className="wallet-button h-12 disabled:opacity-50"><span className="text-xl font-medium text-white"> Pay</span></button>}
+        {applePayAvailable && applePayTokenizeOnly && <button type="button" aria-label="Pay with Apple Pay" onClick={() => void onApplePayClick()} disabled={paymentInFlight} className="wallet-button h-12 disabled:opacity-50"><span className="text-xl font-medium text-white"> Pay</span></button>}
         {!googlePayTokenizeOnly && googlePayRef && <div ref={googlePayRef} className={googlePayAvailable ? "min-h-12 overflow-hidden rounded-md bg-black" : "hidden"} />}
-        {googlePayAvailable && googlePayTokenizeOnly && <button type="button" aria-label="Pay with Google Pay" onClick={() => void onGooglePayClick()} disabled={isWalletProcessing} className="wallet-button h-12 disabled:opacity-50"><span className="text-sm font-medium text-white">Google Pay</span></button>}
+        {googlePayAvailable && googlePayTokenizeOnly && <button type="button" aria-label="Pay with Google Pay" onClick={() => void onGooglePayClick()} disabled={paymentInFlight} className="wallet-button h-12 disabled:opacity-50"><span className="text-sm font-medium text-white">Google Pay</span></button>}
         {isWalletProcessing && <div className="flex items-center justify-center gap-2 py-2"><Loader2 className="size-4 animate-spin" /><span className="text-sm text-muted-foreground">Processing wallet payment…</span></div>}
         {showWallet && <div className="relative flex items-center gap-4 py-2"><div className="flex-1 border-t" /><span className="text-xs text-muted-foreground">or pay with card</span><div className="flex-1 border-t" /></div>}
 

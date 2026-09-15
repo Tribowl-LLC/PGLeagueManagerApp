@@ -7,7 +7,7 @@ type FetchListener = (event: {
   respondWith: ReturnType<typeof vi.fn>;
 }) => void;
 
-function loadFetchListener(): FetchListener {
+function loadFetchListener(fetchImpl = vi.fn(() => new Promise(() => {})), cachesImpl = {}): FetchListener {
   const listeners = new Map<string, (...args: never[]) => void>();
   const self = {
     location: { origin: "https://leaguevault.example" },
@@ -17,10 +17,10 @@ function loadFetchListener(): FetchListener {
   };
   vm.runInNewContext(fs.readFileSync("client/public/sw.js", "utf8"), {
     self,
-    caches: {},
+    caches: cachesImpl,
     URL,
     Response,
-    fetch: vi.fn(() => new Promise(() => {})),
+    fetch: fetchImpl,
   });
   return listeners.get("fetch") as FetchListener;
 }
@@ -43,5 +43,55 @@ describe("service worker origin boundary", () => {
       respondWith,
     });
     expect(respondWith).toHaveBeenCalledOnce();
+  });
+
+  it("returns an uncached 503 API response for a network failure", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    const cachesMock = {
+      match: vi.fn(),
+      open: vi.fn(),
+    };
+    const respondWith = vi.fn();
+    loadFetchListener(fetchMock, cachesMock)({
+      request: { url: "https://leaguevault.example/api/payments", destination: "", mode: "cors" },
+      respondWith,
+    });
+
+    const response = await respondWith.mock.calls[0][0];
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Content-Type")).toBe("application/json");
+    await expect(response.json()).resolves.toEqual({
+      success: false,
+      error: {
+        code: "NETWORK_UNAVAILABLE",
+        message: "Unable to connect. Check your connection and try again.",
+      },
+    });
+    expect(cachesMock.match).not.toHaveBeenCalled();
+    expect(cachesMock.open).not.toHaveBeenCalled();
+  });
+
+  it("preserves abort and unexpected API fetch failures", async () => {
+    const abortError = new DOMException("cancelled", "AbortError");
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(abortError)
+      .mockRejectedValueOnce(new Error("unexpected failure"));
+    const listener = loadFetchListener(fetchMock);
+
+    const abortedRespondWith = vi.fn();
+    listener({
+      request: { url: "https://leaguevault.example/api/one", destination: "", mode: "cors" },
+      respondWith: abortedRespondWith,
+    });
+    await expect(abortedRespondWith.mock.calls[0][0]).rejects.toBe(abortError);
+
+    const unexpectedRespondWith = vi.fn();
+    listener({
+      request: { url: "https://leaguevault.example/api/two", destination: "", mode: "cors" },
+      respondWith: unexpectedRespondWith,
+    });
+    await expect(unexpectedRespondWith.mock.calls[0][0]).rejects.toThrow("unexpected failure");
   });
 });

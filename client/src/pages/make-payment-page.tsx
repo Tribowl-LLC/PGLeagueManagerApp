@@ -19,6 +19,7 @@ import { formatCurrency } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { logger } from "@/lib/logger";
 import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
+import { getApiErrorCode, getApiErrorStatus, isTransportError } from "@/lib/api-error";
 import { isProviderNotConfiguredError, providerNotConfiguredToast, makeApiError } from "@/lib/provider-not-configured";
 import { assertRosterPaymentSucceeded, clearPaymentIntent, interactivePaymentIntentScope, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
 import { paymentHistoryFinancialQueryKey, invalidatePaymentHistoryFinancials } from "@/lib/payment-history-financial-query";
@@ -36,6 +37,24 @@ import {
 } from "@/lib/interactive-payment-v3";
 
 type EditorMode = "one-time" | "autopay" | null;
+
+const STALE_INTERACTIVE_PAYMENT_CODES = new Set([
+  "NO_ELIGIBLE_OBLIGATIONS",
+  "STALE_QUOTE",
+  "RESERVATION_STALE",
+  "FULL_BALANCE_SELECTION_INVALID",
+  "WEEKS_SELECTION_INVALID",
+]);
+
+export function interactivePaymentErrorMessage(error: unknown): string {
+  const code = getApiErrorCode(error);
+  if (code === "NETWORK_UNAVAILABLE" || isTransportError(error)) return "Unable to connect. Check your connection and try again.";
+  if (code === "NO_ELIGIBLE_OBLIGATIONS") return "No remaining balance is available for the selected recipient. Review the recipients and try again.";
+  if (STALE_INTERACTIVE_PAYMENT_CODES.has(code ?? "") || getApiErrorStatus(error) === 409) {
+    return "The payment choices changed while this page was open. Review the recipients and week counts before paying.";
+  }
+  return sanitizePaymentErrorMessage(error, "Payment quote is unavailable. Refresh and try again.");
+}
 
 /** Keep the in-memory wallet identity in step with the durable intent. */
 export function clearWalletRequestKeyForTerminalStatus(
@@ -99,7 +118,12 @@ export function MakePaymentReadError({ message, onRetry, leagueId }: { message: 
   );
 }
 
-export function invalidatePaymentViews(leagueId: number, bowlerId: number, affectedBowlerIds: readonly number[] = [bowlerId]): void {
+export function invalidatePaymentViews(
+  leagueId: number,
+  bowlerId: number,
+  affectedBowlerIds: readonly number[] = [bowlerId],
+  options: { skipInteractivePaymentQueries?: boolean } = {},
+): void {
   const affectedIds = [...new Set([bowlerId, ...affectedBowlerIds])].filter((id) => Number.isSafeInteger(id) && id > 0);
   for (const affectedId of affectedIds) {
     void queryClient.invalidateQueries({ queryKey: paymentHistoryFinancialQueryKey(leagueId, affectedId) });
@@ -110,8 +134,10 @@ export function invalidatePaymentViews(leagueId: number, bowlerId: number, affec
   }
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1/quote`] });
-  void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-participants/3"] });
-  void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-quote/3"] });
+  if (!options.skipInteractivePaymentQueries) {
+    void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-participants/3"] });
+    void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-quote/3"] });
+  }
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
   void queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
 }
@@ -181,7 +207,7 @@ export default function MakePaymentPage() {
         signal,
       });
       const body = await response.json().catch(() => ({})) as ApiResponse<InteractivePaymentParticipantsResponse>;
-      if (!response.ok) throw new Error(body.error?.message || "Payment recipients are unavailable");
+      if (!response.ok) throw makeApiError(body, response.status, "Payment recipients are unavailable");
       return body;
     },
     enabled: !!bowlerId && !!leagueId,
@@ -250,6 +276,9 @@ export default function MakePaymentPage() {
   }), [participants, fullBalanceOnly, paymentMode, recipientWeeks, effectiveSelectedRecipients]);
   const recipientSelections = useMemo(() => selectionStale ? [] : buildInteractivePaymentRecipients(participants, effectiveSelectedRecipients, recipientWeeks, paymentMode), [participants, effectiveSelectedRecipients, recipientWeeks, paymentMode, selectionStale]);
   const recipientSelectionKey = useMemo(() => JSON.stringify(recipientSelections), [recipientSelections]);
+  const [isRecoveryBlocked, setIsRecoveryBlocked] = useState(false);
+  const [paymentRefreshState, setPaymentRefreshState] = useState<"idle" | "refreshing" | "retry">("idle");
+  const [paymentRefreshError, setPaymentRefreshError] = useState<string | null>(null);
   const {
     data: quoteResponse,
     isLoading: loadingQuote,
@@ -265,10 +294,10 @@ export default function MakePaymentPage() {
         signal,
       });
       const body = await response.json().catch(() => ({})) as ApiResponse<InteractivePaymentQuote>;
-      if (!response.ok) throw new Error(body.error?.message || "Payment quote is unavailable");
+      if (!response.ok) throw makeApiError(body, response.status, "Payment quote is unavailable");
       return body;
     },
-    enabled: !!bowlerId && !!leagueId && participantsResponse?.data !== undefined && recipientSelections.length > 0,
+    enabled: !!bowlerId && !!leagueId && participantsResponse?.data !== undefined && recipientSelections.length > 0 && paymentRefreshState === "idle" && !isRecoveryBlocked,
     staleTime: 0,
     retry: false,
   });
@@ -302,8 +331,81 @@ export default function MakePaymentPage() {
   // the next authoritative refetch. Keep that expected transition from being
   // mistaken for an external stale-basket change.
   const participantRefreshBaselineRef = useRef<InteractivePaymentParticipant[] | null>(null);
-  const [isRecoveryBlocked, setIsRecoveryBlocked] = useState(false);
+  const recoveryRefreshKeyRef = useRef<string | null>(null);
+  const quoteRefreshKeyRef = useRef<string | null>(null);
+  const pendingPaymentRefreshIdentityRef = useRef<{ scope: string; requestKey: string; affectedBowlerIds: number[] } | null>(null);
+  const successfulPaymentUiCompletedKeyRef = useRef<string | null>(null);
+  const paymentModeRef = useRef(paymentMode);
+  paymentModeRef.current = paymentMode;
+  const refetchParticipantsRef = useRef(refetchParticipants);
+  refetchParticipantsRef.current = refetchParticipants;
+  const activeLeagueIdRef = useRef(leagueId);
+  activeLeagueIdRef.current = leagueId;
+  const pageGenerationRef = useRef(0);
   const { supportsWallets } = usePaymentProvider(league?.locationId ?? null);
+
+  const applyParticipantSelection = useCallback((nextParticipants: InteractivePaymentParticipant[]) => {
+    const nextSelected: Record<number, boolean> = {};
+    const nextWeeks: Record<number, number> = {};
+    for (const participant of nextParticipants) {
+      nextSelected[participant.bowlerId] = isInteractiveParticipantSelectedByDefault(participant);
+      nextWeeks[participant.bowlerId] = initialInteractivePaymentWeeks(participant, paymentModeRef.current);
+    }
+    participantSnapshotRef.current = null;
+    participantRefreshBaselineRef.current = null;
+    setSelectionStale(false);
+    setSelectedRecipients(nextSelected);
+    setRecipientWeeks(nextWeeks);
+  }, []);
+
+  const refreshAfterPayment = useCallback(async (affectedIds: readonly number[], options: { recovery?: boolean } = {}): Promise<boolean> => {
+    const refreshLeagueId = leagueId;
+    const refreshGeneration = pageGenerationRef.current;
+    const refetchParticipants = refetchParticipantsRef.current;
+    const isCurrentPage = () => activeLeagueIdRef.current === refreshLeagueId && pageGenerationRef.current === refreshGeneration;
+    if (!isCurrentPage()) return false;
+    setPaymentRefreshState("refreshing");
+    setPaymentRefreshError(null);
+    // Recovery has its own blocking surface. Keep the old selection alive
+    // while it is awaiting the authoritative response so a quote amount of
+    // zero cannot restart or cancel the recovery probe.
+    if (!options.recovery) setSelectionStale(true);
+    walletStartQuoteRef.current = null;
+
+    const quoteKey = ["/api/financials/leagues", leagueId ?? 0, "interactive-payment-quote/3"];
+    try {
+      // Remove the old quote from the active cache before participants are
+      // read. This prevents a structurally shared participant response from
+      // making an old successful quote look current after payment.
+      await queryClient.cancelQueries({ queryKey: quoteKey });
+      queryClient.removeQueries({ queryKey: quoteKey });
+      invalidatePaymentViews(leagueId ?? 0, bowlerId ?? 0, affectedIds, { skipInteractivePaymentQueries: true });
+      await Promise.all(affectedIds.map((affectedId) => invalidatePaymentHistoryFinancials(queryClient, leagueId ?? 0, affectedId)));
+
+      if (!isCurrentPage()) return false;
+      const result = await refetchParticipants();
+      if (result.error || result.isError) throw result.error ?? new Error("Payment recipients are unavailable");
+      const refreshed = result.data?.data?.participants;
+      if (!Array.isArray(refreshed)) throw new Error("Payment recipients are unavailable");
+      if (!isCurrentPage()) return false;
+      applyParticipantSelection(refreshed);
+      setPaymentRefreshState("idle");
+      return true;
+    } catch (error) {
+      if (!isCurrentPage()) return false;
+      setSelectionStale(true);
+      setPaymentRefreshState("retry");
+      setPaymentRefreshError(interactivePaymentErrorMessage(error));
+      return false;
+    }
+  }, [applyParticipantSelection, bowlerId, leagueId]);
+
+  useEffect(() => {
+    // A successful quote ends the stale quote episode. Keep the guard armed
+    // while the same stale response persists after a refresh, otherwise this
+    // effect would continuously refetch the same failing quote.
+    if (!quoteError && quote) quoteRefreshKeyRef.current = null;
+  }, [quote, quoteError]);
 
   useEffect(() => {
     if (participants.length === 0) return;
@@ -374,11 +476,18 @@ export default function MakePaymentPage() {
   }, [hasPaymentPartner, participants, paymentMode, selectionStale]);
 
   useEffect(() => {
+    pageGenerationRef.current += 1;
     participantSnapshotRef.current = null;
     participantRefreshBaselineRef.current = null;
     setSelectionStale(false);
     setSelectedRecipients({});
     setRecipientWeeks({});
+    setPaymentRefreshState("idle");
+    setPaymentRefreshError(null);
+    recoveryRefreshKeyRef.current = null;
+    quoteRefreshKeyRef.current = null;
+    pendingPaymentRefreshIdentityRef.current = null;
+    successfulPaymentUiCompletedKeyRef.current = null;
   }, [leagueId]);
 
   useEffect(() => {
@@ -410,6 +519,10 @@ export default function MakePaymentPage() {
       setIsRecoveryBlocked(false);
       return;
     }
+    // A participant response can change the quote amount while this recovery
+    // refresh is still awaiting its result. Do not start a second probe or
+    // clear the blocking state in that intermediate render.
+    if (recoveryRefreshKeyRef.current) return;
     let cancelled = false;
     setWalletRecoveryReady(false);
     setIsRecoveryBlocked(false);
@@ -426,21 +539,34 @@ export default function MakePaymentPage() {
           }
         } else if (prepared.outcome === "succeeded") {
           setIsRecoveryBlocked(true);
-          const noticeKey = `${paymentIntentScope}:${prepared.requestKey}`;
+          const recoveredScope = prepared.scope ?? paymentIntentScope;
+          const noticeKey = `${recoveredScope}:${prepared.requestKey}`;
+          if (recoveryRefreshKeyRef.current === noticeKey) return;
+          recoveryRefreshKeyRef.current = noticeKey;
           if (recoveryNoticeRef.current !== noticeKey) {
             recoveryNoticeRef.current = noticeKey;
             toastRef.current({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
           }
-          const affectedIds = [...new Set([recoveryBowlerId, ...affectedBowlerIdsRef.current])];
-          await Promise.all(affectedIds.map((affectedId) => invalidatePaymentHistoryFinancials(queryClient, recoveryLeagueId, affectedId)));
-          if (cancelled) return;
-          invalidatePaymentViews(recoveryLeagueId, recoveryBowlerId, affectedIds);
-          setSelectionStale(false);
-          setSelectedRecipients({});
-          setRecipientWeeks({});
-          clearPaymentIntent(prepared.scope ?? paymentIntentScope, prepared.requestKey);
-          walletRequestKeyRef.current = null;
-          setIsRecoveryBlocked(false);
+          const pending = pendingPaymentRefreshIdentityRef.current;
+          const affectedIds = pending?.scope === recoveredScope && pending.requestKey === prepared.requestKey
+            ? pending.affectedBowlerIds
+            : [...new Set([recoveryBowlerId, ...affectedBowlerIdsRef.current])];
+          pendingPaymentRefreshIdentityRef.current = { scope: recoveredScope, requestKey: prepared.requestKey, affectedBowlerIds: affectedIds };
+          const refreshed = await refreshAfterPayment(affectedIds, { recovery: true });
+          if (activeLeagueIdRef.current !== recoveryLeagueId) return;
+          if (refreshed) {
+            clearPaymentIntent(prepared.scope ?? paymentIntentScope, prepared.requestKey);
+            walletRequestKeyRef.current = null;
+            setWalletRecoveryReady(false);
+            setIsRecoveryBlocked(false);
+            recoveryRefreshKeyRef.current = null;
+            const pending = pendingPaymentRefreshIdentityRef.current;
+            if (pending?.scope === recoveredScope && pending.requestKey === prepared.requestKey) {
+              pendingPaymentRefreshIdentityRef.current = null;
+            }
+          } else {
+            recoveryRefreshKeyRef.current = null;
+          }
         } else if (prepared.outcome === "terminal_failure") {
           clearPaymentIntent(prepared.scope ?? paymentIntentScope, prepared.requestKey);
           if (walletShouldPrepare) {
@@ -460,7 +586,7 @@ export default function MakePaymentPage() {
         if (!cancelled) setIsRecoveryBlocked(true);
       });
     return () => { cancelled = true; };
-  }, [supportsWallets, paymentIntentScope, leagueId, bowlerId, hasPositivePaymentAmount, recoveryRetry]);
+  }, [supportsWallets, paymentIntentScope, leagueId, bowlerId, hasPositivePaymentAmount, recoveryRetry, refreshAfterPayment]);
 
   const { card, isInitialized, initializeCard, cleanupCard } = useSquarePayment({
     locationId: league?.locationId,
@@ -471,6 +597,17 @@ export default function MakePaymentPage() {
     setWalletRecoveryReady(false);
     setRecoveryRetry((value) => value + 1);
   }, []);
+  const completeSuccessfulPaymentUi = useCallback((options: { identityKey: string; generation: number; leagueId: number; description: string; reinitializeEditor: boolean; refreshSavedCards: boolean }) => {
+    if (activeLeagueIdRef.current !== options.leagueId || pageGenerationRef.current !== options.generation) return;
+    if (successfulPaymentUiCompletedKeyRef.current === options.identityKey) return;
+    successfulPaymentUiCompletedKeyRef.current = options.identityKey;
+    cleanupCard();
+    const reinitializeOneTimeEditor = options.reinitializeEditor;
+    setCardEditorMode(reinitializeOneTimeEditor ? "one-time" : null);
+    if (reinitializeOneTimeEditor) setOneTimeCardEditorKey((key) => key + 1);
+    toast({ title: "Payment Successful", description: options.description });
+    if (options.refreshSavedCards) void queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
+  }, [bowlerId, cleanupCard, toast]);
   const previousLeagueIdRef = useRef<number | undefined>(leagueId);
   useEffect(() => {
     if (previousLeagueIdRef.current !== undefined && previousLeagueIdRef.current !== leagueId) {
@@ -506,13 +643,52 @@ export default function MakePaymentPage() {
     }
     participantSnapshotRef.current = null;
     participantRefreshBaselineRef.current = expectBalanceRefresh ? participants : null;
+    quoteRefreshKeyRef.current = null;
     setSelectionStale(false);
     setSelectedRecipients(nextSelected);
     setRecipientWeeks(nextWeeks);
   }, [participants, paymentMode]);
 
+  const retryInteractivePaymentQuote = useCallback(() => {
+    quoteRefreshKeyRef.current = null;
+    void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId ?? 0, "interactive-payment-quote/3"] });
+  }, [leagueId]);
+
+  const retryPaymentRefresh = useCallback(() => {
+    const retryGeneration = pageGenerationRef.current;
+    const pending = pendingPaymentRefreshIdentityRef.current;
+    const affectedIds = pending?.affectedBowlerIds ?? [...new Set([bowlerId ?? 0, ...affectedBowlerIdsRef.current])].filter((id) => id > 0);
+    void refreshAfterPayment(affectedIds).then((refreshed) => {
+      if (!refreshed || !pending || pendingPaymentRefreshIdentityRef.current !== pending || pageGenerationRef.current !== retryGeneration) return;
+      clearPaymentIntent(pending.scope, pending.requestKey);
+      pendingPaymentRefreshIdentityRef.current = null;
+      recoveryRefreshKeyRef.current = null;
+      walletRequestKeyRef.current = null;
+      setWalletRecoveryReady(false);
+      setRecoveryRetry((value) => value + 1);
+      setIsRecoveryBlocked(false);
+    });
+  }, [bowlerId, refreshAfterPayment]);
+
+  const retryRecoveryStatus = useCallback(() => {
+    if (paymentRefreshState === "refreshing") return;
+    recoveryRefreshKeyRef.current = null;
+    setRecoveryRetry((value) => value + 1);
+  }, [paymentRefreshState]);
+
+  useEffect(() => {
+    const code = getApiErrorCode(quoteError);
+    if (!quoteError || !STALE_INTERACTIVE_PAYMENT_CODES.has(code ?? "") || selectionStale || paymentRefreshState !== "idle") return;
+    const refreshKey = `${recipientSelectionKey}:${code}`;
+    if (quoteRefreshKeyRef.current === refreshKey) return;
+    quoteRefreshKeyRef.current = refreshKey;
+    void refreshAfterPayment([...new Set([bowlerId ?? 0, ...affectedBowlerIdsRef.current])].filter((id) => id > 0));
+  }, [affectedBowlerIdsRef, bowlerId, paymentRefreshState, quoteError, recipientSelectionKey, refreshAfterPayment, selectionStale]);
+
   const handleWalletPayment = useCallback(async (token: string, walletType: "apple_pay" | "google_pay") => {
-    if (!bowlerId || !leagueId || !league || paymentAmountMinor <= 0 || recipientSelections.length === 0) return;
+    if (!bowlerId || !leagueId || !league || paymentAmountMinor <= 0 || recipientSelections.length === 0 || paymentRefreshState !== "idle" || isRecoveryBlocked) return;
+    const paymentGeneration = pageGenerationRef.current;
+    const paymentLeagueId = leagueId;
     const walletStartQuote = walletStartQuoteRef.current;
     walletStartQuoteRef.current = null;
     if (!walletStartQuote) {
@@ -526,7 +702,7 @@ export default function MakePaymentPage() {
       setIsWalletProcessing(true);
       const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-quote/3`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients: recipientSelections }) });
       const quoteBody = await quoteResponse.json().catch(() => ({}));
-      if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Payment allocation is unavailable.");
+      if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment allocation is unavailable.");
       const quotedAmountMinor = quoteBody.data.amountMinor;
       if (!Number.isSafeInteger(quotedAmountMinor) || quotedAmountMinor <= 0) throw new Error("Payment allocation is unavailable.");
       if (submittedSelectionKey !== recipientSelectionKeyRef.current || !isInteractivePaymentQuoteCurrent(walletStartQuote, quoteBody.data, submittedSelectionKey)) throw new Error("Payment quote changed. Review the recipients and try again.");
@@ -543,17 +719,30 @@ export default function MakePaymentPage() {
         resetWalletRecovery();
         throw makeApiError(body, response.status, "Wallet payment failed.");
       }
-      resetWalletRecovery();
-      assertRosterPaymentSucceeded(status);
-      clearPaymentIntent(scope);
+      try {
+        assertRosterPaymentSucceeded(status);
+      } catch (error) {
+        // Preserve the existing recovery probe for an accepted-but-unresolved
+        // wallet outcome. Known success keeps its identity until balances are
+        // refreshed below.
+        resetWalletRecovery();
+        throw error;
+      }
       const affectedIds = [...new Set([bowlerId, ...recipientSelections.map((recipient) => recipient.bowlerId)])];
-      resetRecipientSelection(true);
-      cleanupCard();
-      setCardEditorMode(null);
-      toast({ title: "Payment Successful", description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.` });
-      await Promise.all(affectedIds.map((affectedId) => invalidatePaymentHistoryFinancials(queryClient, leagueId, affectedId)));
-      invalidatePaymentViews(leagueId, bowlerId, affectedIds);
+      pendingPaymentRefreshIdentityRef.current = { scope, requestKey, affectedBowlerIds: affectedIds };
+      recoveryRefreshKeyRef.current = `${scope}:${requestKey}`;
+      completeSuccessfulPaymentUi({ identityKey: `${scope}:${requestKey}`, generation: paymentGeneration, leagueId: paymentLeagueId, description: `${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"} payment completed.`, reinitializeEditor: false, refreshSavedCards: false });
+      const refreshed = await refreshAfterPayment(affectedIds);
+      if (!refreshed) return;
+      walletRequestKeyRef.current = null;
+      setWalletRecoveryReady(false);
+      clearPaymentIntent(scope, requestKey);
+      pendingPaymentRefreshIdentityRef.current = null;
+      recoveryRefreshKeyRef.current = null;
     } catch (error) {
+      if (STALE_INTERACTIVE_PAYMENT_CODES.has(getApiErrorCode(error) ?? "")) {
+        void refreshAfterPayment([...new Set([bowlerId, ...recipientSelections.map((recipient) => recipient.bowlerId)])]);
+      }
       if (isHandledPaymentError(error)) {
         logger.debug("Wallet Payment", "Payment requires customer action");
       } else {
@@ -562,28 +751,30 @@ export default function MakePaymentPage() {
       toast(isProviderNotConfiguredError(error) ? providerNotConfiguredToast({ navigate, locationId: league.locationId }) : { title: "Payment Failed", description: sanitizePaymentErrorMessage(error, "Unable to process payment."), variant: "destructive" });
     }
     finally { setIsWalletProcessing(false); }
-  }, [bowlerId, leagueId, league, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, cleanupCard, paymentIntentScope, resetWalletRecovery, recipientSelections, resetRecipientSelection]);
+  }, [bowlerId, leagueId, league, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, paymentIntentScope, resetWalletRecovery, recipientSelections, refreshAfterPayment, paymentRefreshState, isRecoveryBlocked, completeSuccessfulPaymentUi]);
   const beginWalletPayment = useCallback(() => {
     const displayedQuote = displayedQuoteRef.current;
-    if (!walletRecoveryReady || selectionStale || recipientSelections.length === 0 || !displayedQuote || displayedQuote.selectionKey !== recipientSelectionKeyRef.current) {
+    if (!walletRecoveryReady || paymentRefreshState !== "idle" || isRecoveryBlocked || selectionStale || recipientSelections.length === 0 || !displayedQuote || displayedQuote.selectionKey !== recipientSelectionKeyRef.current) {
       walletStartQuoteRef.current = null;
       return false;
     }
     walletStartQuoteRef.current = { ...displayedQuote };
     return true;
-  }, [walletRecoveryReady, selectionStale, recipientSelections.length]);
+  }, [walletRecoveryReady, paymentRefreshState, isRecoveryBlocked, selectionStale, recipientSelections.length]);
   // Keep the SDK instance mounted while quote data is refreshing. A native
   // wallet sheet can outlive the render that opened it; tearing down the SDK
   // on a transient loading flag would invalidate that in-flight tokenization.
   // beginWalletPayment and handleWalletPayment still reject stale selections
   // and amounts before any charge request is sent.
-  const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: savedCardReadState === "ready" && !!league?.locationId && paymentAmountMinor > 0 && supportsWallets && walletRecoveryReady && !selectionStale && recipientSelections.length > 0, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
+  const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: savedCardReadState === "ready" && !!league?.locationId && paymentAmountMinor > 0 && supportsWallets && walletRecoveryReady && paymentRefreshState === "idle" && !selectionStale && recipientSelections.length > 0, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
   const cleanupWallet = wallet.cleanup;
   useEffect(() => () => cleanupWallet(), [cleanupWallet]);
 
   const submitOneTimePayment = async () => {
-    if (!bowlerId || !leagueId || !league || recipientSelections.length === 0 || quoteError || selectionStale) { toast({ title: "Payment unavailable", description: "Select at least one payable recipient and wait for an exact payment quote.", variant: "destructive" }); return; }
+    if (!bowlerId || !leagueId || !league || recipientSelections.length === 0 || quoteError || selectionStale || paymentRefreshState !== "idle" || isRecoveryBlocked) { toast({ title: "Payment unavailable", description: "Select at least one payable recipient and wait for an exact payment quote.", variant: "destructive" }); return; }
     if (isWalletProcessing || wallet.isProcessing) return;
+    const paymentGeneration = pageGenerationRef.current;
+    const paymentLeagueId = leagueId;
     // Capture this before any awaited recovery/quote work. If a background
     // refetch replaces the displayed quote while submit is in flight, the
     // fresh quote must still match the quote the user actually accepted.
@@ -601,11 +792,18 @@ export default function MakePaymentPage() {
         setIsRecoveryBlocked(true);
         toast({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
         const affectedIds = [...new Set([bowlerId, ...affectedBowlerIdsRef.current])];
-        await Promise.all(affectedIds.map((affectedId) => invalidatePaymentHistoryFinancials(queryClient, leagueId, affectedId)));
-        invalidatePaymentViews(leagueId, bowlerId, affectedIds);
-        resetRecipientSelection(true);
-        clearPaymentIntent(preparedIntent.scope ?? paymentIntentScope, preparedIntent.requestKey);
-        setIsRecoveryBlocked(false);
+        const recoveredScope = preparedIntent.scope ?? paymentIntentScope;
+        pendingPaymentRefreshIdentityRef.current = { scope: recoveredScope, requestKey: preparedIntent.requestKey, affectedBowlerIds: affectedIds };
+        recoveryRefreshKeyRef.current = `${recoveredScope}:${preparedIntent.requestKey}`;
+        const refreshed = await refreshAfterPayment(affectedIds, { recovery: true });
+        if (refreshed) {
+          clearPaymentIntent(recoveredScope, preparedIntent.requestKey);
+          pendingPaymentRefreshIdentityRef.current = null;
+          recoveryRefreshKeyRef.current = null;
+          setIsRecoveryBlocked(false);
+        } else {
+          recoveryRefreshKeyRef.current = null;
+        }
         return;
       }
       if (preparedIntent.outcome === "terminal_failure") {
@@ -622,7 +820,7 @@ export default function MakePaymentPage() {
       const requestKey = preparedIntent.requestKey;
       const latestQuoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-quote/3`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients: recipientSelections }) });
       const quoteBody = await latestQuoteResponse.json().catch(() => ({})) as ApiResponse<InteractivePaymentQuote>;
-      if (!latestQuoteResponse.ok || !quoteBody?.data?.fingerprint || !Number.isSafeInteger(quoteBody.data.amountMinor) || quoteBody.data.amountMinor <= 0) throw new Error(quoteBody.error?.message || "Exact payment obligations are unavailable.");
+      if (!latestQuoteResponse.ok || !quoteBody?.data?.fingerprint || !Number.isSafeInteger(quoteBody.data.amountMinor) || quoteBody.data.amountMinor <= 0) throw makeApiError(quoteBody, latestQuoteResponse.status, "Exact payment obligations are unavailable.");
       if (submittedSelectionKey !== recipientSelectionKeyRef.current || !isInteractivePaymentQuoteCurrent(acceptedQuote, quoteBody.data, submittedSelectionKey)) {
         throw new Error("Payment quote changed. Review the recipients and try again.");
       }
@@ -634,18 +832,26 @@ export default function MakePaymentPage() {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw makeApiError(body, response.status, "Payment failed");
       assertRosterPaymentSucceeded(body.data?.status ?? body.status);
-      clearPaymentIntent(paymentIntentScope);
       const affectedIds = [...new Set([bowlerId, ...recipientSelections.map((recipient) => recipient.bowlerId)])];
-      resetRecipientSelection(true);
-      cleanupCard();
-      const reinitializeOneTimeEditor = shouldReinitializeOneTimeCardEditor(cardMode, savedCards.length);
-      setCardEditorMode(reinitializeOneTimeEditor ? "one-time" : null);
-      if (reinitializeOneTimeEditor) setOneTimeCardEditorKey((key) => key + 1);
-      toast({ title: "Payment Successful", description: `${formatCurrency(paymentAmountMinor)} has been paid.` });
-      await Promise.all(affectedIds.map((affectedId) => invalidatePaymentHistoryFinancials(queryClient, leagueId, affectedId)));
-      invalidatePaymentViews(leagueId, bowlerId, affectedIds);
-      if (storeCard && cardMode === "new") void queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
+      pendingPaymentRefreshIdentityRef.current = { scope: paymentIntentScope, requestKey, affectedBowlerIds: affectedIds };
+      recoveryRefreshKeyRef.current = `${paymentIntentScope}:${requestKey}`;
+      completeSuccessfulPaymentUi({
+        identityKey: `${paymentIntentScope}:${requestKey}`,
+        generation: paymentGeneration,
+        leagueId: paymentLeagueId,
+        description: `${formatCurrency(paymentAmountMinor)} has been paid.`,
+        reinitializeEditor: shouldReinitializeOneTimeCardEditor(cardMode, savedCards.length),
+        refreshSavedCards: storeCard && cardMode === "new",
+      });
+      const refreshed = await refreshAfterPayment(affectedIds);
+      if (!refreshed) return;
+      clearPaymentIntent(paymentIntentScope, requestKey);
+      pendingPaymentRefreshIdentityRef.current = null;
+      recoveryRefreshKeyRef.current = null;
     } catch (error) {
+      if (STALE_INTERACTIVE_PAYMENT_CODES.has(getApiErrorCode(error) ?? "")) {
+        void refreshAfterPayment([...new Set([bowlerId ?? 0, ...recipientSelections.map((recipient) => recipient.bowlerId)])].filter((id) => id > 0));
+      }
       if (isHandledPaymentError(error)) {
         logger.debug("Payment", "Payment requires customer action");
       } else {
@@ -660,7 +866,7 @@ export default function MakePaymentPage() {
   if (userError) return <PageLoadingState message="Authentication required" />;
   if (currentUser?.data && !currentUser.data.bowlerId) return <PageLoadingState message="A bowler profile is required to make a payment" />;
   if (detailsError) return <MakePaymentReadError message="Payment profile data could not be loaded. Try again." onRetry={() => { void refetchDetails(); }} leagueId={selectedLeagueId ?? undefined} />;
-  if (participantsError) return <MakePaymentReadError message="Payment recipient data could not be loaded. Try again." onRetry={() => { void refetchParticipants(); }} leagueId={selectedLeagueId ?? undefined} />;
+  if (participantsError && paymentRefreshState !== "retry") return <MakePaymentReadError message="Payment recipient data could not be loaded. Try again." onRetry={() => { void refetchParticipants(); }} leagueId={selectedLeagueId ?? undefined} />;
   if (savedCardReadState === "unavailable") return <MakePaymentReadError message="Saved payment methods could not be loaded. Try again." onRetry={() => { void refetchSavedCards(); }} leagueId={selectedLeagueId ?? undefined} />;
   if (!league || leagueId === undefined || !bowlerId) return <MakePaymentReadError message="Payment information is unavailable. Try again or view payment history." onRetry={() => { void refetchDetails(); void refetchParticipants(); }} leagueId={selectedLeagueId ?? undefined} />;
 
@@ -687,7 +893,7 @@ export default function MakePaymentPage() {
         {hasMultipleLeagues ? <button type="button" onClick={() => setLeagueSheetOpen(true)} className="flex items-center gap-1 text-navigation-500 hover:text-navigation-700 transition-colors">{league.name}<span aria-hidden="true">⌄</span></button> : <p className="text-muted-foreground">{league.name}</p>}
       </div>
       <ErrorBoundary level="section">
-        {isRecoveryBlocked ? <div role="status" className="rounded-lg border border-warning-500/50 bg-warning-500/5 p-6 text-center"><h2 className="text-lg font-semibold">Payment confirmation in progress</h2><p className="mt-1 text-sm text-muted-foreground">Your previous payment is still being confirmed. Check its status before trying another card.</p><button type="button" className="mt-3 text-sm underline" onClick={() => setRecoveryRetry((value) => value + 1)}>Check payment status again</button></div> : isNoBalanceAvailable ? <div role="status" className="rounded-lg border bg-muted/30 p-6 text-center"><h2 className="text-lg font-semibold">No one-time balance available</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
+        {isRecoveryBlocked ? <div role="status" className="rounded-lg border border-warning-500/50 bg-warning-500/5 p-6 text-center"><h2 className="text-lg font-semibold">Payment confirmation in progress</h2><p className="mt-1 text-sm text-muted-foreground">Your previous payment is still being confirmed. Check its status before trying another card.</p><button type="button" className="mt-3 text-sm underline disabled:opacity-50" onClick={retryRecoveryStatus} disabled={paymentRefreshState === "refreshing"}>Check payment status again</button></div> : isNoBalanceAvailable ? <div role="status" className="rounded-lg border bg-muted/30 p-6 text-center"><h2 className="text-lg font-semibold">No one-time balance available</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
           key={oneTimeCardEditorKey}
           paymentAmountMinor={paymentAmountMinor}
           fullBalanceOnly={fullBalanceOnly}
@@ -699,7 +905,7 @@ export default function MakePaymentPage() {
           storeCard={storeCard}
           setStoreCard={setStoreCard}
           isInitialized={isInitialized && cardEditorMode === "one-time"}
-          isSubmitting={isSubmitting}
+          isSubmitting={isSubmitting || paymentRefreshState !== "idle"}
           onSubmit={() => void submitOneTimePayment()}
           initializeCard={initializeCard}
           cleanupCard={cleanupCard}
@@ -713,14 +919,18 @@ export default function MakePaymentPage() {
           googlePayRef={wallet.googlePayRef}
           onApplePayClick={wallet.handleApplePayClick}
           onGooglePayClick={wallet.handleGooglePayClick}
-          isWalletProcessing={wallet.isProcessing || isWalletProcessing}
+          isWalletProcessing={wallet.isProcessing || isWalletProcessing || paymentRefreshState !== "idle"}
           bowlerHasEmail={!!bowlerEmail}
           receiptEmail={receiptEmail}
           onReceiptEmailChange={setReceiptEmail}
           recipientRows={selectedRecipientRows}
           breakdownRows={breakdownRows}
           quoteLoading={loadingQuote || fetchingQuote}
-          quoteError={quoteError && !selectionStale ? "Payment quote is unavailable. Refresh and try again." : null}
+          quoteError={quoteError && !selectionStale ? interactivePaymentErrorMessage(quoteError) : null}
+          onRetryQuote={retryInteractivePaymentQuote}
+          paymentRefreshState={paymentRefreshState}
+          paymentRefreshError={paymentRefreshError}
+          onRetryPaymentRefresh={retryPaymentRefresh}
           selectionStale={selectionStale}
           onRecipientToggle={handleRecipientToggle}
           onRecipientWeeksChange={handleRecipientWeeksChange}

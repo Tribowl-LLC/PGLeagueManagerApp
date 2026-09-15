@@ -17,12 +17,16 @@ const mocks = vi.hoisted(() => {
   const invalidatePaymentHistoryFinancials = vi.fn(async () => {});
   const prepareRosterPaymentIntent = vi.fn(async (): Promise<{ requestKey: string; outcome: string; status?: string }> => ({ requestKey: "request-key", outcome: "none" }));
   const squareCard = { tokenize: vi.fn(), destroy: vi.fn(), attach: vi.fn() };
+  const cleanupCard = vi.fn();
   const walletOptions: {
     enabled: boolean;
     onPaymentStarted?: () => void | boolean;
     onTokenReceived?: (token: string, walletType: "apple_pay" | "google_pay") => Promise<void>;
   } = { enabled: false };
   let quoteFetching = false;
+  let quoteError: { code: string; message: string; status: number } | null = null;
+  let participantRefreshGate: Promise<void> | null = null;
+  let participantRefreshMissing = false;
   const standingQueryCalls: unknown[][] = [];
   const financialData = () => ({
     contractVersion: "canonical-due-past-due/2",
@@ -107,9 +111,22 @@ const mocks = vi.hoisted(() => {
       };
     }
     if (key === "/api/financials/leagues" && queryKey[2] === "interactive-payment-participants/3") {
-      return { data: { success: true, data: participantsData() }, isLoading: false, error: null, refetch: vi.fn() };
+      const participantResponse = { success: true, data: participantsData() };
+      return {
+        data: participantResponse,
+        isLoading: false,
+        error: null,
+        // Deliberately return the same object reference to model TanStack
+        // Query structural sharing after an authoritative unchanged read.
+        refetch: vi.fn(async () => {
+          if (participantRefreshGate) await participantRefreshGate;
+          if (participantRefreshMissing) return { data: undefined, isLoading: false, isFetching: false, error: null, isError: false };
+          return { data: participantResponse, isLoading: false, isFetching: false, error: null, isError: false };
+        }),
+      };
     }
     if (key === "/api/financials/leagues" && queryKey[2] === "interactive-payment-quote/3") {
+      if (quoteError) return { data: undefined, isLoading: false, isFetching: false, error: quoteError, refetch: vi.fn() };
       const recipientRows = queryKey[4] as Array<{ bowlerId: number; weeks: number }> | undefined;
       const weeks = recipientRows?.[0]?.weeks ?? 1;
       const amountMinor = paymentMode === "upfront" ? remainingMinor : weeks * 1_000;
@@ -166,6 +183,9 @@ const mocks = vi.hoisted(() => {
     setIncludePartner: (value: boolean) => { includePartner = value; },
     setRemainingBalance: (value: number) => { remainingMinor = value; },
     setQuoteFetching: (value: boolean) => { quoteFetching = value; },
+    setQuoteError: (value: { code: string; message: string; status: number } | null) => { quoteError = value; },
+    setParticipantRefreshGate: (value: Promise<void> | null) => { participantRefreshGate = value; },
+    setParticipantRefreshMissing: (value: boolean) => { participantRefreshMissing = value; },
     csrfFetch,
     tokenizeCard,
     toast,
@@ -173,6 +193,7 @@ const mocks = vi.hoisted(() => {
     invalidatePaymentHistoryFinancials,
     prepareRosterPaymentIntent,
     squareCard,
+    cleanupCard,
     walletOptions,
   };
 });
@@ -186,7 +207,7 @@ vi.mock("@/components/bowler-one-time-payment-card", () => ({ BowlerOneTimePayme
 vi.mock("@/components/standing-autopay-card", () => ({ StandingAutopayCard: mocks.standingAutopayCard }));
 vi.mock("@/hooks/use-selected-league", () => ({ useSelectedLeague: () => [17, vi.fn()] }));
 vi.mock("@/hooks/use-saved-card-default", () => ({ useSavedCardDefault: vi.fn() }));
-vi.mock("@/hooks/use-square-payment", () => ({ useSquarePayment: () => ({ card: mocks.squareCard, isInitialized: true, initializeCard: vi.fn(), cleanupCard: vi.fn() }) }));
+vi.mock("@/hooks/use-square-payment", () => ({ useSquarePayment: () => ({ card: mocks.squareCard, isInitialized: true, initializeCard: vi.fn(), cleanupCard: mocks.cleanupCard }) }));
 vi.mock("@/hooks/use-payment-provider", () => ({ usePaymentProvider: () => ({ supportsWallets: true }) }));
 vi.mock("@/hooks/use-wallet-payments", () => ({ useWalletPayments: (options: {
   enabled: boolean;
@@ -211,11 +232,15 @@ vi.mock("@/hooks/use-wallet-payments", () => ({ useWalletPayments: (options: {
 } }));
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
 vi.mock("wouter", () => ({ useLocation: () => ["/make-payment", vi.fn()], useSearch: () => "?leagueId=17", Link: () => null }));
-vi.mock("@/lib/queryClient", () => ({ csrfFetch: mocks.csrfFetch, queryClient: { invalidateQueries: vi.fn() } }));
+vi.mock("@/lib/queryClient", () => ({ csrfFetch: mocks.csrfFetch, queryClient: { invalidateQueries: vi.fn(), cancelQueries: vi.fn(async () => {}), removeQueries: vi.fn() } }));
 vi.mock("@/lib/payment-history-financial-query", () => ({ paymentHistoryFinancialQueryKey: (leagueId: number, bowlerId: number) => ["financial", leagueId, bowlerId], invalidatePaymentHistoryFinancials: mocks.invalidatePaymentHistoryFinancials }));
 vi.mock("@/lib/square", () => ({ tokenizeCard: mocks.tokenizeCard }));
 vi.mock("@/lib/logger", () => ({ logger: { error: vi.fn() } }));
-vi.mock("@/lib/provider-not-configured", () => ({ isProviderNotConfiguredError: () => false, providerNotConfiguredToast: () => ({}), makeApiError: () => new Error("payment failed") }));
+vi.mock("@/lib/provider-not-configured", () => ({
+  isProviderNotConfiguredError: () => false,
+  providerNotConfiguredToast: () => ({}),
+  makeApiError: (body: { error?: { message?: string; code?: string } }, status: number, fallback: string) => Object.assign(new Error(body?.error?.message || fallback), { status, code: body?.error?.code }),
+}));
 vi.mock("@/lib/payment-request-identity", () => ({
   assertRosterPaymentSucceeded: vi.fn((status: unknown) => {
     if (status !== "succeeded") throw new Error("payment unresolved");
@@ -243,8 +268,12 @@ afterEach(() => {
   mocks.setIncludePartner(false);
   mocks.setRemainingBalance(8_750);
   mocks.setQuoteFetching(false);
+  mocks.setQuoteError(null);
+  mocks.setParticipantRefreshGate(null);
+  mocks.setParticipantRefreshMissing(false);
   mocks.csrfFetch.mockReset();
   mocks.tokenizeCard.mockReset();
+  mocks.cleanupCard.mockReset();
   mocks.toast.mockReset();
   mocks.clearPaymentIntent.mockReset();
   mocks.invalidatePaymentHistoryFinancials.mockReset().mockResolvedValue(undefined);
@@ -338,7 +367,7 @@ describe("MakePaymentPage upfront payment mode", () => {
   });
 
   it("does not mount StandingAutopayCard or issue standing-autopay queries", async () => {
-    render(<MakePaymentPage />);
+    const view = render(<MakePaymentPage />);
 
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
     expect(mocks.standingAutopayCard).not.toHaveBeenCalled();
@@ -455,7 +484,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(document.body).not.toHaveTextContent("Payment confirmation in progress");
   });
 
-  it("clears the participant baseline after success before the balance refetch", async () => {
+  it("clears the refresh baseline after an authoritative unchanged response", async () => {
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "successful-request", outcome: "new" });
     mocks.csrfFetch
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
@@ -470,7 +499,7 @@ describe("MakePaymentPage upfront payment mode", () => {
 
     mocks.setRemainingBalance(5_750);
     view.rerender(<MakePaymentPage />);
-    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: false, paymentAmountMinor: 5_750 }));
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: true, paymentAmountMinor: 5_750 }));
     view.unmount();
   });
 
@@ -491,11 +520,33 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("keeps recovered checkout blocked and preserves its identity when refresh fails", async () => {
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "confirmed-request", outcome: "succeeded" });
-    mocks.invalidatePaymentHistoryFinancials.mockRejectedValueOnce(new Error("refresh failed"));
+    mocks.invalidatePaymentHistoryFinancials.mockRejectedValueOnce(new Error("refresh failed")).mockResolvedValue(undefined);
 
     render(<MakePaymentPage />);
     await waitFor(() => expect(document.body).toHaveTextContent("Payment confirmation in progress"));
     expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
+    await act(async () => { await (document.querySelector("button") as HTMLButtonElement).click(); });
+    await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "confirmed-request"));
+  });
+
+  it("can retry a submit-time confirmed payment after its first balance refresh fails", async () => {
+    mocks.prepareRosterPaymentIntent
+      .mockReset()
+      .mockResolvedValueOnce({ requestKey: "initial-request", outcome: "new" })
+      .mockResolvedValueOnce({ requestKey: "submit-confirmed", outcome: "succeeded" })
+      .mockResolvedValue({ requestKey: "submit-confirmed", outcome: "succeeded" });
+    mocks.invalidatePaymentHistoryFinancials.mockRejectedValueOnce(new Error("refresh failed")).mockResolvedValue(undefined);
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+    await act(async () => { await props.onSubmit(); });
+    await waitFor(() => expect(document.body).toHaveTextContent("Payment confirmation in progress"));
+    expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
+
+    await act(async () => { await (document.querySelector("button") as HTMLButtonElement).click(); });
+    await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "submit-confirmed"));
+    expect(document.body).not.toHaveTextContent("Payment confirmation in progress");
   });
 
   it("replaces a terminal wallet identity before the next same-page click", async () => {
@@ -614,6 +665,155 @@ describe("MakePaymentPage upfront payment mode", () => {
 
     await waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment Failed" })));
     expect(mocks.csrfFetch).toHaveBeenCalledOnce();
+    view.unmount();
+  });
+
+  it("keeps controls gated until the authoritative participant refresh returns", async () => {
+    let resolveParticipants!: () => void;
+    mocks.setParticipantRefreshGate(new Promise<void>((resolve) => { resolveParticipants = resolve; }));
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "refresh-request", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ data: { status: "succeeded" } }) });
+    mocks.tokenizeCard.mockResolvedValue("card-source");
+
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+    act(() => { props.onSubmit(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ isSubmitting: true, paymentRefreshState: "refreshing" }));
+    expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
+
+    await act(async () => { resolveParticipants(); });
+    await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "refresh-request"));
+  });
+
+  it("fails closed when participant refresh returns no authoritative data", async () => {
+    mocks.setParticipantRefreshMissing(true);
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "missing-refresh-request", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ data: { status: "succeeded" } }) });
+    mocks.tokenizeCard.mockResolvedValue("card-source");
+
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+    await act(async () => { await props.onSubmit(); });
+
+    expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
+    expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment Successful" }));
+    expect(mocks.cleanupCard).toHaveBeenCalledOnce();
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentRefreshState: "retry", isSubmitting: true }));
+    mocks.setParticipantRefreshMissing(false);
+    const retryProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onRetryPaymentRefresh: () => void };
+    await act(async () => { retryProps.onRetryPaymentRefresh(); });
+    await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "missing-refresh-request"));
+    expect(mocks.toast.mock.calls.filter(([value]) => (value as { title?: string }).title === "Payment Successful")).toHaveLength(1);
+    expect(mocks.cleanupCard).toHaveBeenCalledOnce();
+    view.unmount();
+  });
+
+  it("replaces a wallet identity after a failed refresh before the next wallet payment", async () => {
+    mocks.setParticipantRefreshMissing(true);
+    mocks.setIncludePartner(true);
+    mocks.prepareRosterPaymentIntent
+      .mockReset()
+      .mockResolvedValueOnce({ requestKey: "wallet-old", outcome: "new" })
+      .mockResolvedValueOnce({ requestKey: "wallet-new", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ data: { status: "succeeded" } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ data: { status: "succeeded" } }) });
+
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const selectionProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onRecipientToggle: (bowlerId: number, selected: boolean) => void };
+    act(() => { selectionProps.onRecipientToggle(84, true); });
+    await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
+    expect(mocks.walletOptions.onPaymentStarted?.()).toBe(true);
+    await act(async () => { await mocks.walletOptions.onTokenReceived?.("wallet-source-1", "apple_pay"); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentRefreshState: "retry" }));
+    expect(mocks.toast.mock.calls.filter(([value]) => (value as { title?: string }).title === "Payment Successful")).toHaveLength(1);
+    await waitFor(() => expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledWith(expect.anything(), 17, 84));
+    mocks.invalidatePaymentHistoryFinancials.mockClear();
+
+    mocks.setParticipantRefreshMissing(false);
+    const retryProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onRetryPaymentRefresh: () => void };
+    await act(async () => { retryProps.onRetryPaymentRefresh(); });
+    await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "wallet-old"));
+    expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledWith(expect.anything(), 17, 84);
+    await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
+    expect(mocks.walletOptions.onPaymentStarted?.()).toBe(true);
+    await act(async () => { await mocks.walletOptions.onTokenReceived?.("wallet-source-2", "apple_pay"); });
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledTimes(4));
+    expect((mocks.csrfFetch.mock.calls[3]?.[1] as RequestInit).headers).toMatchObject({ "Idempotency-Key": "wallet-new" });
+    expect(mocks.toast.mock.calls.filter(([value]) => (value as { title?: string }).title === "Payment Successful")).toHaveLength(2);
+    view.unmount();
+  });
+
+  it("does not tokenize or charge when the fresh quote reports the network fallback", async () => {
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "network-request", outcome: "new" });
+    mocks.csrfFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: { code: "NETWORK_UNAVAILABLE", message: "Unable to connect. Check your connection and try again." } }),
+    });
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+    await act(async () => { await props.onSubmit(); });
+
+    expect(mocks.tokenizeCard).not.toHaveBeenCalled();
+    expect(mocks.csrfFetch).toHaveBeenCalledOnce();
+    expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Payment Failed",
+      description: "Unable to connect. Check your connection and try again.",
+    }));
+  });
+
+  it("refreshes participants and keeps the checkout safe when the quote reports no payable obligations", async () => {
+    mocks.setQuoteError({ code: "NO_ELIGIBLE_OBLIGATIONS", status: 422, message: "The selected recipient has no remaining payable balance" });
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      quoteError: "No remaining balance is available for the selected recipient. Review the recipients and try again.",
+    }));
+    expect(mocks.csrfFetch).not.toHaveBeenCalled();
+    expect(mocks.tokenizeCard).not.toHaveBeenCalled();
+  });
+
+  it("bounds a persistent stale quote and re-arms after a successful quote", async () => {
+    const staleQuote = { code: "STALE_QUOTE", status: 409, message: "The quote is stale" };
+    mocks.setQuoteError(staleQuote);
+    const view = render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(1));
+    expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledWith(expect.anything(), 17, 42);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(1);
+
+    const quoteProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onRetryQuote: () => void };
+    act(() => { quoteProps.onRetryQuote(); });
+    // Model the refetch returning the same stale code after the explicit
+    // retry action; the changed error object reruns the page effect without
+    // changing the selection key.
+    mocks.setQuoteError({ ...staleQuote });
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(2);
+
+    mocks.setQuoteError(null);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ quoteError: null }));
+
+    mocks.setQuoteError(staleQuote);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(3));
     view.unmount();
   });
 });

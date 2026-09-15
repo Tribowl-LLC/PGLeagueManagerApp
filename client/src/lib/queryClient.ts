@@ -137,7 +137,10 @@ export function redirectToLoginForExpiredSession(options?: {
 
 async function fetchCsrfToken(): Promise<string> {
   const res = await fetch('/api/csrf-token', { credentials: 'include' });
-  if (!res.ok) throw new Error('Failed to fetch CSRF token');
+  if (!res.ok) {
+    const body = await res.json().catch(() => undefined);
+    throw makeApiError(body, res.status, 'Failed to fetch CSRF token');
+  }
   const json = await res.json();
   csrfToken = json.data.token;
   return csrfToken!;
