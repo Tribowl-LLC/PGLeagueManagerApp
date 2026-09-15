@@ -3,13 +3,15 @@
  *
  * `insertBowlerSchema.phone` and `updateBowlerSchema.phone` share one
  * refinement: an optional leading `+`, then digits, spaces, parentheses,
- * dots, and hyphens, with 9-16 digits total. Empty string clears the value
- * (update) / is accepted (insert); null is accepted on both; missing is
- * accepted on both. Anything else — emails, letters, other symbols, or a
- * digit count outside 9-16 — is rejected with a `phone`-path issue.
+ * dots, and hyphens, with 9-16 digits without `+` and 9-15 digits with `+`.
+ * Empty string clears the value (update) / is accepted (insert); null is
+ * accepted on both; missing is accepted on both. Anything else — emails,
+ * letters, other symbols, or a digit count outside those bounds — is
+ * rejected with a `phone`-path issue.
  */
 import { describe, expect, it } from 'vitest';
-import { insertBowlerSchema, updateBowlerSchema } from '../../shared/schema';
+import { insertBowlerSchema, insertUserSchema, updateBowlerSchema } from '../../shared/schema';
+import { profileUpdateSchema } from '../../server/routes/account-shared';
 
 const VALID_PHONES = [
   '+12025550123',
@@ -17,6 +19,7 @@ const VALID_PHONES = [
   '202.555.0123',
   '123456789', // 9-digit lower bound
   '1234567890123456', // 16-digit upper bound
+  '+123456789012345', // E.164 15-digit upper bound
 ];
 
 const INVALID_PHONES: [string, string][] = [
@@ -26,6 +29,7 @@ const INVALID_PHONES: [string, string][] = [
   ['more than 16 digits (17)', '12345678901234567'],
   ['unsupported symbols', '+12025550123!'],
   ['a double leading plus', '++12025550123'],
+  ['a leading plus with 16 digits', '+1234567890123456'],
 ];
 
 const PHONE_MESSAGE = 'Enter a valid phone number';
@@ -82,5 +86,55 @@ describe('updateBowlerSchema phone validation', () => {
 
   it.each(INVALID_PHONES)('rejects %s with a phone-path issue', (_caseName, phone) => {
     expectPhoneIssue(updateBowlerSchema.safeParse({ phone }));
+  });
+});
+
+describe('profileUpdateSchema phone validation', () => {
+  it('rejects an email-shaped phone value with a phone-path issue', () => {
+    expectPhoneIssue(profileUpdateSchema.safeParse({ phone: 'alex@example.com' }));
+  });
+
+  it('preserves a valid trimmed phone value', () => {
+    const parsed = profileUpdateSchema.parse({ phone: '  +12025550123  ' });
+    expect(parsed.phone).toBe('+12025550123');
+  });
+
+  it('preserves an explicit null clear', () => {
+    const parsed = profileUpdateSchema.parse({ phone: null });
+    expect(parsed.phone).toBeNull();
+  });
+
+  it('preserves an empty clear as null', () => {
+    const parsed = profileUpdateSchema.parse({ phone: '' });
+    expect(parsed.phone).toBeNull();
+  });
+
+  it('preserves a whitespace-only clear as null', () => {
+    const parsed = profileUpdateSchema.parse({ phone: '   ' });
+    expect(parsed.phone).toBeNull();
+  });
+
+  it('preserves an omitted phone as undefined', () => {
+    const parsed = profileUpdateSchema.parse({});
+    expect(parsed.phone).toBeUndefined();
+  });
+});
+
+describe('insertUserSchema phone validation', () => {
+  const userInput = {
+    email: 'phone-schema-user@example.com',
+    name: 'Phone Schema User',
+    password: 'PhoneSchemaUser-1!',
+    role: 'user' as const,
+    // The insert schema requires an organization for non-admin users. This
+    // positive ID is sufficient for the schema contract; FK existence is
+    // enforced by the database at persistence time.
+    organizationId: 1,
+  };
+
+  it('accepts a valid phone, an empty string, and omission', () => {
+    expect(insertUserSchema.parse({ ...userInput, phone: '+12025550123' }).phone).toBe('+12025550123');
+    expect(insertUserSchema.parse({ ...userInput, phone: '' }).phone).toBe('');
+    expect(insertUserSchema.parse(userInput).phone).toBeUndefined();
   });
 });
