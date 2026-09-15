@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   getFirstSquareConfiguredLocation: vi.fn(),
   linkUserToBowler: vi.fn(),
   sendAccountReadyEmail: vi.fn(),
+  logError: vi.fn(),
 }));
 
 vi.mock('../../server/storage', () => ({
@@ -100,7 +101,7 @@ vi.mock('../../server/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),
-    error: vi.fn(),
+    error: mocks.logError,
     debug: vi.fn(),
   }),
 }));
@@ -220,6 +221,14 @@ async function patchEmail() {
   });
 }
 
+async function patchPhone(phone: string | null) {
+  return fetch(`${baseUrl}/api/bowlers/${ORIGINAL_BOWLER.id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ phone }),
+  });
+}
+
 describe('PATCH /api/bowlers/:id account-ready auto-link', () => {
   it('uses locked email proof and sends one notification after a committed link', async () => {
     const response = await patchEmail();
@@ -264,5 +273,56 @@ describe('PATCH /api/bowlers/:id account-ready auto-link', () => {
     expect(response.status).toBe(200);
     expect(mocks.linkUserToBowler).toHaveBeenCalledTimes(1);
     expect(mocks.sendAccountReadyEmail).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('PATCH /api/bowlers/:id phone validation', () => {
+  it('rejects an invalid phone with a 400 before touching storage or identity', async () => {
+    const response = await patchPhone('alex@example.com');
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(body.error.details).toHaveProperty('phone');
+    expect(mocks.updateBowler).not.toHaveBeenCalled();
+    expect(mocks.getFirstSquareConfiguredLocation).not.toHaveBeenCalled();
+    expect(mocks.linkUserToBowler).not.toHaveBeenCalled();
+    expect(mocks.logError).not.toHaveBeenCalled();
+  });
+
+  it('persists a valid phone and skips the email auto-link flow', async () => {
+    mocks.updateBowler.mockResolvedValueOnce({ ...ORIGINAL_BOWLER, phone: '+12025550123' });
+
+    const response = await patchPhone('+12025550123');
+
+    expect(response.status).toBe(200);
+    expect(mocks.updateBowler).toHaveBeenCalledTimes(1);
+    expect(mocks.updateBowler).toHaveBeenCalledWith(
+      ORIGINAL_BOWLER.id,
+      expect.objectContaining({ phone: '+12025550123' }),
+      ACTING_ADMIN.id,
+    );
+    expect(mocks.linkUserToBowler).not.toHaveBeenCalled();
+    expect(mocks.getFirstSquareConfiguredLocation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['null', null],
+    ['an empty string', ''],
+  ])('clears the phone to %s and skips the email auto-link flow', async (_caseName, phone) => {
+    mocks.updateBowler.mockResolvedValueOnce({ ...ORIGINAL_BOWLER, phone });
+
+    const response = await patchPhone(phone);
+
+    expect(response.status).toBe(200);
+    expect(mocks.updateBowler).toHaveBeenCalledTimes(1);
+    expect(mocks.updateBowler).toHaveBeenCalledWith(
+      ORIGINAL_BOWLER.id,
+      expect.objectContaining({ phone }),
+      ACTING_ADMIN.id,
+    );
+    expect(mocks.linkUserToBowler).not.toHaveBeenCalled();
+    expect(mocks.getFirstSquareConfiguredLocation).not.toHaveBeenCalled();
   });
 });

@@ -680,10 +680,10 @@ router.post("/", async (req, res) => {
     // docs/security/fresh-bowler-claim-removal.md for the full trace.
     sendSuccess(res, sanitizeBowler(synced), 201);
   } catch (error) {
-    log.error('Error creating bowler:', error);
     if (error instanceof z.ZodError) {
       return handleZodError(res, error);
     }
+    log.error('Error creating bowler:', error);
     sendError(res, 'Failed to create bowler');
   }
 });
@@ -852,10 +852,10 @@ router.patch("/:id", async (req, res) => {
 
     sendSuccess(res, sanitizeBowler(updated));
   } catch (error) {
-    log.error('Error updating bowler:', error);
     if (error instanceof z.ZodError) {
       return handleZodError(res, error);
     }
+    log.error('Error updating bowler:', error);
     sendError(res, 'Failed to update bowler');
   }
 });

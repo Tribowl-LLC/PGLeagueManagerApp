@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { createHash } from 'crypto';
 import { sendError } from '../utils/api';
-import { updateUserSchemaBase } from '@shared/schema';
+import { phoneSchema, updateUserSchemaBase } from '@shared/schema';
 import { PASSWORD_CHANGED_I18N } from '../services/email-i18n/password-changed';
 
 // Languages we currently ship translations for. Sourced from the
@@ -34,8 +34,7 @@ export const SUPPORTED_PREFERRED_LANGUAGES = Object.keys(
 export const profileUpdateSchema = updateUserSchemaBase
   .pick({ name: true, email: true, phone: true })
   .extend({
-    phone: z
-      .string()
+    phone: phoneSchema
       .nullable()
       .optional()
       .transform((v) => {

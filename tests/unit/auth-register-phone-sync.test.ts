@@ -139,7 +139,7 @@ beforeEach(() => {
     id: 99,
     email: "newbie@example.com",
     name: "New Bie",
-    phone: "5559876",
+    phone: "2025559876",
     role: "user",
     organizationId: 5,
     bowlerId: null,
@@ -155,7 +155,7 @@ describe("POST /api/auth/register — email-first boundaries", () => {
       body: JSON.stringify({
         email: "newbie@example.com",
         name: "New Bie",
-        phone: "5559876",
+        phone: "2025559876",
         leagueId: "10",
         organizationId: "5",
       }),
@@ -181,7 +181,7 @@ describe("POST /api/auth/register — email-first boundaries", () => {
       id: 401,
       email: "existing@example.com",
       role: "org_admin",
-      phone: "5550000",
+      phone: "2025550000",
     });
     const res = await fetch(`${baseUrl}/api/auth/register`, {
       method: "POST",
@@ -189,7 +189,7 @@ describe("POST /api/auth/register — email-first boundaries", () => {
       body: JSON.stringify({
         email: " existing@example.com ",
         name: "Changed Name",
-        phone: "5559999",
+        phone: "2025559999",
         leagueId: "10",
         organizationId: "5",
       }),
@@ -207,7 +207,7 @@ describe("POST /api/auth/register — email-first boundaries", () => {
       id: 402,
       email: "pending@example.com",
       name: "Original Pending Name",
-      phone: "5550001",
+      phone: "2025550001",
       role: "user",
       organizationId: 5,
       bowlerId: 918,
@@ -225,7 +225,7 @@ describe("POST /api/auth/register — email-first boundaries", () => {
       body: JSON.stringify({
         email: " pending@example.com ",
         name: "Attacker Replacement Name",
-        phone: "5559999",
+        phone: "2025559999",
         leagueId: "10",
         organizationId: "5",
       }),
@@ -254,7 +254,7 @@ describe("POST /api/auth/register — email-first boundaries", () => {
       body: JSON.stringify({
         email: "timing@example.com",
         name: "Timing New User",
-        phone: "5551000",
+        phone: "2025551000",
         leagueId: "10",
         organizationId: "5",
       }),
@@ -273,7 +273,7 @@ describe("POST /api/auth/register — email-first boundaries", () => {
       body: JSON.stringify({
         email: "timing@example.com",
         name: "Timing Duplicate",
-        phone: "5551001",
+        phone: "2025551001",
         leagueId: "10",
         organizationId: "5",
       }),

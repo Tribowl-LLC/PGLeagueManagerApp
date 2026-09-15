@@ -2,7 +2,7 @@ import { pgTable, text, serial, integer, boolean, timestamp, index, uniqueIndex,
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import { USER_ROLES, userRoleEnum, nameSchema, emailSchema } from "./constants";
+import { USER_ROLES, userRoleEnum, nameSchema, emailSchema, phoneSchema } from "./constants";
 import { passwordSchema } from "../password-validation";
 import { bowlers } from "./bowlers";
 import { organizations } from "./organizations";
@@ -165,7 +165,7 @@ const requireOrgForNonAdmin = (
 export const insertUserSchema = baseUserSchema.extend({
   email: emailSchema,
   name: nameSchema,
-  phone: z.string().optional(),
+  phone: phoneSchema.optional(),
   role: z.enum(USER_ROLES).optional().default('user'),
   organizationId: z.number().nullable().optional(),
   locationId: z.number().nullable().optional(),
@@ -178,7 +178,7 @@ export const insertUserSchema = baseUserSchema.extend({
 export const updateUserSchemaBase = z.object({
   email: emailSchema,
   name: nameSchema,
-  phone: z.string().nullable(),
+  phone: phoneSchema.nullable(),
   avatar: z.string().nullable(),
   role: z.enum(USER_ROLES),
   organizationId: z.number().nullable(),

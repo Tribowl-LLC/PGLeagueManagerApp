@@ -185,6 +185,35 @@ async function userByEmail(email: string, scopedOrganizationId = organizationId)
   return user;
 }
 
+async function expectNoRegistrationArtifacts(email: string): Promise<void> {
+  const [user] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+  expect(user).toBeUndefined();
+
+  const jobs = await db
+    .select({ id: accountActionDeliveryJobs.id })
+    .from(accountActionDeliveryJobs)
+    .innerJoin(users, eq(accountActionDeliveryJobs.userId, users.id))
+    .where(and(
+      eq(users.email, email),
+      sql`${accountActionDeliveryJobs.action} = ${REGISTRATION_ACTION}`,
+    ));
+  expect(jobs).toEqual([]);
+
+  const actions = await db
+    .select({ id: accountActionRequests.id })
+    .from(accountActionRequests)
+    .innerJoin(users, eq(accountActionRequests.userId, users.id))
+    .where(and(
+      eq(users.email, email),
+      sql`${accountActionRequests.action} = ${REGISTRATION_ACTION}`,
+    ));
+  expect(actions).toEqual([]);
+}
+
 async function countRegistrationActions(userId: number): Promise<number> {
   const rows = await db
     .select({ id: accountActionRequests.id })
@@ -407,6 +436,19 @@ describe("email-first registration API", () => {
     });
     expect(unknownHost.response.status).toBe(503);
     expect(unknownHost.body.error?.code).toBe("SIGNUP_UNAVAILABLE");
+  });
+
+  it.each([
+    ["an email-shaped phone", "alex@example.com"],
+    ["an empty phone", ""],
+    ["a whitespace-only phone", "   "],
+  ])("rejects %s before creating an account or registration action", async (_label, phone) => {
+    const email = uniqueEmail("invalid-phone");
+    const rejected = await register({ email, phone });
+
+    expect(rejected.response.status).toBe(400);
+    expect(rejected.body.error?.code).toBe("VALIDATION_ERROR");
+    await expectNoRegistrationArtifacts(email);
   });
 
   it("returns 202 without authenticating and exposes session-scoped status before action issuance", async () => {

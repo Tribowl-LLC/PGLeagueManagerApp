@@ -1,4 +1,4 @@
-export { WEEKDAYS, PAYMENT_MODES, WeekDay, USER_ROLES, userRoleEnum, PAYMENT_STATUSES, PaymentStatus, PAYMENT_TYPES, PaymentType, CARD_PAYMENT_TYPES, isCardPaymentType, providerNameToPaymentType, dateSchema, timeSchema, nameSchema, emailSchema, positiveIntSchema, DEFAULT_WEEKLY_FEE_CENTS, DEFAULT_TIMEZONE } from "./constants";
+export { WEEKDAYS, PAYMENT_MODES, WeekDay, USER_ROLES, userRoleEnum, PAYMENT_STATUSES, PaymentStatus, PAYMENT_TYPES, PaymentType, CARD_PAYMENT_TYPES, isCardPaymentType, providerNameToPaymentType, dateSchema, timeSchema, nameSchema, emailSchema, phoneSchema, positiveIntSchema, DEFAULT_WEEKLY_FEE_CENTS, DEFAULT_TIMEZONE } from "./constants";
 export type { PaymentMode, UserRole, PaymentTypeValue } from "./constants";
 
 export { organizations, insertOrganizationSchema, updateOrganizationSchema } from "./organizations";
