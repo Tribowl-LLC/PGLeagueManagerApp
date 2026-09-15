@@ -111,6 +111,11 @@ export function isTransportError(error: unknown): boolean {
 export function classifyApiError(error: unknown): ApiErrorClassification {
   if (isAbortError(error)) return "aborted";
 
+  // The service worker uses this explicit code for a transport failure. Keep
+  // it transport-classified even though the fallback carries HTTP 503, so
+  // telemetry and retry behavior retain the network failure semantics.
+  if (getApiErrorCode(error) === "NETWORK_UNAVAILABLE") return "transport";
+
   const status = getApiErrorStatus(error);
   if (status === 429) return "rate-limited";
   if (EXPECTED_API_ERROR_STATUSES.includes(status as (typeof EXPECTED_API_ERROR_STATUSES)[number])) {

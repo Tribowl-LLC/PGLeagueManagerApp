@@ -64,14 +64,38 @@ self.addEventListener('fetch', (event) => {
     },
   );
 
+  const unavailableApiResponse = () => new Response(
+    JSON.stringify({
+      success: false,
+      error: {
+        code: 'NETWORK_UNAVAILABLE',
+        message: 'Unable to connect. Check your connection and try again.',
+      },
+    }),
+    {
+      status: 503,
+      headers: {
+        'Cache-Control': 'no-store',
+        'Content-Type': 'application/json',
+      },
+    },
+  );
+
+  // Fetch reports an unavailable network as a TypeError in browsers. Keep
+  // aborts and unexpected failures visible to the caller instead of turning
+  // every rejected fetch into a user-facing offline response.
+  const isNetworkFetchError = (error) => {
+    if (!error || typeof error !== 'object') return false;
+    const name = error.name;
+    return name === 'TypeError' || name === 'NetworkError';
+  };
+
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
-      fetch(event.request).catch(() => {
-        return new Response(
-          JSON.stringify({ success: false, error: { message: 'You are offline' } }),
-          { headers: { 'Content-Type': 'application/json' } }
-        );
-      })
+      fetch(event.request).catch((error) => {
+        if (!isNetworkFetchError(error)) throw error;
+        return unavailableApiResponse();
+      }),
     );
     return;
   }

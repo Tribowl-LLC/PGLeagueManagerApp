@@ -64,6 +64,21 @@ describe("client API error classification", () => {
     },
   );
 
+  it("classifies the service worker network fallback as transport despite its 503 status", () => {
+    const error = makeApiError(
+      {
+        error: {
+          code: "NETWORK_UNAVAILABLE",
+          message: "Unable to connect. Check your connection and try again.",
+        },
+      },
+      503,
+      "Request failed",
+    );
+    expect(classifyApiError(error)).toBe("transport");
+    expect(shouldRetryApiQuery(0, error)).toBe(true);
+  });
+
   it("does not retry deterministic client failures or arbitrary errors", () => {
     expect(shouldRetryApiQuery(0, new ApiError({ message: "missing", status: 404 }))).toBe(false);
     expect(shouldRetryApiQuery(0, new Error("application failure"))).toBe(false);

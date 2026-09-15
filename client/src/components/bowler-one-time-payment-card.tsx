@@ -72,6 +72,10 @@ interface Props {
   breakdownRows?: PaymentBreakdownRow[];
   quoteLoading?: boolean;
   quoteError?: string | null;
+  onRetryQuote?: () => void;
+  paymentRefreshState?: "idle" | "refreshing" | "retry";
+  paymentRefreshError?: string | null;
+  onRetryPaymentRefresh?: () => void;
   selectionStale?: boolean;
   onRecipientToggle: (bowlerId: number, selected: boolean) => void;
   onRecipientWeeksChange: (bowlerId: number, weeks: number) => void;
@@ -88,7 +92,8 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   onApplePayClick, onGooglePayClick, isWalletProcessing, bowlerHasEmail,
   receiptEmail, onReceiptEmailChange, recipientRows, breakdownRows, quoteLoading = false,
   quoteError = null, selectionStale = false, onRecipientToggle, onRecipientWeeksChange,
-  onResetRecipientSelection,
+  onResetRecipientSelection, paymentRefreshState = "idle", paymentRefreshError = null,
+  onRetryPaymentRefresh, onRetryQuote,
 }) => {
   const cardCallbackRef = useRef<(el: HTMLDivElement | null) => void>(() => undefined);
   cardCallbackRef.current = (el) => { if (el && cardMode === "new" && cardEditorMode === "one-time") void initializeCard(el); };
@@ -146,8 +151,10 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
               ))}
         </fieldset>
         {!hasSelectedRecipient && <Alert><AlertDescription>Select at least one recipient to continue.</AlertDescription></Alert>}
+        {paymentRefreshState === "refreshing" && <Alert><AlertDescription>Refreshing payment balances before continuing…</AlertDescription></Alert>}
+        {paymentRefreshState === "retry" && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{paymentRefreshError ?? "Payment balances could not be refreshed. Try again."}</span>{onRetryPaymentRefresh && <Button type="button" variant="outline" size="sm" onClick={onRetryPaymentRefresh}>Retry refresh</Button>}</AlertDescription></Alert>}
         {selectionStale && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>The payment choices changed while this page was open. Review the recipients and week counts before paying.</span>{onResetRecipientSelection && <Button type="button" variant="outline" size="sm" onClick={onResetRecipientSelection}>Reset choices</Button>}</AlertDescription></Alert>}
-        {quoteError && <Alert variant="destructive"><AlertDescription>{quoteError}</AlertDescription></Alert>}
+        {quoteError && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{quoteError}</span>{onRetryQuote && <Button type="button" variant="outline" size="sm" onClick={onRetryQuote}>Retry quote</Button>}</AlertDescription></Alert>}
         <div className="flex flex-col gap-2 rounded-md border bg-muted/50 p-4" aria-live="polite" data-testid="payment-breakdown">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium">Payment total</span>

@@ -95,6 +95,34 @@ describe('interactive request-key recovery', () => {
     expect(csrfFetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('retains the request key after a worker 503 and recovers before a retry can submit a source', async () => {
+    const values = installStorage();
+    const scope = interactivePaymentIntentScope({ actorUserId: 4, organizationId: 8, leagueId: 11, bowlerId: 42 });
+    const requestKey = beginPaymentIntent(scope);
+    const networkUnavailable = new Response(JSON.stringify({
+      success: false,
+      error: {
+        code: 'NETWORK_UNAVAILABLE',
+        message: 'Unable to connect. Check your connection and try again.',
+      },
+    }), { status: 503, headers: { 'Cache-Control': 'no-store', 'Content-Type': 'application/json' } });
+    const firstRequest = vi.fn().mockResolvedValue(networkUnavailable);
+    csrfFetchMock.mockResolvedValueOnce(noExistingOperation());
+
+    await expect(paymentRequestWithRecovery(requestKey, firstRequest, 11)).resolves.toBe(networkUnavailable);
+    expect(firstRequest).toHaveBeenCalledOnce();
+    expect(values.get(`leaguevault:payment-intent:v1:${scope}`)).toBe(requestKey);
+
+    const recovered = exactResponse('succeeded', 200);
+    const retryRequest = vi.fn().mockResolvedValue(exactResponse('succeeded', 201));
+    csrfFetchMock.mockResolvedValueOnce(recovered);
+
+    await expect(paymentRequestWithRecovery(requestKey, retryRequest, 11)).resolves.toBe(recovered);
+    expect(retryRequest).not.toHaveBeenCalled();
+    expect(csrfFetchMock).toHaveBeenCalledTimes(2);
+    expect(values.get(`leaguevault:payment-intent:v1:${scope}`)).toBe(requestKey);
+  });
+
   it('does not invoke recovery for an ordinary bounded API response', async () => {
     const response = new Response(null, { status: 409 });
     const request = vi.fn().mockResolvedValueOnce(response);
