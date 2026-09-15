@@ -146,19 +146,33 @@ export function buildManagePaymentRows(
   }
 
   const teamNames = new Map((roster?.teams ?? []).map((team) => [team.id, team]));
-  const seenBowlerIds = new Set<number>();
-  return memberships
+  const seenBowlerIdsByTeam = new Map<number, Set<number>>();
+  const uniqueMemberships = memberships
     .filter((membership) => membership.active && membership.bowler?.active && membership.team?.active)
     .filter((membership) => {
       const team = membership.team;
       return !!team && teamNames.size > 0 ? teamNames.has(team.id) : !!team;
     })
+    .sort((left, right) => new Date(right.joinedAt).getTime() - new Date(left.joinedAt).getTime())
+    .filter((membership) => {
+      const bowlerIds = seenBowlerIdsByTeam.get(membership.teamId) ?? new Set<number>();
+      seenBowlerIdsByTeam.set(membership.teamId, bowlerIds);
+      if (bowlerIds.has(membership.bowlerId)) return false;
+      bowlerIds.add(membership.bowlerId);
+      return true;
+    });
+  const seenBowlerIds = new Set<number>();
+  return uniqueMemberships
     .sort((left, right) => {
       const leftTeam = left.team;
       const rightTeam = right.team;
       if (!leftTeam || !rightTeam) return leftTeam ? -1 : rightTeam ? 1 : 0;
-      return (teamNames.get(leftTeam.id)?.number ?? leftTeam.number) - (teamNames.get(rightTeam.id)?.number ?? rightTeam.number)
+      return leftTeam.displayOrder - rightTeam.displayOrder
+        || (teamNames.get(leftTeam.id)?.number ?? leftTeam.number) - (teamNames.get(rightTeam.id)?.number ?? rightTeam.number)
         || (teamNames.get(leftTeam.id)?.name ?? leftTeam.name).localeCompare(teamNames.get(rightTeam.id)?.name ?? rightTeam.name)
+        || leftTeam.id - rightTeam.id
+        || (left.order ?? 0) - (right.order ?? 0)
+        || new Date(right.joinedAt).getTime() - new Date(left.joinedAt).getTime()
         || left.bowlerId - right.bowlerId
         || left.id - right.id;
     })
@@ -181,7 +195,6 @@ export function buildManagePaymentRows(
         reviewRequired: balance?.reviewRequired ?? false,
       }];
     })
-    .sort((a, b) => a.teamNumber - b.teamNumber || a.teamName.localeCompare(b.teamName) || a.bowlerName.localeCompare(b.bowlerName) || a.bowlerId - b.bowlerId);
 }
 
 export default function ManagePaymentsPage() {
