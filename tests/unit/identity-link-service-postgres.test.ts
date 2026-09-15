@@ -256,4 +256,116 @@ describe("identity-link service", () => {
     const events = await db.select().from(identityLinkEvents).where(eq(identityLinkEvents.userId, user.id));
     expect(events).toHaveLength(0);
   });
+
+  it.each([null, "", "   "])(
+    "fills a blank bowler email and phone from the user's trimmed contact values (blank email: %s)",
+    async (blankEmail: string | null) => {
+      const label = blankEmail === null ? "null" : blankEmail === "" ? "empty" : "blank";
+      const user = await createUser("Contact Fill User", "user", `contact-fill-${label}-${suffix}@example.com`);
+      const userPhone = "+1 (555) 010-2345";
+      // The service trims the user source before filling a blank contact.
+      await db.update(users).set({ phone: `  ${userPhone}  ` }).where(eq(users.id, user.id));
+
+      const bowler = await createBowler("Contact Fill Bowler", organizationId, `contact-fill-bowler-${label}-${suffix}@example.com`);
+      await db.update(bowlers).set({ email: blankEmail, phone: blankEmail }).where(eq(bowlers.id, bowler.id));
+
+      const result = await linkUserToBowler({
+        organizationId,
+        userId: user.id,
+        bowlerId: bowler.id,
+        source: "test-contact-fill",
+      });
+
+      const [filled] = await db.select().from(bowlers).where(eq(bowlers.id, bowler.id));
+      expect(filled.email).toBe(`contact-fill-${label}-${suffix}@example.com`);
+      expect(filled.phone).toBe(userPhone);
+      expect(result.bowler).not.toBeNull();
+      expect(result.bowler?.email).toBe(filled.email);
+      expect(result.bowler?.phone).toBe(filled.phone);
+      const [linked] = await db.select({ bowlerId: users.bowlerId }).from(users).where(eq(users.id, user.id));
+      expect(linked.bowlerId).toBe(bowler.id);
+    },
+  );
+
+  it("preserves the bowler's existing email, phone, and name when the user has different contact values", async () => {
+    const user = await createUser("Contact Preserve User", "user", `preserve-user-${suffix}@example.com`);
+    await db.update(users).set({ phone: "+1 (555) 010-6666" }).where(eq(users.id, user.id));
+
+    const bowlerEmail = `preserve-bowler-${suffix}@example.com`;
+    const bowlerPhone = "+1 (555) 010-7777";
+    const bowler = await createBowler("Contact Preserve Bowler", organizationId, bowlerEmail);
+    await db.update(bowlers).set({ phone: bowlerPhone }).where(eq(bowlers.id, bowler.id));
+
+    await linkUserToBowler({
+      organizationId,
+      userId: user.id,
+      bowlerId: bowler.id,
+      source: "test-contact-preserve",
+    });
+
+    const [preserved] = await db.select().from(bowlers).where(eq(bowlers.id, bowler.id));
+    expect(preserved.email).toBe(bowlerEmail);
+    expect(preserved.phone).toBe(bowlerPhone);
+    expect(preserved.name).toBe(`Contact Preserve Bowler ${suffix}`);
+    const [linked] = await db.select({ bowlerId: users.bowlerId }).from(users).where(eq(users.id, user.id));
+    expect(linked.bowlerId).toBe(bowler.id);
+  });
+
+  it.each([null, "", "   "])(
+    "leaves a blank bowler phone untouched when the user phone is missing or blank (user phone: %s)",
+    async (blankPhone: string | null) => {
+      const label = blankPhone === null ? "null" : blankPhone === "" ? "empty" : "blank";
+      const user = await createUser("No Phone User", "user", `no-phone-${label}-${suffix}@example.com`);
+      if (blankPhone !== null) {
+        await db.update(users).set({ phone: blankPhone }).where(eq(users.id, user.id));
+      }
+
+      const bowler = await createBowler("No Phone Bowler", organizationId, `no-phone-bowler-${label}-${suffix}@example.com`);
+      await db.update(bowlers).set({ email: "", phone: blankPhone }).where(eq(bowlers.id, bowler.id));
+
+      await linkUserToBowler({
+        organizationId,
+        userId: user.id,
+        bowlerId: bowler.id,
+        source: "test-no-source-phone",
+      });
+
+      const [unchanged] = await db.select().from(bowlers).where(eq(bowlers.id, bowler.id));
+      expect(unchanged.phone).toBe(blankPhone);
+      expect(unchanged.email).toBe(`no-phone-${label}-${suffix}@example.com`);
+    },
+  );
+
+  it("rolls back contact fill, the link, and the event when the outer transaction fails", async () => {
+    const user = await createUser("Rollback Fill User", "user", `rollback-fill-${suffix}@example.com`);
+    await db.update(users).set({ phone: "+1 (555) 010-9999" }).where(eq(users.id, user.id));
+
+    const bowler = await createBowler("Rollback Fill Bowler", organizationId, `rollback-fill-bowler-${suffix}@example.com`);
+    await db.update(bowlers).set({ email: "" }).where(eq(bowlers.id, bowler.id));
+
+    await expect(
+      db.transaction(async (tx) => {
+        await linkUserToBowler(
+          {
+            organizationId,
+            userId: user.id,
+            bowlerId: bowler.id,
+            source: "test-contact-rollback",
+          },
+          tx,
+        );
+        throw new Error("rollback");
+      }),
+    ).rejects.toThrow("rollback");
+
+    const [userRow] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(userRow.bowlerId).toBeNull();
+    const [bowlerRow] = await db.select().from(bowlers).where(eq(bowlers.id, bowler.id));
+    expect(bowlerRow.email).toBe("");
+    expect(bowlerRow.phone).toBeNull();
+    const userEvents = await db.select().from(identityLinkEvents).where(eq(identityLinkEvents.userId, user.id));
+    expect(userEvents).toHaveLength(0);
+    const bowlerEvents = await db.select().from(identityLinkEvents).where(eq(identityLinkEvents.bowlerId, bowler.id));
+    expect(bowlerEvents).toHaveLength(0);
+  });
 });

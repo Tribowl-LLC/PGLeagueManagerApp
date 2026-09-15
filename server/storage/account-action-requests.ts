@@ -799,7 +799,10 @@ export async function consumeAccountActionAndSetPassword(input: {
     return { request: claimed, user: completedUser };
   });
 
-  if (completed) cacheInvalidate(`user:${completed.user.id}`);
+  if (completed) {
+    cacheInvalidate(`user:${completed.user.id}`);
+    cacheInvalidate("bowlers:");
+  }
   return completed;
 }
 

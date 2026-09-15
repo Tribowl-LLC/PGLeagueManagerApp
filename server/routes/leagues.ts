@@ -882,6 +882,7 @@ router.post("/:id/send-invites", async (req: Request, res) => {
       // write is committed. At this point the user/link/event transaction has
       // committed successfully.
       cacheInvalidate(`user:${created.newUser.id}`);
+      cacheInvalidate('bowlers:');
 
       const firstName = bowler.name.split(' ')[0];
       let emailSent = false;

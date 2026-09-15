@@ -872,6 +872,7 @@ export function registerAuthRoutes(app: Express): void {
                 // transaction has committed so readers do not observe a stale
                 // org/bowler association.
                 cacheInvalidate(`user:${authenticatedUser.id}`);
+                cacheInvalidate("bowlers:");
               }
             }
           }
@@ -1010,7 +1011,7 @@ export function registerAuthRoutes(app: Express): void {
         }
         throw linkError;
       }
-      await storage.updateBowler(bowlerId, { ...bowler, email: user.email });
+      // Contact transfer is committed by the identity-link transaction above.
 
       const bowlerLeagueEntries = await storage.getBowlerLeagues({ bowlerId });
       if (bowlerLeagueEntries.length > 0) {

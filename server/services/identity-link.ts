@@ -298,6 +298,30 @@ async function linkInTransaction(
   }
   await assertBowlerUnclaimed(executor, bowler.id);
 
+  // Backfill contact details the linked account already carries so the
+  // merged roster profile is complete; only fill fields the bowler left empty.
+  const contactPatch: Partial<Pick<Bowler, "email" | "phone">> = {};
+  if (!bowler.email?.trim() && user.email?.trim()) {
+    contactPatch.email = user.email.trim();
+  }
+  if (!bowler.phone?.trim() && user.phone?.trim()) {
+    contactPatch.phone = user.phone.trim();
+  }
+
+  let linkedBowler = bowler;
+  if (Object.keys(contactPatch).length > 0) {
+    const [updatedBowler] = await executor
+      .update(bowlers)
+      .set(contactPatch)
+      .where(and(
+        eq(bowlers.id, bowler.id),
+        eq(bowlers.organizationId, input.organizationId),
+      ))
+      .returning();
+    if (!updatedBowler) throw new Error("Failed to update linked bowler");
+    linkedBowler = updatedBowler;
+  }
+
   const [updatedUser] = await executor
     .update(users)
     .set({ bowlerId: bowler.id })
@@ -312,11 +336,11 @@ async function linkInTransaction(
     bowlerId: bowler.id,
     newBowlerId: bowler.id,
     eventType: input.eventType ?? "link",
-    newBowlerSnapshot: snapshotBowler(bowler),
+    newBowlerSnapshot: snapshotBowler(linkedBowler),
     source: input.source,
     reason: input.reason,
   });
-  return { user: updatedUser, bowler, oldBowler: null, event };
+  return { user: updatedUser, bowler: linkedBowler, oldBowler: null, event };
 }
 
 /**
@@ -331,7 +355,10 @@ export async function linkUserToBowler(
   // An injected executor belongs to a caller-owned compound transaction; its
   // caller invalidates after that outer transaction commits. For a standalone
   // call, this runs only after db.transaction resolves successfully.
-  if (!executor) cacheInvalidate(`user:${result.user.id}`);
+  if (!executor) {
+    cacheInvalidate(`user:${result.user.id}`);
+    cacheInvalidate("bowlers:");
+  }
   return result;
 }
 
