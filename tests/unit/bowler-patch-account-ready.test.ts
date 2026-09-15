@@ -269,17 +269,17 @@ describe('PATCH /api/bowlers/:id account-ready auto-link', () => {
 
   it('carries the identity-link backfilled phone to the provider, the response, and the customer-id write', async () => {
     const FRESH_PHONE = '+1-202-555-0142';
-    const QUEUE_PENDING_AT = '2026-09-15T12:00:00.000Z';
     const linkedBowler = {
       ...UPDATED_BOWLER,
       phone: FRESH_PHONE,
-      // The identity-link service atomically resets the payment-sync queue
-      // when it backfills contact details; the route must carry those queue
-      // fields through to the provider sync and the customer-id write.
-      paymentSyncPendingAt: QUEUE_PENDING_AT,
+      // No payment-sync queue: the identity-link backfilled the phone
+      // without queueing provider work, so the route still performs the
+      // foreground sync and carries the fresh row through to the provider
+      // and the customer-id write.
+      paymentSyncPendingAt: null,
       paymentSyncAttempts: 0,
       paymentSyncLastAttemptAt: null,
-      paymentSyncNextRetryAt: QUEUE_PENDING_AT,
+      paymentSyncNextRetryAt: null,
     };
     const squareLocation = { id: 321 };
     const createOrUpdateCustomer = vi.fn(async () => ({ id: 'sq_test_customer_1' }));
@@ -329,6 +329,59 @@ describe('PATCH /api/bowlers/:id account-ready auto-link', () => {
       ...linkedBowler,
       paymentCustomerId: 'sq_test_customer_1',
       paymentProviderLocationId: squareLocation.id,
+    });
+  });
+
+  it('leaves the queued provider sync to the durable queue worker after an account link', async () => {
+    const FRESH_PHONE = '+1-202-555-0142';
+    const QUEUE_PENDING_AT = '2026-09-15T12:00:00.000Z';
+    const linkedBowler = {
+      ...UPDATED_BOWLER,
+      phone: FRESH_PHONE,
+      // The identity-link service queued the payment-sync work while both
+      // rows were locked; the durable queue worker now owns the provider
+      // sync, so the route must not issue a competing foreground call or
+      // a queue-clearing follow-up write.
+      paymentSyncPendingAt: QUEUE_PENDING_AT,
+      paymentSyncAttempts: 0,
+      paymentSyncLastAttemptAt: null,
+      paymentSyncNextRetryAt: QUEUE_PENDING_AT,
+    };
+    const squareLocation = { id: 321 };
+    const createOrUpdateCustomer = vi.fn(async () => ({ id: 'sq_test_customer_1' }));
+    mocks.linkUserToBowler.mockResolvedValue({
+      user: { ...LINKED_USER },
+      bowler: linkedBowler,
+      oldBowler: null,
+      event: null,
+    });
+    mocks.getFirstSquareConfiguredLocation.mockResolvedValue(squareLocation);
+    mocks.getPaymentProvider.mockResolvedValue({ createOrUpdateCustomer });
+
+    const response = await patchEmail();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mocks.linkUserToBowler).toHaveBeenCalledTimes(1);
+    // The account-ready notification still fires for the committed link.
+    expect(mocks.sendAccountReadyEmail).toHaveBeenCalledTimes(1);
+    // The queued sync is left to the durable queue worker: no competing
+    // foreground provider call.
+    expect(mocks.getFirstSquareConfiguredLocation).not.toHaveBeenCalled();
+    expect(mocks.getPaymentProvider).not.toHaveBeenCalled();
+    expect(createOrUpdateCustomer).not.toHaveBeenCalled();
+    // No queue-clearing follow-up write: only the initial updateBowler.
+    expect(mocks.updateBowler).toHaveBeenCalledTimes(1);
+    // The PATCH response reflects the committed linked row, queue intact.
+    expect(body).toEqual({
+      success: true,
+      data: expect.objectContaining({
+        id: ORIGINAL_BOWLER.id,
+        email: UPDATED_BOWLER.email,
+        phone: FRESH_PHONE,
+        paymentSyncPendingAt: QUEUE_PENDING_AT,
+        paymentSyncNextRetryAt: QUEUE_PENDING_AT,
+      }),
     });
   });
 });

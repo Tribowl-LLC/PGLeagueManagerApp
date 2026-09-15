@@ -9,7 +9,8 @@
  *     exponential backoff window
  *   - sweep skips bowlers without a linked user (manual cleanup needed)
  *   - sweep retries an eligible bowler by calling syncBowlerForUser
- *     with the linked user's profile and reports success
+ *     with the bowler's current contact fields (linked user supplies
+ *     routing only) and reports success
  *   - sweep tolerates an unexpected throw without crashing the tick
  *   - paymentSyncBackoffMs grows exponentially and caps the exponent
  */
@@ -171,6 +172,10 @@ describe('runPaymentSyncRetrySweep', () => {
       bowler({
         paymentSyncAttempts: 1,
         paymentSyncLastAttemptAt: new Date(NOW.getTime() - 10 * 60_000).toISOString(),
+        // Bowler-owned phone that deliberately DIFFERS from the
+        // linked user's phone ('5555550000'): the retry must push
+        // this bowler value, not the user profile value.
+        phone: '2025550188',
       }),
     ]);
     mockGetUserByBowlerId.mockResolvedValue({
@@ -192,8 +197,18 @@ describe('runPaymentSyncRetrySweep', () => {
     expect(result.pendingAgain).toBe(0);
     expect(mockSyncBowlerForUser).toHaveBeenCalledTimes(1);
     const [user, changed] = mockSyncBowlerForUser.mock.calls[0];
-    expect(user).toMatchObject({ id: 9, bowlerId: 100, email: 'linked@example.com' });
-    expect(changed).toEqual({ nameChanged: true, emailChanged: true, phoneChanged: true });
+    // The bowler's CURRENT contact fields win; the linked user
+    // supplies routing (id/bowlerId/locationId/organizationId) only.
+    expect(user).toMatchObject({
+      id: 9,
+      bowlerId: 100,
+      name: 'Pending Bowler',
+      email: 'pending@example.com',
+      phone: '2025550188',
+      locationId: 7,
+      organizationId: 3,
+    });
+    expect(changed).toEqual({ nameChanged: false, emailChanged: false, phoneChanged: false });
   });
 
   it('counts pending_retry results separately so ops can see persistent failures', async () => {

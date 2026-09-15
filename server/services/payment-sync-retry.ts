@@ -211,22 +211,31 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
     let status: PaymentSyncStatus;
     try {
       if (linkedUser) {
-        // Source-of-truth for the retry is the linked user's
-        // profile, matching what the manual admin endpoint does.
-        // We mark every field as "changed" so the helper writes the
-        // local bowler row and re-issues the provider call without
-        // inspecting deltas.
+        // Provider-retry source of truth is the bowler row's CURRENT
+        // contact fields, not the linked user's profile (P1 4020571738).
+        // The foreground profile-update helper already persisted the
+        // intended local contact before stamping the retry flag, so
+        // re-asserting the user profile here could clobber later
+        // bowler-owned edits (e.g. an admin correction). The linked
+        // user still supplies the routing the helper needs (user id,
+        // bowlerId, location/org Square resolution); the all-false
+        // change flags keep the helper from rewriting the local
+        // contact fields, so it re-issues only the provider call with
+        // the existing backoff, guard, and bookkeeping. This policy
+        // applies to the background queue only: manual profile-update
+        // and admin retry endpoints keep their user-authority
+        // behavior.
         status = await syncBowlerForUser(
           {
             id: linkedUser.id,
             bowlerId: bowler.id,
-            name: linkedUser.name ?? bowler.name,
-            email: linkedUser.email ?? bowler.email,
-            phone: linkedUser.phone ?? bowler.phone,
+            name: bowler.name,
+            email: bowler.email,
+            phone: bowler.phone,
             locationId: linkedUser.locationId,
             organizationId: linkedUser.organizationId,
           },
-          { nameChanged: true, emailChanged: true, phoneChanged: true },
+          { nameChanged: false, emailChanged: false, phoneChanged: false },
         );
       } else {
         status = await syncUnclaimedBowler(bowler.id);
