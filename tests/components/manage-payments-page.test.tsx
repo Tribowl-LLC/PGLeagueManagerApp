@@ -20,17 +20,17 @@ const roster: RosterResponse = {
   ],
 };
 
-function membership(id: number, bowlerId: number, name: string, teamId: number, active = true): EnrichedMembership {
+function membership(id: number, bowlerId: number, name: string, teamId: number, active = true, order = 0, displayOrder = 0, joinedAt = "2030-01-01T00:00:00.000Z"): EnrichedMembership {
   return {
     id,
     bowlerId,
     leagueId: 7,
     teamId,
     active,
-    order: 0,
-    joinedAt: "2030-01-01T00:00:00.000Z",
+    order,
+    joinedAt,
     bowler: { id: bowlerId, name, active, email: null },
-    team: { id: teamId, name: teamId === 10 ? "Lucky Strikes" : "Split Happens", number: teamId === 10 ? 1 : 2, active: true, leagueId: 7, displayOrder: 0 },
+    team: { id: teamId, name: teamId === 10 ? "Lucky Strikes" : "Split Happens", number: teamId === 10 ? 1 : 2, active: true, leagueId: 7, displayOrder },
   };
 }
 
@@ -140,6 +140,42 @@ describe("ManagePaymentsPage", () => {
     expect(rows.map((row) => [row.bowlerId, row.teamId])).toEqual([[1, 10], [2, 10]]);
     expect(rows[0]?.balanceMinor).toBe(2_000);
     expect(rows[1]?.balanceMinor).toBe(0);
+  });
+
+  it("preserves team roster order within each team", () => {
+    const memberships = [
+      membership(1, 1, "Zoe Bowler", 10, true, 0, 0),
+      membership(2, 2, "Amy Bowler", 10, true, 1, 0),
+      membership(3, 3, "Zulu Bowler", 20, true, 0, 1),
+      membership(4, 4, "Aaron Bowler", 20, true, 1, 1),
+    ];
+    const rows = buildManagePaymentRows(memberships, undefined, roster);
+
+    expect(rows.map((row) => [row.teamId, row.bowlerName])).toEqual([
+      [10, "Zoe Bowler"],
+      [10, "Amy Bowler"],
+      [20, "Zulu Bowler"],
+      [20, "Aaron Bowler"],
+    ]);
+
+    const client = createManageQueryClient();
+    seedManagePage(client, memberships, dueResponse([]));
+    renderManagePage(client);
+    expect(screen.getAllByRole("spinbutton").map((input) => input.getAttribute("aria-label"))).toEqual([
+      "Amount paid by Zoe Bowler",
+      "Amount paid by Amy Bowler",
+      "Amount paid by Zulu Bowler",
+      "Amount paid by Aaron Bowler",
+    ]);
+  });
+
+  it("uses join recency to break equal roster positions", () => {
+    const rows = buildManagePaymentRows([
+      membership(1, 10, "Amy Bowler", 10, true, 0, 0, "2030-01-01T00:00:00.000Z"),
+      membership(2, 20, "Zoe Bowler", 10, true, 0, 0, "2030-02-01T00:00:00.000Z"),
+    ], undefined, roster);
+
+    expect(rows.map((row) => row.bowlerName)).toEqual(["Zoe Bowler", "Amy Bowler"]);
   });
 
   it("renders blank cash/check controls and disables a row with no eligible balance", () => {
