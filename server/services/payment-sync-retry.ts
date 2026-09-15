@@ -211,22 +211,28 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
     let status: PaymentSyncStatus;
     try {
       if (linkedUser) {
-        // Source-of-truth for the retry is the linked user's
-        // profile, matching what the manual admin endpoint does.
-        // We mark every field as "changed" so the helper writes the
-        // local bowler row and re-issues the provider call without
-        // inspecting deltas.
+        // Provider-retry source of truth is the bowler row's CURRENT
+        // contact fields, not the linked user's profile (P1 4020571738).
+        // The helper reads the bowler again before the provider call, so
+        // a row edited after this sweep selected it cannot be clobbered by
+        // stale user fields. The linked user supplies only the routing
+        // identity; the all-false change flags are retained for backwards
+        // compatibility, while the explicit source tells the helper to
+        // ignore those profile values. This policy applies to the
+        // background queue only: manual profile-update and admin retry
+        // endpoints keep their user-authority behavior.
         status = await syncBowlerForUser(
           {
             id: linkedUser.id,
             bowlerId: bowler.id,
-            name: linkedUser.name ?? bowler.name,
-            email: linkedUser.email ?? bowler.email,
-            phone: linkedUser.phone ?? bowler.phone,
+            name: bowler.name,
+            email: bowler.email,
+            phone: bowler.phone,
             locationId: linkedUser.locationId,
             organizationId: linkedUser.organizationId,
           },
-          { nameChanged: true, emailChanged: true, phoneChanged: true },
+          { nameChanged: false, emailChanged: false, phoneChanged: false },
+          'bowler',
         );
       } else {
         status = await syncUnclaimedBowler(bowler.id);

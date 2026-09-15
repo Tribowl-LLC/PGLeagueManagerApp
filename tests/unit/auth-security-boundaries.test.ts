@@ -21,6 +21,9 @@ import {
 import express, { type NextFunction, type Request, type Response } from 'express';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
+import { storage } from '../../server/storage';
+import { linkUserToBowler } from '../../server/services/identity-link.js';
+import type { User } from '@shared/schema';
 
 vi.mock('../../server/logger', () => ({
   createLogger: () => ({
@@ -435,6 +438,62 @@ describe('POST /api/auth/claim-bowler — authorization boundaries', () => {
     expect(res.status).toBe(403);
     const data = await res.json();
     expect(data.error?.code).toBe('FORBIDDEN');
+  });
+
+  it('allows an authorized same-org matching-email claim without rewriting the bowler after the link', async () => {
+    mockGetBowler.mockResolvedValueOnce({
+      id: 24,
+      name: 'Claimed Bowler',
+      email: 'attacker@example.com',
+      phone: '555-202-0202',
+      organizationId: 5,
+    });
+    // The identity-link transaction commits the contact transfer and sets
+    // the user's bowlerId, so the route's final getUser read must return
+    // the linked ordinary user for sanitizeUser to succeed.
+    const linkedUser: User = {
+      id: 1,
+      email: 'attacker@example.com',
+      password: 'hashed:fixture-password',
+      credentialGeneration: 0,
+      bowlerId: 24,
+      name: 'Attacker',
+      phone: '555-101-0101',
+      avatar: null,
+      role: 'user',
+      organizationId: 5,
+      locationId: null,
+      preferredLanguage: null,
+      failedPasswordChangeAttempts: 0,
+      passwordChangeLockedUntil: null,
+      mustChangePassword: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    vi.mocked(storage.getUser).mockResolvedValueOnce(linkedUser);
+
+    const res = await fetch(CLAIM_URL(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bowlerId: 24 }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.data.bowlerId).toBe(24);
+    expect(linkUserToBowler).toHaveBeenCalledWith({
+      organizationId: 5,
+      userId: 1,
+      bowlerId: 24,
+      actorUserId: 1,
+      source: 'auth.claim-bowler',
+      reason: 'email_ownership_claim',
+      eventType: 'link',
+      requireEmailMatch: true,
+    });
+    // The contact transfer is committed by the identity-link transaction;
+    // a stale whole-record updateBowler after the link would clobber the
+    // freshly transferred phone, so the route must not write the bowler.
+    expect(storage.updateBowler).not.toHaveBeenCalled();
   });
 });
 

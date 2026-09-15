@@ -725,6 +725,9 @@ router.patch("/:id", async (req, res) => {
 
     const merged = { ...bowler, ...update };
     let updated = await storage.updateBowler(id, merged, req.user?.id);
+    // Set when the email auto-link below commits a queued payment-sync row;
+    // the durable queue worker then owns the provider sync.
+    let linkedSyncQueued = false;
 
     if (updated.email) {
       const emailChanged = !bowler.email || bowler.email.toLowerCase() !== updated.email.toLowerCase();
@@ -758,6 +761,20 @@ router.patch("/:id", async (req, res) => {
             if (!linked.user || !linked.bowler) {
               throw new Error('Identity link did not return the linked rows');
             }
+            // The identity service backfills contact details the matched
+            // account already carries (e.g. a phone) while both rows are
+            // locked. Adopt the committed row so the provider sync below and
+            // any follow-up storage write carry the fresh contact details
+            // instead of the pre-link `updated` snapshot.
+            updated = linked.bowler;
+            // The identity service queues payment-sync work while both
+            // rows are locked. A committed row with a pending queue and
+            // retry time means the durable queue worker owns the provider
+            // sync; a foreground call here would race it, and a follow-up
+            // write could clobber the queued row.
+            linkedSyncQueued = Boolean(
+              updated.paymentSyncPendingAt && updated.paymentSyncNextRetryAt,
+            );
             const organization = await storage.getOrganization(linked.bowler.organizationId);
             try {
               await sendAccountReadyEmail({
@@ -779,7 +796,7 @@ router.patch("/:id", async (req, res) => {
       const nameChanged = bowler.name !== updated.name;
       const needsSquareSync = !updated.paymentCustomerId || emailChanged || nameChanged;
 
-      if (needsSquareSync) {
+      if (needsSquareSync && updated.email && !linkedSyncQueued) {
         try {
           const patchOrgId = req.user?.organizationId;
           const patchSquareLocation = patchOrgId ? await storage.getFirstSquareConfiguredLocation(patchOrgId) : null;

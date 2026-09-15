@@ -23,6 +23,7 @@ import { getOrganizationFilter, filterByOrganization } from '../middleware/organ
 import { hashPassword } from '../auth';
 import { sendInviteEmail } from '../services/email';
 import { linkUserToBowler } from '../services/identity-link.js';
+import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-scheduler';
 import { cacheInvalidate } from '../utils/cache.js';
 import { calculateSeasonEnd } from '@shared/schedule-utils';
 import { db } from '../db.js';
@@ -882,6 +883,8 @@ router.post("/:id/send-invites", async (req: Request, res) => {
       // write is committed. At this point the user/link/event transaction has
       // committed successfully.
       cacheInvalidate(`user:${created.newUser.id}`);
+      cacheInvalidate('bowlers:');
+      notifyPaymentSyncRetryChanged();
 
       const firstName = bowler.name.split(' ')[0];
       let emailSent = false;

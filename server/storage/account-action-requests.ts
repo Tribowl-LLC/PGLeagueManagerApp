@@ -22,6 +22,7 @@ import {
   linkUserToBowler,
   isIdentityLinkError,
 } from "../services/identity-link.js";
+import { notifyPaymentSyncRetryChanged } from "../services/payment-sync-retry-scheduler";
 
 /** The only token representation that may be persisted. */
 export function hashAccountActionToken(token: string): string {
@@ -799,7 +800,11 @@ export async function consumeAccountActionAndSetPassword(input: {
     return { request: claimed, user: completedUser };
   });
 
-  if (completed) cacheInvalidate(`user:${completed.user.id}`);
+  if (completed) {
+    cacheInvalidate(`user:${completed.user.id}`);
+    cacheInvalidate("bowlers:");
+    notifyPaymentSyncRetryChanged();
+  }
   return completed;
 }
 

@@ -300,6 +300,11 @@ describe('Admin claim of self-registered users (Task #667)', () => {
   it('POST /link-existing links to an unlinked bowler in the same org', async () => {
     const user = await insertUnclaimedUser({ organizationId: orgAId, label: 'link-existing' });
 
+    // Contact-fill regression setup: the user supplies a phone, and the
+    // bowler below is created with a blank email and a null phone.
+    const userPhone = '+1 (555) 010-4321';
+    await db.update(users).set({ phone: userPhone }).where(eq(users.id, user.id));
+
     // Insert an unlinked bowler in org A directly (no email so it'd appear
     // on /api/bowlers/unlinked too, but the admin route doesn't require that
     // — any unlinked bowler in the org is eligible).
@@ -330,6 +335,12 @@ describe('Admin claim of self-registered users (Task #667)', () => {
 
     const links = await db.select().from(bowlerLeagues).where(eq(bowlerLeagues.bowlerId, bowler.id));
     expect(links.length).toBe(1);
+
+    // The blank bowler email and phone are filled from the user's contact
+    // values inside the link transaction.
+    const [bowlerAfter] = await db.select().from(bowlersTable).where(eq(bowlersTable.id, bowler.id));
+    expect(bowlerAfter.email).toBe(user.email);
+    expect(bowlerAfter.phone).toBe(userPhone);
   });
 
   it('POST /link-existing returns 409 BOWLER_TAKEN when the bowler already belongs to another user', async () => {
