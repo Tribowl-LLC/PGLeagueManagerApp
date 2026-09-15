@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
 import { BowlerOneTimePaymentCard, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
 
-function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false) {
+function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[]) {
   const applePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const googlePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const onRecipientToggle = vi.fn();
@@ -51,8 +51,9 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     bowlerHasEmail
     receiptEmail=""
     onReceiptEmailChange={vi.fn()}
-    recipientRows={[recipient, ...additionalRows]}
+    recipientRows={recipientRowsOverride ?? [recipient, ...additionalRows]}
     breakdownRows={breakdownRows}
+    selectionStale={selectionStale}
     onRecipientToggle={onRecipientToggle}
     onRecipientWeeksChange={onRecipientWeeksChange}
   />);
@@ -60,6 +61,14 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
 }
 
 describe("BowlerOneTimePaymentCard payment mode", () => {
+  it("explains when the participant projection is empty without showing an impossible chooser action", () => {
+    renderCard(false, { amountMinor: 0 }, [], [], false, false, []);
+
+    expect(screen.getByText("No payment recipients are available for this league.")).toBeInTheDocument();
+    expect(screen.queryByText("Select at least one recipient to continue.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pay $0.00" })).toBeDisabled();
+  });
+
   it("shows the selected recipient full balance for an upfront league", () => {
     renderCard(true);
 
@@ -166,6 +175,13 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Pay Alex Partner" })).toBeDisabled();
     expect(screen.getByText("No remaining balance")).toBeInTheDocument();
+  });
+
+  it.each([false, true])("uses generic available-bowler/payment-detail language for stale %s payment choices", (fullBalanceOnly) => {
+    renderCard(fullBalanceOnly, {}, [], [], false, true);
+
+    expect(screen.getByText("The available bowler or payment details changed while this page was open. Review the available bowler and payment details before paying.")).toBeInTheDocument();
+    expect(screen.queryByText(/balance changed|week count/i)).not.toBeInTheDocument();
   });
 
   it("locks recipient choices and card submission while a wallet sheet is processing", () => {

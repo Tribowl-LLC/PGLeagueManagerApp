@@ -96,11 +96,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   const showWallet = applePayAvailable || googlePayAvailable;
   const hasPaymentPartner = recipientRows.some((row) => row.role === "partner");
   const hasSelectedRecipient = recipientRows.some((row) => row.selected);
-  const selectionStaleMessage = hasPaymentPartner
-    ? "The payment choices changed while this page was open. Review the recipients and week counts before paying."
-    : fullBalanceOnly
-      ? "The payment balance changed while this page was open. Review the balance before paying."
-      : "The payment balance changed while this page was open. Review the week count before paying.";
+  const selectionStaleMessage = "The available bowler or payment details changed while this page was open. Review the available bowler and payment details before paying.";
 
   return (
     <Card data-testid="one-time-payment-card">
@@ -151,6 +147,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
                 </div>
               ))}
         </fieldset>
+        {recipientRows.length === 0 && <Alert><AlertDescription>No payment recipients are available for this league.</AlertDescription></Alert>}
         {hasPaymentPartner && !hasSelectedRecipient && <Alert><AlertDescription>Select at least one recipient to continue.</AlertDescription></Alert>}
         {selectionStale && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{selectionStaleMessage}</span>{onResetRecipientSelection && <Button type="button" variant="outline" size="sm" onClick={onResetRecipientSelection}>Reset choices</Button>}</AlertDescription></Alert>}
         {quoteError && <Alert variant="destructive"><AlertDescription>{quoteError}</AlertDescription></Alert>}
