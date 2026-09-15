@@ -2,7 +2,7 @@ import { pgTable, text, serial, integer, boolean, timestamp, index, uniqueIndex 
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import { nameSchema, emailSchema, positiveIntSchema } from "./constants";
+import { nameSchema, emailSchema, phoneSchema, positiveIntSchema } from "./constants";
 import { leagues } from "./leagues";
 import { teams } from "./teams";
 import { locations } from "./locations";
@@ -126,7 +126,7 @@ const baseBowlerLeagueSchema = createInsertSchema(bowlerLeagues);
 export const insertBowlerSchema = baseBowlerSchema.extend({
   name: nameSchema,
   email: z.union([emailSchema, z.literal("")]).optional().nullable(),
-  phone: z.string().nullable().optional(),
+  phone: phoneSchema.nullable().optional(),
   active: z.boolean().default(true),
   order: z.number().min(0).default(0),
   // Server stamps this from the caller's org in every creation route;
@@ -155,7 +155,7 @@ export const insertBowlerLeagueSchema = baseBowlerLeagueSchema.extend({
 export const updateBowlerSchema = z.object({
   name: nameSchema,
   email: z.union([emailSchema, z.literal("")]).nullable(),
-  phone: z.string().nullable(),
+  phone: phoneSchema.nullable(),
   active: z.boolean(),
   order: z.number().min(0),
   paymentCustomerId: z.string().nullable(),

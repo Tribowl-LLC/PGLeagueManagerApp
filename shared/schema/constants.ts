@@ -68,6 +68,23 @@ export const timeSchema = z.union([
 
 export const nameSchema = z.string().min(2, "Name must be at least 2 characters");
 export const emailSchema = z.string().email("Invalid email address");
+// Square accepts 9-16 digits, including international dial-prefix inputs:
+// https://developer.squareup.com/docs/customers-api/use-the-api/keep-records
+// Keep E.164-style values with a leading '+' to its 15-digit limit.
+export const phoneSchema = z
+  .string()
+  .trim()
+  .refine(
+    (value) => {
+      if (value === '') return true;
+      if (!/^\+?[\d\s().-]+$/.test(value)) return false;
+
+      const digitCount = (value.match(/\d/g) ?? []).length;
+      const maxDigits = value.startsWith('+') ? 15 : 16;
+      return digitCount >= 9 && digitCount <= maxDigits;
+    },
+    { message: 'Enter a valid phone number' },
+  );
 export const positiveIntSchema = z.number().int().positive("Must be a positive number");
 
 export const DEFAULT_WEEKLY_FEE_CENTS = 2000;

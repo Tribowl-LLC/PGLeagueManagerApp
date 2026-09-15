@@ -215,7 +215,7 @@ describe('runBowlerPostCreateSync — phone sync from linked user', () => {
     // `paymentSyncPendingAt`. We assert the phone-sync helper
     // didn't fire by checking the patches; we don't assert
     // updateBowler was never called overall.)
-    const bowler = fakeBowler({ phone: '9998888' });
+    const bowler = fakeBowler({ phone: '2025550188' });
     mockGetBowlerByEmail.mockResolvedValue(bowler);
 
     mockGetUserByEmail.mockResolvedValue({
@@ -238,6 +238,6 @@ describe('runBowlerPostCreateSync — phone sync from linked user', () => {
         && (c[1] as Record<string, unknown>).phone !== undefined,
     );
     expect(phoneWrite).toBeUndefined();
-    expect(result.phone).toBe('9998888');
+    expect(result.phone).toBe('2025550188');
   });
 });

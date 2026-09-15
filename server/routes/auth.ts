@@ -34,6 +34,7 @@ import {
 } from "../storage/account-action-delivery-jobs.js";
 import { notifyAccountActionDeliveryChanged } from "../services/account-action-delivery-scheduler.js";
 import { isNormalizedUserEmailConflict } from "../utils/db-errors.js";
+import { phoneSchema } from "@shared/schema/constants";
 // Same allowlist account.ts uses for /api/account/profile (task #420).
 // We pull it from the password-changed email bundle directly rather
 // than re-importing it from `./account` so the unauthenticated
@@ -318,7 +319,7 @@ export function registerAuthRoutes(app: Express): void {
       const registrationSchema = z.object({
         email: emailSchema,
         name: nameSchema,
-        phone: z.string().min(1).max(50),
+        phone: phoneSchema.min(1, "Phone number is required").max(50),
       });
       const result = registrationSchema.safeParse({
         email: typeof req.body?.email === "string" ? req.body.email.trim() : req.body?.email,
