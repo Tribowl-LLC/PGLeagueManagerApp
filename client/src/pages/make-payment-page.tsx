@@ -217,14 +217,18 @@ export default function MakePaymentPage() {
   );
   useSavedCardDefault({ firstSavedCardId: savedCards[0]?.id ?? null, setCardMode, setSelectedSavedCardId, dependencyKey: String(leagueId ?? "") });
   const selfParticipant = participants.find((participant) => participant.role === "self");
+  const hasPaymentPartner = participants.some((participant) => participant.role === "partner");
   const fullBalanceOnly = paymentMode === "upfront";
   const effectiveSelectedRecipients = useMemo(() => {
     const next = { ...selectedRecipients };
     for (const participant of participants) {
-      if (!(participant.bowlerId in next)) next[participant.bowlerId] = isInteractiveParticipantSelectedByDefault(participant);
+      const isSoloSelf = !hasPaymentPartner && participant.role === "self";
+      if (!(participant.bowlerId in next) || isSoloSelf) {
+        next[participant.bowlerId] = isInteractiveParticipantSelectedByDefault(participant);
+      }
     }
     return next;
-  }, [participants, selectedRecipients]);
+  }, [hasPaymentPartner, participants, selectedRecipients]);
   const selectedRecipientRows = useMemo<PaymentRecipientRow[]>(() => participants.map((participant) => {
     const maximumWeeks = participant.weeklyOptions.at(-1)?.weeks ?? 0;
     const weeks = fullBalanceOnly
@@ -345,9 +349,12 @@ export default function MakePaymentPage() {
     setSelectedRecipients((current) => {
       const next: Record<number, boolean> = {};
       for (const participant of participants) {
-        next[participant.bowlerId] = participant.eligible && participant.remainingMinor > 0
-          ? current[participant.bowlerId] ?? isInteractiveParticipantSelectedByDefault(participant)
-          : false;
+        const isPayable = participant.eligible && participant.remainingMinor > 0;
+        const isSoloSelf = !hasPaymentPartner && participant.role === "self";
+        const defaultSelected = isInteractiveParticipantSelectedByDefault(participant);
+        if (!isPayable) next[participant.bowlerId] = false;
+        else if (isSoloSelf) next[participant.bowlerId] = defaultSelected;
+        else next[participant.bowlerId] = current[participant.bowlerId] ?? defaultSelected;
       }
       const currentKeys = Object.keys(current);
       const nextKeys = Object.keys(next);
@@ -364,7 +371,7 @@ export default function MakePaymentPage() {
       const nextKeys = Object.keys(next);
       return currentKeys.length === nextKeys.length && nextKeys.every((key) => current[Number(key)] === next[Number(key)]) ? current : next;
     });
-  }, [participants, paymentMode, selectionStale]);
+  }, [hasPaymentPartner, participants, paymentMode, selectionStale]);
 
   useEffect(() => {
     participantSnapshotRef.current = null;

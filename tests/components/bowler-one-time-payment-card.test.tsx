@@ -64,6 +64,9 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     renderCard(true);
 
     expect(screen.getByText("Bowler (You)")).toBeInTheDocument();
+    expect(screen.queryByText("Who would you like to pay?")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Pay Bowler" })).not.toBeInTheDocument();
+    expect(document.querySelectorAll("label[for^='payment-recipient-']")).toHaveLength(0);
     expect(screen.getByText("Remaining balance: $87.50")).toBeInTheDocument();
     expect(screen.getByText("Past due: $25.00")).toBeInTheDocument();
     expect(screen.getByText("Full Season Remaining Balance")).toBeInTheDocument();
@@ -71,21 +74,25 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.queryByRole("button", { name: /one more week/i })).not.toBeInTheDocument();
     expect(screen.getByText("Full Season Remaining Balance").parentElement).toHaveTextContent("$87.50");
     expect(screen.getByRole("button", { name: "Pay $87.50" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Save this card for future payments" })).not.toBeChecked();
   });
 
-  it("keeps independent weekly selection controls in the shared recipient list", () => {
+  it("automatically selects a solo bowler while keeping independent weekly controls", () => {
     const { onRecipientToggle, onRecipientWeeksChange } = renderCard(false);
 
-    expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeChecked();
+    expect(screen.queryByText("Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Who would you like to pay?")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Pay Bowler" })).not.toBeInTheDocument();
+    expect(document.querySelectorAll("label[for^='payment-recipient-']")).toHaveLength(0);
     expect(screen.getByRole("button", { name: "Pay Bowler for one fewer week" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pay Bowler for one more week" })).toBeInTheDocument();
     expect(screen.getByRole("status", { name: "Number of weeks to pay for Bowler" })).toHaveTextContent("3");
     expect(screen.getByText("Remaining balance: $87.50")).toBeInTheDocument();
+    expect(screen.queryByText("Select at least one recipient to continue.")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Pay Bowler" }));
-    expect(onRecipientToggle).toHaveBeenCalledWith(42, false);
     fireEvent.click(screen.getByRole("button", { name: "Pay Bowler for one fewer week" }));
     expect(onRecipientWeeksChange).toHaveBeenCalledWith(42, 2);
+    expect(onRecipientToggle).not.toHaveBeenCalled();
   });
 
   it("shows partner identity and server-projected covered weeks without exposing allocation ids", () => {
@@ -138,8 +145,44 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(onRecipientWeeksChange).toHaveBeenCalledWith(84, 3);
   });
 
+  it("keeps the chooser when a partner is present but not payable", () => {
+    const partner: PaymentRecipientRow = {
+      bowlerId: 84,
+      name: "Alex Partner",
+      role: "partner",
+      remainingMinor: 0,
+      pastDueMinor: 0,
+      weeks: 1,
+      maximumWeekCount: 1,
+      amountMinor: 0,
+      selected: false,
+      eligible: false,
+      reason: "No remaining balance",
+    };
+    renderCard(false, {}, [partner]);
+
+    expect(screen.getByText("Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.")).toBeInTheDocument();
+    expect(screen.getByText("Who would you like to pay?")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Pay Alex Partner" })).toBeDisabled();
+    expect(screen.getByText("No remaining balance")).toBeInTheDocument();
+  });
+
   it("locks recipient choices and card submission while a wallet sheet is processing", () => {
-    renderCard(false, { weeks: 2 }, [], [], true);
+    const partner: PaymentRecipientRow = {
+      bowlerId: 84,
+      name: "Alex Partner",
+      role: "partner",
+      remainingMinor: 6_000,
+      pastDueMinor: 1_000,
+      weeks: 2,
+      maximumWeekCount: 3,
+      amountMinor: 4_000,
+      selected: true,
+      eligible: true,
+      reason: null,
+    };
+    renderCard(false, { weeks: 2 }, [partner], [], true);
 
     expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Pay Bowler for one fewer week" })).toBeDisabled();
