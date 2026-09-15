@@ -53,6 +53,7 @@ export interface ProfileChanges {
 export async function syncBowlerForUser(
   user: SyncableUser,
   changed: ProfileChanges,
+  contactSource: 'user' | 'bowler' = 'user',
 ): Promise<PaymentSyncStatus> {
   if (!user.bowlerId) return 'not_applicable';
 
@@ -60,9 +61,11 @@ export async function syncBowlerForUser(
   if (!bowler) return 'not_applicable';
 
   const bowlerUpdate: Record<string, unknown> = {};
-  if (changed.nameChanged) bowlerUpdate.name = user.name;
-  if (changed.emailChanged) bowlerUpdate.email = user.email;
-  if (changed.phoneChanged) bowlerUpdate.phone = user.phone;
+  if (contactSource === 'user') {
+    if (changed.nameChanged) bowlerUpdate.name = user.name;
+    if (changed.emailChanged) bowlerUpdate.email = user.email;
+    if (changed.phoneChanged) bowlerUpdate.phone = user.phone;
+  }
 
   if (Object.keys(bowlerUpdate).length > 0) {
     try {
@@ -74,18 +77,39 @@ export async function syncBowlerForUser(
     }
   }
 
-  if (!user.email) return 'skipped';
+  const contactName = contactSource === 'bowler' ? bowler.name : user.name;
+  const contactEmail = contactSource === 'bowler' ? bowler.email : user.email;
+  const contactPhone = contactSource === 'bowler' ? bowler.phone : user.phone;
+  if (!contactEmail) return 'skipped';
 
   let resolvedSquareLocationId: number | null = null;
-  if (user.locationId) {
-    const locationCreds = await storage.getLocationSquareConfig(user.locationId);
-    if ((locationCreds?.accessToken ?? '').trim().length > 0) {
-      resolvedSquareLocationId = user.locationId;
+  const hasRecordedProviderLocation = Boolean(
+    contactSource === 'bowler' &&
+    bowler.paymentCustomerId &&
+    bowler.paymentProviderLocationId,
+  );
+  if (hasRecordedProviderLocation) {
+    const recordedLocationId = bowler.paymentProviderLocationId!;
+    const locationCreds = await storage.getLocationSquareConfig(recordedLocationId);
+    if ((locationCreds?.accessToken ?? '').trim().length === 0) {
+      log.warn('Bowler payment sync: recorded provider location is not configured, skipping', {
+        bowlerId: bowler.id,
+        locationId: recordedLocationId,
+      });
+      return 'skipped';
     }
-  }
-  if (!resolvedSquareLocationId && user.organizationId) {
-    const sq = await storage.getFirstSquareConfiguredLocation(user.organizationId);
-    resolvedSquareLocationId = sq?.id ?? null;
+    resolvedSquareLocationId = recordedLocationId;
+  } else {
+    if (user.locationId) {
+      const locationCreds = await storage.getLocationSquareConfig(user.locationId);
+      if ((locationCreds?.accessToken ?? '').trim().length > 0) {
+        resolvedSquareLocationId = user.locationId;
+      }
+    }
+    if (!resolvedSquareLocationId && user.organizationId) {
+      const sq = await storage.getFirstSquareConfiguredLocation(user.organizationId);
+      resolvedSquareLocationId = sq?.id ?? null;
+    }
   }
   if (!resolvedSquareLocationId) {
     if (isDev) log.info('No payment-configured location found, skipping customer sync');
@@ -99,9 +123,9 @@ export async function syncBowlerForUser(
   try {
     userProvider = await getPaymentProvider(resolvedSquareLocationId);
     providerCustomer = await userProvider.createOrUpdateCustomer(
-      user.name,
-      user.email,
-      user.phone,
+      contactName,
+      contactEmail,
+      contactPhone,
       // Bowler reference for the Square dashboard (task #429).
       `bowler:${bowler.id}`,
     );

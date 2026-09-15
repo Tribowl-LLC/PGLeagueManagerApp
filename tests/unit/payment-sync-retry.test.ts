@@ -196,7 +196,7 @@ describe('runPaymentSyncRetrySweep', () => {
     expect(result.succeeded).toBe(1);
     expect(result.pendingAgain).toBe(0);
     expect(mockSyncBowlerForUser).toHaveBeenCalledTimes(1);
-    const [user, changed] = mockSyncBowlerForUser.mock.calls[0];
+    const [user, changed, contactSource] = mockSyncBowlerForUser.mock.calls[0];
     // The bowler's CURRENT contact fields win; the linked user
     // supplies routing (id/bowlerId/locationId/organizationId) only.
     expect(user).toMatchObject({
@@ -209,6 +209,7 @@ describe('runPaymentSyncRetrySweep', () => {
       organizationId: 3,
     });
     expect(changed).toEqual({ nameChanged: false, emailChanged: false, phoneChanged: false });
+    expect(contactSource).toBe('bowler');
   });
 
   it('counts pending_retry results separately so ops can see persistent failures', async () => {

@@ -213,18 +213,14 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
       if (linkedUser) {
         // Provider-retry source of truth is the bowler row's CURRENT
         // contact fields, not the linked user's profile (P1 4020571738).
-        // The foreground profile-update helper already persisted the
-        // intended local contact before stamping the retry flag, so
-        // re-asserting the user profile here could clobber later
-        // bowler-owned edits (e.g. an admin correction). The linked
-        // user still supplies the routing the helper needs (user id,
-        // bowlerId, location/org Square resolution); the all-false
-        // change flags keep the helper from rewriting the local
-        // contact fields, so it re-issues only the provider call with
-        // the existing backoff, guard, and bookkeeping. This policy
-        // applies to the background queue only: manual profile-update
-        // and admin retry endpoints keep their user-authority
-        // behavior.
+        // The helper reads the bowler again before the provider call, so
+        // a row edited after this sweep selected it cannot be clobbered by
+        // stale user fields. The linked user supplies only the routing
+        // identity; the all-false change flags are retained for backwards
+        // compatibility, while the explicit source tells the helper to
+        // ignore those profile values. This policy applies to the
+        // background queue only: manual profile-update and admin retry
+        // endpoints keep their user-authority behavior.
         status = await syncBowlerForUser(
           {
             id: linkedUser.id,
@@ -236,6 +232,7 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
             organizationId: linkedUser.organizationId,
           },
           { nameChanged: false, emailChanged: false, phoneChanged: false },
+          'bowler',
         );
       } else {
         status = await syncUnclaimedBowler(bowler.id);

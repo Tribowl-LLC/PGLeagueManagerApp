@@ -169,6 +169,82 @@ describe('syncBowlerForUser', () => {
     expect(mockNotifyPaymentSyncRetryChanged).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the freshly-read bowler contacts when the retry source is the bowler', async () => {
+    const freshBowler = {
+      ...baseBowler,
+      name: 'Fresh Bowler Name',
+      email: 'fresh@example.com',
+      phone: '2025550199',
+      paymentCustomerId: 'cust_existing',
+    };
+    mockGetBowler.mockResolvedValue(freshBowler);
+    mockGetLocationSquareConfig.mockResolvedValue({ accessToken: 'live-token' });
+    const createOrUpdateCustomer = vi.fn().mockResolvedValue({ id: 'cust_existing' });
+    mockGetPaymentProvider.mockResolvedValue({ createOrUpdateCustomer });
+
+    const status = await syncBowlerForUser(
+      { ...baseUser, name: 'Stale User Name', email: 'stale@example.com', phone: '2025550100' },
+      allChanged,
+      'bowler',
+    );
+
+    expect(status).toBe('synced');
+    expect(createOrUpdateCustomer).toHaveBeenCalledWith(
+      'Fresh Bowler Name',
+      'fresh@example.com',
+      '2025550199',
+      'bowler:42',
+    );
+    expect(mockUpdateBowler).not.toHaveBeenCalled();
+  });
+
+  it('uses the recorded provider location for an existing bowler customer', async () => {
+    const bowlerWithRecordedLocation = {
+      ...baseBowler,
+      paymentCustomerId: 'cust_existing',
+      paymentProviderLocationId: 11,
+    };
+    mockGetBowler.mockResolvedValue(bowlerWithRecordedLocation);
+    mockGetLocationSquareConfig.mockResolvedValue({ accessToken: 'recorded-live-token' });
+    mockGetFirstSquareConfiguredLocation.mockResolvedValue({ id: 7 });
+    mockGetPaymentProvider.mockResolvedValue({
+      createOrUpdateCustomer: vi.fn().mockResolvedValue({ id: 'cust_existing' }),
+    });
+
+    const status = await syncBowlerForUser(
+      { ...baseUser, locationId: 7 },
+      allChanged,
+      'bowler',
+    );
+
+    expect(status).toBe('synced');
+    expect(mockGetLocationSquareConfig).toHaveBeenCalledWith(11);
+    expect(mockGetPaymentProvider).toHaveBeenCalledWith(11);
+    expect(mockGetFirstSquareConfiguredLocation).not.toHaveBeenCalled();
+  });
+
+  it('skips an existing bowler customer when its recorded location is unavailable', async () => {
+    const bowlerWithRecordedLocation = {
+      ...baseBowler,
+      paymentCustomerId: 'cust_existing',
+      paymentProviderLocationId: 11,
+    };
+    mockGetBowler.mockResolvedValue(bowlerWithRecordedLocation);
+    mockGetLocationSquareConfig.mockResolvedValue(undefined);
+    mockGetFirstSquareConfiguredLocation.mockResolvedValue({ id: 7 });
+
+    const status = await syncBowlerForUser(
+      { ...baseUser, locationId: 7 },
+      allChanged,
+      'bowler',
+    );
+
+    expect(status).toBe('skipped');
+    expect(mockGetPaymentProvider).not.toHaveBeenCalled();
+    expect(mockGetFirstSquareConfiguredLocation).not.toHaveBeenCalled();
+    expect(mockUpdateBowler).not.toHaveBeenCalled();
+  });
+
   it('bumps paymentSyncAttempts and stamps last-attempt when the attribute-write step fails (task #680)', async () => {
     // Regression for the "stuck at attempts=0" loop. Previously, when
     // `createOrUpdateCustomer` succeeded but the follow-up custom-
