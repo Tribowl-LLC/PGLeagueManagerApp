@@ -295,6 +295,13 @@
       "when": 1789345803616,
       "tag": "0041_combined_partner_payment_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1789519818432,
+      "tag": "0042_email_delivery_alerts",
+      "breakpoints": true
     }
   ]
 }

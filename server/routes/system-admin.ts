@@ -32,6 +32,7 @@ import {
 import { requireAdmin } from '../middleware/admin.js';
 import { verifyTrustProxy } from '../lib/trust-proxy-check.js';
 import { createLogger } from '../logger';
+import { getPgErrorCode } from '../utils/db-errors.js';
 import {
   updateDeletionRequestStatusSchema,
   executeDeletionRequestSchema,
@@ -44,6 +45,12 @@ import {
   countAdminEmailChangeAudits,
   clampListLimit as clampAdminEmailChangeAuditListLimit,
 } from '../storage/admin-email-change-audits';
+import {
+  acknowledgeEmailDeliveryAlert,
+  countUnacknowledgedEmailDeliveryAlerts,
+  listEmailDeliveryAlerts,
+  toEmailDeliveryAlertDto,
+} from '../storage/email-delivery-alerts';
 
 const log = createLogger("SystemAdmin");
 
@@ -114,6 +121,79 @@ router.post('/revoke/:id', requireAdmin, async (req: Request, res: Response) => 
     if (handleUserOrgError(res, error)) return;
     log.error('Error revoking system admin:', error);
     sendError(res, 'Failed to revoke system admin privileges', 500, 'SERVER_ERROR');
+  }
+});
+
+function parsePositiveRouteId(value: string): number | null {
+  if (!/^\d{1,12}$/.test(value)) return null;
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 && id <= 2_147_483_647 ? id : null;
+}
+
+// Global provider-operational evidence. These rows deliberately have no
+// organization mapping and are available only to system administrators.
+router.get('/email-delivery-alerts/pending-count', requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const count = await countUnacknowledgedEmailDeliveryAlerts();
+    sendSuccess(res, { count });
+  } catch (error) {
+    log.error('Error counting email delivery alerts:', {
+      errorCode: getPgErrorCode(error) ?? 'unknown',
+    });
+    sendError(res, 'Failed to count email delivery alerts', 500, 'SERVER_ERROR');
+  }
+});
+
+router.get('/email-delivery-alerts', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const acknowledgedParam = req.query.acknowledged;
+    if (acknowledgedParam !== undefined
+      && acknowledgedParam !== 'true'
+      && acknowledgedParam !== 'false') {
+      sendError(res, 'Invalid acknowledged filter', 400, 'INVALID_QUERY');
+      return;
+    }
+    const acknowledged = acknowledgedParam === 'true';
+    const [rows, unacknowledgedCount] = await Promise.all([
+      listEmailDeliveryAlerts({ acknowledged }),
+      countUnacknowledgedEmailDeliveryAlerts(),
+    ]);
+    sendSuccess(res, {
+      alerts: rows.map(toEmailDeliveryAlertDto),
+      unacknowledgedCount,
+      webhookConfigured: Boolean(process.env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY?.trim()),
+    });
+  } catch (error) {
+    log.error('Error listing email delivery alerts:', {
+      errorCode: getPgErrorCode(error) ?? 'unknown',
+    });
+    sendError(res, 'Failed to list email delivery alerts', 500, 'SERVER_ERROR');
+  }
+});
+
+router.post('/email-delivery-alerts/:id/acknowledge', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const id = parsePositiveRouteId(singleRouteParam(req.params.id));
+    if (id === null) {
+      sendError(res, 'Invalid alert ID', 400, 'INVALID_ID');
+      return;
+    }
+    const actorId = req.user?.id;
+    if (!actorId) {
+      sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
+      return;
+    }
+    const alert = await acknowledgeEmailDeliveryAlert(id, actorId);
+    if (!alert) {
+      sendError(res, 'Email delivery alert not found', 404, 'NOT_FOUND');
+      return;
+    }
+    sendSuccess(res, { alert: toEmailDeliveryAlertDto(alert), acknowledged: true });
+  } catch (error) {
+    log.error('Error acknowledging email delivery alert:', {
+      errorCode: getPgErrorCode(error) ?? 'unknown',
+    });
+    sendError(res, 'Failed to acknowledge email delivery alert', 500, 'SERVER_ERROR');
   }
 });
 
