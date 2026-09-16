@@ -136,10 +136,11 @@ assigns a disjoint unblocker file set; pause Luna if ownership overlaps.
 await collaboration.spawn_agent({ task_name: "astra_review_<task_slug>", model: "gpt-6-astra", reasoning_effort: "medium", fork_turns: "none",
   message: `Role: Astra reviewer/resolver; read-only; no recursive coordinator startup.
 Worktree: /absolute/path/to/worktree
-Base evidence: /absolute/path/to/worktree/.artifacts/base.diff
-HEAD evidence: /absolute/path/to/worktree/.artifacts/head.diff
+Base commit / head commit: <base SHA> / <head SHA>
+Dirty diff evidence if applicable: <absolute artifact path>
 Question/review goal: <bounded blocker or independent diff+code+tests review>
-Evidence: findings with severity, file/line, commands, commit IDs, and dirty-diff state.` });
+Evidence: findings with severity, file/line, commands, commit IDs, and dirty-diff state.
+PR: ready for review; after push verify not draft; no merge/deploy without user authorization.` });
 ```
 
 ## 5. Independent final review
@@ -174,7 +175,7 @@ does not carry over.
 
 ## Compact handoff brief
 
-Use this checklist in the Luna message and adapt labels to the task:
+Use this checklist in every delegated brief and adapt the role and labels to the task:
 
 ```text
 Role: Luna routine executor; no recursive coordinator startup.
@@ -186,7 +187,7 @@ Affected systems / constraints / risks: ...
 Validation and evidence: ...
 Release authority: Astra; escalation triggers: ...
 PR: ready for review; after push verify not draft; merge/deploy needs explicit user authorization.
-Completion: update handoff with IDs, SHAs, tests, artifacts, decisions, and next step.
+Completion: return IDs, SHAs, tests, artifacts, decisions, and next step; Luna updates handoff.
 ```
 
 For background on repository instructions and subagents, see the official
