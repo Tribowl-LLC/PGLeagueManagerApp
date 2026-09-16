@@ -52,8 +52,8 @@ mandatory. Keep the handoff current with the evidence fields in
    request only a genuinely necessary user decision. After fixes, run local
    architect review and focused checks as needed; do not start a full GitHub
    rereview loop. A GitHub rerun requires a later explicit user override.
-4. **Final-head checks and merge.** Confirm the live `main` ruleset before
-   Before merging, verify the known `LeagueVault` Render service and its
+4. **Final-head checks and merge.** Before merging, confirm the live `main`
+   ruleset and verify the known `LeagueVault` Render service and its
    Auto-Deploy setting; it must be Off. Keep Auto-Deploy Off through
    certification, migration, and deployment verification. On the final pushed
    PR head, confirm exactly one GitHub review is
