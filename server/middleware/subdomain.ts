@@ -4,7 +4,7 @@ import { createLogger } from '../logger';
 import { Organization } from '@shared/schema';
 import { isSystemAdmin } from '../utils/access-control';
 import { env } from '../config';
-import { getPgErrorCode } from '../utils/db-errors.js';
+import { getPgErrorCode, isTransientDatabaseError } from '../utils/db-errors.js';
 
 const log = createLogger("Subdomain");
 
@@ -17,6 +17,8 @@ const IGNORED_SUBDOMAINS = new Set(['www', 'api', 'admin', 'mail', 'smtp', 'ftp'
 const SLUG_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 const isDev = process.env.NODE_ENV !== 'production';
 export const TENANT_LOOKUP_UNAVAILABLE_CODE = 'TENANT_LOOKUP_UNAVAILABLE';
+export const TENANT_LOOKUP_MAX_ATTEMPTS = 2;
+export const TENANT_LOOKUP_RETRY_DELAY_MS = 100;
 
 declare global {
   namespace Express {
@@ -52,27 +54,37 @@ function extractSubdomain(hostname: string): string | null {
 export async function lookupOrganizationByHostname(
   subdomain: string,
 ): Promise<Organization | null> {
-  try {
-    let org = await storage.getOrganizationBySubdomain(subdomain);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= TENANT_LOOKUP_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      // Retry the complete precedence-ordered lookup. If the first query
+      // misses and the fallback query loses its connection, a retry must
+      // re-check the subdomain before accepting a slug result.
+      let org = await storage.getOrganizationBySubdomain(subdomain);
 
-    if (!org) {
-      org = await storage.getOrganizationBySlug(subdomain);
+      if (!org) {
+        org = await storage.getOrganizationBySlug(subdomain);
+      }
+
+      return org ?? null;
+    } catch (err) {
+      lastError = err;
+      if (!isTransientDatabaseError(err) || attempt === TENANT_LOOKUP_MAX_ATTEMPTS) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, TENANT_LOOKUP_RETRY_DELAY_MS));
     }
-
-    return org ?? null;
-  } catch (err) {
-    // A database failure is not a cache miss. Returning null here would let
-    // downstream routes continue as if this were the platform host, which is
-    // an unsafe tenant-isolation failure mode. Keep telemetry structured and
-    // avoid logging the tenant hostname or a raw Drizzle/SQL error.
-    log.captureException(err);
-    log.error('Tenant hostname lookup failed', {
-      operation: 'organization_hostname_lookup',
-      errorType: err instanceof Error ? err.name : 'unknown',
-      errorCode: getPgErrorCode(err) ?? 'unknown',
-    });
-    throw new OrganizationHostnameLookupError(err);
   }
+
+  // A database failure is not a cache miss. Returning null here would let
+  // downstream routes continue as if this were the platform host, which is
+  // an unsafe tenant-isolation failure mode. Keep telemetry structured and
+  // avoid logging the tenant hostname or a raw Drizzle/SQL error.
+  log.captureException(lastError);
+  log.error('Tenant hostname lookup failed', {
+    operation: 'organization_hostname_lookup',
+    errorType: lastError instanceof Error ? lastError.name : 'unknown',
+    errorCode: getPgErrorCode(lastError) ?? 'unknown',
+  });
+  throw new OrganizationHostnameLookupError(lastError);
 }
 
 export class OrganizationHostnameLookupError extends Error {

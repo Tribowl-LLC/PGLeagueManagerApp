@@ -110,4 +110,55 @@ describe('tenant hostname resolution consistency', () => {
     expect(JSON.stringify(loggerMock.error.mock.calls[0])).not.toContain('acme.leaguevault.app');
     expect(JSON.stringify(loggerMock.error.mock.calls[0])).not.toContain('SELECT secret');
   });
+
+  it('retries a transient hostname lookup and returns the recovered organization', async () => {
+    const transientError = Object.assign(new Error('read ECONNABORTED'), { code: 'ECONNABORTED' });
+    storageMocks.getOrganizationBySubdomain
+      .mockRejectedValueOnce(transientError)
+      .mockResolvedValueOnce(firstOrganization);
+
+    await expect(lookupOrganizationByHostname('recoverable-host')).resolves.toBe(firstOrganization);
+    expect(storageMocks.getOrganizationBySubdomain).toHaveBeenCalledTimes(2);
+    expect(loggerMock.captureException).not.toHaveBeenCalled();
+    expect(loggerMock.error).not.toHaveBeenCalled();
+  });
+
+  it('retries the full precedence lookup after a transient slug fallback failure', async () => {
+    const transientError = Object.assign(new Error('read ECONNABORTED'), { code: 'ECONNABORTED' });
+    storageMocks.getOrganizationBySubdomain
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(firstOrganization);
+    storageMocks.getOrganizationBySlug.mockRejectedValueOnce(transientError);
+
+    await expect(lookupOrganizationByHostname('precedence-host')).resolves.toBe(firstOrganization);
+    expect(storageMocks.getOrganizationBySubdomain).toHaveBeenCalledTimes(2);
+    expect(storageMocks.getOrganizationBySlug).toHaveBeenCalledOnce();
+    expect(loggerMock.captureException).not.toHaveBeenCalled();
+    expect(loggerMock.error).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a nontransient hostname lookup failure', async () => {
+    const databaseError = Object.assign(new Error('Failed query: SELECT 1'), { code: '42P01' });
+    storageMocks.getOrganizationBySubdomain.mockRejectedValue(databaseError);
+
+    await expect(lookupOrganizationByHostname('nontransient-host')).rejects.toMatchObject({
+      name: 'OrganizationHostnameLookupError',
+    });
+    expect(storageMocks.getOrganizationBySubdomain).toHaveBeenCalledOnce();
+    expect(loggerMock.captureException).toHaveBeenCalledOnce();
+    expect(loggerMock.captureException).toHaveBeenCalledWith(databaseError);
+  });
+
+  it('fails closed after exhausting a transient hostname lookup retry', async () => {
+    const transientError = Object.assign(new Error('read ECONNABORTED'), { code: 'ECONNABORTED' });
+    storageMocks.getOrganizationBySubdomain.mockRejectedValue(transientError);
+
+    await expect(lookupOrganizationByHostname('unavailable-host')).rejects.toMatchObject({
+      name: 'OrganizationHostnameLookupError',
+    });
+    expect(storageMocks.getOrganizationBySubdomain).toHaveBeenCalledTimes(2);
+    expect(loggerMock.captureException).toHaveBeenCalledOnce();
+    expect(loggerMock.captureException).toHaveBeenCalledWith(transientError);
+    expect(loggerMock.error).toHaveBeenCalledOnce();
+  });
 });
