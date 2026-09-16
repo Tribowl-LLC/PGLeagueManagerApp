@@ -53,14 +53,16 @@ handoff state.
 Give Luna a self-contained brief: objective, acceptance criteria, constraints,
 owned paths, validation, escalation rules, and absolute worktree and handoff
 paths. Use a safe task slug of lowercase letters, digits, and underscores only
-(for example, `payment_retry_audit`). Use the current collaboration tool shape;
-adapt the task name and paths to the harness:
+(for example, `payment_retry_audit`). At startup, inspect the exposed
+`collaboration.spawn_agent` schema and use only its accepted fields and enum
+values. A role label in the prompt cannot select a model or reasoning effort.
+Use the minimal call below only after the launcher has verified the requested
+model and effort. Where supported, add the explicit overrides described below
+to `request` before invoking the tool:
 
 ```js
-await collaboration.spawn_agent({
+const request = {
   task_name: "luna_<task_slug>",
-  model: "gpt-5.6-luna",
-  reasoning_effort: "xhigh",
   fork_turns: "none",
   message: `Role: Luna routine executor; do not bootstrap another coordinator.
 Objective: <outcome and acceptance criteria>
@@ -72,8 +74,21 @@ Validation: <commands and required evidence>
 PR: ready for review; after pushing verify it is not a draft; no merge/deploy
 without explicit user authorization.
 Escalate: <triggers and how to pause safely>`
-});
+};
+await collaboration.spawn_agent(request);
 ```
+
+If the inspected schema explicitly exposes `model` and
+`reasoning_effort`, set them before the call (for example,
+`request.model = "gpt-5.6-luna"` and
+`request.reasoning_effort = "xhigh"`). Record the requested
+values and the actual values reported by the runtime, or the launcher's
+verification when the runtime does not report them. If overrides are not
+accepted, the launcher must preconfigure and verify the role's model and
+reasoning effort before startup; do not pass unknown arguments. If the
+requested model or effort is unavailable, report that limitation and stop the
+delegation decision. Do not silently substitute a model, inherit Astra for
+Luna (or Luna for Astra), or delegate the full routine loop to the wrong model.
 
 Every bounded child startup must detect its assigned role (Luna executor, Astra
 blocker resolver, Astra final reviewer, or another explicitly named role) and
@@ -95,12 +110,21 @@ separate local files. Neither handoff nor logs may contain secrets or personal
 information. The `.local/` state is local evidence and is not portable unless
 copied into an approved artifact.
 
-Record the task and agent IDs, target branch, base commit, current `HEAD`,
-reviewed commit, test commit, changed paths, test/check commands and results,
-artifact paths, decisions, authority, risks, and the next step. Preserve local
-evidence paths and add shared/portable artifact references when available. If a
-check ran before a commit, record clean/dirty status plus status/diff evidence;
-a SHA alone does not identify a dirty tested worktree. Update state at
+Record the task and agent IDs, requested role/model/effort, actual
+runtime-reported role/model/effort (or launcher verification), and the
+runtime schema/capabilities checked. Also record the target branch, base
+commit, current `HEAD`, exact reviewed commit, exact test/check commit, changed
+paths, test/check commands and results, artifact paths, decisions, authority,
+risks, and the next step. Preserve local evidence paths and add
+shared/portable artifact references when available. A review or check must
+have a fresh evidence producer tied to the exact tree under review: capture
+branch, `HEAD`, status, and relevant untracked paths/content before reporting
+results. Prefer a clean committed checkpoint with exact base/head SHAs and
+commands such as `git diff --check <base SHA> <head SHA>` and
+`git diff <base SHA> <head SHA> -- <owned paths>`. Check that relevant
+untracked source is not omitted. If a check ran before a commit, record
+clean/dirty status plus status/diff evidence; a SHA alone does not identify a
+dirty tested worktree. Never commit unrelated user changes. Update state at
 meaningful boundaries: plan accepted, edit complete, check result, escalation,
 and handoff. After a context reset, verify git state against the handoff before
 resuming; do not trust stale prose alone.
@@ -127,17 +151,30 @@ Escalate for a fresh bounded Astra task when any of these occurs:
 There is no continuous model-polling watcher. Luna writes the blocker and safe
 next step to the handoff, then pauses the affected work. If child spawning is
 supported and authorized, Luna may launch the fresh Astra resolver; otherwise
-root launches it as a bounded fallback. Use `model: "gpt-6-astra"`,
-`reasoning_effort: "medium"`, and `fork_turns: "none"`, with explicit paths and
-acceptance criteria. The resolver is read-only unless its brief explicitly
-assigns a disjoint unblocker file set; pause Luna if ownership overlaps.
+root launches it as a bounded fallback, with explicit paths and acceptance
+criteria. The resolver is read-only unless its brief explicitly assigns a
+disjoint unblocker file set; pause Luna if ownership overlaps.
+
+Use the schema-checked portable call from section 2 for a resolver as well;
+set `model: "gpt-6-astra"` and `reasoning_effort: "medium"` only when the
+exposed schema accepts them, and verify the actual or launcher-configured
+values. For a dirty worktree blocker, pass an existing generated diff artifact
+under the ignored `.local/agent-tasks/<slug>/` directory, plus references to
+the list or content of relevant untracked source files, excluding secrets. Do
+not invent artifact paths or snapshots. The reviewer verifies the supplied
+snapshot against the current tree, and Luna pauses relevant edits while the
+snapshot is consumed.
+
+The minimal example below also requires verified Astra/medium launcher
+selection; otherwise add supported overrides before invoking it.
 
 ```js
-await collaboration.spawn_agent({ task_name: "astra_review_<task_slug>", model: "gpt-6-astra", reasoning_effort: "medium", fork_turns: "none",
+await collaboration.spawn_agent({ task_name: "astra_review_<task_slug>", fork_turns: "none",
   message: `Role: Astra reviewer/resolver; read-only; no recursive coordinator startup.
 Worktree: /absolute/path/to/worktree
 Base commit / head commit: <base SHA> / <head SHA>
-Dirty diff evidence if applicable: <absolute artifact path>
+Dirty diff evidence if applicable: <existing absolute artifact path>
+Relevant untracked source references if applicable: <reviewed paths/content references>
 Question/review goal: <bounded blocker or independent diff+code+tests review>
 Evidence: findings with severity, file/line, commands, commit IDs, and dirty-diff state.
 PR: ready for review; after push verify not draft; no merge/deploy without user authorization.` });
@@ -147,10 +184,17 @@ PR: ready for review; after push verify not draft; no merge/deploy without user 
 
 After Luna reports completion, Astra directs one fresh Astra final reviewer;
 Luna may launch it when child spawning is supported, otherwise root launches
-it. Use `model: "gpt-6-astra"`, `reasoning_effort: "medium"`, and
-`fork_turns: "none"`. The reviewer independently inspects the diff, relevant
-code, and tests, and reports findings by severity with evidence. It must not
-review the summary alone and is read-only by default.
+it. Use the schema-checked portable call from section 2, adding
+`model: "gpt-6-astra"` and `reasoning_effort: "medium"` only when those fields
+are exposed and accepted. The reviewer independently inspects the exact
+base/head diff, relevant code, and tests, and reports findings by severity with
+fresh evidence. The brief names the exact base/head SHAs, clean/dirty status,
+and commands used to capture and check the diff, such as
+`git diff --check <base SHA> <head SHA>` and
+`git diff <base SHA> <head SHA> -- <owned paths>`. It must not review the
+summary alone and is read-only by default. Prefer a clean committed
+checkpoint; for a dirty review, supply the existing ignored artifact and
+relevant untracked source references described in section 4.
 
 Luna fixes accepted findings, then runs focused follow-up checks for the
 affected scope. Run a new full review only when the fix introduces substantial

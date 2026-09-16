@@ -12,6 +12,9 @@ Preserve local paths and add shared references when portable artifacts exist.
 - Objective and acceptance criteria:
 - Worktree (absolute path):
 - Target branch:
+- Requested role / model / reasoning effort:
+- Actual runtime-reported role / model / reasoning effort (or launcher verification):
+- Runtime collaboration schema/capabilities checked:
 - Base commit:
 - Current `HEAD`:
 - Worktree state at last check (`clean`/`dirty`, status and diff evidence):
@@ -47,6 +50,9 @@ Preserve local paths and add shared references when portable artifacts exist.
 ## Evidence
 
 - Changed paths:
+- Evidence producer and capture time (UTC):
+- Exact reviewed/tested state (base/head SHAs, clean/dirty status):
+- Relevant untracked source paths/content references reviewed:
 - Commands and results:
 - CI run, task IDs, or commit SHAs:
 - Local evidence paths:
