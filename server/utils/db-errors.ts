@@ -41,17 +41,17 @@ export function getPgErrorConstraint(err: unknown): string | undefined {
 }
 
 /**
- * Errors that are safe to retry when a request is only acquiring a database
- * connection.  SQLSTATE class 08 is the PostgreSQL connection-exception
- * class; the remaining codes cover the transient pool/server conditions we
- * can observe during a rolling restart.  The message fallback is deliberately
- * narrow because Drizzle may omit the driver's error code from some pool
- * acquisition failures.
+ * Errors that are safe to retry for bounded read-only operations and
+ * explicitly idempotent recovery jobs. SQLSTATE class 08 is the PostgreSQL
+ * connection-exception class; the remaining codes cover transient pool/server
+ * conditions we can observe during a rolling restart. The message fallback is
+ * deliberately narrow because Drizzle may omit the driver's error code from
+ * some pool acquisition failures.
  */
 export function isTransientDatabaseError(err: unknown): boolean {
   const code = getPgErrorCode(err);
   if (code?.startsWith('08')) return true;
-  if (code && /^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENETUNREACH|EAI_AGAIN)$/i.test(code)) return true;
+  if (code && /^(?:ECONNABORTED|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENETUNREACH|EAI_AGAIN)$/i.test(code)) return true;
   if (code && new Set([
     '40001', // serialization_failure
     '40P01', // deadlock_detected
@@ -71,7 +71,7 @@ export function isTransientDatabaseError(err: unknown): boolean {
       : typeof (current as { message?: unknown }).message === 'string'
         ? (current as { message: string }).message
         : '';
-    if (/\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENETUNREACH|EAI_AGAIN)\b/i.test(message)) return true;
+    if (/\b(?:ECONNABORTED|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENETUNREACH|EAI_AGAIN)\b/i.test(message)) return true;
     if (/connection (?:acquisition|attempt|terminated|reset|closed|refused|timed out)|(?:database|db)\s+(?:connection|unavailable|timeout)|pool\s+(?:is\s+)?exhausted|timeout exceeded when trying to connect/i.test(message)) return true;
     current = (current as { cause?: unknown }).cause;
   }
