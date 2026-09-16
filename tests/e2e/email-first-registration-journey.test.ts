@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from 'vitest';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { and, eq, inArray } from 'drizzle-orm';
@@ -34,12 +35,18 @@ let matchedBowlerId: number;
 let app: CreatedApp;
 let browser: Browser;
 
-type BrowserRouteState = { tearingDown: boolean };
+type BrowserRouteState = {
+  tearingDown: boolean;
+  pendingFetchPort?: number;
+  activeHandlers: Set<Promise<void>>;
+  unexpectedErrors: unknown[];
+};
 
 function isRouteLifecycleError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return error.message.includes('Route is already handled!')
     || error.message.includes('Fetch response has been disposed')
+    || error.message.includes('Request context disposed.')
     || error.message.includes('Target page, context or browser has been closed');
 }
 
@@ -49,32 +56,59 @@ export function shouldIgnoreRouteLifecycleError(error: unknown, tearingDown: boo
 
 const browserRouteStates = new WeakMap<BrowserContext, BrowserRouteState>();
 
-async function createBrowserContext(): Promise<BrowserContext> {
+async function createBrowserContext(options: { pendingFetchPort?: number } = {}): Promise<BrowserContext> {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   context.setDefaultTimeout(15_000);
   context.setDefaultNavigationTimeout(15_000);
-  const routeState: BrowserRouteState = { tearingDown: false };
+  const routeState: BrowserRouteState = {
+    tearingDown: false,
+    pendingFetchPort: options.pendingFetchPort,
+    activeHandlers: new Set(),
+    unexpectedErrors: [],
+  };
   // Keep the exact HTTPS URL from the email while routing its real HTTP
   // traffic to this isolated app. This supplies transport, not API mocks.
   await context.route('**/*', async (route) => {
-    try {
-      const incoming = new URL(route.request().url());
-      if (![EXPECTED_HOST, ROOT_HOST].includes(incoming.hostname)) {
-        await route.abort();
-        return;
+    const handler = (async () => {
+      try {
+        const incoming = new URL(route.request().url());
+        if (![EXPECTED_HOST, ROOT_HOST].includes(incoming.hostname)) {
+          await route.abort();
+          return;
+        }
+        const targetPort = routeState.pendingFetchPort && incoming.pathname === '/__pending-browser-fetch'
+          ? routeState.pendingFetchPort
+          : app.port;
+        const response = await route.fetch({
+          url: `http://127.0.0.1:${targetPort}${incoming.pathname}${incoming.search}`,
+          headers: { ...route.request().headers(), host: incoming.hostname },
+          maxRedirects: 0,
+        });
+        await route.fulfill({ response });
+      } catch (error) {
+        // A superseded navigation or browser/context teardown may cancel a
+        // route after fetch has started. Only these Playwright lifecycle
+        // errors are expected after this context has entered teardown.
+        if (!shouldIgnoreRouteLifecycleError(error, routeState.tearingDown)) throw error;
+        // route.fetch() is not a route action, so a canceled fetch can leave
+        // Playwright's route handling promise unresolved. Complete the route
+        // so the context can close; a real abort failure is still surfaced
+        // unless it is another known teardown error.
+        try {
+          await route.abort();
+        } catch (abortError) {
+          if (!shouldIgnoreRouteLifecycleError(abortError, routeState.tearingDown)) throw abortError;
+        }
       }
-      const response = await route.fetch({
-        url: `http://127.0.0.1:${app.port}${incoming.pathname}${incoming.search}`,
-        headers: { ...route.request().headers(), host: incoming.hostname },
-        maxRedirects: 0,
-      });
-      await route.fulfill({ response });
+    })();
+    routeState.activeHandlers.add(handler);
+    try {
+      await handler;
     } catch (error) {
-      // A superseded navigation or browser/context teardown may cancel a
-      // route after fetch has started. Teardown waits for normal handlers via
-      // unrouteAll({ behavior: 'wait' }); only these Playwright lifecycle
-      // errors are expected after this context has explicitly entered teardown.
-      if (!shouldIgnoreRouteLifecycleError(error, routeState.tearingDown)) throw error;
+      routeState.unexpectedErrors.push(error);
+      throw error;
+    } finally {
+      routeState.activeHandlers.delete(handler);
     }
   });
   browserRouteStates.set(context, routeState);
@@ -84,8 +118,26 @@ async function createBrowserContext(): Promise<BrowserContext> {
 async function closeContextAfterRoutesDrain(context: BrowserContext): Promise<void> {
   const routeState = browserRouteStates.get(context);
   if (routeState) routeState.tearingDown = true;
-  await context.unrouteAll({ behavior: 'wait' });
-  await context.close();
+  const cleanupErrors: unknown[] = [];
+  try {
+    // Removing routes without waiting lets context.close() dispose the
+    // request client that route.fetch() uses. Waiting first can deadlock on a
+    // fetch that is still waiting for the app to respond.
+    await context.unrouteAll({ behavior: 'default' });
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  try {
+    await context.close();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  if (routeState) {
+    await Promise.allSettled([...routeState.activeHandlers]);
+    cleanupErrors.push(...routeState.unexpectedErrors);
+  }
+  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, 'Browser route cleanup failed');
 }
 
 async function installRegistrationTemplate(): Promise<void> {
@@ -282,6 +334,8 @@ describe('browser route lifecycle handling', () => {
     expect(shouldIgnoreRouteLifecycleError(new Error('Route is already handled!'), false)).toBe(false);
     expect(shouldIgnoreRouteLifecycleError(new Error('Route is already handled!'), true)).toBe(true);
     expect(shouldIgnoreRouteLifecycleError(new Error('Fetch response has been disposed'), true)).toBe(true);
+    expect(shouldIgnoreRouteLifecycleError(new Error('Request context disposed.'), false)).toBe(false);
+    expect(shouldIgnoreRouteLifecycleError(new Error('Request context disposed.'), true)).toBe(true);
     expect(shouldIgnoreRouteLifecycleError(new Error('synthetic live route failure'), true)).toBe(false);
   });
 });
@@ -317,6 +371,42 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
     });
     browser = await chromium.launch({ executablePath, headless: true });
   }, 60_000);
+
+  it('cancels a pending intercepted fetch before draining browser routes', async () => {
+    let requestSeen = false;
+    const pendingServer = createServer((_request, _response) => {
+      requestSeen = true;
+      // Keep the response open until the browser context request client is
+      // disposed by closeContextAfterRoutesDrain.
+    });
+    await new Promise<void>((resolve, reject) => {
+      pendingServer.once('error', reject);
+      pendingServer.listen(0, '127.0.0.1', resolve);
+    });
+    const address = pendingServer.address();
+    if (!address || typeof address === 'string') throw new Error('Pending route server did not expose a port');
+
+    const context = await createBrowserContext({ pendingFetchPort: address.port });
+    const page = await context.newPage();
+    const navigation = page.goto(`https://${EXPECTED_HOST}/__pending-browser-fetch`).catch((error: unknown) => error);
+    let contextClosed = false;
+    try {
+      await expect.poll(() => requestSeen, { timeout: 5_000 }).toBe(true);
+      await closeContextAfterRoutesDrain(context);
+      contextClosed = true;
+      await expect(navigation).resolves.toBeInstanceOf(Error);
+    } finally {
+      if (!contextClosed) await context.close();
+      pendingServer.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        if (!pendingServer.listening) {
+          resolve();
+          return;
+        }
+        pendingServer.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  }, 15_000);
 
   afterAll(async () => {
     await browser?.close();

@@ -251,4 +251,27 @@ describe("team envelope report", () => {
     expect(Buffer.from(bytes.subarray(0, 4)).toString("ascii")).toBe("%PDF");
     expect(bytes.byteLength).toBeGreaterThan(5_000);
   });
+
+  it.each([
+    ["2026-09-16 22:15:54.123456+00", "20260916221554"],
+    ["2026-09-16 22:15:54.123456+05:30", "20260916164554"],
+  ])("normalizes a PostgreSQL timestamp before passing PDF metadata (%s)", async (asOf, expectedCreationDate) => {
+    const input = reportInput();
+    input.financial.asOf = asOf;
+
+    const bytes = await renderTeamEnvelopePdf(buildTeamEnvelopeReport(input));
+
+    expect(Buffer.from(bytes.subarray(0, 4)).toString("ascii")).toBe("%PDF");
+    expect(Buffer.from(bytes).toString("latin1")).toContain(`CreationDate(D:${expectedCreationDate}Z)`);
+  });
+
+  it("rejects an invalid PDF metadata timestamp with a report error", async () => {
+    const report = buildTeamEnvelopeReport(reportInput());
+    report.generatedAt = "not-a-timestamp";
+
+    await expect(renderTeamEnvelopePdf(report)).rejects.toMatchObject({
+      code: "REPORT_DATE_INVALID",
+      status: 503,
+    });
+  });
 });
