@@ -60,5 +60,8 @@ describe("PR1 roster-driven payment contract", () => {
     expect(canonicalManualRecordRequestSchema.safeParse({ amountMinor: 400, payerBowlerId: 10, type: "check", checkNumber: "C-1", idempotencyKey: "manual", requestFingerprint: "quote" }).success).toBe(true);
     expect(canonicalCorrectionRequestSchema.safeParse({ paymentId: 12, reason: "cash correction", idempotencyKey: "correction", requestFingerprint: "quote" }).success).toBe(true);
     expect(canonicalCorrectionRequestSchema.safeParse({ paymentId: 12, correctionMode: "replace", reason: "unsupported", idempotencyKey: "correction-2", requestFingerprint: "quote" }).success).toBe(false);
+    expect(canonicalCorrectionRequestSchema.safeParse({ paymentId: 12, correctionMode: "edit_cash", amountMinor: 6000, paymentDate: "2032-10-08", reason: "cash edit", idempotencyKey: "edit", requestFingerprint: "quote" }).success).toBe(true);
+    expect(canonicalCorrectionRequestSchema.safeParse({ paymentId: 12, correctionMode: "edit_cash", amountMinor: 6000, paymentDate: "2032-02-30", reason: "cash edit", idempotencyKey: "edit-invalid-date", requestFingerprint: "quote" }).success).toBe(false);
+    expect(canonicalCorrectionRequestSchema.safeParse({ paymentId: 12, correctionMode: "edit_cash", amountMinor: 6000.5, paymentDate: "2032-10-08", reason: "cash edit", idempotencyKey: "edit-pennies", requestFingerprint: "quote" }).success).toBe(false);
   });
 });
