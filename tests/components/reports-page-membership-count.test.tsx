@@ -51,6 +51,10 @@ describe("ReportsPage membership counts", () => {
     await waitFor(() => expect(screen.getByRole("row", { name: /Tuesday League/ })).toBeInTheDocument());
     const row = screen.getByRole("row", { name: /Tuesday League/ });
     expect(within(row).getAllByRole("cell")[1]).toHaveTextContent("2");
+    expect(within(row).getByRole("link", { name: "Envelope PDF" })).toHaveAttribute(
+      "href",
+      "/api/financials/leagues/7/team-envelope-slips.pdf",
+    );
   });
 
   it("preserves a reports AUTH_REQUIRED response and redirects a cached user once", async () => {

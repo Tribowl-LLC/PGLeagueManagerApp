@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { PageLoadingState } from "@/components/page-states";
@@ -226,6 +227,7 @@ export default function ReportsPage() {
                   <TableHead>Past Due</TableHead>
                   <TableHead>Review</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Print</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -250,6 +252,13 @@ export default function ReportsPage() {
                       <Badge variant={league.active ? "default" : "secondary"}>
                         {league.active ? "Active" : "Inactive"}
                       </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Button asChild variant="outline" size="sm">
+                        <a href={`/api/financials/leagues/${league.id}/team-envelope-slips.pdf${systemScope}`}>
+                          Envelope PDF
+                        </a>
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))}

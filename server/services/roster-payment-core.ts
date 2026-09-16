@@ -35,6 +35,7 @@ import type {
   RosterPaymentResponsibilityRequest,
   calculateRosterPaymentTiming,
 } from "@shared/roster-payment-contract";
+import type { FinancialReadContract } from "@shared/financial-contract";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { prepareInteractivePaymentOperation } from "./interactive-payment-operation-preparation.js";
@@ -351,7 +352,7 @@ export async function saveTeamRoster(input: {
   });
 }
 
-export async function readCanonicalDuePastDue(input: { organizationId: number; leagueId: number; payerBowlerId?: number }) {
+export async function readCanonicalDuePastDue(input: { organizationId: number; leagueId: number; payerBowlerId?: number }): Promise<FinancialReadContract> {
   await leagueScope(input.organizationId, input.leagueId);
   return db.transaction(async (tx) => {
     await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
@@ -407,7 +408,7 @@ export async function readCanonicalDuePastDue(input: { organizationId: number; l
               : "past_due" as const;
       const teamId = teamByResponsibilityId.get(obligation.responsibilityId);
       if (teamId === undefined) throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its canonical team", 503);
-      return { ...obligation, teamId, allocatedMinor: balance.effectiveAllocatedMinor, grossAllocatedMinor: balance.grossAllocatedMinor, refundedMinor: balance.refundedMinor, waivedMinor: balance.waivedMinor, stillOwed: balance.stillOwed, outstandingMinor: balance.outstandingMinor, classification, reviewRequired };
+      return { ...obligation, currency: "USD" as const, teamId, allocatedMinor: balance.effectiveAllocatedMinor, grossAllocatedMinor: balance.grossAllocatedMinor, refundedMinor: balance.refundedMinor, waivedMinor: balance.waivedMinor, stillOwed: balance.stillOwed, outstandingMinor: balance.outstandingMinor, classification, reviewRequired };
     });
     return {
     contractVersion: "canonical-due-past-due/2" as const,

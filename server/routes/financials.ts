@@ -1,9 +1,18 @@
 import { Router } from "express";
+import { createLogger } from "../logger.js";
+import { LeagueOccurrenceScheduleError } from "../services/league-occurrence-schedule.js";
 import { readCanonicalDuePastDue, RosterPaymentError } from "../services/roster-payment-core.js";
+import {
+  readTeamEnvelopeReport,
+  renderTeamEnvelopePdf,
+  TeamEnvelopeReportError,
+  teamEnvelopeFilename,
+} from "../services/team-envelope-report.js";
 import { hasAdminAccessToLeague, hasAccessToLeague, hasPaymentManagerAccessToLeague, isPaymentManager } from "../utils/access-control.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { storage } from "../storage/index.js";
 
+const log = createLogger("FinancialRoutes");
 const router = Router();
 
 function positive(value: unknown): number | undefined | null {
@@ -12,6 +21,50 @@ function positive(value: unknown): number | undefined | null {
   const result = Number(value);
   return Number.isSafeInteger(result) && result > 0 ? result : null;
 }
+
+router.get("/leagues/:leagueId/team-envelope-slips.pdf", async (req, res) => {
+  if (!req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const leagueId = positive(req.params.leagueId);
+  if (!leagueId) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const requestedOrg = positive(req.query.organizationId);
+  if (requestedOrg === null) return sendError(res, "Invalid scope", 400, "INVALID_SCOPE");
+
+  const league = await storage.getLeague(leagueId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  if (req.user.role === "system_admin") {
+    const selectedOrg = requestedOrg ?? req.user.organizationId ?? undefined;
+    if (!selectedOrg) {
+      return sendError(res, "Select an organization before creating envelope slips", 400, "INVALID_SCOPE");
+    }
+    if (selectedOrg !== league.organizationId) return sendError(res, "Not found", 404, "NOT_FOUND");
+  } else {
+    if (requestedOrg !== undefined && requestedOrg !== req.user.organizationId) return sendError(res, "Not found", 404, "NOT_FOUND");
+    if (req.user.organizationId !== league.organizationId) return sendError(res, "Not found", 404, "NOT_FOUND");
+    const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
+    if (!privileged) return sendError(res, "Not found", 404, "NOT_FOUND");
+  }
+
+  try {
+    const report = await readTeamEnvelopeReport({ organizationId: league.organizationId, leagueId });
+    const pdf = await renderTeamEnvelopePdf(report);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${teamEnvelopeFilename(report)}"`);
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).send(Buffer.from(pdf));
+  } catch (error) {
+    if (error instanceof TeamEnvelopeReportError || error instanceof RosterPaymentError) {
+      return sendError(res, error.message, error.status, error.code);
+    }
+    if (error instanceof LeagueOccurrenceScheduleError) {
+      if (error.code === "league_not_found") return sendError(res, "Not found", 404, "NOT_FOUND");
+      return sendError(res, "Canonical schedule evidence cannot safely produce envelope slips", 409, "CANONICAL_SCHEDULE_INCOMPATIBLE");
+    }
+    log.error("Team envelope PDF creation failed", {
+      error: error instanceof Error ? error.name : "unknown",
+    });
+    return sendError(res, "Unable to create team envelope slips", 500, "TEAM_ENVELOPE_PDF_ERROR");
+  }
+});
 
 router.get("/due-past-due", async (req, res) => {
   if (!req.user) return sendError(res, "Not found", 404, "NOT_FOUND");

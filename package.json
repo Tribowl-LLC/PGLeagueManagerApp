@@ -99,6 +99,7 @@
     "square": "^44.2.0",
     "tailwind-merge": "^3.6.0",
     "tailwindcss-animate": "^1.0.7",
+    "takumi-pdf": "0.14.3",
     "wouter": "^3.10.0",
     "zod": "^4.4.3"
   },
