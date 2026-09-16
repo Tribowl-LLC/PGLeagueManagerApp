@@ -148,6 +148,8 @@ const UNIT_NO_DB = [
   // suites in the shared parallel project.
   'tests/unit/interactive-partner-payment-routes.test.ts',
   'tests/unit/bowler-financial-summary.test.ts',
+  'tests/unit/team-envelope-report.test.ts',
+  'tests/unit/team-envelope-report-route.test.ts',
 ];
 
 const PARALLEL_ISOLATED = [

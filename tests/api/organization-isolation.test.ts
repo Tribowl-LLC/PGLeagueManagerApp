@@ -302,6 +302,25 @@ describe('Organization Isolation', () => {
       expect(JSON.stringify(data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
 
+    it('org A GET /api/financials/leagues/:leagueId/team-envelope-slips.pdf?organizationId=<orgB> must fail closed for implicit and spoofed scope', async () => {
+      expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
+      expect(sessionB.user.organizationId, 'expected an org B organization id').not.toBeNull();
+
+      const implicitScope = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/team-envelope-slips.pdf`,
+        sessionA,
+      );
+      const spoofedScope = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/team-envelope-slips.pdf?organizationId=${sessionB.user.organizationId}`,
+        sessionA,
+      );
+      for (const response of [implicitScope, spoofedScope]) {
+        expect([403, 404]).toContain(response.status);
+        expect(response.data.success).toBe(false);
+        expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+      }
+    });
+
     it('org A admin fetching org B generic canonical review must get a definitive 403/404', async () => {
       expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
       const { status, data } = await apiGet(
