@@ -27,9 +27,21 @@ with one child allocation per obligation.
 
 Every request is scoped to one payer and league. Accepted partner links remain
 available to archive/history surfaces but cannot select obligations in the
-checkout. A cash/check correction voids the whole tender and records one
-`payment_voids` row; a corrected payment is a separate FIFO entry. Provider
-refunds and disputes retain the original tender/allocation evidence.
+checkout. The existing `void_only` cash/check correction voids the whole tender
+and records one `payment_voids` row; a corrected payment is a separate FIFO
+entry. Provider refunds and disputes retain the original tender/allocation
+evidence.
+
+An administrator can use `correctionMode=edit_cash` for an eligible paid cash
+tender from the Payments Actions menu. The command is atomic and keeps the
+original tender, its allocations, and its void evidence as audit history while
+creating one replacement cash tender. A date-only edit copies the original
+allocations exactly. An amount edit releases those allocations and reapplies
+canonical FIFO under the same league lock, so increases and decreases update
+the oldest outstanding obligations first. A cash tender with no active
+allocation, or an amount that cannot be allocated, is rejected without any
+change. The replacement payment date is interpreted in the league timezone,
+and retries are idempotent for the same actor and request fingerprint.
 
 All roster, responsibility, quote, manual, and correction commands take the
 tenant+league advisory lock and record idempotency in `financial_commands`.
@@ -50,6 +62,14 @@ model boundary. It fails closed before destructive DDL if payment/provider
 evidence is present, makes tenant-safe parent/child keys and exact amount
 conservation constraints, and removes obsolete week/lineage/per-allocation
 payment fields. No old payment data is inferred or backfilled.
+
+Migration `0044_cash_edit_obligation_reopen` follows the active migration
+history through `0043_email_alert_frequency_volume`. It preserves the
+append-only obligation guard and adds only the proven cash-edit transition
+from partially settled to open when the retired cash allocation has zero
+effective coverage and matching void evidence. Apply it through the guarded
+forward-only migration workflow before enabling this edit command; do not edit
+or reverse an adopted migration.
 
 ## Permanent bowler profile deletion
 
