@@ -11,7 +11,7 @@ do not add delegation ceremony where it has no value.
 | --- | --- |
 | Astra (root) | Uses `gpt-6-astra` at `medium` reasoning for architecture, task scope, release authority, and user communications. Creates the initial plan, starts the execution loop, handles escalations, and makes the final integration decision. |
 | Luna | Long-running routine executor. Owns assigned edits, checks, fixes, CI work, and updates to the task handoff. |
-| Fresh Astra | Short-context bounded blocker resolver or independent final reviewer. It must inspect the relevant diff, code, and tests rather than relying on a summary. |
+| Fresh Astra | Short-context bounded blocker resolver or internal final reviewer. It must inspect the relevant diff, code, and tests rather than relying on a summary. |
 
 The root remains accountable even while Luna executes. Root may relay short
 milestones and must not claim work continues autonomously after the session
@@ -19,6 +19,17 @@ ends. Root stays lightweight and does not repeatedly read raw logs or redo
 Luna's assigned work. A reviewer does not become a second writer: use read-only
 review unless an explicit unblocker brief grants file ownership, and pause the
 overlapping writer while that unblocker edits.
+
+The default release lifecycle is the single numbered procedure in
+[`docs/production-runbook.md`](production-runbook.md#default-release-lifecycle).
+It applies to every PR-required change. The active user's standing
+authorization permits the accountable root/Astra to merge after review and
+final-head checks, run the guarded Neon migration when needed after exact-main
+certification, and deploy the exact certified `main` commit after the
+preceding migration gate. A task-specific hold, draft, no-deploy instruction,
+or explicit approval rule overrides that default. PR-ready status alone never
+authorizes release actions; the root owns merge, migration, and deployment
+decisions.
 
 This Markdown documents intended behavior; it cannot select or change the
 running root model, enforce a watchdog, or run after the session ends. The
@@ -71,8 +82,8 @@ Handoff: /absolute/path/to/worktree/.local/agent-tasks/<task-slug>/handoff.md
 Owned paths: <files or directories>
 Constraints: <invariants and out-of-scope paths>
 Validation: <commands and required evidence>
-PR: ready for review; after pushing verify it is not a draft; no merge/deploy
-without explicit user authorization.
+PR: ready for review; after pushing verify it is not a draft; follow the
+standing release policy and runbook gates for merge/migration/deploy.
 Escalate: <triggers and how to pause safely>`
 };
 await collaboration.spawn_agent(request);
@@ -175,12 +186,13 @@ Worktree: /absolute/path/to/worktree
 Base commit / head commit: <base SHA> / <head SHA>
 Dirty diff evidence if applicable: <existing absolute artifact path>
 Relevant untracked source references if applicable: <reviewed paths/content references>
-Question/review goal: <bounded blocker or independent diff+code+tests review>
+Question/review goal: <bounded blocker or internal diff+code+tests review>
 Evidence: findings with severity, file/line, commands, commit IDs, and dirty-diff state.
-PR: ready for review; after push verify not draft; no merge/deploy without user authorization.` });
+PR: ready for review; after push verify not draft; follow the standing release
+policy and runbook gates for merge/migration/deploy.` });
 ```
 
-## 5. Independent final review
+## 5. Internal Astra review
 
 After Luna reports completion, Astra directs one fresh Astra final reviewer;
 Luna may launch it when child spawning is supported, otherwise root launches
@@ -196,12 +208,15 @@ summary alone and is read-only by default. Prefer a clean committed
 checkpoint; for a dirty review, supply the existing ignored artifact and
 relevant untracked source references described in section 4.
 
+This is an internal architecture review. It is separate from, and never
+substitutes for, the one independent GitHub review required for each PR in the
+default release lifecycle.
+
 Luna fixes accepted findings, then runs focused follow-up checks for the
-affected scope. Run a new full review only when the fix introduces substantial
-new risk. Do not create automatic endless re-reviews. The reviewer returns
-commit IDs and evidence; Luna records them in the handoff. Astra decides
-whether the result is ready for release; reviewer readiness is not user merge
-or deploy authorization.
+affected scope. Run a new internal review only when the fix introduces
+substantial new risk. Do not create automatic endless re-reviews. The reviewer
+returns commit IDs and evidence; Luna records them in the handoff. Astra
+decides whether the result is ready for the GitHub review/release lifecycle.
 
 ## Completion and pull requests
 
@@ -213,9 +228,13 @@ invent costs or claim unavailable telemetry.
 
 Create pull requests ready for review unless the user explicitly requests a
 draft. After pushing, verify the PR is not a draft and mark it ready when
-needed. Ready-for-review status does not authorize merging. Merge or deploy
-requires explicit task-scoped authorization; unrelated earlier authorization
-does not carry over.
+needed. Ready-for-review status does not authorize merging. Follow the one
+GitHub review and final-head check gates in the
+[default release lifecycle](production-runbook.md#default-release-lifecycle).
+The standing user authorization described there covers routine merge,
+guarded-migration, and exact-certified-commit deployment actions once those
+gates pass. Later task-specific holds, drafts, no-deploy instructions, or
+explicit approval requirements take precedence.
 
 ## Compact handoff brief
 
@@ -230,7 +249,9 @@ Owned paths / forbidden paths: ... / ...
 Affected systems / constraints / risks: ...
 Validation and evidence: ...
 Release authority: Astra; escalation triggers: ...
-PR: ready for review; after push verify not draft; merge/deploy needs explicit user authorization.
+PR: ready for review; after push verify not draft; follow the one-review and
+final-head check gates in the production runbook; PR-ready alone does not
+authorize merge/migration/deploy.
 Completion: return IDs, SHAs, tests, artifacts, decisions, and next step; Luna updates handoff.
 ```
 
