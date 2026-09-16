@@ -17,3 +17,4 @@ attached_assets/
 .local/known-failures.md
 .local/test-template-hash
 .local/test-local.log
+.local/agent-tasks/

@@ -418,6 +418,8 @@ the exact certified Render SHA. The complete release procedure is in
   contribution rules.
 - [`docs/engineering-context.md`](docs/engineering-context.md) — product
   boundaries and architecture decisions.
+- [`docs/agent-workflow.md`](docs/agent-workflow.md) — default Astra/Luna
+  implementation, handoff, escalation, and review workflow.
 - [`docs/ci.md`](docs/ci.md) — GitHub Actions workflows, checks, and CI secrets.
 - [`docs/TEST_INFRA.md`](docs/TEST_INFRA.md) — local and CI test database
   infrastructure.

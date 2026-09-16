@@ -60,6 +60,10 @@ See `docs/ci.md` and `docs/production-runbook.md` for operational details.
 
 ## Task Startup
 
+For a multi-step implementation, follow [`docs/agent-workflow.md`](docs/agent-workflow.md)
+for the default Astra/Luna plan, handoff, escalation, and review loop. Simple
+questions and tiny documentation tasks may be handled directly.
+
 Before editing:
 
 1. Inspect `git status`, the current branch, and the active worktree.
