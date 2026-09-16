@@ -69,6 +69,7 @@ export class DatabaseStorage implements IStorage {
   getPaymentsPaginated!: IStorage["getPaymentsPaginated"];
   getPaymentById!: IStorage["getPaymentById"];
   getPaymentByIdForOrganization!: IStorage["getPaymentByIdForOrganization"];
+  getVisiblePaymentByIdForOrganization!: IStorage["getVisiblePaymentByIdForOrganization"];
   getPaymentByIdempotencyKey!: IStorage["getPaymentByIdempotencyKey"];
   getPaymentsByPaymentOperationId!: IStorage["getPaymentsByPaymentOperationId"];
   getPaymentByDisputeId!: IStorage["getPaymentByDisputeId"];

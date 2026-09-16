@@ -26,6 +26,7 @@ import type { Server } from 'node:http';
 const mockStorage = {
   getPaymentById: vi.fn(),
   getPaymentByIdForOrganization: vi.fn(),
+  getVisiblePaymentByIdForOrganization: vi.fn(),
   getPaymentsByPaymentOperationId: vi.fn(),
   getLeague: vi.fn(),
   getOrganization: vi.fn(),
@@ -114,6 +115,7 @@ beforeEach(() => {
   mockStorage.getOrganization.mockResolvedValue({ id: 1, name: 'Cosmic Lanes' });
   mockStorage.getBowler.mockResolvedValue({ id: 42, name: 'Pat', email: 'on-file@example.com' });
   mockStorage.getPaymentByIdForOrganization.mockImplementation((paymentId: number) => mockStorage.getPaymentById(paymentId));
+  mockStorage.getVisiblePaymentByIdForOrganization.mockImplementation((paymentId: number) => mockStorage.getPaymentByIdForOrganization(paymentId, 1));
   mockStorage.getPaymentsByPaymentOperationId.mockResolvedValue([]);
   mockDb.select.mockImplementation(() => dbResult([]));
   mockReadPaymentReceiptProjection.mockImplementation(async ({ paymentId }: { paymentId: number }) => {
@@ -181,6 +183,23 @@ function post(path: string, body: unknown, user: object) {
 }
 
 describe('GET /payments/:id/receipt (Task #503)', () => {
+  it('returns 404 for a retained original hidden by an applied cash edit', async () => {
+    mockStorage.getPaymentById.mockResolvedValue({
+      id: 4, leagueId: 11, bowlerId: 42, amount: 2_000, status: 'voided', type: 'cash',
+      providerPaymentId: null, receiptUrl: null, receiptNumber: null,
+    });
+    mockStorage.getPaymentByIdForOrganization.mockResolvedValue({
+      id: 4, leagueId: 11, bowlerId: 42, amount: 2_000, status: 'voided', type: 'cash',
+      providerPaymentId: null, receiptUrl: null, receiptNumber: null,
+    });
+    mockStorage.getVisiblePaymentByIdForOrganization.mockResolvedValue(undefined);
+
+    const res = await get('/api/payments-provider/payments/4/receipt', ADMIN);
+    expect(res.status).toBe(404);
+    expect((await res.json()).error?.code).toBe('RECEIPT_UNAVAILABLE');
+    expect(mockReadPaymentReceiptProjection).not.toHaveBeenCalled();
+  });
+
   it('returns cached receiptUrl without calling the provider', async () => {
     mockStorage.getPaymentById.mockResolvedValue({
       id: 5, leagueId: 11, bowlerId: 42, providerPaymentId: 'sq_1',

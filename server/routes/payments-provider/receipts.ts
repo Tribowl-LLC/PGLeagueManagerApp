@@ -20,6 +20,14 @@ import { CanonicalPaymentReportIncompatibilityError, readPaymentReceiptProjectio
 
 const log = createLogger('PaymentReceipts');
 
+async function getVisiblePayment(paymentId: number, organizationId?: number) {
+  // Receipt reads are always tenant-scoped. An absent scope fails closed so
+  // this route cannot fall back to the raw payment lookup and leak a retained
+  // superseded payment.
+  if (organizationId === undefined || organizationId === null) return undefined;
+  return storage.getVisiblePaymentByIdForOrganization(paymentId, organizationId);
+}
+
 const router = Router();
 
 // `email` is OPTIONAL. When omitted (or
@@ -51,9 +59,7 @@ async function resolveReceiptUrl(paymentId: number, organizationId?: number): Pr
   receiptNumber: string | null;
   receipt: PaymentReceiptContract;
 } | null> {
-  const payment = organizationId && typeof storage.getPaymentByIdForOrganization === "function"
-    ? await storage.getPaymentByIdForOrganization(paymentId, organizationId)
-    : await storage.getPaymentById(paymentId);
+  const payment = await getVisiblePayment(paymentId, organizationId);
   if (!payment) {
     return null;
   }
@@ -112,8 +118,8 @@ async function resolveReceiptUrl(paymentId: number, organizationId?: number): Pr
 }
 
 async function buildReceiptEvidence(paymentId: number, organizationId: number, viewer: Express.User): Promise<{ evidence: PaymentReceiptContract; sharedReceiptAllowed: boolean } | null> {
-  const paymentScope = await storage.getPaymentByIdForOrganization(paymentId, organizationId);
-  const scopedLeague = paymentScope ? await storage.getLeague(paymentScope.leagueId) : undefined;
+  const paymentScope = await getVisiblePayment(paymentId, organizationId);
+  if (!paymentScope) return null;
   const projection = await readPaymentReceiptProjection({ organizationId, paymentId });
   const { payment, report, row } = projection;
   const transaction = report.transactions.find((candidate) => candidate.rows.some((candidateRow) => candidateRow.paymentId === payment.id));
@@ -200,7 +206,7 @@ router.get('/payments/:id/receipt', async (req, res) => {
     }
 
     const organizationId = effectiveOrganizationId;
-    const evidenceResult = organizationId && typeof storage.getPaymentByIdForOrganization === "function"
+    const evidenceResult = organizationId && Number.isSafeInteger(organizationId) && organizationId > 0
       ? await buildReceiptEvidence(id, organizationId, req.user)
       : null;
     if (!evidenceResult) {
@@ -275,9 +281,7 @@ router.post('/payments/:id/resend-receipt', paymentWriteLimiter, async (req, res
       return sendError(res, 'No hosted receipt is available for this payment', 404, 'RECEIPT_UNAVAILABLE');
     }
 
-    const payment = req.user?.organizationId && typeof storage.getPaymentByIdForOrganization === "function"
-      ? await storage.getPaymentByIdForOrganization(id, req.user.organizationId)
-      : await storage.getPaymentById(id);
+    const payment = await getVisiblePayment(id, effectiveOrganizationId ?? undefined);
     if (!payment) {
       return sendError(res, 'Payment not found', 404, 'NOT_FOUND');
     }

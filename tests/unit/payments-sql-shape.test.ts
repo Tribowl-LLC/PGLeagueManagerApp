@@ -45,4 +45,18 @@ describe('buildPaymentConditions — emitted SQL shape', () => {
     expect(sqlText).toMatch(/"bowler_leagues"\."team_id" = \$\d+/i);
     expect(sqlText).toMatch(/"bowler_leagues"\."league_id" = "payments"\."league_id"/i);
   });
+
+  it('excludes only an applied canonical cash edit for the matching voided original', () => {
+    const sqlText = sqlFor(buildPaymentConditions({ organizationId: 42 }));
+    expect(sqlText).toMatch(/not exists \(\s*select 1\s*from "financial_commands"/i);
+    expect(sqlText).toMatch(/"command_type" = 'roster_payment\.edit_cash_payment'/i);
+    expect(sqlText).toMatch(/"state" = 'applied'/i);
+    expect(sqlText).toMatch(/"type" = 'cash'/i);
+    expect(sqlText).toMatch(/"status" = 'voided'/i);
+    expect(sqlText).toMatch(/"result"\s*->>\s*'contractVersion' = 'canonical-cash-payment-edit\/1'/i);
+    expect(sqlText).toMatch(/"result"\s*->>\s*'originalPaymentId'\s*=\s*"payments"\."id"::text/i);
+    expect(sqlText).toMatch(/"financial_commands"\."organization_id" = "payments"\."organization_id"/i);
+    expect(sqlText).toMatch(/"financial_commands"\."league_id" = "payments"\."league_id"/i);
+    expect(sqlText).not.toMatch(/result[^\n]*::integer/i);
+  });
 });

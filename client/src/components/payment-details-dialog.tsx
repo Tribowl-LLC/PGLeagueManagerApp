@@ -332,7 +332,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
           <section className="space-y-2 border-t pt-4" aria-label="Payment correction">
             {editingCorrection && editingMode === "edit_cash" ? (
               <>
-                <p className="text-sm text-muted-foreground">The original payment will remain in the record as voided evidence. The edited payment will keep the same payment details and use the new amount and date. Changing the amount reapplies it to the oldest eligible balances; changing only the date keeps its current allocations.</p>
+                <p className="text-sm text-muted-foreground">The edited payment will keep the payment details and use the new amount and date. The original payment is retained internally as voided evidence. Changing the amount reapplies it to the oldest eligible balances; changing only the date keeps its current allocations.</p>
                 <label className="grid gap-1 text-sm">
                   Amount
                   <input aria-label="Payment amount" inputMode="decimal" className="rounded-md border bg-background px-3 py-2" value={editAmount} onChange={(event) => setEditAmount(event.target.value)} disabled={correctionBusy} />
