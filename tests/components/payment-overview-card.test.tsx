@@ -39,7 +39,7 @@ describe("PaymentOverviewCard", () => {
 
     const bodyText = document.body.textContent ?? "";
     const rowLabels = [
-      "Full Season Total Due",
+      "Full Season Amount Due",
       "Amount Due to Date",
       "Amount Paid to Date",
       "Full Season Remaining Balance",

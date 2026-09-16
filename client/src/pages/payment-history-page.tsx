@@ -13,6 +13,7 @@ import { BowlerErrorView } from "./payment-history-page/bowler-error-view";
 import { NoLeaguesView } from "./payment-history-page/no-leagues-view";
 import { NoLeagueView } from "./payment-history-page/no-league-view";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
+import { deriveBowlerFinancials } from "@/lib/financial-utils";
 import { paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
 
 export default function PaymentHistoryPage() {
@@ -72,16 +73,24 @@ export default function PaymentHistoryPage() {
 
   const report = reportResponse?.data;
   const resolved = useMemo(() => resolveInteractiveFinancialRead(financialResponse?.data), [financialResponse?.data]);
-  const rows = resolved.status === "canonical" ? resolved.rows : [];
-  const netDue = (row: typeof rows[number]) => Math.max(0, row.amountMinor - row.waivedMinor);
+  // Keep the resolver as the fail-closed gate for checkout-facing financial
+  // data. Summary cards may use the full canonical rows only after that gate
+  // accepts the versioned contract.
+  const canonicalReport = resolved.status === "canonical" ? financialResponse?.data : undefined;
+  const canonicalRows = canonicalReport?.rows ?? [];
+  const summary = deriveBowlerFinancials(
+    canonicalRows,
+    canonicalReport?.asOf ?? "",
+    canonicalReport?.totals.collectiblePastDueMinor ?? 0,
+  );
   const financials = {
-    weeksPassed: rows.filter((row) => row.classification !== "future").length,
-    totalWeeksInSeason: rows.length,
-    totalDueToDate: rows.filter((row) => row.classification !== "future").reduce((sum, row) => sum + netDue(row), 0),
-    totalPaid: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+    weeksPassed: summary.weeksDue,
+    totalWeeksInSeason: summary.totalWeeksInSeason,
+    totalDueToDate: summary.totalSeasonDues,
+    totalPaid: summary.totalPaidAmount,
     amountPastDue: resolved.amountPastDue,
-    fullSeasonAmount: rows.reduce((sum, row) => sum + netDue(row), 0),
-    waivedAmount: rows.reduce((sum, row) => sum + row.waivedMinor, 0),
+    fullSeasonAmount: summary.fullSeasonAmount,
+    waivedAmount: summary.waivedAmount,
     remainingBalance: resolved.remainingBalance,
     doublePay: { dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: resolved.remainingBalance <= 0 },
   };

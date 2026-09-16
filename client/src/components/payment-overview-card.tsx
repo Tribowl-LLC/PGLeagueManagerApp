@@ -33,7 +33,7 @@ export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({ weeklyFee, f
       <CardContent padding="topComfortable" spacing="normal">
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm text-muted-foreground">Full Season Total Due</span>
+            <span className="text-sm text-muted-foreground">Full Season Amount Due</span>
             <span className="text-sm font-medium">{formatCurrency(financials.fullSeasonAmount)}</span>
           </div>
           {(financials.waivedAmount ?? 0) > 0 && <div className="flex items-center justify-between"><span className="text-sm text-muted-foreground">Refunds Waived</span><span className="text-sm font-medium">{formatCurrency(financials.waivedAmount ?? 0)}</span></div>}

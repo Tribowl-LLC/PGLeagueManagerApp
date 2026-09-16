@@ -147,6 +147,7 @@ const UNIT_NO_DB = [
   // prevents its mocked route registry from affecting payment integration
   // suites in the shared parallel project.
   'tests/unit/interactive-partner-payment-routes.test.ts',
+  'tests/unit/bowler-financial-summary.test.ts',
 ];
 
 const PARALLEL_ISOLATED = [
