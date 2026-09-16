@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { db } from "../db.js";
 import {
@@ -48,6 +48,7 @@ import { assertOpenRosterEvidenceCanBeReplaced, deriveRosterPaymentTimingInTrans
 import { createLogger } from "../logger.js";
 import { allocateAutomaticFifoPayment as allocateFifo, comparePublishedCollectionOrder, type FifoPaymentCandidate as BaseFifoPaymentCandidate, AutomaticFifoAllocationError } from "./automatic-fifo-allocation.js";
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
+import { resolveCanonicalLocalDateTime } from "@shared/canonical-dst-resolver";
 
 export { calculateRosterPaymentTiming };
 
@@ -125,6 +126,19 @@ function commandFingerprint(prefix: string, value: unknown): string {
   return `${prefix}:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 }
 
+function paymentLocalDate(instant: string, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    calendar: "gregory",
+    numberingSystem: "latn",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(instant));
+  const values = new Map(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return `${values.get("year")}-${values.get("month")}-${values.get("day")}`;
+}
+
 export function canonicalRosterFingerprint(request: RosterPaymentResponsibilityRequest & { policy?: TeamPaymentPolicy }): string {
   return commandFingerprint("lvroster:v1", {
     lineupSize: request.lineupSize,
@@ -153,6 +167,16 @@ export function canonicalCorrectionFingerprint(request: CanonicalCorrectionInput
   return commandFingerprint("lvcorrection:v3", {
     paymentId: request.paymentId ?? null,
     correctionMode: request.correctionMode,
+    reason: request.reason,
+  });
+}
+
+export function canonicalCashPaymentEditFingerprint(request: Pick<CanonicalCorrectionInput, "paymentId" | "correctionMode" | "reason" | "amountMinor" | "paymentDate">): string {
+  return commandFingerprint("lvcashedit:v1", {
+    paymentId: request.paymentId,
+    correctionMode: request.correctionMode,
+    amountMinor: request.amountMinor,
+    paymentDate: request.paymentDate,
     reason: request.reason,
   });
 }
@@ -663,13 +687,19 @@ type FifoQuoteInput = {
 
 export async function fifoCandidatesInTransaction(
   tx: RosterPaymentTransaction,
-  input: { organizationId: number; leagueId: number; payerBowlerId: number },
+  input: { organizationId: number; leagueId: number; payerBowlerId: number; includeSettledObligationIds?: string[] },
 ): Promise<FifoPaymentCandidate[]> {
+  const stateFilter = input.includeSettledObligationIds && input.includeSettledObligationIds.length > 0
+    ? or(
+      inArray(paymentObligations.state, ["open", "partially_settled"] as const),
+      and(inArray(paymentObligations.id, input.includeSettledObligationIds), eq(paymentObligations.state, "settled")),
+    )
+    : inArray(paymentObligations.state, ["open", "partially_settled"] as const);
   const rows = await tx.select().from(paymentObligations).where(and(
     eq(paymentObligations.organizationId, input.organizationId),
     eq(paymentObligations.leagueId, input.leagueId),
     eq(paymentObligations.payerBowlerId, input.payerBowlerId),
-    inArray(paymentObligations.state, ["open", "partially_settled"] as const),
+    stateFilter,
   )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.occurrenceId), asc(paymentObligations.id)).for("update");
   if (rows.length === 0) return [];
   const responsibilityIds = [...new Set(rows.map((row) => row.responsibilityId))];
@@ -1180,6 +1210,256 @@ export async function correctCanonicalAllocation(input: { organizationId: number
     }
     const result = { contractVersion: "canonical-correction/3" as const, mode: "void_only" as const, payment: { ...payment, status: "voided" as const }, voidEvidence, voidedAllocations: allocations, restoredObligationIds: obligationIds };
     await completeFinancialCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: "roster_payment.void_payment", idempotencyKey: input.request.idempotencyKey, result });
+    return result;
+  });
+}
+
+/**
+ * Edit one cash tender as one serialized financial command. The original
+ * tender and its allocations remain immutable evidence: they are voided and
+ * a new cash tender receives either the exact old allocation shape (date-only
+ * edits) or a fresh server-authoritative FIFO allocation (amount edits).
+ */
+export async function editCanonicalCashPayment(input: { organizationId: number; leagueId: number; actorUserId: number; request: CanonicalCorrectionInput }) {
+  return db.transaction(async (tx) => {
+    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    await beginFinancialCommand(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      actorUserId: input.actorUserId,
+      commandType: "roster_payment.edit_cash_payment",
+      idempotencyKey: input.request.idempotencyKey,
+      requestFingerprint: input.request.requestFingerprint,
+    });
+
+    const [league] = await tx.select({ timezone: leagues.timezone })
+      .from(leagues)
+      .where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId)))
+      .limit(1)
+      .for("share");
+    const [payment] = await tx.select().from(payments).where(and(
+      eq(payments.id, input.request.paymentId),
+      eq(payments.organizationId, input.organizationId),
+      eq(payments.leagueId, input.leagueId),
+    )).limit(1).for("update");
+    if (!league || !payment) throw new RosterPaymentError("NOT_FOUND", "Payment not found", 404);
+    if (input.request.correctionMode !== "edit_cash") {
+      throw new RosterPaymentError("INVALID_CORRECTION_MODE", "The cash edit command requires correctionMode=edit_cash", 422);
+    }
+    if (input.request.amountMinor === undefined || input.request.paymentDate === undefined) {
+      throw new RosterPaymentError("INVALID_REQUEST", "A cash edit requires an amount and payment date", 422);
+    }
+    if (!Number.isSafeInteger(input.request.amountMinor) || input.request.amountMinor <= 0) {
+      throw new RosterPaymentError("INVALID_AMOUNT", "Payment amount must be a positive whole number of cents", 422);
+    }
+    if (input.request.requestFingerprint !== canonicalCashPaymentEditFingerprint(input.request)) {
+      throw new RosterPaymentError("INVALID_FINGERPRINT", "The cash edit request fingerprint is invalid", 422);
+    }
+    if (payment.type !== "cash" || payment.status !== "paid" || payment.paymentOperationId !== null
+      || payment.providerPaymentId !== null || payment.refundedAt !== null || payment.squareRefundId !== null
+      || payment.disputeId !== null || payment.disputedAt !== null) {
+      throw new RosterPaymentError("CASH_EDIT_UNAVAILABLE", "Only an active cash payment can be edited", 409);
+    }
+
+    const timezone = league.timezone ?? "UTC";
+    const oldPaymentDate = paymentLocalDate(payment.createdAt, timezone);
+    if (payment.amount === input.request.amountMinor && oldPaymentDate === input.request.paymentDate) {
+      throw new RosterPaymentError("UNCHANGED_PAYMENT", "Change the amount or payment date before saving", 422);
+    }
+    let replacementCreatedAt: string;
+    try {
+      // Noon is stable across ordinary DST transitions and the resulting
+      // instant is persisted in UTC. The server resolves it in the league's
+      // timezone; the browser never participates in date conversion.
+      replacementCreatedAt = resolveCanonicalLocalDateTime({
+        localDate: input.request.paymentDate,
+        localTime: "12:00:00",
+        timezone,
+        ambiguousFold: "earlier",
+      }).startAt;
+    } catch (error) {
+      if (error instanceof Error) throw new RosterPaymentError("INVALID_PAYMENT_DATE", error.message, 422);
+      throw error;
+    }
+
+    const sourceAllocations = await tx.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, input.organizationId),
+      eq(paymentAllocations.leagueId, input.leagueId),
+      eq(paymentAllocations.paymentId, payment.id),
+    )).orderBy(asc(paymentAllocations.id)).for("update");
+    if (sourceAllocations.length === 0) {
+      throw new RosterPaymentError("PAYMENT_NOT_ALLOCATED", "The cash payment has no active allocation evidence", 409);
+    }
+    if (sourceAllocations.some((allocation) => allocation.state !== "active" || allocation.reviewRequired)) {
+      throw new RosterPaymentError("CASH_EDIT_UNAVAILABLE", "This payment has allocation evidence requiring review", 409);
+    }
+    const sourceAllocationIds = sourceAllocations.map((allocation) => allocation.id);
+    const refundAdjustments = await tx.select({ id: refundAllocationAdjustments.id }).from(refundAllocationAdjustments).where(and(
+      eq(refundAllocationAdjustments.organizationId, input.organizationId),
+      eq(refundAllocationAdjustments.leagueId, input.leagueId),
+      inArray(refundAllocationAdjustments.sourceAllocationId, sourceAllocationIds),
+    )).limit(1);
+    if (refundAdjustments.length > 0) {
+      throw new RosterPaymentError("CASH_EDIT_UNAVAILABLE", "This payment has refund allocation evidence requiring reconciliation", 409);
+    }
+    const sourceObligationIds = [...new Set(sourceAllocations.map((allocation) => allocation.obligationId))];
+    if (sourceObligationIds.length > 0) {
+      const reservations = await tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).where(and(
+        eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+        eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+        eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+        inArray(paymentOperationRosterSnapshotItems.obligationId, sourceObligationIds),
+      )).limit(1).for("update");
+      if (reservations.length > 0) throw new RosterPaymentError("OBLIGATION_RESERVED", "An automatic payment has reserved this payment's allocation", 409);
+    }
+
+    const [alreadyVoided] = await tx.select({ id: paymentVoids.id }).from(paymentVoids).where(and(
+      eq(paymentVoids.organizationId, input.organizationId),
+      eq(paymentVoids.leagueId, input.leagueId),
+      eq(paymentVoids.paymentId, payment.id),
+    )).limit(1).for("update");
+    if (alreadyVoided) throw new RosterPaymentError("PAYMENT_ALREADY_VOIDED", "The payment is already voided", 409);
+
+    const originalPaymentDate = oldPaymentDate;
+    const editReason = input.request.reason;
+    const [voidEvidence] = await tx.insert(paymentVoids).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      paymentId: payment.id,
+      reason: editReason,
+      recordedByUserId: input.actorUserId,
+    }).returning();
+    if (!voidEvidence) throw new RosterPaymentError("PAYMENT_VOID_FAILED", "The payment void could not be recorded", 503);
+    await tx.update(payments).set({ status: "voided" }).where(and(
+      eq(payments.id, payment.id),
+      eq(payments.organizationId, input.organizationId),
+      eq(payments.leagueId, input.leagueId),
+    ));
+    if (sourceAllocations.length > 0) {
+      await tx.update(paymentAllocations).set({ state: "voided" }).where(and(
+        eq(paymentAllocations.organizationId, input.organizationId),
+        eq(paymentAllocations.leagueId, input.leagueId),
+        eq(paymentAllocations.paymentId, payment.id),
+        eq(paymentAllocations.state, "active"),
+      ));
+    }
+
+    const touchedObligationIds = new Set(sourceObligationIds);
+    const refreshObligationState = async (obligationIds: string[]) => {
+      if (obligationIds.length === 0) return;
+      const obligations = await tx.select().from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, input.organizationId),
+        eq(paymentObligations.leagueId, input.leagueId),
+        inArray(paymentObligations.id, obligationIds),
+      )).for("update");
+      for (const obligation of obligations) {
+        const active = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
+          eq(paymentAllocations.organizationId, input.organizationId),
+          eq(paymentAllocations.leagueId, input.leagueId),
+          eq(paymentAllocations.obligationId, obligation.id),
+          eq(paymentAllocations.state, "active"),
+        ));
+        const adjustments = active.length === 0 ? [] : await tx.select({
+          sourceAllocationId: refundAllocationAdjustments.sourceAllocationId,
+          amountMinor: refundAllocationAdjustments.amountMinor,
+          disposition: refundAllocationAdjustments.disposition,
+        }).from(refundAllocationAdjustments).where(and(
+          eq(refundAllocationAdjustments.organizationId, input.organizationId),
+          eq(refundAllocationAdjustments.leagueId, input.leagueId),
+          inArray(refundAllocationAdjustments.sourceAllocationId, active.map((row) => row.id)),
+        ));
+        const balance = canonicalObligationBalance({
+          amountMinor: obligation.amountMinor,
+          state: obligation.state,
+          grossAllocatedMinor: active.reduce((sum, row) => sum + row.amountMinor, 0),
+          adjustments,
+        });
+        await tx.update(paymentObligations).set({
+          state: balance.outstandingMinor === 0 ? "settled" : balance.effectiveAllocatedMinor > 0 ? "partially_settled" : "open",
+          voidedAt: null,
+        }).where(and(
+          eq(paymentObligations.id, obligation.id),
+          eq(paymentObligations.organizationId, input.organizationId),
+          eq(paymentObligations.leagueId, input.leagueId),
+        ));
+      }
+    };
+    let replacementAllocations: Array<{ obligationId: string; amountMinor: number }>;
+    const dateOnly = payment.amount === input.request.amountMinor;
+    if (dateOnly) {
+      replacementAllocations = sourceAllocations.map((allocation) => ({ obligationId: allocation.obligationId, amountMinor: allocation.amountMinor }));
+    } else {
+      const candidates = await fifoCandidatesInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        payerBowlerId: payment.bowlerId,
+        // A fully paid source obligation is still settled evidence after its
+        // old allocation is voided. Include it in FIFO's projected balance
+        // without mutating its append-only state before replacement rows exist.
+        includeSettledObligationIds: sourceObligationIds,
+      });
+      replacementAllocations = allocateAutomaticFifoPayment(input.request.amountMinor, candidates);
+    }
+
+    const [replacement] = await tx.insert(payments).values({
+      organizationId: input.organizationId,
+      bowlerId: payment.bowlerId,
+      leagueId: payment.leagueId,
+      amount: input.request.amountMinor,
+      currency: payment.currency,
+      status: "paid",
+      type: "cash",
+      checkNumber: null,
+      providerPaymentId: null,
+      idempotencyKey: null,
+      receiptEmailMissing: false,
+      notes: payment.notes,
+      paidByUserId: payment.paidByUserId,
+      createdAt: replacementCreatedAt,
+    }).returning();
+    if (!replacement) throw new RosterPaymentError("PAYMENT_WRITE_FAILED", "The corrected payment could not be recorded", 503);
+
+    const createdAllocations = [];
+    for (const allocation of replacementAllocations) {
+      const [created] = await tx.insert(paymentAllocations).values({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: replacement.id,
+        obligationId: allocation.obligationId,
+        amountMinor: allocation.amountMinor,
+        currency: payment.currency,
+        recordedByUserId: input.actorUserId,
+      }).returning();
+      if (!created) throw new RosterPaymentError("ALLOCATION_WRITE_FAILED", "The corrected payment allocation could not be recorded", 503);
+      createdAllocations.push(created);
+      touchedObligationIds.add(allocation.obligationId);
+    }
+    await refreshObligationState([...touchedObligationIds]);
+
+    const result = {
+      contractVersion: "canonical-cash-payment-edit/1" as const,
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      mode: "edit_cash" as const,
+      originalPaymentId: payment.id,
+      replacementPaymentId: replacement.id,
+      oldAmountMinor: payment.amount,
+      newAmountMinor: replacement.amount,
+      oldPaymentDate: originalPaymentDate,
+      newPaymentDate: input.request.paymentDate,
+      allocationMode: dateOnly ? "copied" as const : "fifo_reapplied" as const,
+      allocationCount: createdAllocations.length,
+      payment: replacement,
+      voidEvidence,
+      allocations: createdAllocations,
+    };
+    await completeFinancialCommand(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      commandType: "roster_payment.edit_cash_payment",
+      idempotencyKey: input.request.idempotencyKey,
+      result,
+    });
     return result;
   });
 }

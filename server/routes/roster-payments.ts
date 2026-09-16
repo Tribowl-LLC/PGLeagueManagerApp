@@ -21,6 +21,7 @@ import { storage } from "../storage/index.js";
 import { adminWriteLimiter, paymentWriteLimiter } from "../middleware/rate-limit.js";
 import {
   correctCanonicalAllocation,
+  editCanonicalCashPayment,
   chargeInteractiveObligations,
   quoteInteractiveObligations,
   readCanonicalDuePastDue,
@@ -101,7 +102,7 @@ function wireObject(value: unknown): WireObject | null {
 function rosterWireResult(value: unknown): Record<string, unknown> {
   const source = wireObject(value) ?? {};
   const base: Record<string, unknown> = {};
-  for (const key of ["contractVersion", "automaticContractVersion", "organizationId", "leagueId", "teamId", "ready", "commandKey", "requestFingerprint", "mode", "restoredObligationId", "payerBowlerId", "amountMinor", "currency", "fingerprint"]) {
+  for (const key of ["contractVersion", "automaticContractVersion", "organizationId", "leagueId", "teamId", "ready", "commandKey", "requestFingerprint", "mode", "restoredObligationId", "payerBowlerId", "amountMinor", "currency", "fingerprint", "originalPaymentId", "replacementPaymentId", "oldAmountMinor", "newAmountMinor", "oldPaymentDate", "newPaymentDate", "allocationMode", "allocationCount"]) {
     if (source[key] !== undefined) base[key] = source[key];
   }
   if (source.operationId !== undefined) {
@@ -117,6 +118,7 @@ function rosterWireResult(value: unknown): Record<string, unknown> {
     return row ? { id: row.id, bowlerId: row.bowlerId, leagueId: row.leagueId, amount: row.amount, currency: row.currency ?? "USD", createdAt: row.createdAt, status: row.status, type: row.type, checkNumber: row.checkNumber ?? null, notes: row.notes ?? null } : null;
   };
   if (source.payment !== undefined) base.payment = wirePayment(source.payment);
+  if (source.replacementPayment !== undefined) base.replacementPayment = wirePayment(source.replacementPayment);
   if (Array.isArray(source.records)) base.records = source.records.map((record) => {
     const row = wireObject(record) ?? {};
     return { payment: wirePayment(row.payment) };
@@ -506,7 +508,12 @@ router.post("/leagues/:leagueId/canonical/corrections/1", adminWriteLimiter, asy
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = canonicalCorrectionRequestSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid correction request", 400, "INVALID_REQUEST");
-  try { return sendSuccess(res, rosterWireResult(await correctCanonicalAllocation({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, request: parsed.data })), 201); } catch (error) { return handleError(res, error); }
+  try {
+    const result = parsed.data.correctionMode === "edit_cash"
+      ? await editCanonicalCashPayment({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, request: parsed.data })
+      : await correctCanonicalAllocation({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, request: parsed.data });
+    return sendSuccess(res, rosterWireResult(result), 201);
+  } catch (error) { return handleError(res, error); }
 });
 
 export default router;

@@ -123,11 +123,29 @@ export const canonicalManualRecordBatchRequestSchema = z.object({
 
 export const canonicalCorrectionRequestSchema = z.object({
   paymentId: z.number().int().positive(),
-  correctionMode: z.literal("void_only").default("void_only"),
+  correctionMode: z.enum(["void_only", "edit_cash"]).default("void_only"),
   reason: z.string().trim().min(1).max(500),
   idempotencyKey: z.string().trim().min(1).max(255),
   requestFingerprint: z.string().trim().min(1).max(128),
-}).strict();
+  amountMinor: z.number().int().positive().optional(),
+  paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "paymentDate must be YYYY-MM-DD").optional(),
+}).strict().superRefine((value, context) => {
+  if (value.correctionMode === "edit_cash") {
+    if (value.amountMinor === undefined) context.addIssue({ code: "custom", path: ["amountMinor"], message: "amountMinor is required for cash edits" });
+    if (value.paymentDate === undefined) context.addIssue({ code: "custom", path: ["paymentDate"], message: "paymentDate is required for cash edits" });
+  } else if (value.amountMinor !== undefined || value.paymentDate !== undefined) {
+    context.addIssue({ code: "custom", path: ["correctionMode"], message: "amountMinor and paymentDate require correctionMode=edit_cash" });
+  }
+  if (value.paymentDate !== undefined) {
+    const [year, month, day] = value.paymentDate.split("-").map(Number);
+    const parsed = new Date(0);
+    parsed.setUTCFullYear(year, month - 1, day);
+    parsed.setUTCHours(0, 0, 0, 0);
+    if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() + 1 !== month || parsed.getUTCDate() !== day) {
+      context.addIssue({ code: "custom", path: ["paymentDate"], message: "paymentDate must be a real calendar date" });
+    }
+  }
+});
 
 export type RosterPaymentResponsibilityRequest = z.infer<typeof rosterPaymentResponsibilityRequestSchema>;
 export type OccurrenceResponsibilityInput = z.infer<typeof occurrenceResponsibilityInputSchema>;

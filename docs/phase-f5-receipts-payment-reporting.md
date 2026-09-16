@@ -57,7 +57,11 @@ refunds and disputes retain the original allocation and remain review-required.
 Cash/check recording uses the canonical FIFO quote; there is no generic
 payment-create path that can bypass canonical allocation. A cash/check
 correction voids the whole tender and records one `payment_voids` audit row;
-any replacement is a separate FIFO entry.
+any replacement is a separate FIFO entry. After an applied canonical cash edit,
+the shared payment read predicate removes the matched voided original from
+customer/admin lists, pagination/counts, canonical reports, bowler details, and
+receipt lookups. The original payment, allocations, void, and command remain
+available to internal audit and correction workflows.
 
 F1 due/past-due remains the sole debt source. F5 collections never recompute
 debt from tender totals or occurrence display dates. Refunds and disputes retain original

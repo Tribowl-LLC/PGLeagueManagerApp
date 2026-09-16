@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PaymentDetailsDialog } from "@/components/payment-details-dialog";
 import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
@@ -141,6 +141,38 @@ describe("PaymentDetailsDialog", () => {
     expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["/api/payments"] });
     expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["/api/financials/f5/payments"] });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("edits cash amount and date with one retry-stable command", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect startInEdit onClose={onClose} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save payment edit" })).toBeInTheDocument());
+    const amount = screen.getByRole("textbox", { name: "Payment amount" });
+    await user.clear(amount);
+    await user.type(amount, "60.00");
+    fireEvent.change(screen.getByLabelText("Payment date"), { target: { value: "2034-09-17" } });
+    await user.click(screen.getByRole("button", { name: "Save payment edit" }));
+
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledTimes(1));
+    const firstRequest = mocks.csrfFetch.mock.calls[0]?.[1] as RequestInit;
+    const firstBody = JSON.parse(String(firstRequest.body)) as Record<string, unknown>;
+    expect(firstBody).toMatchObject({ correctionMode: "edit_cash", amountMinor: 6000, paymentDate: "2034-09-17" });
+    expect(firstBody.idempotencyKey).toEqual(firstRequest.headers && (firstRequest.headers as Record<string, string>)["Idempotency-Key"]);
+    expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["/api/bowlers/42/details"] });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("does not reopen the initial edit form after cancel", async () => {
+    const user = userEvent.setup();
+    render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect startInEdit onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save payment edit" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("button", { name: "Save payment edit" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit cash payment" })).toBeInTheDocument();
   });
 
   it("does not offer corrections without permission", () => {

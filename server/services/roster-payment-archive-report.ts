@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import { bowlers, leagueOccurrences, leagues, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments, refundAllocationAdjustments } from "@shared/schema";
 import type { CanonicalPaymentReport, CanonicalPaymentRow, CanonicalPaymentReportTotals } from "@shared/canonical-payment-report";
 import { canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
+import { paymentVisibilityCondition } from "../storage/payments.js";
 
 export class CanonicalPaymentReportIncompatibilityError extends Error {}
 
@@ -83,7 +84,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       if (bowlerPaymentScope) conditions.push(bowlerPaymentScope);
     }
     if (input.paymentId !== undefined) conditions.push(eq(payments.id, input.paymentId));
-    const paymentRows = await tx.select().from(payments).innerJoin(bowlers, eq(bowlers.id, payments.bowlerId)).where(and(...conditions, eq(bowlers.organizationId, input.organizationId))).orderBy(desc(payments.createdAt), desc(payments.id));
+    const paymentRows = await tx.select().from(payments).innerJoin(bowlers, eq(bowlers.id, payments.bowlerId)).where(and(...conditions, paymentVisibilityCondition(), eq(bowlers.organizationId, input.organizationId))).orderBy(desc(payments.createdAt), desc(payments.id));
     const allPayments = paymentRows.map((row) => row.payments);
     const paymentIds = allPayments.map((row) => row.id);
     const operationIds = allPayments.flatMap((row) => row.paymentOperationId ? [row.paymentOperationId] : []);
@@ -363,10 +364,16 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
 }
 
 export async function readPaymentReceiptProjection(input: { organizationId: number; paymentId: number }) {
-    const [paymentIdentity] = await db.select().from(payments).innerJoin(bowlers, eq(bowlers.id, payments.bowlerId)).where(and(eq(payments.id, input.paymentId), eq(payments.organizationId, input.organizationId), eq(bowlers.organizationId, input.organizationId))).limit(1);
+  const [paymentIdentity] = await db.select().from(payments).innerJoin(bowlers, eq(bowlers.id, payments.bowlerId)).where(and(
+    eq(payments.id, input.paymentId),
+    eq(payments.organizationId, input.organizationId),
+    eq(bowlers.organizationId, input.organizationId),
+    paymentVisibilityCondition(),
+  )).limit(1);
   const paymentRecord = paymentIdentity?.payments;
-  const report = await readCanonicalPaymentReport({ organizationId: input.organizationId, leagueId: paymentRecord?.leagueId ?? 0, paymentId: input.paymentId, page: 1, limit: 1 });
+  if (!paymentRecord) throw new CanonicalPaymentReportIncompatibilityError("payment not found");
+  const report = await readCanonicalPaymentReport({ organizationId: input.organizationId, leagueId: paymentRecord.leagueId, paymentId: input.paymentId, page: 1, limit: 1 });
   const reportRow = report.rows[0];
-  if (!paymentRecord || !reportRow) throw new CanonicalPaymentReportIncompatibilityError("payment not found");
+  if (!reportRow) throw new CanonicalPaymentReportIncompatibilityError("payment not found");
   return { payment: paymentRecord, report, row: reportRow };
 }
