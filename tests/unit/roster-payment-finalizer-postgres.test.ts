@@ -26,6 +26,7 @@ import {
 } from "@shared/schema";
 import { getTestDb, getTestPool } from "../setup/test-db";
 import { deleteOrganization } from "../../server/storage/organizations";
+import { getPayments, getPaymentsPaginated, getVisiblePaymentByIdForOrganization } from "../../server/storage/payments";
 import { updateBowler } from "../../server/storage/bowlers";
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
 import {
@@ -34,7 +35,7 @@ import {
 } from "../../server/services/roster-payment-finalizer";
 import { recoverRosterPaymentOperation, recoverRosterPaymentOperationByRequestKey } from "../../server/services/roster-payment-recovery";
 import { acquireInteractivePaymentOperationDispatchCutoff } from "../../server/storage/payment-operations";
-import { canonicalCashPaymentEditFingerprint, canonicalResponsibilityFingerprint, canonicalRosterFingerprint, chargeInteractiveObligations, editCanonicalCashPayment, quoteInteractiveObligations, recordOccurrenceResponsibilities, saveTeamRoster } from "../../server/services/roster-payment-core";
+import { canonicalCashPaymentEditFingerprint, canonicalCorrectionFingerprint, canonicalResponsibilityFingerprint, canonicalRosterFingerprint, chargeInteractiveObligations, correctCanonicalAllocation, editCanonicalCashPayment, quoteInteractiveObligations, recordOccurrenceResponsibilities, saveTeamRoster } from "../../server/services/roster-payment-core";
 import { interactivePaymentOperationExecutor } from "../../server/services/interactive-payment-operation-executor";
 import { paymentOperationRetryExecutor } from "../../server/services/payment-operation-retry-executor";
 import { prepareInteractivePaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
@@ -2256,6 +2257,143 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
   });
 
   describe("atomic cash payment edits", () => {
+    it("hides the voided original from list, pagination, canonical, and direct read projections while retaining audit evidence", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const listBefore = await getPayments({ organizationId, leagueId });
+      const reportBefore = await readCanonicalPaymentReport({ organizationId, leagueId, page: 1, limit: 200 });
+      const source = await createCashEvidence(fixture.obligation.id, 2_000);
+      const request = cashEditRequest(source.payment.id, 1_700, "2038-02-20");
+
+      const result = await editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request });
+      const list = await getPayments({ organizationId, leagueId });
+      expect(list.map((payment) => payment.id)).toContain(result.replacementPaymentId);
+      expect(list.map((payment) => payment.id)).not.toContain(source.payment.id);
+      expect(list).toHaveLength(listBefore.length + 1);
+
+      const paginated = await getPaymentsPaginated({ organizationId, leagueId }, 1, 200);
+      expect(paginated.pagination).toMatchObject({ total: list.length, totalPages: 1 });
+      expect(paginated.items.map((payment) => payment.id)).toContain(result.replacementPaymentId);
+      expect(paginated.items.map((payment) => payment.id)).not.toContain(source.payment.id);
+      expect(await getVisiblePaymentByIdForOrganization(source.payment.id, organizationId)).toBeUndefined();
+      expect((await getVisiblePaymentByIdForOrganization(result.replacementPaymentId, organizationId))?.amount).toBe(1_700);
+
+      const report = await readCanonicalPaymentReport({ organizationId, leagueId, page: 1, limit: 200 });
+      expect(report.rows.map((row) => row.paymentId)).toContain(result.replacementPaymentId);
+      expect(report.rows.map((row) => row.paymentId)).not.toContain(source.payment.id);
+      const transactionPaymentIds = report.transactions.flatMap((transaction) => transaction.rows.map((row) => row.paymentId));
+      expect(transactionPaymentIds).toContain(result.replacementPaymentId);
+      expect(transactionPaymentIds).not.toContain(source.payment.id);
+      expect(report.totalRows).toBe(reportBefore.totalRows + 1);
+      expect(report.totalTransactions).toBe(reportBefore.totalTransactions + 1);
+      expect(report.totals.grossConfirmedPaidMinor).toBe(reportBefore.totals.grossConfirmedPaidMinor + 1_700);
+
+      const [retainedOriginal] = await db.select({ status: payments.status, amount: payments.amount }).from(payments).where(and(
+        eq(payments.organizationId, organizationId),
+        eq(payments.leagueId, leagueId),
+        eq(payments.id, source.payment.id),
+      ));
+      expect(retainedOriginal).toEqual({ status: "voided", amount: 2_000 });
+      expect(await db.select({ id: paymentVoids.id }).from(paymentVoids).where(and(
+        eq(paymentVoids.organizationId, organizationId),
+        eq(paymentVoids.leagueId, leagueId),
+        eq(paymentVoids.paymentId, source.payment.id),
+      ))).toHaveLength(1);
+      const [audit] = await db.select({ state: financialCommands.state, result: financialCommands.result }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        eq(financialCommands.idempotencyKey, request.idempotencyKey),
+      ));
+      expect(audit?.state).toBe("applied");
+      expect(audit?.result).toMatchObject({ originalPaymentId: source.payment.id, replacementPaymentId: result.replacementPaymentId });
+    });
+
+    it("hides every superseded link in a chained edit and leaves only the latest replacement visible", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const listBefore = await getPayments({ organizationId, leagueId });
+      const reportBefore = await readCanonicalPaymentReport({ organizationId, leagueId, page: 1, limit: 200 });
+      const source = await createCashEvidence(fixture.obligation.id, 2_000);
+
+      const first = await editCanonicalCashPayment({
+        organizationId,
+        leagueId,
+        actorUserId,
+        request: cashEditRequest(source.payment.id, 1_900, "2038-02-03"),
+      });
+      const second = await editCanonicalCashPayment({
+        organizationId,
+        leagueId,
+        actorUserId,
+        request: cashEditRequest(first.replacementPaymentId, 1_700, "2038-02-05"),
+      });
+
+      const visibleIds = (await getPayments({ organizationId, leagueId })).map((payment) => payment.id);
+      expect(visibleIds).toContain(second.replacementPaymentId);
+      expect(visibleIds).not.toContain(source.payment.id);
+      expect(visibleIds).not.toContain(first.replacementPaymentId);
+      expect(visibleIds).toHaveLength(listBefore.length + 1);
+      expect(await getVisiblePaymentByIdForOrganization(source.payment.id, organizationId)).toBeUndefined();
+      expect(await getVisiblePaymentByIdForOrganization(first.replacementPaymentId, organizationId)).toBeUndefined();
+      expect((await getVisiblePaymentByIdForOrganization(second.replacementPaymentId, organizationId))?.amount).toBe(1_700);
+
+      const report = await readCanonicalPaymentReport({ organizationId, leagueId, page: 1, limit: 200 });
+      const reportIds = report.rows.map((row) => row.paymentId);
+      expect(reportIds).toContain(second.replacementPaymentId);
+      expect(reportIds).not.toContain(source.payment.id);
+      expect(reportIds).not.toContain(first.replacementPaymentId);
+      expect(report.totalRows).toBe(reportBefore.totalRows + 1);
+      expect(report.totals.grossConfirmedPaidMinor).toBe(reportBefore.totals.grossConfirmedPaidMinor + 1_700);
+    });
+
+    it("keeps ordinary voids visible and ignores malformed or cross-league edit command evidence", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const source = await createCashEvidence(fixture.obligation.id, 2_000);
+      const voidRequest = {
+        paymentId: source.payment.id,
+        correctionMode: "void_only" as const,
+        reason: "ordinary void fixture",
+        idempotencyKey: `ordinary-void-${randomUUID()}`,
+        requestFingerprint: "",
+      };
+      voidRequest.requestFingerprint = canonicalCorrectionFingerprint(voidRequest);
+      await correctCanonicalAllocation({ organizationId, leagueId, actorUserId, request: voidRequest });
+
+      const otherLeague = await createUpfrontFallbackFixture();
+      const matchingResult = {
+        contractVersion: "canonical-cash-payment-edit/1",
+        originalPaymentId: source.payment.id,
+        replacementPaymentId: source.payment.id + 1,
+      };
+      await db.insert(financialCommands).values([
+        {
+          organizationId,
+          leagueId: otherLeague.leagueId,
+          actorUserId,
+          commandType: "roster_payment.edit_cash_payment",
+          idempotencyKey: `cross-league-edit-${randomUUID()}`,
+          requestFingerprint: `cross-league-fingerprint-${randomUUID()}`,
+          state: "applied",
+          result: matchingResult,
+        },
+        {
+          organizationId,
+          leagueId,
+          actorUserId,
+          commandType: "roster_payment.edit_cash_payment",
+          idempotencyKey: `malformed-edit-${randomUUID()}`,
+          requestFingerprint: `malformed-edit-fingerprint-${randomUUID()}`,
+          state: "applied",
+          result: "malformed-result",
+        },
+      ]);
+
+      const visible = await getPayments({ organizationId, leagueId });
+      expect(visible.map((payment) => payment.id)).toContain(source.payment.id);
+      expect((await getVisiblePaymentByIdForOrganization(source.payment.id, organizationId))?.status).toBe("voided");
+    });
+
     it("copies allocations for a date-only edit and records original/replacement audit linkage", async () => {
       await resetBaseRosterToWeeklyMain();
       const fixture = await createOccurrence();

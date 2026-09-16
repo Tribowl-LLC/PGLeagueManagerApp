@@ -2,7 +2,7 @@ import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   payments, leagues, bowlerLeagues,
-  paymentDisputes, paymentOperations, paymentAllocations,
+  paymentDisputes, paymentOperations, paymentAllocations, financialCommands,
   type Payment, type UpdatePayment,
   type PaginatedResult,
 } from "@shared/schema";
@@ -50,8 +50,33 @@ interface AllPaymentFilters {
   leagueIds?: number[];
 }
 
+/**
+ * Customer/admin payment reads omit the retained original row after an
+ * applied canonical cash edit. The command/result linkage is the durable
+ * proof that a specific payment was replaced; payment type and status keep a
+ * malformed or unrelated command from hiding a different payment kind.
+ *
+ * Keep the comparison text based. JSONB `->>` returns NULL for a missing key
+ * (and for a scalar result), so malformed command payloads fail closed without
+ * casting untrusted JSON text to an integer.
+ */
+export function paymentVisibilityCondition() {
+  return sql`NOT EXISTS (
+    SELECT 1
+    FROM ${financialCommands}
+    WHERE ${financialCommands.organizationId} = ${payments.organizationId}
+      AND ${financialCommands.leagueId} = ${payments.leagueId}
+      AND ${financialCommands.commandType} = 'roster_payment.edit_cash_payment'
+      AND ${financialCommands.state} = 'applied'
+      AND ${payments.type} = 'cash'
+      AND ${payments.status} = 'voided'
+      AND ${financialCommands.result}->>'contractVersion' = 'canonical-cash-payment-edit/1'
+      AND ${financialCommands.result}->>'originalPaymentId' = ${payments.id}::text
+  )`;
+}
+
 export function buildPaymentConditions(filters: AllPaymentFilters, options?: { excludeOrgLessLeagues?: boolean }) {
-  const conditions = [];
+  const conditions = [paymentVisibilityCondition()];
 
   if (filters.organizationId !== undefined) {
     conditions.push(eq(payments.organizationId, filters.organizationId));
@@ -208,6 +233,24 @@ export async function getPaymentByIdForOrganization(id: number, organizationId: 
     .from(payments)
     .innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, organizationId)))
     .where(and(eq(payments.id, id), eq(payments.organizationId, organizationId)))
+    .limit(1);
+  return result?.payment;
+}
+
+/**
+ * Tenant-scoped customer/admin read lookup. Mutation, correction, recovery,
+ * and other internal paths intentionally use getPaymentByIdForOrganization()
+ * so retained evidence remains available to the ledger workflows.
+ */
+export async function getVisiblePaymentByIdForOrganization(id: number, organizationId: number): Promise<Payment | undefined> {
+  const [result] = await db.select({ payment: payments })
+    .from(payments)
+    .innerJoin(leagues, and(eq(leagues.id, payments.leagueId), eq(leagues.organizationId, organizationId)))
+    .where(and(
+      eq(payments.id, id),
+      eq(payments.organizationId, organizationId),
+      paymentVisibilityCondition(),
+    ))
     .limit(1);
   return result?.payment;
 }

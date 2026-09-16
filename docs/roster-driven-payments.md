@@ -35,7 +35,9 @@ evidence.
 An administrator can use `correctionMode=edit_cash` for an eligible paid cash
 tender from the Payments Actions menu. The command is atomic and keeps the
 original tender, its allocations, and its void evidence as audit history while
-creating one replacement cash tender. A date-only edit copies the original
+creating one replacement cash tender. Customer and administrator payment
+history shows the replacement once the edit is applied; the original remains
+available only to internal audit and correction workflows. A date-only edit copies the original
 allocations exactly. An amount edit releases those allocations and reapplies
 canonical FIFO under the same league lock, so increases and decreases update
 the oldest outstanding obligations first. A cash tender with no active
