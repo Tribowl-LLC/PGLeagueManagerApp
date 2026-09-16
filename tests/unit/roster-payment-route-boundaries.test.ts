@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => {
   saveRoster: vi.fn(),
   manual: vi.fn(),
   correct: vi.fn(),
+  editCash: vi.fn(),
   recoverByRequestKey: vi.fn(),
   RosterPaymentError: MockRosterPaymentError,
   RosterPaymentReplay: MockRosterPaymentReplay,
@@ -51,6 +52,7 @@ vi.mock("../../server/services/roster-payment-core.js", () => ({
   recordOccurrenceResponsibilities: vi.fn(),
   recordCanonicalManualPayment: (...args: unknown[]) => mocks.manual(...args),
   correctCanonicalAllocation: (...args: unknown[]) => mocks.correct(...args),
+  editCanonicalCashPayment: (...args: unknown[]) => mocks.editCash(...args),
   RosterPaymentError: mocks.RosterPaymentError,
   RosterPaymentReplay: mocks.RosterPaymentReplay,
 }));
@@ -166,6 +168,58 @@ describe("roster payment route authorization", () => {
     expect(body.data).toMatchObject({ mode: "void_only", payment: { id: 12, status: "voided" }, voidEvidence: { id: "void-1", paymentId: 12 } });
     expect(body.data).not.toHaveProperty("voidedAllocations");
     expect(body.data).not.toHaveProperty("replacement");
+  });
+
+  it("routes eligible cash edits to the admin-only atomic command", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    mocks.editCash.mockResolvedValue({
+      contractVersion: "canonical-cash-payment-edit/1",
+      mode: "edit_cash",
+      originalPaymentId: 12,
+      replacementPaymentId: 13,
+      oldAmountMinor: 5000,
+      newAmountMinor: 6000,
+      oldPaymentDate: "2034-09-10",
+      newPaymentDate: "2034-09-17",
+      allocationMode: "fifo_reapplied",
+      allocationCount: 1,
+      payment: { id: 13, bowlerId: 42, leagueId: 7, amount: 6000, currency: "USD", status: "paid", type: "cash" },
+      voidEvidence: { id: "void-1", paymentId: 12, reason: "cash edit", recordedAt: "2038-01-01T00:00:00.000Z" },
+    });
+    const response = await request("/leagues/7/canonical/corrections/1", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ paymentId: 12, correctionMode: "edit_cash", amountMinor: 6000, paymentDate: "2034-09-17", reason: "cash edit", idempotencyKey: "cash-edit-1", requestFingerprint: "q" }),
+    });
+    expect(response.status).toBe(201);
+    expect(mocks.editCash).toHaveBeenCalledWith(expect.objectContaining({ organizationId: 11, leagueId: 7, actorUserId: 1, request: expect.objectContaining({ correctionMode: "edit_cash", amountMinor: 6000, paymentDate: "2034-09-17" }) }));
+    const body = await response.json();
+    expect(body.data).toMatchObject({ mode: "edit_cash", originalPaymentId: 12, replacementPaymentId: 13, payment: { id: 13, status: "paid", type: "cash" } });
+    expect(body.data).not.toHaveProperty("allocations");
+  });
+
+  it.each([
+    ["user", false],
+    ["payment_manager", true],
+  ])("denies %s before invoking the cash edit command", async (role, paymentManager) => {
+    mocks.hasAdmin.mockResolvedValue(false);
+    mocks.hasPaymentManager.mockResolvedValue(paymentManager);
+    const response = await request("/leagues/7/canonical/corrections/1", user(role, 11, 42), {
+      method: "POST",
+      body: JSON.stringify({ paymentId: 12, correctionMode: "edit_cash", amountMinor: 6000, paymentDate: "2034-09-17", reason: "cash edit", idempotencyKey: `cash-denied-${role}`, requestFingerprint: "q" }),
+    });
+    expect(response.status).toBe(404);
+    expect(mocks.editCash).not.toHaveBeenCalled();
+  });
+
+  it("denies a cross-tenant cash edit before invoking the command", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    mocks.getLeague.mockResolvedValue({ id: 7, organizationId: 22, payingLineupSize: 3 });
+    const response = await request("/leagues/7/canonical/corrections/1", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ paymentId: 12, correctionMode: "edit_cash", amountMinor: 6000, paymentDate: "2034-09-17", reason: "cash edit", idempotencyKey: "cash-cross-tenant", requestFingerprint: "q" }),
+    });
+    expect(response.status).toBe(404);
+    expect(mocks.editCash).not.toHaveBeenCalled();
   });
 
   it("allows location-scoped manual entries but keeps roster and corrections admin-only", async () => {

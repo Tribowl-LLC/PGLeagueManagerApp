@@ -2369,6 +2369,66 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       expect(obligation?.state).toBe("partially_settled");
     });
 
+    it("serializes concurrent edits so one original wins and the stale retry is rejected", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const source = await createCashEvidence(fixture.obligation.id, 2_000);
+      const firstRequest = cashEditRequest(source.payment.id, 1_500, "2038-02-03");
+      const secondRequest = cashEditRequest(source.payment.id, 1_000, "2038-02-04");
+
+      const outcomes = await Promise.allSettled([
+        editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: firstRequest }),
+        editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: secondRequest }),
+      ]);
+      expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+      const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+      expect(rejected).toMatchObject({ reason: { code: "CASH_EDIT_UNAVAILABLE" } });
+      const [sourceAfter] = await db.select({ status: payments.status }).from(payments).where(and(
+        eq(payments.organizationId, organizationId),
+        eq(payments.leagueId, leagueId),
+        eq(payments.id, source.payment.id),
+      )).orderBy(payments.id);
+      expect(sourceAfter?.status).toBe("voided");
+      const paidAfter = await db.select({ id: payments.id }).from(payments).where(and(
+        eq(payments.organizationId, organizationId),
+        eq(payments.leagueId, leagueId),
+        eq(payments.status, "paid"),
+      ));
+      expect(paidAfter).toHaveLength(1);
+      expect(paidAfter[0]?.id).not.toBe(source.payment.id);
+      expect(await db.select({ id: paymentVoids.id }).from(paymentVoids).where(and(
+        eq(paymentVoids.organizationId, organizationId),
+        eq(paymentVoids.leagueId, leagueId),
+        eq(paymentVoids.paymentId, source.payment.id),
+      ))).toHaveLength(1);
+    });
+
+    it("resolves payment dates in the league timezone across a UTC boundary and DST", async () => {
+      await resetBaseRosterToWeeklyMain();
+      await db.update(leagues).set({ timezone: "America/New_York" }).where(and(
+        eq(leagues.organizationId, organizationId),
+        eq(leagues.id, leagueId),
+      ));
+      try {
+        const fixture = await createOccurrence();
+        const source = await createCashEvidence(fixture.obligation.id, 2_000, "2038-03-13T04:30:00.000Z");
+        const request = cashEditRequest(source.payment.id, 2_000, "2038-03-14");
+
+        const result = await editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request });
+        expect(result).toMatchObject({ oldPaymentDate: "2038-03-12", newPaymentDate: "2038-03-14", allocationMode: "copied" });
+        const [replacement] = await db.select({ createdAt: payments.createdAt }).from(payments).where(and(
+          eq(payments.organizationId, organizationId),
+          eq(payments.id, result.replacementPaymentId),
+        ));
+        expect(new Date(replacement?.createdAt ?? "").toISOString()).toBe("2038-03-14T16:00:00.000Z");
+      } finally {
+        await db.update(leagues).set({ timezone: "UTC" }).where(and(
+          eq(leagues.organizationId, organizationId),
+          eq(leagues.id, leagueId),
+        ));
+      }
+    });
+
     it("rolls back the void and replacement when the edited amount cannot be allocated", async () => {
       await resetBaseRosterToWeeklyMain();
       const fixture = await createOccurrence();

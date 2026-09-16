@@ -164,6 +164,17 @@ describe("PaymentDetailsDialog", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("does not reopen the initial edit form after cancel", async () => {
+    const user = userEvent.setup();
+    render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect startInEdit onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save payment edit" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("button", { name: "Save payment edit" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit cash payment" })).toBeInTheDocument();
+  });
+
   it("does not offer corrections without permission", () => {
     render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
     expect(screen.queryByRole("button", { name: "Void cash/check payment" })).not.toBeInTheDocument();

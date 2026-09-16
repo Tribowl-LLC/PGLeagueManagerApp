@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -106,6 +106,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
   const [correctionError, setCorrectionError] = useState<string | null>(null);
   const [receiptLoading, setReceiptLoading] = useState(false);
   const [receiptError, setReceiptError] = useState<string | null>(null);
+  const initialEditStarted = useRef(false);
 
   const canEditCash = Boolean(
     canCorrect
@@ -116,11 +117,17 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
       && payment.status === "paid"
       && evidence.status === "confirmed_paid"
       && !evidence.reviewRequired
+      && evidence.allocations.length > 0
       && evidence.allocations.every((allocation) => allocation.state === "active"),
   );
 
   useEffect(() => {
-    if (!startInEdit || !canEditCash || !evidence || evidence.paymentId === null || editingMode !== null) return;
+    if (!startInEdit) {
+      initialEditStarted.current = false;
+      return;
+    }
+    if (initialEditStarted.current || !canEditCash || !evidence || evidence.paymentId === null || editingMode !== null) return;
+    initialEditStarted.current = true;
     setEditingMode("edit_cash");
     setEditingCorrection(true);
     setEditAmount((evidence.amountMinor / 100).toFixed(2));

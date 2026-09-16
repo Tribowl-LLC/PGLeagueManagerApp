@@ -129,6 +129,7 @@ export function PaymentsTable({
                 && payment.type === "cash"
                 && canonicalRow?.status === "confirmed_paid"
                 && !canonicalRow.reviewRequired
+                && canonicalRow.allocations.length > 0
                 && canonicalRow.allocations.every((allocation) => allocation.state === "active");
               const disputes = payment.disputes ?? [];
               const expanded = expandedPaymentIds.has(payment.id);
