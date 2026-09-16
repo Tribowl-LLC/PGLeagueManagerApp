@@ -55,6 +55,7 @@ const BOUNCE_CLASSIFICATION_LABELS: Record<string, string> = {
   content: 'Content',
   reputation: 'Reputation',
   mailbox_unavailable: 'Mailbox unavailable',
+  frequency_volume: 'Frequency/volume',
   unclassified: 'Unclassified',
 };
 

@@ -21,7 +21,7 @@ const pendingAlert = {
   eventType: 'bounce',
   failureType: 'bounce',
   reasonCode: 'recipient_address_invalid',
-  bounceClassification: 'invalid_address',
+  bounceClassification: 'frequency_volume',
   smtpStatus: '550',
   sendingIp: '198.51.100.10',
   providerEventAt: '2026-09-16T09:00:00.000Z',
@@ -73,6 +73,7 @@ describe('AdminEmailDeliveryAlertsPage', () => {
     expect(row).toHaveTextContent('Recipient address is invalid');
     expect(row).toHaveTextContent('198.51.100.10');
     expect(row).toHaveTextContent('SMTP 550');
+    expect(row).toHaveTextContent('Frequency/volume');
     expect(screen.getByTestId('delivery-alerts-webhook-not-configured')).toBeInTheDocument();
     expect(screen.queryByText('provider reason text')).not.toBeInTheDocument();
   });

@@ -133,6 +133,15 @@ describe("SendGrid delivery alert parser", () => {
       reason: "550 5.1.1 no such user",
     }))?.failureType).toBe("dropped");
   });
+
+  it("normalizes SendGrid Frequency/Volume classification to the stable key", () => {
+    expect(parseSendgridDeliveryAlert(failure({
+      bounce_classification: "Frequency/Volume",
+    }))?.bounceClassification).toBe("frequency_volume");
+    expect(parseSendgridDeliveryAlert(failure({
+      bounce_classification: "frequency-volume",
+    }))?.bounceClassification).toBe("frequency_volume");
+  });
 });
 
 describe("signed webhook alert ingestion", () => {

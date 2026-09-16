@@ -253,7 +253,7 @@ function normalizedFailureText(payload: SendgridEventPayload): string {
 function bounceClassification(value: unknown): EmailDeliveryAlertBounceClassification | null {
   const raw = boundedString(value, 64);
   if (!raw) return null;
-  const normalized = raw.toLowerCase().replace(/[\s-]+/g, "_");
+  const normalized = raw.toLowerCase().replace(/[\/\s-]+/g, "_").replace(/_+/g, "_");
   const aliases: Record<string, EmailDeliveryAlertBounceClassification> = {
     invalid_address: "invalid_address",
     invalidaddress: "invalid_address",
@@ -262,6 +262,8 @@ function bounceClassification(value: unknown): EmailDeliveryAlertBounceClassific
     reputation: "reputation",
     mailbox_unavailable: "mailbox_unavailable",
     mailboxunavailable: "mailbox_unavailable",
+    frequency_volume: "frequency_volume",
+    frequencyvolume: "frequency_volume",
     unclassified: "unclassified",
   };
   return Object.hasOwn(aliases, normalized) ? aliases[normalized] : null;

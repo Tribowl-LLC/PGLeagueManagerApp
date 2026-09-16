@@ -42,6 +42,7 @@ export const EMAIL_DELIVERY_ALERT_BOUNCE_CLASSIFICATIONS = [
   "content",
   "reputation",
   "mailbox_unavailable",
+  "frequency_volume",
   "unclassified",
 ] as const;
 export type EmailDeliveryAlertBounceClassification =
