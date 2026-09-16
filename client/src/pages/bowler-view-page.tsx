@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import type { BowlerDetailsResponse, ApiResponse } from "@shared/schema";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { filterActiveBowlerLeagues } from "@/lib/bowler-league-utils";
+import { deriveBowlerFinancials } from "@/lib/financial-utils";
 import { BowlerFinancialSummary } from "@/components/bowler-financial-summary";
 import { PaymentSyncRetryStatus } from "@/components/payment-sync-retry-status";
 import { AdminBowlerLinkPanel } from "@/components/admin-bowler-link-panel";
@@ -151,24 +152,11 @@ export default function BowlerViewPage() {
   if (financialError || !financialResponse?.data) return <Layout><p className="p-6 text-destructive">Financial evidence requires review; balances are unavailable.</p></Layout>;
 
   const financialRows = financialResponse?.data?.rows ?? [];
-  const financials = (() => {
-    const dueRows = financialRows.filter((row) => row.classification !== "future");
-    const pastDueRows = financialRows.filter((row) => row.classification === "past_due");
-    const netDue = (row: typeof financialRows[number]) => Math.max(0, row.amountMinor - (row.waivedMinor ?? 0));
-    return {
-      weeksDue: dueRows.length,
-      totalSeasonDues: dueRows.reduce((sum, row) => sum + netDue(row), 0),
-      totalWeeksInSeason: financialRows.length,
-      fullSeasonAmount: financialRows.reduce((sum, row) => sum + netDue(row), 0),
-      amountPastDue: financialResponse.data.totals.collectiblePastDueMinor,
-      remainingBalance: financialRows.reduce((sum, row) => sum + row.outstandingMinor, 0),
-      totalPaidAmount: financialRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
-      waivedAmount: financialRows.reduce((sum, row) => sum + (row.waivedMinor ?? 0), 0),
-      totalUnpaidAmount: 0,
-      reviewRequired: financialRows.some((row) => row.reviewRequired),
-      reviewCategory: financialRows.some((row) => row.reviewRequired) ? ("evidence" as const) : null,
-    };
-  })();
+  const financials = deriveBowlerFinancials(
+    financialRows,
+    financialResponse.data.asOf,
+    financialResponse.data.totals.collectiblePastDueMinor,
+  );
 
   return (
     <Layout>

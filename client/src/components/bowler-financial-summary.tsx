@@ -53,7 +53,7 @@ export function BowlerFinancialSummary({ league, financials, sourceLabel }: Prop
         valueClass="text-destructive"
       />
       <SummaryCard
-        title="Full Season Lineage Amount Due"
+        title="Full Season Amount Due"
         description={`${totalWeeksInSeason} week${totalWeeksInSeason === 1 ? "" : "s"} at $${weeklyFee.toFixed(2)}`}
         value={`$${(fullSeasonAmount / 100).toFixed(2)}`}
         valueClass="text-attention-600"
