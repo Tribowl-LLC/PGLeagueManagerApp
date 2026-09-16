@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { ChevronDown, ChevronRight, RotateCcw, Send } from "lucide-react";
+import { ChevronDown, ChevronRight, Pencil, RotateCcw, Send } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -76,6 +76,7 @@ export function PaymentsTable({
 }: Props) {
   const [resendTarget, setResendTarget] = useState<Payment | null>(null);
   const [detailsTarget, setDetailsTarget] = useState<Payment | null>(null);
+  const [startDetailsInEdit, setStartDetailsInEdit] = useState(false);
   const [expandedPaymentIds, setExpandedPaymentIds] = useState<Set<number>>(new Set());
   const leagueLocationMap = new Map<number, number | null>();
   for (const league of leagues) {
@@ -122,6 +123,13 @@ export function PaymentsTable({
               const canResend = isAdmin
                 && payment.status === 'paid'
                 && (payment.type === 'square' || payment.type === 'credit_card');
+              const canEditCash = isAdmin
+                && !isPaymentManager
+                && payment.status === "paid"
+                && payment.type === "cash"
+                && canonicalRow?.status === "confirmed_paid"
+                && !canonicalRow.reviewRequired
+                && canonicalRow.allocations.every((allocation) => allocation.state === "active");
               const disputes = payment.disputes ?? [];
               const expanded = expandedPaymentIds.has(payment.id);
               return (
@@ -137,7 +145,7 @@ export function PaymentsTable({
                           type="button"
                           className={cn(badgeVariants({ variant: canonicalStatusVariant }), "cursor-pointer")}
                           aria-label={`View payment details: ${canonicalStatusLabel}`}
-                          onClick={() => setDetailsTarget(payment)}
+                          onClick={() => { setStartDetailsInEdit(false); setDetailsTarget(payment); }}
                         >
                           {canonicalStatusLabel}
                         </button>
@@ -181,6 +189,17 @@ export function PaymentsTable({
                           <Send className="size-4" />
                         </Button>
                       )}
+                      {canEditCash && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title="Edit cash payment"
+                          aria-label="Edit cash payment"
+                          onClick={() => { setStartDetailsInEdit(true); setDetailsTarget(payment); }}
+                        >
+                          <Pencil className="size-4" />
+                        </Button>
+                      )}
                       {payment.status === "paid" && isCardPaymentType(payment.type) && isAdmin && !isPaymentManager && (
                         <Button
                           size="icon"
@@ -222,14 +241,15 @@ export function PaymentsTable({
         onClose={() => setResendTarget(null)}
         locationId={resendTargetLocationId}
       />
-      <PaymentDetailsDialog
+                      <PaymentDetailsDialog
         key={detailsTarget?.id ?? "closed"}
         payment={detailsTarget}
         evidence={detailsTarget ? paymentCanonicalRows?.get(detailsTarget.id) ?? null : null}
         bowlerName={detailsTarget ? bowlers.find((bowler) => bowler.id === detailsTarget.bowlerId)?.name || "Unknown Bowler" : ""}
         canCorrect={isAdmin && !isPaymentManager}
         organizationId={organizationId}
-        onClose={() => setDetailsTarget(null)}
+        startInEdit={startDetailsInEdit}
+        onClose={() => { setDetailsTarget(null); setStartDetailsInEdit(false); }}
       />
     </div>
   );

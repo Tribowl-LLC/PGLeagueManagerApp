@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,6 +18,7 @@ type Props = {
   bowlerName: string;
   canCorrect: boolean;
   organizationId?: number | null;
+  startInEdit?: boolean;
   onClose: () => void;
 };
 
@@ -59,18 +60,73 @@ function paymentTypeLabel(paymentType: CanonicalPaymentRow["paymentType"], check
   }
 }
 
-async function correctionFingerprint(payload: { paymentId: number; correctionMode: "void_only"; reason: string }) {
+async function correctionFingerprint(payload: Record<string, unknown>) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(payload)));
   return `lvcorrection:v3:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizationId, onClose }: Props) {
+async function cashEditFingerprint(payload: Record<string, unknown>) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(payload)));
+  return `lvcashedit:v1:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function parseAmountMinor(value: string): number | null {
+  if (!/^\d+(?:\.\d{1,2})?$/.test(value.trim())) return null;
+  const [whole, fraction = ""] = value.trim().split(".");
+  const amount = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  return Number.isSafeInteger(amount) && amount > 0 ? amount : null;
+}
+
+function invalidateCashEditViews(leagueId: number, bowlerId: number): Promise<unknown[]> {
+  const requests = [
+    queryClient.invalidateQueries({ queryKey: ["/api/payments"] }),
+    queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] }),
+    queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "canonical-due-past-due/2"] }),
+    queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }),
+    queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] }),
+    queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1/quote`] }),
+    queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "canonical-due-past-due/2", bowlerId] }),
+    queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`, bowlerId] }),
+    queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowlerId}/details`] }),
+    queryClient.invalidateQueries({
+      predicate: ({ queryKey }) => typeof queryKey[0] === "string" && queryKey[0].startsWith("/api/financials/due-past-due"),
+    }),
+  ];
+  return Promise.all(requests);
+}
+
+export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizationId, startInEdit = false, onClose }: Props) {
   const [editingCorrection, setEditingCorrection] = useState(false);
+  const [editingMode, setEditingMode] = useState<"void_only" | "edit_cash" | null>(null);
   const [reason, setReason] = useState("");
+  const [editAmount, setEditAmount] = useState("");
+  const [editPaymentDate, setEditPaymentDate] = useState("");
+  const [editRequestKey, setEditRequestKey] = useState<string | null>(null);
   const [correctionBusy, setCorrectionBusy] = useState(false);
   const [correctionError, setCorrectionError] = useState<string | null>(null);
   const [receiptLoading, setReceiptLoading] = useState(false);
   const [receiptError, setReceiptError] = useState<string | null>(null);
+
+  const canEditCash = Boolean(
+    canCorrect
+      && payment
+      && evidence?.paymentId !== null
+      && evidence?.paymentType === "cash"
+      && payment.type === "cash"
+      && payment.status === "paid"
+      && evidence.status === "confirmed_paid"
+      && !evidence.reviewRequired
+      && evidence.allocations.every((allocation) => allocation.state === "active"),
+  );
+
+  useEffect(() => {
+    if (!startInEdit || !canEditCash || !evidence || evidence.paymentId === null || editingMode !== null) return;
+    setEditingMode("edit_cash");
+    setEditingCorrection(true);
+    setEditAmount((evidence.amountMinor / 100).toFixed(2));
+    setEditPaymentDate(evidence.authoritativeLocalDate);
+    setEditRequestKey(crypto.randomUUID());
+  }, [canEditCash, editingMode, evidence, startInEdit]);
 
   if (!evidence) return null;
 
@@ -110,15 +166,65 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     }
   };
 
+  const beginCashEdit = () => {
+    if (!canEditCash || !evidence) return;
+    setEditingMode("edit_cash");
+    setEditingCorrection(true);
+    setReason("");
+    setEditAmount((evidence.amountMinor / 100).toFixed(2));
+    setEditPaymentDate(evidence.authoritativeLocalDate);
+    setEditRequestKey(crypto.randomUUID());
+    setCorrectionError(null);
+  };
+
   const submitCorrection = async () => {
+    if (editingMode === "edit_cash") {
+      if (evidence.paymentId === null || !editRequestKey) return;
+      const amountMinor = parseAmountMinor(editAmount);
+      if (amountMinor === null || !/^\d{4}-\d{2}-\d{2}$/.test(editPaymentDate)) {
+        setCorrectionError("Enter a valid amount with up to two decimal places and a payment date.");
+        return;
+      }
+      const trimmedReason = `Cash payment edited from $${(evidence.amountMinor / 100).toFixed(2)} on ${evidence.authoritativeLocalDate}`;
+      setCorrectionBusy(true);
+      setCorrectionError(null);
+      try {
+        const fingerprintPayload = {
+          paymentId: evidence.paymentId,
+          correctionMode: "edit_cash" as const,
+          amountMinor,
+          paymentDate: editPaymentDate,
+          reason: trimmedReason,
+        };
+        const response = await csrfFetch(`/api/financials/leagues/${evidence.leagueId}/canonical/corrections/1`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": editRequestKey },
+          body: JSON.stringify({
+            ...fingerprintPayload,
+            idempotencyKey: editRequestKey,
+            requestFingerprint: await cashEditFingerprint(fingerprintPayload),
+          }),
+        });
+        const body = await response.json().catch(() => ({})) as { error?: { message?: string } };
+        if (!response.ok) throw new Error(body.error?.message || "Cash payment could not be edited");
+        await invalidateCashEditViews(evidence.leagueId, evidence.bowlerId);
+        onClose();
+      } catch (error) {
+        setCorrectionError(error instanceof Error ? error.message : "Cash payment could not be edited");
+      } finally {
+        setCorrectionBusy(false);
+      }
+      return;
+    }
+
     const trimmedReason = reason.trim();
     if (!trimmedReason || evidence.paymentId === null) return;
     setCorrectionBusy(true);
     setCorrectionError(null);
     try {
-      const fingerprintPayload = {
-        paymentId: evidence.paymentId,
-        correctionMode: "void_only" as const,
+        const fingerprintPayload = {
+          paymentId: evidence.paymentId,
+          correctionMode: "void_only" as const,
         reason: trimmedReason,
       };
       const idempotencyKey = crypto.randomUUID();
@@ -132,13 +238,10 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
         }),
       });
       if (!response.ok) throw new Error("Payment correction could not be recorded");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["/api/payments"] }),
-        queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] }),
-      ]);
+      await invalidateCashEditViews(evidence.leagueId, evidence.bowlerId);
       onClose();
-    } catch {
-      setCorrectionError("Payment correction could not be recorded");
+    } catch (error) {
+      setCorrectionError(error instanceof Error ? error.message : "Payment correction could not be recorded");
     } finally {
       setCorrectionBusy(false);
     }
@@ -218,9 +321,26 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
           </section>
         )}
 
-        {canVoid && (
+        {(canEditCash || canVoid) && (
           <section className="space-y-2 border-t pt-4" aria-label="Payment correction">
-            {editingCorrection ? (
+            {editingCorrection && editingMode === "edit_cash" ? (
+              <>
+                <p className="text-sm text-muted-foreground">The original payment will remain in the record as voided evidence. The edited payment will keep the same payment details and use the new amount and date. Changing the amount reapplies it to the oldest eligible balances; changing only the date keeps its current allocations.</p>
+                <label className="grid gap-1 text-sm">
+                  Amount
+                  <input aria-label="Payment amount" inputMode="decimal" className="rounded-md border bg-background px-3 py-2" value={editAmount} onChange={(event) => setEditAmount(event.target.value)} disabled={correctionBusy} />
+                </label>
+                <label className="grid gap-1 text-sm">
+                  Payment date
+                  <input aria-label="Payment date" type="date" className="rounded-md border bg-background px-3 py-2" value={editPaymentDate} onChange={(event) => setEditPaymentDate(event.target.value)} disabled={correctionBusy} />
+                </label>
+                {correctionError && <p role="alert" className="text-sm text-destructive">{correctionError}</p>}
+                <div className="flex gap-2">
+                  <Button variant="default" size="sm" disabled={correctionBusy || parseAmountMinor(editAmount) === null || !editPaymentDate} onClick={() => void submitCorrection()}>{correctionBusy ? "Saving…" : "Save payment edit"}</Button>
+                  <Button variant="outline" size="sm" disabled={correctionBusy} onClick={() => { setEditingCorrection(false); setEditingMode(null); setEditRequestKey(null); setCorrectionError(null); }}>Cancel</Button>
+                </div>
+              </>
+            ) : editingCorrection ? (
               <>
                 <label className="grid gap-1 text-sm">
                   Correction reason
@@ -233,7 +353,10 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
                 </div>
               </>
             ) : (
-              <Button variant="outline" size="sm" onClick={() => setEditingCorrection(true)}>Void cash/check payment</Button>
+              <div className="flex flex-wrap gap-2">
+                {canEditCash && <Button variant="outline" size="sm" onClick={beginCashEdit}>Edit cash payment</Button>}
+                {canVoid && <Button variant="outline" size="sm" onClick={() => { setEditingMode("void_only"); setEditingCorrection(true); }}>Void cash/check payment</Button>}
+              </div>
             )}
           </section>
         )}

@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0044_cash_edit_obligation_reopen",
+    "hash": "e138c9b7af61f21b7d50764210cd7f93e97c075e1eb681ff374b8ff16fc21502",
+    "createdAt": 1789587886181
+  },
+  "digest": "f1d0fb68432fe419291407573213c735d181f24a0da2879df41837a56886d0fd",
+  "counts": {
+    "tables": 68,
+    "columns": 928,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 26,
+    "constraints": 521,
+    "indexes": 285,
+    "types": 1,
+    "functions": 19,
+    "triggers": 33,
+    "policies": 0
+  }
+}
