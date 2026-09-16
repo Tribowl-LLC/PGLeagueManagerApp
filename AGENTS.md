@@ -45,7 +45,17 @@ uses npm. Do not introduce Yarn, pnpm, or an additional lockfile.
 - Do not reuse a merged branch for new work.
 - Do not combine unrelated changes in one branch or pull request.
 - Do not push normal work directly to `main`.
-- Do not merge pull requests unless explicitly instructed.
+- Follow the default release lifecycle in
+  [`docs/production-runbook.md`](docs/production-runbook.md#default-release-lifecycle).
+  Standing user authorization covers routine scoped LeagueVault changes at
+  each stage once its preceding lifecycle gates pass: after review and
+  final-head checks, the accountable root/Astra may merge; after exact-main
+  certification, it may run the guarded Neon migration when required and
+  deploy the exact certified `main` commit after the preceding migration gate.
+  PR-ready status alone never authorizes merge, migration, or deployment. A
+  task-specific hold, draft, no-deploy instruction, or explicit approval rule
+  overrides this default; existing destructive database approval controls
+  remain mandatory.
 - After a pull request is merged, its remote branch should be deleted.
 - Never force-push `main` or rewrite published history unless explicitly
   instructed.

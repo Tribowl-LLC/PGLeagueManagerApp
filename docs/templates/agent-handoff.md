@@ -45,7 +45,9 @@ Preserve local paths and add shared references when portable artifacts exist.
 - Risks or assumptions:
 - Escalation trigger and requested decision:
 - Resolver or reviewer result:
-- User merge/deploy authorization scope and source: `not granted` | `<exact scope and message/source>`
+- User release authorization scope and source: `standing routine scoped
+  merge/migration/deploy authorization from the active user` | `<task-specific
+  override or exact source>`
 
 ## Evidence
 
@@ -60,10 +62,28 @@ Preserve local paths and add shared references when portable artifacts exist.
 - Manual verification:
 - Remaining checks or follow-up:
 
+## Release lifecycle evidence
+
+- GitHub review requested: `not yet` | `<timestamp>`
+- GitHub review trigger: `automatic on open/ready` | `one explicit request (reason)`
+- GitHub review run ID/URL:
+- GitHub reviewed SHA:
+- GitHub review completion/result: `pending` | `completed — pass/findings` | `blocked/unavailable — blocker`
+- GitHub findings and factual disposition (`fix` or explanation if invalid):
+- Fix SHA(s):
+- Thread replies with specific validation and SHA:
+- Resolved threads (addressed findings only):
+- Final-head GitHub checks SHA and results:
+- Merged certified SHA / Exact main certification evidence:
+- Migration: `N/A — no schema change` | `<backup, target, fingerprint, workflow, and pending=none evidence>`
+- Render deployment: `<known service, exact certified SHA, deploy ID, health/
+  org-context/log evidence>`
+
 ## Completion
 
 - Completion metrics (when available):
 - Cost metrics (when available; never estimate as fact):
-- Review readiness (does not grant merge/deploy authorization):
+- Review readiness (internal Astra review and exactly one GitHub review; does not
+  grant release authority by itself):
 - Branch and PR status:
 - Database, deployment, security, tenant, payment, or provider implications:

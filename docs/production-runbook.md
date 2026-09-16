@@ -15,32 +15,81 @@ they are not current release procedures.
 
 ## Normal Code Release
 
-1. Fetch the latest `origin/main` and create a `codex/<task>` branch.
-2. Make the smallest scoped change.
-3. Run the relevant focused tests locally, plus `npm run check`, `npm run
-   lint`, and `npm run build` when practical.
-4. Push the branch and open a pull request.
-5. Wait for `Type check & lint` and `Tests`, which the active GitHub `main`
-   ruleset requires. Also verify `Database migrations (PostgreSQL 17)` and
-   `Race suite` manually; repository policy treats those two as
-   release-blocking even though the current ruleset does not enforce them.
-   Review Semgrep, Semgrep Cloud, Gitleaks, HoundDog, and dependency-audit
-   results as well. Confirm the live ruleset before every release instead of
-   assuming repository settings have remained unchanged.
-6. Keep Render Auto-Deploy Off. A schema release must remain held until the
-   reviewed production migration has succeeded.
-7. Merge the pull request into `main`.
-8. Wait for `Exact main certification` on the merged `main` SHA. Confirm its
-   log identifies the merged PR, identical tree SHA, and successful PR CI and
-   Race suite runs.
-9. If the commit contains schema changes, follow [Schema Release](#schema-release)
-   through its reviewed migration and deployment order. If it contains no
-   schema changes, do not run a migration merely as a deployment ritual.
-10. Manually deploy that exact certified commit in the order required by the
-    schema-release procedure. Leave Auto-Deploy Off.
-11. Run the post-deploy trust-proxy probe manually when a release changes
-   proxy, cookie, auth, or rate-limit behavior. The scheduled workflow also
-   probes the live deployment daily.
+### Default Release Lifecycle
+
+This is the canonical numbered lifecycle for every PR-required LeagueVault
+change. The active user's standing authorization covers routine scoped merge
+after review and final-head checks, guarded migration after exact-main
+certification, and deployment after the preceding migration gate. A later
+task-specific hold, draft, no-deploy instruction, or explicit approval rule
+overrides that default. Existing destructive database approval controls remain
+mandatory. Keep the handoff current with the evidence fields in
+[`templates/agent-handoff.md`](templates/agent-handoff.md).
+
+1. **Local review and checks.** Inspect the branch, base, status, and diff;
+   preserve unrelated user work. Complete local architect review, including
+   the fresh internal Astra reviewer when assigned. Run the relevant focused tests and repository checks,
+   including `npm run check`, `npm run lint`, `npm run build`, and applicable
+   database, race, and security checks; applicable checks must pass before
+   step 2. Task-related failures must be fixed before step 2. For a
+   documentation-only change, record why code or database checks are
+   inapplicable. Record the exact tested `HEAD`, clean or dirty state, and
+   failures or skips.
+2. **Commit, push, and ready PR.** Commit only the scoped change, push the
+   branch, open one pull request, and verify it is ready for review unless a
+   later task explicitly requests a draft. After every push, recapture the
+   exact head SHA and recheck the final-head gates before release.
+3. **Exactly one independent GitHub review per PR.** An automatic review that
+   starts on PR open or ready-for-review counts; wait for it to complete
+   regardless of CI state. If no automatic review is configured or started,
+   make exactly one explicit request; first verify that no review is already
+   queued or running rather than treating a delayed start as absence. Never request `@codex review` again after
+   fixes, rebases, or pushes. Internal Astra review is separate and never
+   satisfies this GitHub review. Disposition every finding factually: fix it,
+   or explain why it is invalid. Reply to each addressed thread with specific
+   validation and the fix SHA, then resolve only addressed findings. Reviewer
+   silence, failure, or unavailability is not a pass; record the blocker and
+   request only a genuinely necessary user decision. After fixes, run local
+   architect review and focused checks as needed; do not start a full GitHub
+   rereview loop. A GitHub rerun requires a later explicit user override.
+4. **Final-head checks and merge.** Confirm the live `main` ruleset before
+   merging. On the final pushed PR head, confirm exactly one GitHub review is
+   complete, every finding is addressed with a factual disposition, and every
+   addressed thread is resolved. The single review may cover an earlier PR
+   head: record its SHA and locally review and validate every subsequent fix
+   against the final head; do not request another GitHub review. Wait for all
+   required GitHub checks to pass
+   and recheck them after every push. Treat `Type check & lint`, `Tests`, `Database
+   migrations (PostgreSQL 17)`, `Race suite`, and applicable Semgrep, Semgrep
+   Cloud, Gitleaks, HoundDog, and dependency-audit results as
+   release-blocking; do not use an admin bypass. The accountable root/Astra
+   merges only after this final-head evidence is complete and records the
+   merge result.
+5. **Exact-main certification.** Wait for `Exact main certification` on the
+   merged `main` SHA. Its logs must prove the merged PR, identical tree, PR
+   check provenance, and certified SHA. Record the exact certification evidence
+   and stop if identity or any required check is missing or fails.
+6. **Guarded Neon migration when needed.** If there is no schema change, mark
+   migration `N/A` and do not run one as a deployment ritual. For a schema
+   change, use the existing protected production migration workflow from the
+   exact certified `main` SHA, with its independent target, current backup or
+   restorable branch, pre/post fingerprints, journal, checksum, exact pending
+   list, recovery, and guarded order checks. Never bypass that workflow or run
+   production migration SQL directly from a local shell. If the protected
+   workflow is unavailable, use only the existing documented manual fallback
+   under its explicit conditions and safeguards; it is not an ad hoc direct
+   SQL path, and the two executors must never run concurrently. The
+   `0040_remove_league_public_signup` application-first procedure below remains
+   the labeled approved exception; it is not the default order. A migration or
+   guard failure stops deployment.
+7. **Render deployment and verification.** Keep Render Auto-Deploy Off, verify
+   the known `LeagueVault` service and production configuration, and manually
+   select the exact certified SHA. Missing credentials, an unknown service,
+   deployment failure, or failed check stops the affected action; record the
+   blocker and do not claim completion. Verify the deployed commit through
+   `/healthz`, `/api/health`, `/api/org-context` (`appEnv: "prod"` plus the
+   matching short commit), authentication, the affected workflow, and Render
+   and application logs. Run the trust-proxy probe when its conditions apply.
 
 ## Render Configuration
 
