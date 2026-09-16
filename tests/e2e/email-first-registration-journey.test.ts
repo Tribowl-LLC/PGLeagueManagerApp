@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from 'vitest';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { and, eq, inArray } from 'drizzle-orm';
 
@@ -51,6 +51,8 @@ const browserRouteStates = new WeakMap<BrowserContext, BrowserRouteState>();
 
 async function createBrowserContext(): Promise<BrowserContext> {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  context.setDefaultTimeout(15_000);
+  context.setDefaultNavigationTimeout(15_000);
   const routeState: BrowserRouteState = { tearingDown: false };
   // Keep the exact HTTPS URL from the email while routing its real HTTP
   // traffic to this isolated app. This supplies transport, not API mocks.
@@ -331,6 +333,8 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
   });
 
   it('proves unique same-org normalized email ownership before dashboard access', async () => {
+    let phase = 'registration';
+    onTestFailed(() => console.info(`[registration-browser] failed phase=${phase}`));
     clearCapturedEmails();
     await installRegistrationTemplate();
     const context = await createBrowserContext();
@@ -340,10 +344,14 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
         name: 'Matched Browser User',
       });
       const setupUrl = await waitForSetupUrl(MATCH_EMAIL);
+      phase = 'open and reload setup';
       await openAndReloadSetup(page, setupUrl, user.id);
+      phase = 'submit password';
       expect(await setPassword(page)).toBe(200);
+      phase = 'authenticated landing';
       await waitForAuthenticatedLanding(page, '/bowler-dashboard');
 
+      phase = 'verify roster ownership';
       await expect.poll(async () => {
         const [updated] = await db.select({ bowlerId: users.bowlerId })
           .from(users).where(eq(users.id, user.id));
@@ -356,6 +364,7 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
       expect(forbiddenRequests).toEqual([]);
       expect(page.url()).not.toContain('/claim-bowler');
     } finally {
+      phase = `drain browser routes after ${phase}`;
       await closeContextAfterRoutesDrain(context);
     }
   }, 60_000);
