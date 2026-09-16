@@ -35,7 +35,7 @@ import {
 } from "../../server/services/roster-payment-finalizer";
 import { recoverRosterPaymentOperation, recoverRosterPaymentOperationByRequestKey } from "../../server/services/roster-payment-recovery";
 import { acquireInteractivePaymentOperationDispatchCutoff } from "../../server/storage/payment-operations";
-import { canonicalCashPaymentEditFingerprint, canonicalResponsibilityFingerprint, canonicalRosterFingerprint, chargeInteractiveObligations, editCanonicalCashPayment, quoteInteractiveObligations, recordOccurrenceResponsibilities, saveTeamRoster } from "../../server/services/roster-payment-core";
+import { canonicalCashPaymentEditFingerprint, canonicalCorrectionFingerprint, canonicalResponsibilityFingerprint, canonicalRosterFingerprint, chargeInteractiveObligations, correctCanonicalAllocation, editCanonicalCashPayment, quoteInteractiveObligations, recordOccurrenceResponsibilities, saveTeamRoster } from "../../server/services/roster-payment-core";
 import { interactivePaymentOperationExecutor } from "../../server/services/interactive-payment-operation-executor";
 import { paymentOperationRetryExecutor } from "../../server/services/payment-operation-retry-executor";
 import { prepareInteractivePaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
@@ -2344,6 +2344,54 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       expect(reportIds).not.toContain(first.replacementPaymentId);
       expect(report.totalRows).toBe(reportBefore.totalRows + 1);
       expect(report.totals.grossConfirmedPaidMinor).toBe(reportBefore.totals.grossConfirmedPaidMinor + 1_700);
+    });
+
+    it("keeps ordinary voids visible and ignores malformed or cross-league edit command evidence", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const source = await createCashEvidence(fixture.obligation.id, 2_000);
+      const voidRequest = {
+        paymentId: source.payment.id,
+        correctionMode: "void_only" as const,
+        reason: "ordinary void fixture",
+        idempotencyKey: `ordinary-void-${randomUUID()}`,
+        requestFingerprint: "",
+      };
+      voidRequest.requestFingerprint = canonicalCorrectionFingerprint(voidRequest);
+      await correctCanonicalAllocation({ organizationId, leagueId, actorUserId, request: voidRequest });
+
+      const otherLeague = await createUpfrontFallbackFixture();
+      const matchingResult = {
+        contractVersion: "canonical-cash-payment-edit/1",
+        originalPaymentId: source.payment.id,
+        replacementPaymentId: source.payment.id + 1,
+      };
+      await db.insert(financialCommands).values([
+        {
+          organizationId,
+          leagueId: otherLeague.leagueId,
+          actorUserId,
+          commandType: "roster_payment.edit_cash_payment",
+          idempotencyKey: `cross-league-edit-${randomUUID()}`,
+          requestFingerprint: `cross-league-fingerprint-${randomUUID()}`,
+          state: "applied",
+          result: matchingResult,
+        },
+        {
+          organizationId,
+          leagueId,
+          actorUserId,
+          commandType: "roster_payment.edit_cash_payment",
+          idempotencyKey: `malformed-edit-${randomUUID()}`,
+          requestFingerprint: `malformed-edit-fingerprint-${randomUUID()}`,
+          state: "applied",
+          result: "malformed-result",
+        },
+      ]);
+
+      const visible = await getPayments({ organizationId, leagueId });
+      expect(visible.map((payment) => payment.id)).toContain(source.payment.id);
+      expect((await getVisiblePaymentByIdForOrganization(source.payment.id, organizationId))?.status).toBe("voided");
     });
 
     it("copies allocations for a date-only edit and records original/replacement audit linkage", async () => {
