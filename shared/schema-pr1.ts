@@ -16,6 +16,7 @@ export * from "./schema/users";
 export * from "./schema/account-action-requests";
 export * from "./schema/account-action-delivery-jobs";
 export * from "./schema/account-email-delivery-events";
+export * from "./schema/email-delivery-alerts";
 export * from "./schema/games";
 export * from "./schema/email-templates";
 export * from "./schema/deletion-requests";

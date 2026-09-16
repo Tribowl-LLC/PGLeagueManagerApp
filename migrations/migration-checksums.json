@@ -252,6 +252,18 @@
       "tag": "0041_combined_partner_payment_snapshot",
       "createdAt": 1789345803616,
       "hash": "119f48c839774bcd3d0840999dfb6117f01dee8a3e564acb9692108bfab25aef"
+    },
+    {
+      "idx": 42,
+      "tag": "0042_email_delivery_alerts",
+      "createdAt": 1789519818432,
+      "hash": "4428210f32ec99e880f3c45d863ac78c6e509f9587615bb67e4f377972749e89"
+    },
+    {
+      "idx": 43,
+      "tag": "0043_email_alert_frequency_volume",
+      "createdAt": 1789521459246,
+      "hash": "d452f9c0296f63148e514ee36d479282330ff8d8dcba85bd62223ae66d831c15"
     }
   ]
 }

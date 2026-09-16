@@ -2,7 +2,7 @@ import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { logger } from "@/lib/logger";
 import { throwIfResNotOk } from "@/lib/queryClient";
-import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPlus, LayoutDashboard, Loader2, Building2, MapPin, Mail, Plug, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MessageSquare, MailWarning, UserPlus } from "lucide-react";
+import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPlus, LayoutDashboard, Loader2, Building2, MapPin, Mail, Plug, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MessageSquare, MailWarning, MailX, UserPlus } from "lucide-react";
 import { useState, useEffect, Suspense, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
@@ -60,6 +60,9 @@ interface NavItem {
   // we can scope it to admins and control polling cadence in one place.
   badgeQueryKey?: readonly unknown[];
 }
+
+const EMAIL_DELIVERY_ALERTS_PENDING_COUNT_QUERY_KEY =
+  ['/api/system-admin/email-delivery-alerts/pending-count'] as const;
 
 const navItems: NavItem[] = [
   {
@@ -146,6 +149,13 @@ const navItems: NavItem[] = [
         adminOnly: true,
       },
       {
+        icon: MailX,
+        label: "Delivery Alerts",
+        href: "/admin/email-delivery-alerts",
+        adminOnly: true,
+        badgeQueryKey: EMAIL_DELIVERY_ALERTS_PENDING_COUNT_QUERY_KEY,
+      },
+      {
         icon: Trash2,
         label: "Deletion Requests",
         href: "/admin/deletion-requests",
@@ -186,6 +196,7 @@ const pageLabels: Record<string, string> = {
   "/admin/apple-pay-jobs": "Apple Pay Jobs",
   "/admin/data-integrity": "Data Integrity",
   "/admin/email-change-audits": "Email Change Audits",
+  "/admin/email-delivery-alerts": "Delivery Alerts",
   "/admin/unclaimed-users": "Unclaimed Users",
   "/leagues": "Leagues",
   "/bowlers": "Bowlers",
@@ -585,14 +596,27 @@ export function Layout({ children }: { children: React.ReactNode }) {
     refetchOnWindowFocus: true,
     staleTime: 30_000,
   });
+  // Delivery failures are operational work for system administrators only.
+  // Keep the sidebar count on the established mount/focus refresh pattern.
+  // The alert page owns active foreground polling while it is open and
+  // updates this cache as it receives the full alert response.
+  const { data: pendingEmailDeliveryAlertsResponse } = useQuery<ApiResponse<{ count: number }>>({
+    queryKey: EMAIL_DELIVERY_ALERTS_PENDING_COUNT_QUERY_KEY,
+    enabled: isSystemAdmin,
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+  });
   const badgeCounts = useMemo<Record<string, number>>(() => ({
     [['/api/system-admin/deletion-requests/pending-count'].join('|')]:
       pendingDeletionResponse?.data?.count ?? 0,
     [['/api/payments-provider/apple-pay/jobs/pending-count'].join('|')]:
       pendingApplePayResponse?.data?.count ?? 0,
+    [EMAIL_DELIVERY_ALERTS_PENDING_COUNT_QUERY_KEY.join('|')]:
+      pendingEmailDeliveryAlertsResponse?.data?.count ?? 0,
   }), [
     pendingDeletionResponse?.data?.count,
     pendingApplePayResponse?.data?.count,
+    pendingEmailDeliveryAlertsResponse?.data?.count,
   ]);
 
   const toggleSidebar = useCallback(() => {
@@ -736,7 +760,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </Sheet>
 
       <main className={cn(
-        "flex-1 flex flex-col min-h-screen transition-all duration-300",
+        "flex-1 min-w-0 flex flex-col min-h-screen transition-all duration-300",
         isCollapsed ? "md:ml-20" : "md:ml-64"
       )}>
         <header className="h-16 bg-white border-b border-navigation-200 flex items-center justify-between px-4 md:px-8 shrink-0 app-header-shadow z-10 sticky top-0">

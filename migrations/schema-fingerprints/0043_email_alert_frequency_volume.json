@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0043_email_alert_frequency_volume",
+    "hash": "d452f9c0296f63148e514ee36d479282330ff8d8dcba85bd62223ae66d831c15",
+    "createdAt": 1789521459246
+  },
+  "digest": "ab5f7b114143f4e292689a7f43d36773ac84bc66c9e8e693d2536a2c62cad525",
+  "counts": {
+    "tables": 68,
+    "columns": 928,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 26,
+    "constraints": 521,
+    "indexes": 285,
+    "types": 1,
+    "functions": 19,
+    "triggers": 33,
+    "policies": 0
+  }
+}

@@ -1,0 +1,2 @@
+ALTER TABLE "email_delivery_alerts" DROP CONSTRAINT "email_delivery_alerts_bounce_classification_check";--> statement-breakpoint
+ALTER TABLE "email_delivery_alerts" ADD CONSTRAINT "email_delivery_alerts_bounce_classification_check" CHECK ("email_delivery_alerts"."bounce_classification" IS NULL OR "email_delivery_alerts"."bounce_classification" IN ('invalid_address', 'technical', 'content', 'reputation', 'mailbox_unavailable', 'frequency_volume', 'unclassified'));

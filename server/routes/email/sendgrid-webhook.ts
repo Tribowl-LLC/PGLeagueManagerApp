@@ -1,4 +1,5 @@
 import { createPublicKey, createVerify } from "node:crypto";
+import { isIP } from "node:net";
 import express, {
   type ErrorRequestHandler,
   type Express,
@@ -19,6 +20,17 @@ import {
   type AccountEmailDeliveryEventType,
 } from "@shared/schema/account-email-delivery-events";
 import { getPgErrorCode } from "../../utils/db-errors.js";
+import {
+  ingestEmailDeliveryAlert,
+  type IngestEmailDeliveryAlertInput,
+  type IngestEmailDeliveryAlertResult,
+} from "../../storage/email-delivery-alerts.js";
+import {
+  type EmailDeliveryAlertBounceClassification,
+  type EmailDeliveryAlertEventType,
+  type EmailDeliveryAlertFailureType,
+  type EmailDeliveryAlertReasonCode,
+} from "@shared/schema/email-delivery-alerts";
 
 const log = createLogger("SendgridWebhook");
 
@@ -50,6 +62,9 @@ export interface SendgridWebhookOptions {
   ingest?: (
     input: IngestAccountEmailDeliveryEventInput,
   ) => Promise<IngestAccountEmailDeliveryEventResult>;
+  ingestAlert?: (
+    input: IngestEmailDeliveryAlertInput,
+  ) => Promise<IngestEmailDeliveryAlertResult>;
 }
 
 export interface ParsedSendgridEvent {
@@ -58,6 +73,19 @@ export interface ParsedSendgridEvent {
   eventType: AccountEmailDeliveryEventType;
   providerEventAt: string;
   correlation: AccountEmailDeliveryCorrelation;
+}
+
+export interface ParsedSendgridDeliveryAlert {
+  providerEventId: string;
+  providerMessageId: string | null;
+  recipientEmail: string;
+  eventType: EmailDeliveryAlertEventType;
+  failureType: EmailDeliveryAlertFailureType;
+  reasonCode: EmailDeliveryAlertReasonCode;
+  bounceClassification: EmailDeliveryAlertBounceClassification | null;
+  smtpStatus: string | null;
+  sendingIp: string | null;
+  providerEventAt: string;
 }
 
 function decodeSignature(value: string): Buffer | null {
@@ -165,13 +193,13 @@ function eventType(value: unknown): AccountEmailDeliveryEventType | null {
 function providerEventId(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const id = value.trim();
-  return id.length > 0 && id.length <= 100 ? id : null;
+  return id.length > 0 && id.length <= 100 && !/[\u0000-\u001f\u007f]/.test(id) ? id : null;
 }
 
 function providerMessageId(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const id = value.trim();
-  return id.length > 0 && id.length <= 255 ? id : null;
+  return id.length > 0 && id.length <= 255 && !/[\u0000-\u001f\u007f]/.test(id) ? id : null;
 }
 
 function providerEventAt(value: unknown): string | null {
@@ -183,6 +211,144 @@ function providerEventAt(value: unknown): string | null {
   if (!Number.isSafeInteger(seconds) || seconds <= 0) return null;
   const date = new Date(seconds * 1000);
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function boundedString(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const result = value.trim();
+  return result.length > 0
+    && result.length <= maxLength
+    && !/[\u0000-\u001f\u007f]/.test(result)
+    ? result
+    : null;
+}
+
+function recipientEmail(value: unknown): string | null {
+  const email = boundedString(value, 320);
+  // This is intentionally a bounded provider-payload guard rather than a
+  // permissive parser. The schema applies the same basic shape at rest.
+  return email
+    && !/[\u0000-\u001f\u007f]/.test(email)
+    && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    ? email
+    : null;
+}
+
+function normalizedFailureText(payload: SendgridEventPayload): string {
+  const reasonFields = [
+    payload.reason,
+    payload.response,
+    payload.type,
+  ];
+  const fields = reasonFields.some((field) => typeof field === "string" && field.trim().length > 0)
+    ? reasonFields
+    : [payload.status, payload.event];
+  return fields
+    .filter((field): field is string | number => typeof field === "string" || typeof field === "number")
+    .map((field) => String(field).slice(0, 512))
+    .join(" ")
+    .toLowerCase();
+}
+
+function bounceClassification(value: unknown): EmailDeliveryAlertBounceClassification | null {
+  const raw = boundedString(value, 64);
+  if (!raw) return null;
+  const normalized = raw.toLowerCase().replace(/[\/\s-]+/g, "_").replace(/_+/g, "_");
+  const aliases: Record<string, EmailDeliveryAlertBounceClassification> = {
+    invalid_address: "invalid_address",
+    invalidaddress: "invalid_address",
+    technical: "technical",
+    content: "content",
+    reputation: "reputation",
+    mailbox_unavailable: "mailbox_unavailable",
+    mailboxunavailable: "mailbox_unavailable",
+    frequency_volume: "frequency_volume",
+    frequencyvolume: "frequency_volume",
+    unclassified: "unclassified",
+  };
+  return Object.hasOwn(aliases, normalized) ? aliases[normalized] : null;
+}
+
+function smtpStatus(value: unknown): string | null {
+  const raw = typeof value === "number" && Number.isSafeInteger(value)
+    ? String(value)
+    : boundedString(value, 32);
+  if (!raw) return null;
+  // SendGrid supplies either a three-digit SMTP status (`550`) or an
+  // enhanced status (`5.1.1`). Keep only that code-shaped metadata.
+  return /^(?:[2-5]\d{2}|[2-5]\.\d{1,3}\.\d{1,3})$/.test(raw) ? raw : null;
+}
+
+function sendingIp(value: unknown): string | null {
+  const ip = boundedString(value, 45);
+  return ip && isIP(ip) !== 0 ? ip : null;
+}
+
+function deriveAlertReason(
+  payload: SendgridEventPayload,
+  eventType: EmailDeliveryAlertEventType,
+): { reasonCode: EmailDeliveryAlertReasonCode; failureType: EmailDeliveryAlertFailureType } {
+  const text = normalizedFailureText(payload);
+  const ipBlocklisted = /\b(?:dnsbl|rbl|blocklist(?:ed)?|bl\d{6})\b/.test(text);
+  const bounceType = typeof payload.type === "string" ? payload.type.trim().toLowerCase() : "";
+  const explicitlyBlocked = eventType === "bounce" && bounceType === "blocked";
+  const failureType = eventType === "dropped"
+    ? "dropped"
+    : ipBlocklisted || explicitlyBlocked
+      ? "blocked"
+      : "bounce";
+  if (ipBlocklisted) return { reasonCode: "sending_ip_blocklisted", failureType };
+  if (/mailbox\s+(?:is\s+)?full|over\s+quota|quota\s+(?:has\s+been\s+)?exceeded/.test(text)) {
+    return { reasonCode: "mailbox_full", failureType };
+  }
+  if (/invalid\s+(?:e[- ]?mail\s+)?address|no\s+such\s+user|user\s+unknown|recipient.*(?:not\s+found|unknown)|5\.1\./.test(text)) {
+    return { reasonCode: "recipient_address_invalid", failureType };
+  }
+  if (/policy|spam|prohibited|content|blocked|5\.7\./.test(text)) {
+    return { reasonCode: "policy_rejection", failureType };
+  }
+  if (/(?:^|\s)4\d{2}(?:\s|$)|\b4\.\d{1,3}\.\d{1,3}\b|temporary|temporar|defer/.test(text)) {
+    return { reasonCode: "temporary_failure", failureType };
+  }
+  if (eventType === "dropped") {
+    return { reasonCode: "provider_dropped", failureType: "dropped" };
+  }
+  return { reasonCode: "unknown_failure", failureType };
+}
+
+/**
+ * Parse the provider-neutral operational alert independently of application
+ * correlation. SendGrid can report a failed message before custom args exist,
+ * so this parser deliberately requires only failure identity, recipient, and
+ * the provider timestamp.
+ */
+export function parseSendgridDeliveryAlert(value: unknown): ParsedSendgridDeliveryAlert | null {
+  if (!value || typeof value !== "object") return null;
+  const payload = value as SendgridEventPayload;
+  const event = payload.event;
+  if (event !== "bounce" && event !== "dropped") return null;
+  const providerEventIdValue = providerEventId(payload.sg_event_id);
+  const providerEventAtValue = providerEventAt(payload.timestamp);
+  const recipient = recipientEmail(payload.email ?? payload.to);
+  if (!providerEventIdValue || !providerEventAtValue || !recipient) return null;
+
+  const eventType = event;
+  const derived = deriveAlertReason(payload, eventType);
+  const classification = bounceClassification(payload.bounce_classification ?? payload.bounceClassification);
+  const status = smtpStatus(payload.status ?? payload.smtp_status ?? payload.smtpStatus);
+  const ip = sendingIp(payload.ip ?? payload.sending_ip ?? payload.sendingIp);
+  return {
+    providerEventId: providerEventIdValue,
+    providerMessageId: providerMessageId(payload.sg_message_id),
+    recipientEmail: recipient,
+    eventType,
+    failureType: derived.failureType,
+    reasonCode: derived.reasonCode,
+    bounceClassification: classification,
+    smtpStatus: status,
+    sendingIp: ip,
+    providerEventAt: providerEventAtValue,
+  };
 }
 
 export function parseSendgridEvent(value: unknown): ParsedSendgridEvent | null {
@@ -249,6 +415,7 @@ export function registerSendgridWebhookReceiver(
   const now = options.now ?? (() => new Date());
   const isKnownCorrelation = options.isKnownCorrelation ?? isKnownAccountEmailDeliveryCorrelation;
   const ingest = options.ingest ?? ingestAccountEmailDeliveryEvent;
+  const ingestAlert = options.ingestAlert ?? ingestEmailDeliveryAlert;
 
   app.post(
     SENDGRID_WEBHOOK_PATH,
@@ -312,21 +479,54 @@ export function registerSendgridWebhookReceiver(
       try {
         for (const rawEvent of payload) {
           const event = parseSendgridEvent(rawEvent);
-          if (!event || !(await isKnownCorrelation(event.correlation))) {
-            ignoredCount += 1;
-            continue;
+          const alert = parseSendgridDeliveryAlert(rawEvent);
+          let accepted = false;
+          let ignored = false;
+
+          // Ingest the independent operational alert first. This path does
+          // not require custom args or any tenant mapping, which preserves a
+          // failure event even when its account action is unknown.
+          if (alert) {
+            const alertResult = await ingestAlert({
+              providerEventId: alert.providerEventId,
+              providerMessageId: alert.providerMessageId,
+              recipientEmail: alert.recipientEmail,
+              eventType: alert.eventType,
+              failureType: alert.failureType,
+              reasonCode: alert.reasonCode,
+              bounceClassification: alert.bounceClassification,
+              smtpStatus: alert.smtpStatus,
+              sendingIp: alert.sendingIp,
+              providerEventAt: alert.providerEventAt,
+            });
+            accepted = true;
+            // Duplicate alerts are still accepted: SendGrid retries must be
+            // acknowledged once the durable idempotency key is present.
+            void alertResult;
           }
 
-          const result = await ingest({
-            providerEventId: event.providerEventId,
-            providerMessageId: event.providerMessageId,
-            accountActionId: event.correlation.accountActionId,
-            accountDeliveryJobId: event.correlation.accountDeliveryJobId,
-            eventType: event.eventType,
-            providerEventAt: event.providerEventAt,
-          });
-          if (result.ignored) ignoredCount += 1;
-          else acceptedCount += 1;
+          if (event) {
+            if (await isKnownCorrelation(event.correlation)) {
+              const result = await ingest({
+                providerEventId: event.providerEventId,
+                providerMessageId: event.providerMessageId,
+                accountActionId: event.correlation.accountActionId,
+                accountDeliveryJobId: event.correlation.accountDeliveryJobId,
+                eventType: event.eventType,
+                providerEventAt: event.providerEventAt,
+              });
+              if (result.ignored) ignored = true;
+              else accepted = true;
+            } else {
+              // Unknown correlation is expected for older, expired, or
+              // provider-replayed actions. It must not hide an alert parsed
+              // from the same failure event.
+              ignored = true;
+            }
+          }
+
+          if (accepted) acceptedCount += 1;
+          else if (ignored || !alert) ignoredCount += 1;
         }
       } catch (error) {
         // SQLSTATE is bounded diagnostic metadata. Avoid logging arbitrary

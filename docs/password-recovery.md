@@ -150,11 +150,20 @@ Configure a Signed Event Webhook at
 key in server-only `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY`. Enable processed,
 delivered, deferred, bounce, and dropped events. The receiver verifies the exact
 raw body plus timestamp using SendGrid's ECDSA signature, enforces a five-minute
-signature timestamp window, and deduplicates `sg_event_id`. It requires known,
-matching action/job IDs. Delayed events remain associated with their original
-action even after another attempt is issued. Database failures receive a
-retryable response. Missing or invalid signatures never enter the evidence
-store. No recipient, raw payload, provider reason, or link is retained.
+signature timestamp window, and deduplicates `sg_event_id`. Correlated account
+delivery evidence requires known, matching action/job IDs. Delayed events remain
+associated with their original action even after another attempt is issued.
+Database failures receive a retryable response. Missing or invalid signatures
+never enter the evidence store. Correlated account evidence retains no recipient,
+raw payload, provider reason, or link.
+
+Separately, validated bounce and dropped events are retained in the global Delivery
+Alerts feed for system administrators, even when no account action/job correlation
+is available. Those alerts retain the recipient and a bounded allowlist of
+operational metadata for the safe failure explanation, such as a failure
+classification, reason code, optional SMTP status and sending IP, and provider
+and received timestamps. They retain no raw payload, provider reason text, or
+link. See [SendGrid delivery alerts](sendgrid-delivery-alerts.md).
 
 An HTTP acceptance from SendGrid is recorded separately from subsequent
 mail delivery events. A delivered event is not proof that a human opened or

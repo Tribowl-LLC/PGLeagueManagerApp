@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(42);
+    expect(migrations).toHaveLength(44);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -480,6 +480,21 @@ describe('normalized migration baseline tools', () => {
     });
     expect(migrations[41]?.sql).toContain('ADD COLUMN "partner_evidence" jsonb');
     expect(migrations[41]?.sql).toContain('snapshot_version" = 3');
+    expect(migrations[42]).toMatchObject({
+      idx: 42,
+      tag: '0042_email_delivery_alerts',
+      createdAt: 1789519818432,
+      hash: '4428210f32ec99e880f3c45d863ac78c6e509f9587615bb67e4f377972749e89',
+    });
+    expect(migrations[43]).toMatchObject({
+      idx: 43,
+      tag: '0043_email_alert_frequency_volume',
+      createdAt: 1789521459246,
+      hash: 'd452f9c0296f63148e514ee36d479282330ff8d8dcba85bd62223ae66d831c15',
+    });
+    expect(migrations[43]?.sql).toContain(
+      'email_delivery_alerts_bounce_classification_check',
+    );
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

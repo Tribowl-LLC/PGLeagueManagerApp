@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0042_email_delivery_alerts",
+    "hash": "4428210f32ec99e880f3c45d863ac78c6e509f9587615bb67e4f377972749e89",
+    "createdAt": 1789519818432
+  },
+  "digest": "e749a42f395840380afbd6f5d068243f9339f51bc8d60ba07d2856accb9efa0b",
+  "counts": {
+    "tables": 68,
+    "columns": 928,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 26,
+    "constraints": 521,
+    "indexes": 285,
+    "types": 1,
+    "functions": 19,
+    "triggers": 33,
+    "policies": 0
+  }
+}
