@@ -61,7 +61,7 @@ function LeagueHealthCard({ leagueId, name, bowlerCount, pastDueBowlerCount, rev
                 ? "bg-warning-400"
                 : "bg-danger-500"
             }`}
-            style={{ "--progress-width": `${Math.max(pastDueRate > 0 ? 5 : 0, pastDueRate)}%` } as React.CSSProperties}
+            style={{ "--progress-width": `${Math.max(pastDueRate > 0 ? 5 : 0, pastDueRate)}%` }}
           />
         </div>
       </div>
