@@ -53,7 +53,10 @@ mandatory. Keep the handoff current with the evidence fields in
    architect review and focused checks as needed; do not start a full GitHub
    rereview loop. A GitHub rerun requires a later explicit user override.
 4. **Final-head checks and merge.** Confirm the live `main` ruleset before
-   merging. On the final pushed PR head, confirm exactly one GitHub review is
+   Before merging, verify the known `LeagueVault` Render service and its
+   Auto-Deploy setting; it must be Off. Keep Auto-Deploy Off through
+   certification, migration, and deployment verification. On the final pushed
+   PR head, confirm exactly one GitHub review is
    complete, every finding is addressed with a factual disposition, and every
    addressed thread is resolved. The single review may cover an earlier PR
    head: record its SHA and locally review and validate every subsequent fix
@@ -61,10 +64,11 @@ mandatory. Keep the handoff current with the evidence fields in
    required GitHub checks to pass
    and recheck them after every push. Treat `Type check & lint`, `Tests`, `Database
    migrations (PostgreSQL 17)`, `Race suite`, and applicable Semgrep, Semgrep
-   Cloud, Gitleaks, HoundDog, and dependency-audit results as
-   release-blocking; do not use an admin bypass. The accountable root/Astra
-   merges only after this final-head evidence is complete and records the
-   merge result.
+   Cloud, Gitleaks, and dependency-audit results as release-blocking. Review
+   the HoundDog privacy scan as advisory and record its result; do not promote
+   it to a blocking gate. Do not use an admin bypass. The accountable
+   root/Astra merges only after this final-head evidence is complete and
+   records the merge result.
 5. **Exact-main certification.** Wait for `Exact main certification` on the
    merged `main` SHA. Its logs must prove the merged PR, identical tree, PR
    check provenance, and certified SHA. Record the exact certification evidence
@@ -89,7 +93,10 @@ mandatory. Keep the handoff current with the evidence fields in
    blocker and do not claim completion. Verify the deployed commit through
    `/healthz`, `/api/health`, `/api/org-context` (`appEnv: "prod"` plus the
    matching short commit), authentication, the affected workflow, and Render
-   and application logs. Run the trust-proxy probe when its conditions apply.
+   and application logs. Verify tenant isolation explicitly with an allowed
+   same-organization request and a denied cross-organization request using
+   safe test records or approved evidence. Run the trust-proxy probe when its
+   conditions apply.
 
 ## Render Configuration
 

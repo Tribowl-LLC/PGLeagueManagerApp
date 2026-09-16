@@ -76,8 +76,11 @@ Preserve local paths and add shared references when portable artifacts exist.
 - Final-head GitHub checks SHA and results:
 - Merged certified SHA / Exact main certification evidence:
 - Migration: `N/A — no schema change` | `<backup, target, fingerprint, workflow, and pending=none evidence>`
+- Render service and Auto-Deploy-Off verification before merge:
 - Render deployment: `<known service, exact certified SHA, deploy ID, health/
   org-context/log evidence>`
+- Post-deploy tenant-isolation verification (same-org allowed / cross-org denied):
+- HoundDog advisory result:
 
 ## Completion
 
