@@ -34,6 +34,7 @@ vi.mock("../../server/storage", () => ({
 }));
 
 vi.mock("../../server/storage/account-action-delivery-jobs.js", () => ({ enqueuePasswordResetDelivery: vi.fn() }));
+vi.mock("../../server/storage/account-guidance-delivery-jobs.js", () => ({ enqueueAccountGuidanceNotice: vi.fn() }));
 vi.mock("../../server/services/account-action-delivery-scheduler.js", () => ({ notifyAccountActionDeliveryChanged: vi.fn() }));
 
 vi.mock("../../server/storage/account-action-requests.js", () => ({

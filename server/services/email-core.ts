@@ -129,6 +129,15 @@ export function safeAccountEmailDeliveryCustomArgs(
     : undefined;
 }
 
+/** Guidance notices carry only their durable, non-secret job correlation. */
+export function safeAccountGuidanceDeliveryCustomArgs(
+  jobId: number,
+): { account_guidance_job_id: string } | undefined {
+  return Number.isSafeInteger(jobId) && jobId > 0 && jobId <= 999_999_999_999
+    ? { account_guidance_job_id: String(jobId) }
+    : undefined;
+}
+
 function providerMessageIdFromResponse(value: unknown): string | null {
   const response = Array.isArray(value) ? value[0] : value;
   if (!response || typeof response !== 'object') return null;

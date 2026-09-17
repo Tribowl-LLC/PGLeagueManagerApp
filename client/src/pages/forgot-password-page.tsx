@@ -82,7 +82,7 @@ const ForgotPasswordPage: FC = () => {
               </div>
               <CardTitle size="2xl" weight="bold">Check your email</CardTitle>
               <CardDescription>
-                If an account exists for <strong>{email}</strong>, we've sent a password reset link. Please check your inbox and spam folder.
+                We've sent an email with next steps for <strong>{email}</strong>, when this address can be used with LeagueVault. Please check your inbox and spam folder.
               </CardDescription>
             </CardHeader>
             <CardFooter spacing="tight" className="flex flex-col items-center">

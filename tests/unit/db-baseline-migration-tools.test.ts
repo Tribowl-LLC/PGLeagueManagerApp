@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(45);
+    expect(migrations).toHaveLength(46);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -502,6 +502,12 @@ describe('normalized migration baseline tools', () => {
     });
     expect(migrations[44]?.sql).toContain('original.type = \'cash\'');
     expect(migrations[44]?.sql).toContain('roster payment evidence is append-only');
+    expect(migrations[45]).toMatchObject({
+      idx: 45,
+      tag: '0045_account_guidance_delivery_queue',
+      createdAt: 1789684823944,
+    });
+    expect(migrations[45]?.sql).toContain('CREATE TABLE "account_guidance_delivery_jobs"');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

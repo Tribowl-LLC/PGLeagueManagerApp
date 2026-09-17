@@ -1,5 +1,6 @@
 import { createLogger } from "../logger.js";
 import { getNextPasswordResetDeliveryAt } from "../storage/account-action-delivery-jobs.js";
+import { getNextAccountGuidanceDeliveryAt } from "../storage/account-guidance-delivery-jobs.js";
 
 const log = createLogger("AccountActionDeliveryScheduler");
 
@@ -22,7 +23,15 @@ export interface AccountActionDeliverySchedulerDependencies {
 }
 
 const defaultDependencies: AccountActionDeliverySchedulerDependencies = {
-  findNextDueAt: getNextPasswordResetDeliveryAt,
+  findNextDueAt: async () => {
+    const [passwordReset, accountGuidance] = await Promise.all([
+      getNextPasswordResetDeliveryAt(),
+      getNextAccountGuidanceDeliveryAt(),
+    ]);
+    if (!passwordReset) return accountGuidance;
+    if (!accountGuidance) return passwordReset;
+    return passwordReset.getTime() <= accountGuidance.getTime() ? passwordReset : accountGuidance;
+  },
   now: () => Date.now(),
   setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimer: (timer) => clearTimeout(timer),

@@ -19,6 +19,10 @@ const mockEnqueueRegistration = vi.fn(async () => ({
   kind: "enqueued" as const,
   job: { id: 123 },
 }));
+const mockEnqueueGuidance = vi.fn(async (..._args: unknown[]) => ({
+  kind: "enqueued" as const,
+  job: { id: 789 },
+}));
 const mockIdentityLink = vi.fn();
 const mockHashPassword = vi.fn(async (password: string) => `hashed:${password}`);
 
@@ -46,6 +50,9 @@ vi.mock("../../server/storage/account-action-delivery-jobs", () => ({
   resumePendingAccountRegistration: (input: unknown) => mockResumeRegistration(input),
   enqueuePasswordResetDelivery: vi.fn(async () => ({ kind: "enqueued", job: { id: 456 } })),
   getNextPasswordResetDeliveryAt: vi.fn(async () => null),
+}));
+vi.mock("../../server/storage/account-guidance-delivery-jobs", () => ({
+  enqueueAccountGuidanceNotice: (...args: unknown[]) => mockEnqueueGuidance(...args as []),
 }));
 
 vi.mock("../../server/db", () => ({
@@ -133,6 +140,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockEnqueueGuidance.mockResolvedValue({ kind: "enqueued", job: { id: 789 } });
   mockGetUserByEmail.mockResolvedValue(undefined);
   mockResumeRegistration.mockResolvedValue(undefined);
   mockCreateUser.mockResolvedValue({
@@ -176,12 +184,14 @@ describe("POST /api/auth/register — email-first boundaries", () => {
     expect(mockIdentityLink).not.toHaveBeenCalled();
   });
 
-  it("uses the same generic acknowledgement for an existing account and does not enqueue or mutate it", async () => {
+  it("uses the same generic acknowledgement for an existing account and queues guidance without mutating it", async () => {
     mockGetUserByEmail.mockResolvedValue({
       id: 401,
       email: "existing@example.com",
       role: "org_admin",
       phone: "2025550000",
+      password: "existing-password-hash",
+      organizationId: 5,
     });
     const res = await fetch(`${baseUrl}/api/auth/register`, {
       method: "POST",
@@ -199,6 +209,12 @@ describe("POST /api/auth/register — email-first boundaries", () => {
     expect((await res.json()).data).toEqual(expect.objectContaining({ status: "pending" }));
     expect(mockCreateUser).not.toHaveBeenCalled();
     expect(mockEnqueueRegistration).not.toHaveBeenCalled();
+    expect(mockEnqueueGuidance).toHaveBeenCalledWith({
+      recipientEmail: "existing@example.com",
+      noticeType: "account_exists",
+      userId: 401,
+      organizationId: 5,
+    });
     expect(mockIdentityLink).not.toHaveBeenCalled();
   });
 
@@ -245,6 +261,24 @@ describe("POST /api/auth/register — email-first boundaries", () => {
     });
     expect(mockCreateUser).not.toHaveBeenCalled();
     expect(mockEnqueueRegistration).not.toHaveBeenCalled();
+    expect(mockEnqueueGuidance).not.toHaveBeenCalled();
+  });
+
+  it("queues a registration link for an unknown forgot-password address without creating an account", async () => {
+    const res = await fetch(`${baseUrl}/api/auth/forgot-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: " unknown@example.com " }),
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.message).toContain("email with next steps");
+    expect(mockEnqueueGuidance).toHaveBeenCalledWith({
+      recipientEmail: "unknown@example.com",
+      noticeType: "account_missing",
+      organizationId: 5,
+    });
+    expect(mockCreateUser).not.toHaveBeenCalled();
   });
 
   it("does the same expensive hash work for valid new and duplicate submissions", async () => {

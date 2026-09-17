@@ -59,9 +59,13 @@ vi.mock('../../server/logger', () => ({
 // --- External dep mocks. Hoisted by vitest. ----------------------
 
 const mockEnqueueReset = vi.fn();
+const mockEnqueueGuidance = vi.fn(async (..._args: unknown[]) => ({ kind: "suppressed", reason: "cooldown" }));
 const mockNotifyReset = vi.fn();
 vi.mock('../../server/storage/account-action-delivery-jobs.js', () => ({
   enqueuePasswordResetDelivery: (...args: unknown[]) => mockEnqueueReset(...args),
+}));
+vi.mock('../../server/storage/account-guidance-delivery-jobs.js', () => ({
+  enqueueAccountGuidanceNotice: (...args: unknown[]) => mockEnqueueGuidance(...args),
 }));
 vi.mock('../../server/services/account-action-delivery-scheduler.js', () => ({
   notifyAccountActionDeliveryChanged: () => mockNotifyReset(),
@@ -91,6 +95,7 @@ vi.mock('../../server/storage', () => ({
       mockHasRecentlyDeliveredPendingAccountAction.apply(null, a as never),
     getOrganization: (...a: unknown[]) =>
       mockGetOrganization.apply(null, a as never),
+    getActiveOrganizations: vi.fn(async () => []),
     // Defensively stub the surfaces auth.ts also touches in success
     // branches we don't drive here, so an accidental reachable path
     // can't blow up with a TypeError that masks the real assertion.
@@ -247,6 +252,8 @@ beforeEach(() => {
   mockGetAccountActionByToken.mockReset();
   mockConsumeAccountAction.mockReset();
   mockIssueAccountAction.mockReset();
+  mockEnqueueGuidance.mockReset();
+  mockEnqueueGuidance.mockResolvedValue({ kind: "suppressed", reason: "cooldown" });
   mockUpdateAccountActionDeliveryStatus.mockClear();
   mockHasRecentlyDeliveredPendingAccountAction.mockReset();
   mockHasRecentlyDeliveredPendingAccountAction.mockResolvedValue(false);

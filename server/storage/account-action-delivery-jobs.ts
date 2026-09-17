@@ -343,6 +343,47 @@ export async function resumePendingAccountRegistration(
   });
 }
 
+/**
+ * Recheck whether a user is still an unfinished email-first registration.
+ * The placeholder password is intentionally not a completion signal: every
+ * registration row has one so the login strategy remains uniform. Match the
+ * durable origin and current credential generation, then require that no
+ * registration action has been consumed. The organization is deliberately
+ * not part of this lookup so a moved pending account cannot be misreported as
+ * an established login when a request arrives on its former tenant.
+ */
+export async function hasCurrentUnfinishedAccountRegistration(input: {
+  userId: number;
+  role: string;
+  credentialGeneration: number;
+}, executor: AccountActionDeliveryJobExecutor = db): Promise<boolean> {
+  if (input.role !== "user") return false;
+  return runInTransaction(executor, async (tx) => {
+    const [origin] = await tx
+      .select({ id: accountActionDeliveryJobs.id })
+      .from(accountActionDeliveryJobs)
+      .where(and(
+        eq(accountActionDeliveryJobs.userId, input.userId),
+        eq(accountActionDeliveryJobs.action, "account_registration"),
+        eq(accountActionDeliveryJobs.credentialGeneration, input.credentialGeneration),
+      ))
+      .orderBy(desc(accountActionDeliveryJobs.createdAt), desc(accountActionDeliveryJobs.id))
+      .limit(1);
+    if (!origin) return false;
+
+    const [completed] = await tx
+      .select({ id: accountActionRequests.id })
+      .from(accountActionRequests)
+      .where(and(
+        eq(accountActionRequests.userId, input.userId),
+        eq(accountActionRequests.action, "account_registration"),
+        eq(accountActionRequests.status, "consumed"),
+      ))
+      .limit(1);
+    return completed === undefined;
+  });
+}
+
 /** Earliest due intent for the one-shot process-local scheduler. */
 export async function getNextPasswordResetDeliveryAt(): Promise<Date | null> {
   const [row] = await db

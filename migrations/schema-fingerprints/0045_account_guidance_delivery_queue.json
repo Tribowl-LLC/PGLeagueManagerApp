@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0045_account_guidance_delivery_queue",
+    "hash": "fa5757a94f488d054fe283f9b2aaad9c6f5e5d25790088e65e9d9c6ba1b4d55b",
+    "createdAt": 1789684823944
+  },
+  "digest": "9376819079a28c71438ac493b88f9300acf69000febef3f7fbd0a7bead6ffcb8",
+  "counts": {
+    "tables": 69,
+    "columns": 946,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 27,
+    "constraints": 528,
+    "indexes": 290,
+    "types": 1,
+    "functions": 19,
+    "triggers": 33,
+    "policies": 0
+  }
+}
