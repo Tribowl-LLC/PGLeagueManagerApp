@@ -32,6 +32,7 @@ import {
   enqueueAccountRegistrationDelivery,
   resumePendingAccountRegistration,
 } from "../storage/account-action-delivery-jobs.js";
+import { enqueueAccountGuidanceNotice } from "../storage/account-guidance-delivery-jobs.js";
 import { notifyAccountActionDeliveryChanged } from "../services/account-action-delivery-scheduler.js";
 import { isNormalizedUserEmailConflict } from "../utils/db-errors.js";
 import { phoneSchema } from "@shared/schema/constants";
@@ -292,7 +293,7 @@ export function registerAuthRoutes(app: Express): void {
   const authRouter = Router();
 
   const registrationSession = (req: Request) => req.session.pendingRegistration;
-  const registrationGenericMessage = "If this email can be used for registration, a setup link will be sent.";
+  const registrationGenericMessage = "If this email can be used for registration, an email with next steps will be sent.";
 
   authRouter.get("/registration/availability", async (req, res) => {
     res.set("Cache-Control", "no-store");
@@ -351,7 +352,8 @@ export function registerAuthRoutes(app: Express): void {
       // exception: a user who lost the anonymous browser session may resume
       // delivery, but the durable helper rechecks the locked user, tenant,
       // role, generation, origin job, and completion state before doing so.
-      if (await storage.getUserByEmail(email)) {
+      const existingUser = await storage.getUserByEmail(email);
+      if (existingUser) {
         const resumed = await resumePendingAccountRegistration({
           email,
           organizationId: registrationOrganizationId,
@@ -365,6 +367,14 @@ export function registerAuthRoutes(app: Express): void {
             createdAt: Date.now(),
           };
           if (resumed.delivery.kind === "enqueued") notifyAccountActionDeliveryChanged();
+        } else {
+          const guidance = await enqueueAccountGuidanceNotice({
+            recipientEmail: email,
+            noticeType: "account_exists",
+            userId: existingUser.id,
+            organizationId: existingUser.organizationId,
+          });
+          if (guidance.kind === "enqueued") notifyAccountActionDeliveryChanged();
         }
         return sendSuccess(res, { status: "pending", email: maskEmail(email), message: registrationGenericMessage }, 202);
       }
@@ -916,12 +926,15 @@ export function registerAuthRoutes(app: Express): void {
     // connection while waiting. The rate limiter remains the abuse boundary.
     const responseNotBefore = Date.now() + 250;
     try {
-      const { email } = req.body;
-      if (!email || typeof email !== 'string') {
-        return sendError(res, "Email is required", 400, "VALIDATION_ERROR");
+      const parsed = z.object({
+        email: z.string().trim().max(320, "Email address is too long").email("Invalid email address"),
+      }).safeParse(req.body);
+      if (!parsed.success) {
+        return sendError(res, "A valid email address is required", 400, "VALIDATION_ERROR");
       }
 
-      const user = await storage.getUserByEmail(email.trim().toLowerCase());
+      const email = parsed.data.email.toLowerCase();
+      const user = await storage.getUserByEmail(email);
       if (user?.password) {
         // Commit the non-secret intent before acknowledging the request. A
         // process crash after the response cannot silently lose this email.
@@ -937,10 +950,25 @@ export function registerAuthRoutes(app: Express): void {
         } else {
           log.info("Password-reset delivery suppressed", { reason: result.reason });
         }
+      } else if (!user) {
+        const registrationOrganization = await resolveRegistrationOrganization(req);
+        if (registrationOrganization) {
+          const result = await enqueueAccountGuidanceNotice({
+            recipientEmail: email,
+            noticeType: "account_missing",
+            organizationId: registrationOrganization.id,
+          });
+          if (result.kind === "enqueued") {
+            notifyAccountActionDeliveryChanged();
+            log.info("Account-guidance delivery queued", { jobId: result.job.id });
+          } else {
+            log.info("Account-guidance delivery suppressed", { reason: result.reason });
+          }
+        }
       }
       const remaining = responseNotBefore - Date.now();
       if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
-      sendSuccess(res, { message: "If an account exists with that email, a password reset link will be sent." });
+      sendSuccess(res, { message: "If this email can be used for a LeagueVault account, an email with next steps will be sent." });
     } catch (error) {
       log.error('Forgot password request failed', { errorType: error instanceof Error ? error.name : 'unknown' });
       sendError(res, "Something went wrong", 500, "SERVER_ERROR");

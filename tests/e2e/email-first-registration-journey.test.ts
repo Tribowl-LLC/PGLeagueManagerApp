@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from 'vitest';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 
 // Exercise the real registration renderer and blocked-recipient outbox. No
 // provider credentials or production recipients are used, even when the
@@ -41,6 +41,175 @@ type BrowserRouteState = {
   activeHandlers: Set<Promise<void>>;
   unexpectedErrors: unknown[];
 };
+
+type RegistrationBrowserDiagnostics = {
+  phase?: string;
+  url?: string;
+  readyState?: string;
+  title?: string;
+  bodyText?: string;
+  labels?: string[];
+  buttons?: string[];
+  availability?: unknown;
+  pageErrors: string[];
+  consoleErrors: string[];
+  failedRequests: string[];
+  responses: string[];
+  registrationResponse?: { status: number; body: string };
+  activeOrganizations?: {
+    beforeCallback?: unknown;
+    beforePost?: unknown;
+    afterPost?: unknown;
+  };
+  screenshot?: string;
+};
+
+type BrowserOrganizationIsolationDiagnostics = {
+  beforeCallback?: unknown;
+};
+
+function diagnosticPath(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return '<invalid-url>';
+  }
+}
+
+function redactDiagnosticText(value: string): string {
+  return value
+    .replace(/([?&](?:token|key|secret|code|signature)=)[^&\s"']+/gi, '$1<redacted>')
+    .slice(0, 4_000);
+}
+
+function appendDiagnostic(values: string[], value: string): void {
+  if (values.length < 50) values.push(value);
+}
+
+function installRegistrationDiagnostics(page: Page): {
+  diagnostics: Pick<RegistrationBrowserDiagnostics, 'pageErrors' | 'consoleErrors' | 'failedRequests' | 'responses'>;
+  dispose: () => void;
+} {
+  const diagnostics = {
+    pageErrors: [] as string[],
+    consoleErrors: [] as string[],
+    failedRequests: [] as string[],
+    responses: [] as string[],
+  };
+  const onPageError = (error: Error) => {
+    appendDiagnostic(diagnostics.pageErrors, redactDiagnosticText(error.message));
+  };
+  const onConsole = (message: { type(): string; text(): string }) => {
+    if (message.type() === 'warning' || message.type() === 'error') {
+      appendDiagnostic(diagnostics.consoleErrors, redactDiagnosticText(`${message.type()}: ${message.text()}`));
+    }
+  };
+  const onRequestFailed = (request: { method(): string; url(): string; failure(): { errorText?: string } | null }) => {
+    const failure = request.failure()?.errorText ?? 'unknown';
+    appendDiagnostic(diagnostics.failedRequests, `${request.method()} ${diagnosticPath(request.url())} — ${redactDiagnosticText(failure)}`);
+  };
+  const onResponse = (response: { status(): number; url(): string; request(): { resourceType(): string; method(): string } }) => {
+    const request = response.request();
+    const path = diagnosticPath(response.url());
+    if (request.resourceType() === 'document' || path.includes('/api/auth/')) {
+      appendDiagnostic(diagnostics.responses, `${request.method()} ${path} → ${response.status()}`);
+    }
+  };
+  page.on('pageerror', onPageError);
+  page.on('console', onConsole);
+  page.on('requestfailed', onRequestFailed);
+  page.on('response', onResponse);
+  return {
+    diagnostics,
+    dispose: () => {
+      page.off('pageerror', onPageError);
+      page.off('console', onConsole);
+      page.off('requestfailed', onRequestFailed);
+      page.off('response', onResponse);
+    },
+  };
+}
+
+async function collectRegistrationDiagnostics(
+  page: Page,
+  captured: Pick<RegistrationBrowserDiagnostics, 'pageErrors' | 'consoleErrors' | 'failedRequests' | 'responses'>,
+  extra: Pick<RegistrationBrowserDiagnostics, 'phase' | 'registrationResponse' | 'activeOrganizations'> = {},
+): Promise<RegistrationBrowserDiagnostics> {
+  const diagnostics: RegistrationBrowserDiagnostics = {
+    ...captured,
+    ...extra,
+  };
+  try {
+    diagnostics.url = diagnosticPath(page.url());
+    const pageState = await page.evaluate(() => ({
+      readyState: document.readyState,
+      title: document.title,
+      bodyText: document.body?.innerText ?? '',
+      labels: Array.from(document.querySelectorAll('label')).map((element) => element.textContent?.trim() ?? '').filter(Boolean),
+      buttons: Array.from(document.querySelectorAll('button')).map((element) => element.textContent?.trim() ?? '').filter(Boolean),
+    }));
+    diagnostics.readyState = pageState.readyState;
+    diagnostics.title = pageState.title;
+    diagnostics.bodyText = redactDiagnosticText(pageState.bodyText);
+    diagnostics.labels = pageState.labels.slice(0, 50);
+    diagnostics.buttons = pageState.buttons.slice(0, 50);
+  } catch (error) {
+    diagnostics.bodyText = `<page inspection failed: ${error instanceof Error ? error.message : String(error)}>`;
+  }
+  try {
+    diagnostics.availability = await page.evaluate(async () => {
+      const response = await fetch('/api/auth/registration/availability', {
+        credentials: 'include',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3_000),
+      });
+      const body = await response.text();
+      return { status: response.status, body: body.slice(0, 1_000) };
+    });
+    if (diagnostics.availability && typeof diagnostics.availability === 'object' && 'body' in diagnostics.availability) {
+      const availability = diagnostics.availability as { body?: unknown };
+      if (typeof availability.body === 'string') {
+        availability.body = redactDiagnosticText(availability.body).slice(0, 1_000);
+      }
+    }
+  } catch (error) {
+    diagnostics.availability = { error: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    const screenshot = `.local/email-first-registration-failure-${process.pid}-${Date.now()}.png`;
+    await page.screenshot({ path: screenshot, fullPage: true, timeout: 3_000 });
+    diagnostics.screenshot = screenshot;
+  } catch (error) {
+    diagnostics.screenshot = `<screenshot failed: ${error instanceof Error ? error.message : String(error)}>`;
+  }
+  return diagnostics;
+}
+
+async function activeOrganizationRows(): Promise<unknown> {
+  try {
+    const rows = (await db.select({
+      id: organizations.id,
+      slug: organizations.slug,
+      subdomain: organizations.subdomain,
+      active: organizations.active,
+    }).from(organizations).where(eq(organizations.active, true)).limit(50))
+      .map((row) => ({ ...row }));
+    const databaseResult = await db.execute(sql`SELECT current_database() AS database_name`);
+    const databaseName = (databaseResult.rows[0] as { database_name?: unknown } | undefined)?.database_name;
+    return {
+      currentDatabase: typeof databaseName === 'string' ? databaseName : '<unknown>',
+      vitestPoolId: process.env.VITEST_POOL_ID ?? '<unset>',
+      activeOrganizations: rows,
+    };
+  } catch (error) {
+    return {
+      currentDatabase: '<query-failed>',
+      vitestPoolId: process.env.VITEST_POOL_ID ?? '<unset>',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
 
 function isRouteLifecycleError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -214,64 +383,97 @@ function watchForbiddenProfileRequests(page: Page): string[] {
 async function startRegistration(
   context: BrowserContext,
   input: { email: string; name: string; host?: string },
+  isolationDiagnostics?: BrowserOrganizationIsolationDiagnostics,
 ): Promise<{ page: Page; forbiddenRequests: string[]; user: typeof users.$inferSelect }> {
   const page = await context.newPage();
   const forbiddenRequests = watchForbiddenProfileRequests(page);
+  const browserDiagnostics = installRegistrationDiagnostics(page);
   const host = input.host ?? EXPECTED_HOST;
   const signupPath = '/signup';
-  await page.goto(`https://${host}${signupPath}`);
-  await page.getByLabel('Full Name', { exact: true }).fill(input.name);
-  await page.getByLabel('Email Address', { exact: true }).fill(input.email);
-  await page.getByLabel('Phone Number', { exact: true }).fill(SIGNUP_PHONE);
+  let phase = 'load-and-fill';
+  let registrationFailureResponse: { status: number; body: string } | undefined;
+  let activeOrganizationsBeforePost: unknown;
+  let activeOrganizationsAfterPost: unknown;
+  try {
+    await page.goto(`https://${host}${signupPath}`);
+    await page.getByLabel('Full Name', { exact: true }).fill(input.name);
+    await page.getByLabel('Email Address', { exact: true }).fill(input.email);
+    await page.getByLabel('Phone Number', { exact: true }).fill(SIGNUP_PHONE);
+    phase = 'submit-registration';
+    activeOrganizationsBeforePost = await activeOrganizationRows();
+    const requestPromise = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return request.method() === 'POST' && url.pathname === '/api/auth/register';
+    });
+    const responsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return response.request().method() === 'POST' && url.pathname === '/api/auth/register';
+    });
+    await page.getByRole('button', { name: /create account/i }).click();
+    const [request, response] = await Promise.all([requestPromise, responsePromise]);
+    let registrationResponseBody = '';
+    if (response.status() !== 202) {
+      try {
+        registrationResponseBody = redactDiagnosticText(await response.text());
+      } catch (error) {
+        registrationResponseBody = `<response body unavailable: ${error instanceof Error ? error.message : String(error)}>`;
+      }
+      registrationFailureResponse = { status: response.status(), body: registrationResponseBody };
+      activeOrganizationsAfterPost = await activeOrganizationRows();
+    }
+    expect(response.status()).toBe(202);
 
-  const requestPromise = page.waitForRequest((request) => {
-    const url = new URL(request.url());
-    return request.method() === 'POST' && url.pathname === '/api/auth/register';
-  });
-  const responsePromise = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return response.request().method() === 'POST' && url.pathname === '/api/auth/register';
-  });
-  await page.getByRole('button', { name: /create account/i }).click();
-  const [request, response] = await Promise.all([requestPromise, responsePromise]);
-  expect(response.status()).toBe(202);
+    const body = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
+    expect(body).toEqual({
+      name: input.name,
+      email: input.email,
+      phone: SIGNUP_PHONE,
+    });
+    expect(body).not.toHaveProperty('password');
 
-  const body = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
-  expect(body).toEqual({
-    name: input.name,
-    email: input.email,
-    phone: SIGNUP_PHONE,
-  });
-  expect(body).not.toHaveProperty('password');
+    // The response is a check-email success state, not an authenticated app
+    // session. The anonymous session itself is the capability for status/resend.
+    phase = 'wait-for-registration-email';
+    await page.getByText('Check your email', { exact: true }).waitFor();
+    // Exercise a fresh document/query cache on the waiting URL for both the
+    // organization and canonical-root hosts. The background /api/user request
+    // is naturally unauthenticated and must not redirect this public page.
+    await page.goto(`https://${host}/registration-email`);
+    await page.getByText('Check your email', { exact: true }).waitFor();
+    await page.reload();
+    await page.getByText('Check your email', { exact: true }).waitFor();
+    const cookies = await context.cookies();
+    expect(cookies.some((cookie) => cookie.name === 'connect.sid')).toBe(true);
+    const authBeforeSetup = await page.evaluate(async () => (
+      await fetch('/api/auth/user', { credentials: 'include' })
+    ).status);
+    expect(authBeforeSetup).toBe(401);
+    const registrationStatus = await page.evaluate(async () => {
+      const response = await fetch('/api/auth/registration/status', { credentials: 'include' });
+      return { status: response.status, body: await response.json() as { data?: { status?: unknown } } };
+    });
+    expect(registrationStatus.status).toBe(200);
+    expect(registrationStatus.body.data?.status).toBe('pending');
 
-  // The response is a check-email success state, not an authenticated app
-  // session. The anonymous session itself is the capability for status/resend.
-  await page.getByText('Check your email', { exact: true }).waitFor();
-  // Exercise a fresh document/query cache on the waiting URL for both the
-  // organization and canonical-root hosts. The background /api/user request
-  // is naturally unauthenticated and must not redirect this public page.
-  await page.goto(`https://${host}/registration-email`);
-  await page.getByText('Check your email', { exact: true }).waitFor();
-  await page.reload();
-  await page.getByText('Check your email', { exact: true }).waitFor();
-  const cookies = await context.cookies();
-  expect(cookies.some((cookie) => cookie.name === 'connect.sid')).toBe(true);
-  const authBeforeSetup = await page.evaluate(async () => (
-    await fetch('/api/auth/user', { credentials: 'include' })
-  ).status);
-  expect(authBeforeSetup).toBe(401);
-  const registrationStatus = await page.evaluate(async () => {
-    const response = await fetch('/api/auth/registration/status', { credentials: 'include' });
-    return { status: response.status, body: await response.json() as { data?: { status?: unknown } } };
-  });
-  expect(registrationStatus.status).toBe(200);
-  expect(registrationStatus.body.data?.status).toBe('pending');
-
-  const user = await waitForUser(input.email);
-  expect(user.password).toEqual(expect.any(String));
-  expect(user.bowlerId).toBeNull();
-  expect(user.phone).toBe(SIGNUP_PHONE);
-  return { page, forbiddenRequests, user };
+    const user = await waitForUser(input.email);
+    expect(user.password).toEqual(expect.any(String));
+    expect(user.bowlerId).toBeNull();
+    expect(user.phone).toBe(SIGNUP_PHONE);
+    return { page, forbiddenRequests, user };
+  } catch (error) {
+    const diagnostics = await collectRegistrationDiagnostics(page, browserDiagnostics.diagnostics, {
+      phase,
+      registrationResponse: registrationFailureResponse,
+      activeOrganizations: {
+        beforeCallback: isolationDiagnostics?.beforeCallback,
+        beforePost: activeOrganizationsBeforePost,
+        afterPost: activeOrganizationsAfterPost,
+      },
+    });
+    throw new Error(`Registration browser flow failed: ${JSON.stringify(diagnostics)}`, { cause: error });
+  } finally {
+    browserDiagnostics.dispose();
+  }
 }
 
 async function openAndReloadSetup(page: Page, setupUrl: URL, userId: number): Promise<void> {
@@ -309,7 +511,11 @@ async function waitForAuthenticatedLanding(page: Page, expectedPath: '/bowler-da
   expect(authAfterSetup).toBe(200);
 }
 
-async function withOnlyBrowserOrganization<T>(callback: () => Promise<T>): Promise<T> {
+async function withOnlyBrowserOrganization<T>(
+  callback: () => Promise<T>,
+  isolationDiagnostics?: BrowserOrganizationIsolationDiagnostics,
+): Promise<T> {
+  if (isolationDiagnostics) isolationDiagnostics.beforeCallback = await activeOrganizationRows();
   const activeRows = await db
     .select({ id: organizations.id })
     .from(organizations)
@@ -488,13 +694,14 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
     clearCapturedEmails();
     await installRegistrationTemplate();
     const context = await createBrowserContext();
+    const isolationDiagnostics: BrowserOrganizationIsolationDiagnostics = {};
     try {
       await withOnlyBrowserOrganization(async () => {
         await startRegistration(context, {
           email: ROOT_EMAIL,
           name: 'Root Waiting User',
           host: ROOT_HOST,
-        });
+        }, isolationDiagnostics);
         const directPage = await context.newPage();
         await directPage.goto(`https://${ROOT_HOST}/registration-email`);
         await directPage.getByText('Check your email', { exact: true }).waitFor();
@@ -507,7 +714,7 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
         });
         expect(status.status).toBe(200);
         expect(status.body.data?.status).toBe('pending');
-      });
+      }, isolationDiagnostics);
     } finally {
       await closeContextAfterRoutesDrain(context);
     }

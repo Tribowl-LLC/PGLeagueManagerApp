@@ -306,8 +306,8 @@ const RegistrationEmailPage: FC = () => {
     return shell(
       <>
         <CardHeader spacing="relaxed" className="text-center">
-          <CardTitle>Continue registration</CardTitle>
-          <CardDescription>We couldn't find an active registration session in this browser. If you already have an account, sign in or reset your password. Otherwise, start registration again with the same email address.</CardDescription>
+          <CardTitle>Check your email</CardTitle>
+          <CardDescription>If you recently requested registration help, check your email for next steps. If you already have an account, sign in or reset your password. Otherwise, start registration again with the same email address.</CardDescription>
         </CardHeader>
         <CardFooter spacing="normal" className="flex flex-col">
           <Button asChild className="w-full" data-testid="link-registration-continue"><Link href="/sign-up">Continue sign-up</Link></Button>

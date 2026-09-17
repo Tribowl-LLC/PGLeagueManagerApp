@@ -66,7 +66,7 @@ describe("RegistrationEmailPage delivery states", () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/user' ? anonymous() : missing()));
     renderPage();
 
-    expect(await screen.findByText("Continue registration", { exact: true })).toBeInTheDocument();
+    expect(await screen.findByText("Check your email", { exact: true })).toBeInTheDocument();
     expect(screen.getByTestId("link-registration-continue")).toHaveTextContent("Continue sign-up");
     expect(screen.getByTestId("link-registration-sign-in")).toHaveTextContent("Sign in");
     expect(screen.getByTestId("link-registration-forgot-password")).toHaveTextContent("Forgot password?");
@@ -126,7 +126,7 @@ describe('RegistrationEmailPage recovery', () => {
     vi.stubGlobal('fetch', fetchMock);
     appQueryClient.clear();
     renderPage(appQueryClient);
-    await screen.findByText("We couldn't find an active registration session in this browser. If you already have an account, sign in or reset your password. Otherwise, start registration again with the same email address.");
+    await screen.findByText("If you recently requested registration help, check your email for next steps. If you already have an account, sign in or reset your password. Otherwise, start registration again with the same email address.");
     await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(captureException).not.toHaveBeenCalled();

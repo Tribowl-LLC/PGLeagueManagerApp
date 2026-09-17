@@ -36,7 +36,15 @@ vi.mock('../../server/services/email-core', async (importActual) => {
     SENDGRID_API_KEY: 'SG.test-key',
     FROM_EMAIL: 'noreply@test.example',
     FROM_NAME: 'LeagueVault',
-    getBaseUrl: () => 'https://test.example',
+    getBaseUrl: (orgOrSlug?: unknown) => {
+      const host = typeof orgOrSlug === 'string'
+        ? orgOrSlug
+        : orgOrSlug && typeof orgOrSlug === 'object'
+          ? ((orgOrSlug as { subdomain?: string | null; slug?: string | null }).subdomain
+            || (orgOrSlug as { slug?: string | null }).slug)
+          : null;
+      return host ? `https://${host}.test.example` : 'https://test.example';
+    },
     log: {
       info: (...args: unknown[]) => { infoLogs.push(args); },
       error: vi.fn(),
@@ -55,7 +63,7 @@ vi.mock('../../server/storage', () => ({
   storage: { getOrganization: vi.fn(async () => undefined) },
 }));
 
-const { sendInviteEmail, sendPasswordResetFallbackEmail } = await import(
+const { sendAccountGuidanceEmail, sendInviteEmail, sendPasswordResetFallbackEmail } = await import(
   '../../server/services/email-auth'
 );
 const { classifyEmailProviderFailure } = await import('../../server/services/email-core');
@@ -134,6 +142,28 @@ describe('email-auth fallback senders — HTML injection guard', () => {
     const { html } = dispatched[0];
     expect(html).not.toContain('<img src=x onerror=');
     expect(html).toContain(XSS_ESCAPED);
+  });
+
+  it('renders account guidance with escaped names and the trusted tenant links', async () => {
+    mockDispatchMail.mockImplementationOnce(async (msg: { html: string; customArgs?: Record<string, string> }) => {
+      dispatched.push(msg);
+      return { accepted: true, providerMessageId: 'sg-guidance-message' };
+    });
+
+    const result = await sendAccountGuidanceEmail({
+      toEmail: 'recipient@test.example',
+      userName: XSS,
+      noticeType: 'account_exists',
+      organization: { name: 'Tenant A', subdomain: 'tenant-a', slug: 'ignored-slug' },
+      guidanceJobId: 17,
+    });
+
+    expect(result).toEqual({ accepted: true, providerMessageId: 'sg-guidance-message' });
+    expect(dispatched[0]?.html).not.toContain('<img src=x onerror=');
+    expect(dispatched[0]?.html).toContain(XSS_ESCAPED);
+    expect(dispatched[0]?.html).toContain('https://tenant-a.test.example/forgot-password');
+    expect(dispatched[0]?.html).toContain('https://tenant-a.test.example/login');
+    expect(dispatched[0]?.customArgs).toEqual({ account_guidance_job_id: '17' });
   });
 
   it('adds only string action/job correlation IDs and returns provider metadata on request', async () => {

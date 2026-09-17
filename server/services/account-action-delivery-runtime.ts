@@ -9,7 +9,16 @@ import {
   sendTemplatedEmail,
   type EmailDispatchResult,
 } from './email-core';
-import { sendAccountRegistrationFallbackEmail, sendPasswordResetFallbackEmail } from './email-auth';
+import {
+  sendAccountGuidanceEmail,
+  sendAccountRegistrationFallbackEmail,
+  sendPasswordResetFallbackEmail,
+} from './email-auth';
+import {
+  AccountGuidanceDeliveryWorker,
+  runAccountGuidanceFairSweep,
+  type AccountGuidanceProviderOutcome,
+} from './account-guidance-delivery-worker';
 
 export function emailProviderOutcome(result: EmailDispatchResult, action: "password_reset" | "account_registration") {
   if (result.accepted) {
@@ -84,15 +93,50 @@ export const accountActionDeliveryWorker = new AccountActionDeliveryWorker({
   send: sendAccountActionEmail,
 });
 
+export const accountGuidanceDeliveryWorker = new AccountGuidanceDeliveryWorker({
+  send: async ({ job, target }): Promise<AccountGuidanceProviderOutcome> => {
+    const result = await sendAccountGuidanceEmail({
+      toEmail: target.recipientEmail,
+      userName: target.userName,
+      noticeType: job.noticeType,
+      organization: target.organization,
+      guidanceJobId: job.id,
+    });
+    if (result.accepted) {
+      return { kind: "accepted", providerMessageId: result.providerMessageId };
+    }
+    return {
+      kind: "failed",
+      errorCode: result.failureReason ?? "provider_not_accepted",
+      retryable: result.failureReason !== "not_configured"
+        && result.failureReason !== "render_error"
+        && result.failureReason !== "provider_rejected",
+    };
+  },
+});
+
+// Guidance notices are lower priority than credential actions. Keep each
+// shared scheduler sweep small so a provider outage or recipient flood cannot
+// hold a newly queued password reset behind 100 sequential 30-second timeouts.
+export const ACCOUNT_GUIDANCE_SWEEP_BATCH_SIZE = 5;
+
 export async function startAccountActionDelivery(): Promise<void> {
   await accountActionDeliveryWorker.start();
+  await accountGuidanceDeliveryWorker.start();
   await startAccountActionDeliveryScheduler(async () => {
     await accountActionDeliveryWorker.recoverOnStartup();
     await accountActionDeliveryWorker.runUntilIdle();
+    await accountGuidanceDeliveryWorker.recoverOnStartup();
+    await runAccountGuidanceFairSweep({
+      runCredentialOne: () => accountActionDeliveryWorker.runOne(),
+      runGuidanceOne: () => accountGuidanceDeliveryWorker.runOne(),
+      maxJobs: ACCOUNT_GUIDANCE_SWEEP_BATCH_SIZE,
+    });
   });
 }
 
 export async function stopAccountActionDelivery(): Promise<void> {
   stopAccountActionDeliveryScheduler();
   await accountActionDeliveryWorker.stopAndDrain();
+  await accountGuidanceDeliveryWorker.stopAndDrain();
 }

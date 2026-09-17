@@ -93,6 +93,7 @@ const UNIT_NO_DB = [
   'tests/eslint-rules/design-system-config.test.ts',
   'tests/unit/account-action-delivery-worker.test.ts',
   'tests/unit/account-action-delivery-scheduler.test.ts',
+  'tests/unit/account-guidance-delivery-worker.test.ts',
   'tests/unit/sendgrid-webhook.test.ts',
   'tests/unit/email-delivery-alerts.test.ts',
   'tests/unit/auth-action-routes.test.ts',

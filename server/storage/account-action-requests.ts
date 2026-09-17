@@ -414,6 +414,24 @@ export async function getAccountActionPendingState(input: {
   return { pendingCount, recentlyDelivered: recentDelivery !== undefined };
 }
 
+/** An unconsumed administrator invitation means the account is not a login yet. */
+export async function hasPendingAccountInvitation(
+  userId: number,
+  executor: AccountActionExecutor = db,
+): Promise<boolean> {
+  const [pending] = await executor
+    .select({ id: accountActionRequests.id })
+    .from(accountActionRequests)
+    .where(and(
+      eq(accountActionRequests.userId, userId),
+      eq(accountActionRequests.action, "account_invite"),
+      eq(accountActionRequests.status, "pending"),
+      gt(accountActionRequests.expiresAt, sql`now()`),
+    ))
+    .limit(1);
+  return pending !== undefined;
+}
+
 /**
  * Issue a recovery link only after the per-account capacity and delivery
  * suppression checks have run inside the same transaction-scoped credential

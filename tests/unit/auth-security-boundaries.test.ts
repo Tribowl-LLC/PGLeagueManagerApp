@@ -81,6 +81,9 @@ vi.mock('../../server/storage/account-action-delivery-jobs.js', () => ({
   resumePendingAccountRegistration: vi.fn(async () => undefined),
   getNextPasswordResetDeliveryAt: vi.fn(async () => null),
 }));
+vi.mock('../../server/storage/account-guidance-delivery-jobs.js', () => ({
+  enqueueAccountGuidanceNotice: vi.fn(async () => ({ kind: 'suppressed', reason: 'cooldown' })),
+}));
 
 vi.mock('../../server/db.js', () => ({
   db: {
