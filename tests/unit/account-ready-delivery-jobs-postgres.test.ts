@@ -166,6 +166,29 @@ describe("account-ready delivery queue PostgreSQL boundaries", () => {
       .where(eq(accountReadyDeliveryJobs.id, queued.job.id));
   });
 
+  it("persists standalone intent when an administrator creates a new resend job", async () => {
+    const { user, bowler } = await fixture("New manual resend");
+    const event = await eventFor(user.id, bowler.id);
+    const queued = await queueAccountReadyDeliveryJob({
+      identityLinkEventId: event.id,
+      userId: user.id,
+      bowlerId: bowler.id,
+      organizationId,
+      standaloneDeliveryRequested: true,
+    });
+
+    expect(queued.kind).toBe("enqueued");
+    if (queued.kind !== "enqueued") return;
+    expect(queued.job.standaloneDeliveryRequested).toBe(true);
+    const [stored] = await db.select({ standaloneDeliveryRequested: accountReadyDeliveryJobs.standaloneDeliveryRequested })
+      .from(accountReadyDeliveryJobs)
+      .where(eq(accountReadyDeliveryJobs.id, queued.job.id));
+    expect(stored?.standaloneDeliveryRequested).toBe(true);
+    await db.update(accountReadyDeliveryJobs)
+      .set({ nextAttemptAt: new Date(Date.now() + 60 * 60_000).toISOString() })
+      .where(eq(accountReadyDeliveryJobs.id, queued.job.id));
+  });
+
   it("claims two due intents concurrently without handing out the same row", async () => {
     const firstFixture = await fixture("Concurrent One");
     const secondFixture = await fixture("Concurrent Two");

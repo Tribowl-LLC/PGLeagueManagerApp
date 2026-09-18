@@ -248,6 +248,7 @@ describe('POST /api/organization-admin/users/:id/resend-account-ready', () => {
       userId: TARGET_USER.id,
       bowlerId: TARGET_BOWLER.id,
       organizationId: TARGET_USER.organizationId,
+      standaloneDeliveryRequested: true,
     });
     expect(mockSendAccountReadyEmail).not.toHaveBeenCalled();
   });

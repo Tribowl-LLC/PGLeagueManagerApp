@@ -46,6 +46,7 @@ export async function queueAccountReadyDeliveryJob(input: {
   bowlerId: number;
   organizationId: number;
   expiresAt?: Date;
+  standaloneDeliveryRequested?: boolean;
 }, executor?: AccountReadyDeliveryExecutor): Promise<AccountReadyEnqueueResult> {
   const expiresAt = input.expiresAt ?? new Date(Date.now() + ACCOUNT_READY_DELIVERY_RETENTION_MS);
   if (
@@ -73,6 +74,7 @@ export async function queueAccountReadyDeliveryJob(input: {
         userId: input.userId,
         bowlerId: input.bowlerId,
         organizationId: input.organizationId,
+        standaloneDeliveryRequested: input.standaloneDeliveryRequested ?? false,
         expiresAt: expiresAt.toISOString(),
       })
       .onConflictDoNothing({ target: accountReadyDeliveryJobs.identityLinkEventId })

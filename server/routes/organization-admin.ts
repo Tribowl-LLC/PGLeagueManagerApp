@@ -1199,6 +1199,7 @@ router.post('/users/:id/resend-account-ready', requireOrgAdminOrSystemAdmin, inv
       userId: user.id,
       bowlerId: bowler.id,
       organizationId: user.organizationId,
+      standaloneDeliveryRequested: true,
     });
     const job = existingJob.kind === 'enqueued'
       ? existingJob.job
