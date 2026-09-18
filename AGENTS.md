@@ -51,12 +51,16 @@ uses npm. Do not introduce Yarn, pnpm, or an additional lockfile.
   each stage once its preceding lifecycle gates pass: after review and
   final-head checks, the accountable root/Astra may merge; after exact-main
   certification, it may run the guarded Neon migration when required and
-  deploy the exact certified `main` commit after the preceding migration gate.
+  deploy the exact certified `main` commit after the preceding migration gate;
+  after successful deployment verification, it may perform the safe
+  post-release fast-forward and worktree cleanup in step 8.
   PR-ready status alone never authorizes merge, migration, or deployment. A
   task-specific hold, draft, no-deploy instruction, or explicit approval rule
   overrides this default; existing destructive database approval controls
   remain mandatory.
-- After a pull request is merged, its remote branch should be deleted.
+- After a pull request is merged, its remote branch should be deleted when
+  safe; the full post-release cleanup and local `main` update procedure is
+  defined in [step 8 of the production runbook](docs/production-runbook.md#default-release-lifecycle).
 - Never force-push `main` or rewrite published history unless explicitly
   instructed.
 - Deploy the exact `main` commit that passed the required checks. Do not deploy
