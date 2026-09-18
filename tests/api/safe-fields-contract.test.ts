@@ -19,24 +19,18 @@
  *     (server/routes/auth.ts). It's the cleanest user-shaped
  *     response on a real route and reaches the wire over the same
  *     pipeline as every other endpoint.
- *   - `GET /api/organizations/:id` returns exactly
- *     `sanitizeOrg(organization)` (server/routes/organizations.ts).
- *     The org-A admin seeded by `tests/setup/seed-test-users.ts`
- *     has `organizationId` set, so the request passes the
- *     `requireOrganizationAccess` check.
+ *   - The retired tenant-lifecycle `GET /api/organizations/:id` route is
+ *     not mounted in singleton mode, so it is intentionally not exercised
+ *     here; organization-shaped response contracts remain covered by their
+ *     route-specific tests.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
-  login,
-  apiGet,
   BASE_URL,
   TEST_ADMIN_EMAIL,
   TEST_ADMIN_PASSWORD,
-  TEST_ORG_A_EMAIL,
-  TEST_ORG_PASSWORD,
-  type AuthSession,
 } from '../helpers';
-import { SAFE_USER_FIELDS, SAFE_ORG_FIELDS } from '../../server/utils/api';
+import { SAFE_USER_FIELDS } from '../../server/utils/api';
 
 function assertSubset(
   actualKeys: string[],
@@ -54,15 +48,6 @@ function assertSubset(
 }
 
 describe('Deny-by-default wire contract (integration)', () => {
-  let orgAdminSession: AuthSession;
-
-  beforeAll(async () => {
-    // The org-A admin has a non-null `organizationId`, which is what
-    // `GET /api/organizations/:id` needs to pass its access check.
-    orgAdminSession = await login(TEST_ORG_A_EMAIL, TEST_ORG_PASSWORD);
-    expect(orgAdminSession.user.organizationId).toBeTruthy();
-  });
-
   it('POST /api/auth/login returns only SAFE_USER_FIELDS keys', async () => {
     // Hit the route directly so we inspect the raw JSON body —
     // `login()` itself parses into a typed shape and would mask any
@@ -82,19 +67,5 @@ describe('Deny-by-default wire contract (integration)', () => {
     expect(typeof body.data).toBe('object');
 
     assertSubset(Object.keys(body.data), SAFE_USER_FIELDS, 'POST /api/auth/login');
-  });
-
-  it('GET /api/organizations/:id returns only SAFE_ORG_FIELDS keys', async () => {
-    const orgId = orgAdminSession.user.organizationId!;
-    const { status, data } = await apiGet<Record<string, unknown>>(
-      `/api/organizations/${orgId}`,
-      orgAdminSession,
-    );
-    expect(status).toBe(200);
-    expect(data.success).toBe(true);
-    expect(data.data).toBeTruthy();
-    expect(typeof data.data).toBe('object');
-
-    assertSubset(Object.keys(data.data!), SAFE_ORG_FIELDS, `GET /api/organizations/${orgId}`);
   });
 });
