@@ -1,17 +1,17 @@
 import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { logger } from "@/lib/logger";
-import { throwIfResNotOk } from "@/lib/queryClient";
-import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPlus, LayoutDashboard, Loader2, Building2, MapPin, Mail, Plug, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MessageSquare, MailWarning, MailX, UserPlus } from "lucide-react";
+import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPlus, LayoutDashboard, Loader2, MapPin, Mail, Plug, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MessageSquare, MailWarning, MailX, UserPlus } from "lucide-react";
 import { useState, useEffect, Suspense, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
-import type { ApiResponse, Organization, User } from "@shared/schema";
+import type { ApiResponse, User } from "@shared/schema";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { UserProfileMenu } from "@/components/user-profile-menu";
 import { GlobalSearch } from "@/components/global-search";
+import { useBusinessContext } from "@/hooks/use-business-context";
 import {
   Sheet,
   SheetContent,
@@ -73,10 +73,10 @@ const navItems: NavItem[] = [
     href: "/"
   },
   {
-    icon: Building2,
-    label: "Organizations",
-    href: "/organizations",
-    adminOnly: true
+    icon: Settings,
+    label: "Business Settings",
+    href: "/business-settings",
+    adminOnly: true,
   },
   {
     icon: MapPin,
@@ -191,7 +191,7 @@ const navItems: NavItem[] = [
 const pageLabels: Record<string, string> = {
   "/": "Overview",
   "/home": "Overview",
-  "/organizations": "Organizations",
+  "/business-settings": "Business Settings",
   "/locations": "Locations",
   "/users": "Users",
   "/email-templates": "Email Templates",
@@ -559,20 +559,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   });
 
   const userOrgId = currentUserResponse?.data?.organizationId;
-
-  const { data: organizationResponse } = useQuery<ApiResponse<Organization>>({
-    queryKey: ["/api/organizations", userOrgId],
-    queryFn: async () => {
-      const res = await fetch(`/api/organizations/${userOrgId}`, {
-        credentials: "include",
-        headers: { "Accept": "application/json" }
-      });
-      await throwIfResNotOk(res);
-      return res.json();
-    },
-    enabled: !!userOrgId,
-    staleTime: 1000 * 60 * 5,
-  });
+  const { business } = useBusinessContext();
 
   const userRole = currentUserResponse?.data?.role;
   const isAdmin = userRole === 'system_admin';
@@ -657,16 +644,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
     return () => mql.removeEventListener("change", handler);
   }, []);
 
-  const organization = organizationResponse?.data;
-  const orgName = organization?.name || "LeagueVault";
+  const orgName = business?.name || "LeagueVault";
   const orgInitials = orgName.split(/\s+/).map(w => w[0]).join("").substring(0, 2).toUpperCase();
 
   const parentLabel = getParentLabel(location);
   const pageLabel = getPageLabel(location);
 
-  const logoElement = (organization?.darkLogo || organization?.logo) ? (
+  const logoElement = (business?.darkLogo || business?.logo) ? (
     <img
-      src={organization.darkLogo || organization.logo || ''}
+      src={business.darkLogo || business.logo || ''}
       alt={orgName}
       className="w-full h-auto max-h-12 object-contain"
     />

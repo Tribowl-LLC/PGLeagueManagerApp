@@ -5,6 +5,7 @@ import { Router } from "wouter";
 import { Layout } from "@/components/layout";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { classifyApiError } from "@/lib/api-error";
+import { throwIfResNotOk } from "@/lib/queryClient";
 
 vi.mock("@/hooks/use-subdomain-org", () => ({ useSubdomainOrg: () => ({ org: null }) }));
 vi.mock("@/components/user-profile-menu", () => ({ UserProfileMenu: () => null }));
@@ -26,7 +27,18 @@ describe.each(["admin", "bowler"])("%s layout organization request", (kind) => {
     const onError = vi.fn();
     const client = new QueryClient({
       queryCache: new QueryCache({ onError }),
-      defaultOptions: { queries: { retry: false, staleTime: Infinity, queryFn: async () => ({ data: null }) } },
+      defaultOptions: {
+        queries: {
+          retry: false,
+          staleTime: Infinity,
+          queryFn: async ({ queryKey }) => {
+            if (kind !== "admin") return { data: null };
+            const response = await fetch(String(queryKey[0]), { credentials: "include" });
+            await throwIfResNotOk(response);
+            return response.json();
+          },
+        },
+      },
     });
     client.setQueryData(["/api/user"], { data: { role: "user", organizationId: 7 } });
     render(<QueryClientProvider client={client}><Router hook={() => ["/leagues", vi.fn()]}>
@@ -36,7 +48,10 @@ describe.each(["admin", "bowler"])("%s layout organization request", (kind) => {
     const error = onError.mock.calls[0][0];
     expect(error).toMatchObject({ status });
     expect(classifyApiError(error)).toBe(status === 401 ? "expected-client" : "retryable-server");
-    expect(fetchMock).toHaveBeenCalledWith("/api/organizations/7", expect.objectContaining({ credentials: "include" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      kind === "admin" ? "/api/business-settings" : "/api/organizations/7",
+      expect.objectContaining({ credentials: "include" }),
+    );
     client.clear();
   });
 });
