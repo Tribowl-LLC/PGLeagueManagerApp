@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 export const APPLE_PAY_DOMAIN_VERIFICATION_FILENAME =
   'apple-developer-merchantid-domain-association';
@@ -20,9 +21,29 @@ export function applePayVerificationFileCandidates(options: {
   const moduleDir = options.moduleDir ?? import.meta.dirname;
   const candidates = [
     path.join(cwd, '.well-known', APPLE_PAY_DOMAIN_VERIFICATION_FILENAME),
+    path.join(cwd, 'dist', '.well-known', APPLE_PAY_DOMAIN_VERIFICATION_FILENAME),
     path.join(moduleDir, '..', '.well-known', APPLE_PAY_DOMAIN_VERIFICATION_FILENAME),
     path.join(moduleDir, '..', '..', '.well-known', APPLE_PAY_DOMAIN_VERIFICATION_FILENAME),
   ];
 
   return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
+}
+
+/**
+ * Read the first available association artifact from the supported deployment
+ * layouts. Reading the bytes directly avoids Express `sendFile()` resolving a
+ * path differently from the existence check in bundled Render deployments.
+ */
+export async function readApplePayVerificationFile(options: {
+  cwd?: string;
+  moduleDir?: string;
+} = {}): Promise<Buffer | undefined> {
+  for (const candidate of applePayVerificationFileCandidates(options)) {
+    try {
+      return await readFile(candidate);
+    } catch {
+      // Try the next deployment layout before falling back to configuration.
+    }
+  }
+  return undefined;
 }

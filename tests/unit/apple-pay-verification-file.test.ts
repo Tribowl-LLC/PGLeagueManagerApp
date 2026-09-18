@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   applePayVerificationFileCandidates,
   APPLE_PAY_DOMAIN_VERIFICATION_FILENAME,
+  readApplePayVerificationFile,
 } from '../../server/utils/apple-pay-verification';
 import { copyApplePayVerificationFile } from '../../scripts/copy-apple-pay-verification';
 
@@ -65,6 +66,35 @@ describe('Apple Pay verification file resolution', () => {
         moduleDir: path.join(testRoot, 'dist', 'server-chunks'),
       }).find((candidate) => candidate === destinationPath);
       expect(bundledCandidate).toBe(destinationPath);
+    } finally {
+      await rm(testRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reads the copied dist artifact when the deployment root is unavailable', async () => {
+    const testRoot = await mkdtemp(path.join(tmpdir(), 'leaguevault-apple-pay-'));
+    const artifactPath = path.join(
+      testRoot,
+      'dist',
+      '.well-known',
+      APPLE_PAY_DOMAIN_VERIFICATION_FILENAME,
+    );
+
+    try {
+      await mkdir(path.dirname(artifactPath), { recursive: true });
+      const sourceContents = await readFile(
+        path.resolve(
+          process.cwd(),
+          '.well-known',
+          APPLE_PAY_DOMAIN_VERIFICATION_FILENAME,
+        ),
+      );
+      await writeFile(artifactPath, sourceContents);
+
+      await expect(readApplePayVerificationFile({
+        cwd: testRoot,
+        moduleDir: path.join(testRoot, 'dist', 'server-chunks'),
+      })).resolves.toEqual(sourceContents);
     } finally {
       await rm(testRoot, { recursive: true, force: true });
     }
