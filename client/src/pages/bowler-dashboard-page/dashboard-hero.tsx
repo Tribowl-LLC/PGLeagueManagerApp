@@ -29,7 +29,7 @@ export const DashboardHero: FC<DashboardHeroProps> = ({
     <div className="bg-white rounded-2xl p-6 shadow-sm border border-navigation-100">
       <h2 className="text-2xl font-bold text-navigation-900 mb-1">Hi, {bowlerName}</h2>
       {isSystemAdmin && (
-        <p className="text-sm text-navigation-400 mb-1">Viewing as System Administrator</p>
+        <p className="text-sm text-navigation-400 mb-1">Viewing as Owner</p>
       )}
       {hasMultipleLeagues ? (
         <button type="button"

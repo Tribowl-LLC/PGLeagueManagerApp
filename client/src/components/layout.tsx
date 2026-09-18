@@ -559,6 +559,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
   });
 
   const userOrgId = currentUserResponse?.data?.organizationId;
+  // Public branding is intentionally read from the public context endpoint;
+  // ordinary bowlers must not need Owner-only Business Settings permission.
   const { business } = useBusinessContext();
 
   const userRole = currentUserResponse?.data?.role;

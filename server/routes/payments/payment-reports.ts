@@ -144,9 +144,10 @@ router.get("/", async (req, res) => {
     }
 
     // Effective org context: explicit param > sysadmin's own org > null (unaffiliated sysadmin)
-    const effectiveOrgId: number | null = isSystemAdmin
-      ? (rawQueryOrgId ?? req.user?.organizationId ?? null)
-      : (req.user?.organizationId ?? null);
+    const effectiveOrgId: number | null = req.organizationContextId
+      ?? (isSystemAdmin
+        ? (rawQueryOrgId ?? req.user?.organizationId ?? null)
+        : (req.user?.organizationId ?? null));
 
     const paymentManagerLeagueIds = isPaymentManager(req.user)
       ? await getPaymentManagerAccessibleLeagueIds(req)

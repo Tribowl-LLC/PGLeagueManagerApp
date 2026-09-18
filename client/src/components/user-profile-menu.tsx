@@ -268,8 +268,8 @@ export function UserProfileMenu({ user, showName = false }: UserProfileMenuProps
             <div className="w-full space-y-2">
               <Label>Roles</Label>
               <div className="text-sm">
-                {user.role === 'system_admin' && <div className="py-1">System Administrator</div>}
-                {user.role === 'org_admin' && <div className="py-1">Organization Administrator</div>}
+                {user.role === 'system_admin' && <div className="py-1">Owner</div>}
+                {user.role === 'org_admin' && <div className="py-1">Administrator</div>}
                 {user.role === 'user' && <div className="py-1">Standard User</div>}
               </div>
             </div>

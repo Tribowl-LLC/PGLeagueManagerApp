@@ -17,7 +17,6 @@ import { throwIfResNotOk } from "@/lib/queryClient";
 import { financialReadErrorMessage } from "@/lib/financial-utils";
 
 export function PastDueBowlersSection({ enabled = true, organizationId }: { enabled?: boolean; organizationId?: number | null }) {
-  const scopeSuffix = organizationId ? `?organizationId=${encodeURIComponent(organizationId)}` : "";
   const isMobile = useIsMobile();
   const { data: leaguesResponse } = useQuery<{ success: true, data: League[] }>({
     queryKey: ["/api/leagues"],
@@ -44,12 +43,10 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
   });
   const bowlerLeagues = bowlerLeaguesResponse?.data || [];
 
-  // scopeSuffix is encoded in the URL key above; keep the legacy base key for existing ordinary-member cache/tests.
-  // eslint-disable-next-line @tanstack/query/exhaustive-deps
   const { data: financialReportResponse, isLoading: financialLoading, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: CanonicalDuePastDueResponseV2 }> } }>({
-    queryKey: [organizationId ? `/api/financials/due-past-due?organizationId=${organizationId}` : "/api/financials/due-past-due"],
+    queryKey: ["/api/financials/due-past-due", organizationId ?? null],
     queryFn: async () => {
-      const response = await fetch(`/api/financials/due-past-due${scopeSuffix}`);
+      const response = await fetch('/api/financials/due-past-due');
       await throwIfResNotOk(response);
       return response.json();
     },

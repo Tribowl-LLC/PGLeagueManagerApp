@@ -38,7 +38,6 @@ export default function BowlerViewPage() {
     staleTime: 1000 * 60 * 5,
   });
   const currentUserRole = currentUserResponse?.data?.role;
-  const systemScope = currentUserRole === "system_admin" && currentUserResponse?.data?.organizationId ? `&organizationId=${encodeURIComponent(currentUserResponse.data.organizationId)}` : "";
   const canEditBowler = currentUserRole === "system_admin" || currentUserRole === "org_admin";
   // Payment-partner linking is an administrator workflow. The panel scopes
   // every operation to the selected bowler's organization, so platform
@@ -114,10 +113,7 @@ export default function BowlerViewPage() {
   const { data: paymentReportResponse, isLoading: paymentReportLoading, error: paymentReportError } = useQuery<{ data: CanonicalPaymentReport }>({
     queryKey: ["/api/financials/f5/payments", effectiveLeagueId, bowlerId, paymentReportPage, currentUserRole, currentUserResponse?.data?.organizationId],
     queryFn: async ({ signal }) => {
-      const scope = currentUserRole === "system_admin" && currentUserResponse?.data?.organizationId
-        ? `&organizationId=${encodeURIComponent(currentUserResponse.data.organizationId)}`
-        : "";
-      const response = await fetch(`/api/financials/f5/payments?leagueId=${effectiveLeagueId}&bowlerId=${bowlerId}&page=${paymentReportPage}&limit=200${scope}`, {
+      const response = await fetch(`/api/financials/f5/payments?leagueId=${effectiveLeagueId}&bowlerId=${bowlerId}&page=${paymentReportPage}&limit=200`, {
         credentials: "include",
         headers: { Accept: "application/json" },
         signal,
@@ -130,9 +126,9 @@ export default function BowlerViewPage() {
     retry: false,
   });
   const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<ApiResponse<CanonicalDuePastDueResponseV2>>({
-    queryKey: ["/api/financials/leagues", effectiveLeagueId, "canonical-due-past-due/2", bowlerId, systemScope],
+    queryKey: ["/api/financials/leagues", effectiveLeagueId, "canonical-due-past-due/2", bowlerId],
     queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/financials/leagues/${effectiveLeagueId}/canonical-due-past-due/2?bowlerId=${bowlerId}${systemScope}`, { credentials: "include", headers: { Accept: "application/json" }, signal });
+      const response = await fetch(`/api/financials/leagues/${effectiveLeagueId}/canonical-due-past-due/2?bowlerId=${bowlerId}`, { credentials: "include", headers: { Accept: "application/json" }, signal });
       if (!response.ok) throw new Error("Financial evidence is unavailable");
       return response.json();
     },

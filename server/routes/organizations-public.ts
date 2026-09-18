@@ -5,6 +5,8 @@ import { isAllowedRedirectUrl } from '../utils/url-validation.js';
 import { validateDataUri } from '../utils/image-magic-bytes.js';
 import { storage } from '../storage';
 import { createLogger } from '../logger';
+import { isSingletonOrganizationMode } from '../config';
+import { resolveConfiguredOrganization } from '../services/single-tenant-context';
 
 const log = createLogger("OrganizationsPublic");
 
@@ -41,12 +43,20 @@ async function serveOrgImage(
   res.redirect(data);
 }
 
+async function publicOrganizationForSlug(slug: string): Promise<Organization | undefined> {
+  if (isSingletonOrganizationMode) {
+    // Legacy asset URLs retain their path shape, but the path parameter never
+    // selects a different business in singleton mode.
+    return resolveConfiguredOrganization();
+  }
+  return (await storage.getOrganizationBySubdomain(slug))
+    ?? (await storage.getOrganizationBySlug(slug));
+}
+
 router.get('/slug/:slug', async (req, res) => {
   try {
     const { slug } = req.params;
-    const organization =
-      (await storage.getOrganizationBySubdomain(slug)) ??
-      (await storage.getOrganizationBySlug(slug));
+    const organization = await publicOrganizationForSlug(slug);
 
     if (!organization) {
       return sendError(res, 'Organization not found', 404, 'NOT_FOUND');
@@ -69,9 +79,7 @@ router.get('/slug/:slug', async (req, res) => {
 router.get('/slug/:slug/logo', async (req, res) => {
   try {
     const { slug } = req.params;
-    const organization =
-      (await storage.getOrganizationBySubdomain(slug)) ??
-      (await storage.getOrganizationBySlug(slug));
+    const organization = await publicOrganizationForSlug(slug);
     await serveOrgImage(res, organization, (o) => o.logo, 'Logo');
   } catch (error) {
     log.error('Error serving organization logo:', error);
@@ -82,9 +90,7 @@ router.get('/slug/:slug/logo', async (req, res) => {
 router.get('/slug/:slug/app-icon', async (req, res) => {
   try {
     const { slug } = req.params;
-    const organization =
-      (await storage.getOrganizationBySubdomain(slug)) ??
-      (await storage.getOrganizationBySlug(slug));
+    const organization = await publicOrganizationForSlug(slug);
     await serveOrgImage(res, organization, (o) => o.appIcon || o.logo, 'App icon');
   } catch (error) {
     log.error('Error serving organization app icon:', error);
@@ -104,6 +110,9 @@ router.get('/slug/:slug/app-icon', async (req, res) => {
 // but you can't see it". Internal callers should use the
 // `/slug/:slug/logo` and `/slug/:slug/app-icon` routes above.
 function isAuthorizedForOrgId(req: Request, id: number): boolean {
+  if (isSingletonOrganizationMode && req.organizationContextId !== undefined) {
+    return req.organizationContextId === id;
+  }
   if (req.subdomainOrg && req.subdomainOrg.id === id) return true;
   if (req.isAuthenticated?.() && req.user?.organizationId === id) return true;
   return false;

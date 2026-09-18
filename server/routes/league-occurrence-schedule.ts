@@ -32,7 +32,7 @@ async function authorizedReadScope(req: Request): Promise<{
   const leagueId = positiveId(singleRouteParam(req.params.id));
   if (!leagueId) return null;
   if (req.user.role === "system_admin") {
-    const organizationId = positiveId(req.query.organizationId);
+    const organizationId = req.organizationContextId ?? positiveId(req.query.organizationId);
     return organizationId === null
       ? null
       : { organizationId, leagueId, includeAdministratorEvidence: true };
@@ -60,7 +60,7 @@ router.get("/:id/occurrence-schedule", async (req: Request, res) => {
   try {
     const scope = await authorizedReadScope(req);
     if (!scope) {
-      if (req.user?.role === "system_admin" && req.query.organizationId === undefined) {
+      if (req.user?.role === "system_admin" && req.organizationContextId === undefined && req.query.organizationId === undefined) {
         return sendError(
           res,
           "System administrators must select one organization with ?organizationId=<id>",

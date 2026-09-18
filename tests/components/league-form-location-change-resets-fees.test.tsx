@@ -91,7 +91,7 @@ const seededLeague: League = {
   doublePayDates: [],
 };
 
-function renderForm(league: League | null = seededLeague, systemAdminOrganizationId?: number) {
+function renderForm(league: League | null = seededLeague) {
   // Use the real queryClient so its default queryFn (which calls the
   // mocked global fetch) hydrates the /api/locations query — without it
   // the LeagueBasicInfo Location <Select> never renders.
@@ -103,7 +103,6 @@ function renderForm(league: League | null = seededLeague, systemAdminOrganizatio
         open={open}
         onClose={() => setOpen(false)}
         league={league ?? undefined}
-        systemAdminOrganizationId={systemAdminOrganizationId}
       />
     );
   }
@@ -169,9 +168,9 @@ describe('LeagueForm — handleLocationChange clears stored lineage / prize-fund
     });
   });
 
-  it('includes the selected organization in a system-admin Add League request', async () => {
+  it('lets the server resolve the organization for an Add League request', async () => {
     const user = userEvent.setup();
-    renderForm(null, 37);
+    renderForm(null);
 
     await user.type(screen.getByLabelText(/^Name$/), 'Scoped League');
     await user.click(await screen.findByRole('combobox', { name: /location/i }));
@@ -191,9 +190,9 @@ describe('LeagueForm — handleLocationChange clears stored lineage / prize-fund
     expect(requestBody).toMatchObject({
       name: 'Scoped League',
       payingLineupSize: 4,
-      organizationId: 37,
       setupIntegration: { contractVersion: 'league-setup-integration-request/3' },
     });
+    expect(requestBody).not.toHaveProperty('organizationId');
     expect(requestBody).not.toHaveProperty('seasonEnd');
   });
 });

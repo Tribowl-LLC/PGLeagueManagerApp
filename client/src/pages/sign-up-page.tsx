@@ -27,7 +27,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { useSubdomainOrg } from "@/hooks/use-subdomain-org";
+import { useBusinessContext } from "@/hooks/use-business-context";
 import {
   DEFAULT_THROTTLE_FALLBACK_SECONDS,
   formatCountdown,
@@ -71,7 +71,7 @@ const signUpAvailabilityResponseSchema = z.object({
 const SignUpPage: FC = () => {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
-  const { org: orgInfo } = useSubdomainOrg();
+  const { business: orgInfo } = useBusinessContext();
   const registrationAvailability = useQuery({
     queryKey: ["/api/auth/registration/availability"],
     queryFn: async ({ signal }) => {

@@ -31,7 +31,7 @@ function resolveOrganizationId(
   const user = req.user;
   if (!user) return null;
   if (user.role === "org_admin") return user.organizationId ?? null;
-  if (user.role === "system_admin") return requested ?? null;
+  if (user.role === "system_admin") return req.organizationContextId ?? requested ?? null;
   return null;
 }
 

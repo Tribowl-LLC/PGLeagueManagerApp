@@ -6,6 +6,7 @@ import {
   eq,
   gt,
   inArray,
+  isNull,
   lte,
   ne,
   or,
@@ -22,6 +23,7 @@ import {
 import { accountActionRequests } from "@shared/schema/account-action-requests";
 import { users } from "@shared/schema/users";
 import { db } from "../db.js";
+import { env, isProdLike, isSingletonOrganizationMode } from "../config.js";
 import {
   getAccountActionPendingState,
   lockAccountCredential,
@@ -35,6 +37,27 @@ export type AccountActionDeliveryJobExecutor = AccountActionExecutor;
 export type AccountActionDeliveryAction = "password_reset" | "account_registration";
 
 const ACTIVE_JOB_STATUSES = ["pending", "processing", "retry_scheduled"] as const;
+const configuredOrganizationId = env.APP_ORGANIZATION_ID;
+const SINGLETON_ORGANIZATION_SCOPE = isProdLike && configuredOrganizationId === undefined
+  ? sql`false`
+  : configuredOrganizationId === undefined
+  ? undefined
+  : or(
+    eq(accountActionDeliveryJobs.organizationId, configuredOrganizationId),
+    isNull(accountActionDeliveryJobs.organizationId),
+  );
+
+function assertConfiguredOrganization(organizationId: number | null | undefined): void {
+  if (
+    (isProdLike && configuredOrganizationId === undefined)
+    || (isSingletonOrganizationMode
+    && organizationId !== undefined
+    && organizationId !== null
+    && organizationId !== configuredOrganizationId)
+  ) {
+    throw new Error("Account delivery job organization does not match the configured business");
+  }
+}
 
 export type PasswordResetDeliveryEnqueueSuppressionReason =
   | "user_missing"
@@ -96,6 +119,7 @@ export async function enqueuePasswordResetDelivery(
   const action = input.action ?? "password_reset";
   assertPositiveUserId(input.userId);
   assertFutureDate(input.expiresAt, "Password-reset delivery expiry");
+  assertConfiguredOrganization(input.organizationId);
   if (
     input.credentialGeneration !== undefined
     && (!Number.isSafeInteger(input.credentialGeneration) || input.credentialGeneration < 0)
@@ -395,17 +419,20 @@ export async function getNextPasswordResetDeliveryAt(): Promise<Date | null> {
       END`,
     })
     .from(accountActionDeliveryJobs)
-    .where(or(
-      and(
-        inArray(accountActionDeliveryJobs.status, ["pending", "retry_scheduled"]),
-        gt(accountActionDeliveryJobs.expiresAt, sql`now()`),
-        lte(accountActionDeliveryJobs.attemptCount, ACCOUNT_ACTION_DELIVERY_MAX_ATTEMPTS - 1),
+    .where(and(
+      or(
+        and(
+          inArray(accountActionDeliveryJobs.status, ["pending", "retry_scheduled"]),
+          gt(accountActionDeliveryJobs.expiresAt, sql`now()`),
+          lte(accountActionDeliveryJobs.attemptCount, ACCOUNT_ACTION_DELIVERY_MAX_ATTEMPTS - 1),
+        ),
+        and(
+          eq(accountActionDeliveryJobs.status, "processing"),
+          gt(accountActionDeliveryJobs.expiresAt, sql`now()`),
+          sql`${accountActionDeliveryJobs.leaseExpiresAt} IS NOT NULL`,
+        ),
       ),
-      and(
-        eq(accountActionDeliveryJobs.status, "processing"),
-        gt(accountActionDeliveryJobs.expiresAt, sql`now()`),
-        sql`${accountActionDeliveryJobs.leaseExpiresAt} IS NOT NULL`,
-      ),
+      SINGLETON_ORGANIZATION_SCOPE,
     ))
     .orderBy(sql`CASE
       WHEN ${accountActionDeliveryJobs.status} = 'processing'
@@ -451,6 +478,11 @@ export async function claimNextPasswordResetDeliveryJob(
       )
         AND expires_at > now()
         AND attempt_count < ${ACCOUNT_ACTION_DELIVERY_MAX_ATTEMPTS}
+        ${isProdLike && configuredOrganizationId === undefined
+          ? sql`AND false`
+          : isSingletonOrganizationMode
+          ? sql`AND (organization_id = ${configuredOrganizationId} OR organization_id IS NULL)`
+          : sql``}
       ORDER BY next_attempt_at ASC, created_at ASC, id ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
@@ -494,6 +526,7 @@ export async function recoverPasswordResetDeliveryJobs(): Promise<number> {
       .where(and(
         inArray(accountActionDeliveryJobs.status, ["pending", "retry_scheduled", "processing"]),
         lte(accountActionDeliveryJobs.expiresAt, sql`now()`),
+        SINGLETON_ORGANIZATION_SCOPE,
       ))
       .returning({ id: accountActionDeliveryJobs.id });
 
@@ -513,6 +546,7 @@ export async function recoverPasswordResetDeliveryJobs(): Promise<number> {
         lte(accountActionDeliveryJobs.attemptCount, ACCOUNT_ACTION_DELIVERY_MAX_ATTEMPTS),
         sql`${accountActionDeliveryJobs.attemptCount} >= ${ACCOUNT_ACTION_DELIVERY_MAX_ATTEMPTS}`,
         sql`(${accountActionDeliveryJobs.status} <> 'processing' OR ${accountActionDeliveryJobs.leaseExpiresAt} <= now())`,
+        SINGLETON_ORGANIZATION_SCOPE,
       ))
       .returning({ id: accountActionDeliveryJobs.id });
     return expired.length + exhausted.length;

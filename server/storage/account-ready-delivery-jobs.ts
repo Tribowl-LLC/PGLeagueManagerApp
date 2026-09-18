@@ -1,6 +1,7 @@
 import { and, asc, eq, gte, gt, inArray, lte, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "../db.js";
+import { env, isProdLike, isSingletonOrganizationMode } from "../config.js";
 import type { AccountActionExecutor } from "./account-action-requests.js";
 import {
   ACCOUNT_READY_DELIVERY_CLEANUP_BATCH_SIZE,
@@ -25,6 +26,12 @@ export type AccountReadyDeliveryFinalization =
   | { status: "suppressed"; reason: string };
 
 const ACTIVE_STATUSES = ["pending", "processing", "retry_scheduled"] as const;
+const configuredOrganizationId = env.APP_ORGANIZATION_ID;
+const SINGLETON_ORGANIZATION_SCOPE = isProdLike && configuredOrganizationId === undefined
+  ? sql`false`
+  : configuredOrganizationId === undefined
+  ? undefined
+  : eq(accountReadyDeliveryJobs.organizationId, configuredOrganizationId);
 
 export async function queueAccountReadyDeliveryJob(input: {
   identityLinkEventId: number;
@@ -43,6 +50,12 @@ export async function queueAccountReadyDeliveryJob(input: {
     || expiresAt.getTime() <= Date.now()
   ) {
     throw new Error("Invalid account-ready delivery job input");
+  }
+  if (
+    (isProdLike && configuredOrganizationId === undefined)
+    || (isSingletonOrganizationMode && input.organizationId !== configuredOrganizationId)
+  ) {
+    throw new Error("Account-ready delivery job organization does not match the configured business");
   }
 
   const run = async (tx: AccountReadyDeliveryExecutor): Promise<AccountReadyEnqueueResult> => {
@@ -89,6 +102,7 @@ export async function getNextAccountReadyDeliveryAt(): Promise<Date | null> {
       inArray(accountReadyDeliveryJobs.status, [...ACTIVE_STATUSES]),
       sql`(${accountReadyDeliveryJobs.status} = 'processing' OR ${accountReadyDeliveryJobs.attemptCount} < ${ACCOUNT_READY_DELIVERY_MAX_ATTEMPTS})`,
       gt(accountReadyDeliveryJobs.expiresAt, sql`now()`),
+      SINGLETON_ORGANIZATION_SCOPE,
     ))
     .orderBy(sql`CASE
       WHEN ${accountReadyDeliveryJobs.status} = 'processing'
@@ -126,6 +140,11 @@ export async function claimNextAccountReadyDeliveryJob(
         OR (status = 'processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= now())
       )
         AND attempt_count < ${ACCOUNT_READY_DELIVERY_MAX_ATTEMPTS}
+        ${isProdLike && configuredOrganizationId === undefined
+          ? sql`AND false`
+          : isSingletonOrganizationMode
+          ? sql`AND organization_id = ${configuredOrganizationId}`
+          : sql``}
       ORDER BY next_attempt_at ASC, created_at ASC, id ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
@@ -168,6 +187,7 @@ export async function recoverAccountReadyDeliveryJobs(): Promise<number> {
         inArray(accountReadyDeliveryJobs.status, [...ACTIVE_STATUSES]),
         lte(accountReadyDeliveryJobs.expiresAt, sql`now()`),
         sql`(${accountReadyDeliveryJobs.status} <> 'processing' OR ${accountReadyDeliveryJobs.leaseExpiresAt} <= now())`,
+        SINGLETON_ORGANIZATION_SCOPE,
       ))
       .returning({ id: accountReadyDeliveryJobs.id });
 
@@ -186,6 +206,7 @@ export async function recoverAccountReadyDeliveryJobs(): Promise<number> {
         inArray(accountReadyDeliveryJobs.status, [...ACTIVE_STATUSES]),
         gte(accountReadyDeliveryJobs.attemptCount, ACCOUNT_READY_DELIVERY_MAX_ATTEMPTS),
         sql`(${accountReadyDeliveryJobs.status} <> 'processing' OR ${accountReadyDeliveryJobs.leaseExpiresAt} <= now())`,
+        SINGLETON_ORGANIZATION_SCOPE,
       ))
       .returning({ id: accountReadyDeliveryJobs.id });
 

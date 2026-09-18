@@ -179,6 +179,8 @@ Production should explicitly set:
 APP_ENV=prod
 NODE_ENV=production
 APP_DOMAIN=leaguevault.app
+APP_ORGANIZATION_ID=<verified organizations.id>
+LEGACY_ORG_HOSTS=<explicit legacy hostnames, comma-separated>
 ```
 
 Required application variables are `DATABASE_URL`, `SESSION_SECRET`, and

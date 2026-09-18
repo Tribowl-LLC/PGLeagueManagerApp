@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+vi.hoisted(() => {
+  process.env.DATABASE_URL = "postgres://unit.test/leaguevault";
+  process.env.SESSION_SECRET = "unit-test-session-secret";
+  process.env.FIELD_ENCRYPTION_KEY = "0".repeat(64);
+});
 import {
   SingleTenantContextError,
   validateSingleTenantContext,

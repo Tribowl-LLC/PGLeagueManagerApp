@@ -45,17 +45,17 @@ describe('email getBaseUrl honors APP_DOMAIN', () => {
     expect(getBaseUrl()).toBe('https://staging.example');
   });
 
-  it('builds the per-org URL from APP_DOMAIN when an org slug is given', async () => {
+  it('keeps account links on the canonical root when an org slug is given', async () => {
     mockConfig('staging.example');
     const { getBaseUrl } = await import('../../server/services/email');
-    expect(getBaseUrl('acme')).toBe('https://acme.staging.example');
+    expect(getBaseUrl('acme')).toBe('https://staging.example');
   });
 
   it('falls back to leaguevault.app by default (production)', async () => {
     mockConfig('leaguevault.app');
     const { getBaseUrl } = await import('../../server/services/email');
     expect(getBaseUrl()).toBe('https://leaguevault.app');
-    expect(getBaseUrl('acme')).toBe('https://acme.leaguevault.app');
+    expect(getBaseUrl('acme')).toBe('https://leaguevault.app');
   });
 });
 

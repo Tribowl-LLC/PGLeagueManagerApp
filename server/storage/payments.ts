@@ -135,7 +135,7 @@ export async function getPayments(filters: PaymentFilters): Promise<Payment[]> {
   return query;
 }
 
-export async function getAllPaymentsSystemAdmin(filters?: { bowlerId?: number; leagueId?: number; teamId?: number; createdAt?: Date }): Promise<Payment[]> {
+export async function getAllPaymentsSystemAdmin(filters?: AllPaymentFilters): Promise<Payment[]> {
   const conditions = buildPaymentConditions(filters ?? {}, { excludeOrgLessLeagues: true });
   const query = db.select().from(payments);
   if (conditions.length > 0) {

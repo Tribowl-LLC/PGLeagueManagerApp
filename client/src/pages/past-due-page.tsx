@@ -19,7 +19,6 @@ import { financialReadErrorMessage } from "@/lib/financial-utils";
 
 export default function PastDuePage() {
   const { data: userResponse } = useQuery<{ data: User }>({ queryKey: ["/api/user"], staleTime: 1000 * 60 * 5 });
-  const systemScope = userResponse?.data?.role === "system_admin" && userResponse.data.organizationId ? `?organizationId=${encodeURIComponent(userResponse.data.organizationId)}` : "";
   const { data: leaguesResponse, isLoading: loadingLeagues } = useQuery<{ success: true, data: League[] }>({
     queryKey: ["/api/leagues"],
     queryFn: async () => {
@@ -61,9 +60,9 @@ export default function PastDuePage() {
   const bowlerLeagues = bowlerLeaguesResponse?.data || [];
 
   const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: CanonicalDuePastDueResponseV2 }> } }>({
-    queryKey: [systemScope ? `/api/financials/due-past-due${systemScope}` : "/api/financials/due-past-due"],
+    queryKey: ["/api/financials/due-past-due"],
     queryFn: async () => {
-      const response = await fetch(`/api/financials/due-past-due${systemScope}`);
+      const response = await fetch('/api/financials/due-past-due');
       await throwIfResNotOk(response);
       return response.json();
     },

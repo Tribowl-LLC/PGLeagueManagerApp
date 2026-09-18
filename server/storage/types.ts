@@ -82,7 +82,7 @@ export interface IBowlerStorage {
 
 export interface IPaymentStorage {
   getPayments(filters: { bowlerId?: number; leagueId?: number; leagueIds?: number[]; teamId?: number; createdAt?: Date; organizationId: number }): Promise<Payment[]>;
-  getAllPaymentsSystemAdmin(filters?: { bowlerId?: number; leagueId?: number; teamId?: number; createdAt?: Date }): Promise<Payment[]>;
+  getAllPaymentsSystemAdmin(filters?: { bowlerId?: number; leagueId?: number; teamId?: number; createdAt?: Date; organizationId?: number; leagueIds?: number[] }): Promise<Payment[]>;
   getAllPaymentsPaginatedSystemAdmin(filters: { bowlerId?: number; leagueId?: number; teamId?: number; createdAt?: Date }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
   getPaymentsPaginated(filters: { bowlerId?: number; leagueId?: number; leagueIds?: number[]; teamId?: number; createdAt?: Date; organizationId: number }, page: number, limit: number): Promise<PaginatedResult<Payment>>;
   getPaymentById(id: number): Promise<Payment | undefined>;

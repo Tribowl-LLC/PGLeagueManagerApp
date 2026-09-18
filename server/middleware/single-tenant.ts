@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
-import { env, isDev, isSingletonOrganizationMode } from '../config';
+import { env, isProdLike, isSingletonOrganizationMode } from '../config';
 import { resolveConfiguredOrganization, SingleTenantContextError } from '../services/single-tenant-context';
 import { subdomainDetection } from './subdomain';
 
@@ -34,7 +34,7 @@ function rejectUnknownHost(req: Request, res: Response): boolean {
   // Local development often runs behind a Vite/Render-style forwarded host.
   // Production-like deployments must be explicit so an arbitrary subdomain
   // cannot become an accidental organization selector.
-  if (isDev) return false;
+  if (!isProdLike) return false;
   res.status(421).json({
     success: false,
     error: { code: 'UNKNOWN_HOST', message: 'This hostname is not configured for LeagueVault.' },
@@ -49,6 +49,16 @@ function rejectUnknownHost(req: Request, res: Response): boolean {
  */
 export async function singletonOrganizationContext(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!isSingletonOrganizationMode) {
+    if (isProdLike) {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'configuration_missing',
+          message: 'Business context is not configured.',
+        },
+      });
+      return;
+    }
     return subdomainDetection(req, res, next);
   }
 

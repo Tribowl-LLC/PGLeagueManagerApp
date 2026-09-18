@@ -441,8 +441,8 @@ router.get("/admin", async (req, res) => {
     if (!user || !isOrgOrHigher(user)) {
       return sendError(res, "Admin access required", 403, "FORBIDDEN");
     }
-    let orgId = user.organizationId ?? null;
-    if (isSystemAdmin(user)) {
+    let orgId = req.organizationContextId ?? user.organizationId ?? null;
+    if (req.organizationContextId === undefined && isSystemAdmin(user)) {
       const raw = req.query.organizationId;
       const parsed = typeof raw === "string" ? parseInt(raw, 10) : NaN;
       if (Number.isFinite(parsed) && parsed > 0) orgId = parsed;

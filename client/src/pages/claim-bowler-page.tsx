@@ -1,7 +1,7 @@
 import { FC, useState, useMemo } from "react";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useLocation, useSearch } from "wouter";
+import { useLocation } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -45,15 +45,9 @@ interface LeagueGroup {
 const ClaimBowlerPage: FC = () => {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
-  const searchString = useSearch();
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedBowler, setSelectedBowler] = useState<UnlinkedBowler | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
-
-  const organizationId = useMemo(() => {
-    const params = new URLSearchParams(searchString);
-    return params.get("organizationId") || null;
-  }, [searchString]);
 
   const {
     data: unlinkedResponse,
@@ -62,12 +56,9 @@ const ClaimBowlerPage: FC = () => {
     error,
     refetch,
   } = useQuery<{ success: boolean; data: LeagueGroup[] }>({
-    queryKey: ["/api/bowlers/unlinked", organizationId],
+    queryKey: ["/api/bowlers/unlinked"],
     queryFn: async () => {
-      const unlinkedUrl = organizationId
-        ? `/api/bowlers/unlinked?organizationId=${organizationId}`
-        : "/api/bowlers/unlinked";
-      const res = await fetch(unlinkedUrl, { credentials: "include" });
+      const res = await fetch('/api/bowlers/unlinked', { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch unlinked bowlers");
       return res.json();
     },

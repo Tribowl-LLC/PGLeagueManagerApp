@@ -21,6 +21,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request, Response } from 'express';
+
+vi.hoisted(() => {
+  process.env.DATABASE_URL = 'postgres://unit.test/leaguevault';
+  process.env.SESSION_SECRET = 'unit-test-session-secret';
+  process.env.FIELD_ENCRYPTION_KEY = '0'.repeat(64);
+});
 import { envSchema } from '../../server/config';
 
 const MIXED_CASE_INPUT = 'Staging.LeagueVault.App';
@@ -54,6 +60,7 @@ function mockConfigWithParsedAppDomain(overrides: ConfigOverrides = {}): string 
       SENDGRID_API_KEY: undefined,
     },
     isDev: overrides.isDev ?? false,
+    isProdLike: !(overrides.isDev ?? false),
   }));
   return appDomain;
 }
@@ -106,10 +113,10 @@ describe('security.isAllowedOrigin matches a mixed-case operator value', () => {
     expect(isAllowedOrigin(`https://${EXPECTED_LOWER}`)).toBe(true);
   });
 
-  it('allow-lists subdomains via the suffix endsWith check', async () => {
+  it('rejects subdomains because tenant-origin wildcards are retired', async () => {
     mockConfigWithParsedAppDomain();
     const { isAllowedOrigin } = await import('../../server/middleware/security');
-    expect(isAllowedOrigin(`https://acme.${EXPECTED_LOWER}`)).toBe(true);
+    expect(isAllowedOrigin(`https://acme.${EXPECTED_LOWER}`)).toBe(false);
   });
 });
 
@@ -142,8 +149,8 @@ async function runSecurityHeadersAndGetCsp(): Promise<string> {
   return csp;
 }
 
-describe('CSP frame-ancestors emits the lowercase form for a mixed-case operator value', () => {
-  it('contains the lowercase host and wildcard, never the mixed-case input', async () => {
+describe('CSP frame-ancestors emits the canonical host for a mixed-case operator value', () => {
+  it('contains only the lowercase host, never the wildcard or mixed-case input', async () => {
     mockConfigWithParsedAppDomain();
     const csp = await runSecurityHeadersAndGetCsp();
     const directive = csp
@@ -152,7 +159,7 @@ describe('CSP frame-ancestors emits the lowercase form for a mixed-case operator
       .find((d) => d.startsWith('frame-ancestors'));
     expect(directive).toBeDefined();
     expect(directive).toContain(`https://${EXPECTED_LOWER}`);
-    expect(directive).toContain(`https://*.${EXPECTED_LOWER}`);
+    expect(directive).not.toContain(`https://*.${EXPECTED_LOWER}`);
     // Belt-and-braces: the mixed-case input must not appear anywhere.
     expect(directive).not.toContain(MIXED_CASE_INPUT);
   });
@@ -165,10 +172,10 @@ describe('email getBaseUrl emits the lowercase form for a mixed-case operator va
     expect(getBaseUrl()).toBe(`https://${EXPECTED_LOWER}`);
   });
 
-  it('builds the per-org URL in canonical lowercase', async () => {
+  it('ignores the legacy per-org URL argument and builds the canonical root', async () => {
     mockConfigWithParsedAppDomain();
     const { getBaseUrl } = await import('../../server/services/email');
-    expect(getBaseUrl('acme')).toBe(`https://acme.${EXPECTED_LOWER}`);
+    expect(getBaseUrl('acme')).toBe(`https://${EXPECTED_LOWER}`);
   });
 });
 
@@ -178,10 +185,10 @@ describe('apple-pay accepted-domain set lowercases for a mixed-case operator val
     const { canonicalApplePayDomain, acceptedApplePayDomainsForOrg, isAcceptedApplePayDomain } =
       await import('../../server/services/apple-pay-domains');
     const org = { subdomain: 'acme', slug: 'acme' };
-    expect(canonicalApplePayDomain(org)).toBe(`acme.${EXPECTED_LOWER}`);
+    expect(canonicalApplePayDomain(org)).toBe(EXPECTED_LOWER);
     expect(acceptedApplePayDomainsForOrg(org)).toContain(`acme.${EXPECTED_LOWER}`);
     // The compare side also lowercases candidate input, so a request
     // for a mixed-case domain still resolves to the lowercase entry.
-    expect(isAcceptedApplePayDomain(org, `Acme.${MIXED_CASE_INPUT}`)).toBe(true);
+    expect(isAcceptedApplePayDomain(org, EXPECTED_LOWER.toUpperCase())).toBe(true);
   });
 });

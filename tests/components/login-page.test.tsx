@@ -12,7 +12,7 @@
  *
  * The page uses raw `fetch` (not apiRequest), so we mock the global
  * fetch with a tiny route table — /api/org-context returns an empty
- * org so useSubdomainOrg resolves cleanly, and /api/auth/login can
+ * org so useBusinessContext resolves cleanly, and /api/auth/login can
  * be choreographed per-test.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
@@ -31,7 +31,7 @@ function installFetchMock() {
   global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     if (url.includes('/api/org-context')) {
-      // useSubdomainOrg's query — return an empty org so the page
+      // useBusinessContext's query — return an empty org so the page
       // renders without a logo or org-name copy and doesn't retry.
       return new Response(JSON.stringify({ success: true, data: null }), {
         status: 200,

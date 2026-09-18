@@ -191,7 +191,7 @@ export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onR
                   <SelectItem value="admin">
                     <span className="flex items-center gap-1.5">
                       <Shield className="size-3.5" />
-                      Admin
+                      Administrator
                     </span>
                   </SelectItem>
                   <SelectItem value="payment_manager">

@@ -1,4 +1,5 @@
 import type { Organization } from "@shared/schema";
+import { env } from "../config.js";
 
 export interface SingleTenantOrganizationRecord {
   id: number;
@@ -201,4 +202,8 @@ export async function resolveConfiguredOrganization(): Promise<Organization> {
     );
   }
   return organization;
+}
+
+export function configuredOrganizationId(): number | undefined {
+  return env.APP_ORGANIZATION_ID;
 }

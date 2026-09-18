@@ -32,7 +32,7 @@ router.get("/leagues/:leagueId/team-envelope-slips.pdf", async (req, res) => {
   const league = await storage.getLeague(leagueId);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   if (req.user.role === "system_admin") {
-    const selectedOrg = requestedOrg ?? req.user.organizationId ?? undefined;
+    const selectedOrg = req.organizationContextId ?? requestedOrg ?? req.user.organizationId ?? undefined;
     if (!selectedOrg) {
       return sendError(res, "Select an organization before creating envelope slips", 400, "INVALID_SCOPE");
     }
@@ -74,7 +74,8 @@ router.get("/due-past-due", async (req, res) => {
   if (requestedOrg !== undefined && req.user.role !== "system_admin" && requestedOrg !== req.user.organizationId) {
     return sendError(res, "Not found", 404, "NOT_FOUND");
   }
-  const organizationId = req.user.role === "system_admin" ? requestedOrg : req.user.organizationId;
+  const organizationId = req.organizationContextId
+    ?? (req.user.role === "system_admin" ? requestedOrg : req.user.organizationId);
   if (!organizationId) return sendError(res, "Not found", 404, "NOT_FOUND");
   const user = req.user;
   const leagues = (await storage.getLeagues(organizationId)).filter((league) => !isPaymentManager(user) || league.locationId === user.locationId);

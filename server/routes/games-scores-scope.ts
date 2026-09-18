@@ -16,6 +16,7 @@ export function positiveId(value: unknown): number | null {
 export function authorizedOrganizationId(req: Request): number | "system_scope_required" | null {
   if (!req.user) return null;
   if (req.user.role === "system_admin") {
+    if (req.organizationContextId !== undefined) return req.organizationContextId;
     return positiveId(req.query.organizationId) ?? "system_scope_required";
   }
   const organizationId = req.user.organizationId;

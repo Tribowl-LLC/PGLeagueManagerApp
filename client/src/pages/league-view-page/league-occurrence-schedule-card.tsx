@@ -101,10 +101,9 @@ export function LeagueOccurrenceScheduleCard({
 }: LeagueOccurrenceScheduleCardProps) {
   const isSystemAdmin = viewerRole === "system_admin";
   const isAdministrator = viewerRole === "org_admin" || isSystemAdmin;
-  const querySuffix = isSystemAdmin ? `?organizationId=${organizationId}` : "";
-  const endpoint = `/api/leagues/${leagueId}/occurrence-schedule${querySuffix}`;
+  const endpoint = `/api/leagues/${leagueId}/occurrence-schedule`;
   const scheduleQuery = useQuery<ApiResponse<LeagueOccurrenceScheduleReadContract>>({
-    queryKey: ["league-occurrence-schedule", endpoint],
+    queryKey: ["league-occurrence-schedule", endpoint, organizationId],
     queryFn: () => apiRequest<LeagueOccurrenceScheduleReadContract>(endpoint, "GET"),
     enabled: viewerRole !== undefined,
     retry: false,
@@ -177,7 +176,7 @@ export function LeagueOccurrenceScheduleCard({
             {schedule.administrator.c2ReviewAvailable && schedule.administrator.reviewContractFamily === "canonical" && (
               <FallDraftReviewPanel
                 basePath={canonicalAdminPath}
-                querySuffix={querySuffix}
+                querySuffix=""
                 enabled
                 scheduleQueryKey={["league-occurrence-schedule", endpoint]}
               />

@@ -90,6 +90,15 @@ const PARALLEL_ISOLATED_WITH_APP = [
  * error-log guard, so nothing preloads `pg` ahead of the mock.
  */
 const UNIT_NO_DB = [
+  'tests/unit/app-domain-mixed-case-pins.test.ts',
+  'tests/unit/app-domain-runtime.test.ts',
+  'tests/unit/apple-pay-domains.test.ts',
+  'tests/unit/security-app-domain.test.ts',
+  'tests/unit/single-tenant-boundaries.test.ts',
+  'tests/unit/single-tenant-config.test.ts',
+  'tests/unit/single-tenant-context.test.ts',
+  'tests/unit/single-tenant-preflight.test.ts',
+  'tests/unit/score-requests.test.ts',
   'tests/eslint-rules/design-system-config.test.ts',
   'tests/unit/account-action-delivery-worker.test.ts',
   'tests/unit/account-action-delivery-scheduler.test.ts',

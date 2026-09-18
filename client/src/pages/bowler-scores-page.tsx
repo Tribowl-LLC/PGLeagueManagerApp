@@ -49,7 +49,7 @@ export default function BowlerScoresPage() {
     queryKey: historyRequest?.queryKey ?? ["/api/scores/history", parsedBowlerId, null],
     queryFn: async ({ queryKey }) => {
       const scopedUrl = queryKey[3];
-      if (typeof scopedUrl !== "string") throw new Error("Tenant-scoped bowler ID is required");
+      if (typeof scopedUrl !== "string") throw new Error("Business-scoped bowler ID is required");
       const response = await fetch(scopedUrl);
       if (!response.ok) {
         const errorData = await response.json();

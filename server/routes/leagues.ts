@@ -388,9 +388,10 @@ router.post("/", async (req: Request, res) => {
     // (which don't include an organizationId field) would fail validation.
     const filterOrg = getOrganizationFilter(req);
     const bodyOrg = typeof req.body?.organizationId === 'number' ? req.body.organizationId : null;
-    const effectiveOrgId: number | null = req.user?.role === 'system_admin'
-      ? bodyOrg
-      : filterOrg ?? req.user?.organizationId ?? null;
+    const effectiveOrgId: number | null = req.organizationContextId
+      ?? (req.user?.role === 'system_admin'
+        ? bodyOrg
+        : filterOrg ?? req.user?.organizationId ?? null);
 
     if (effectiveOrgId == null) {
       // Every league must belong to an organization. system_admin used to
@@ -948,16 +949,9 @@ router.get("/:id/new-season/source-confirmation", async (req: Request, res) => {
     if (!req.user || (req.user.role !== 'system_admin' && req.user.role !== 'org_admin')) {
       return sendError(res, "Only admins can start a new season", 403, "FORBIDDEN");
     }
-    const explicitSystemOrganization = typeof req.query.organizationId === 'string'
-      && /^\d+$/.test(req.query.organizationId)
-      ? Number(req.query.organizationId)
-      : null;
-    if (req.user.role === 'system_admin' && (!explicitSystemOrganization || !Number.isSafeInteger(explicitSystemOrganization))) {
-      return sendError(res, 'System administrators must select one organization with ?organizationId=<id>', 400, 'INVALID_REQUEST');
-    }
-    const organizationId = req.user.role === 'system_admin'
-      ? explicitSystemOrganization
-      : getOrganizationFilter(req) ?? req.user.organizationId;
+    const organizationId = req.organizationContextId
+      ?? getOrganizationFilter(req)
+      ?? req.user.organizationId;
     if (!organizationId) return sendError(res, 'A valid organization scope is required', 400, 'INVALID_REQUEST');
     sendSuccess(res, await loadLeagueRolloverSource({
       scope: { organizationId, actorUserId: req.user.id },
@@ -986,16 +980,9 @@ router.post("/:id/new-season", async (req: Request, res) => {
     }
 
     if (!req.user) return sendError(res, 'Authentication is required', 403, 'FORBIDDEN');
-    const explicitSystemOrganization = typeof req.query.organizationId === 'string'
-      && /^\d+$/.test(req.query.organizationId)
-      ? Number(req.query.organizationId)
-      : null;
-    if (req.user.role === 'system_admin' && (!explicitSystemOrganization || !Number.isSafeInteger(explicitSystemOrganization))) {
-      return sendError(res, 'System administrators must select one organization with ?organizationId=<id>', 400, 'INVALID_REQUEST');
-    }
-    const organizationId = req.user.role === 'system_admin'
-      ? explicitSystemOrganization
-      : getOrganizationFilter(req) ?? req.user.organizationId;
+    const organizationId = req.organizationContextId
+      ?? getOrganizationFilter(req)
+      ?? req.user.organizationId;
     if (!organizationId) return sendError(res, 'A valid organization scope is required', 400, 'INVALID_REQUEST');
     const { setupIntegration, ...requestValues } = parsedRequest.data;
     const sourceConfirmation = "sourceConfirmation" in requestValues

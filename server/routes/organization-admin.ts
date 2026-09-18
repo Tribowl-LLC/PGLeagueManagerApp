@@ -190,9 +190,8 @@ router.get('/users', requireOrgAdminOrSystemAdmin, async (req: Request, res: Res
     }
 
     // A system admin can specify any organization
-    let organizationId: number | null = req.query.organizationId 
-      ? parseInt(String(req.query.organizationId), 10) 
-      : null;
+    let organizationId: number | null = req.organizationContextId
+      ?? (req.query.organizationId ? parseInt(String(req.query.organizationId), 10) : null);
     
     // For organization admins, force their own organization
     if (actingUser.role === 'org_admin') {

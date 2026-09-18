@@ -1,9 +1,4 @@
 {
-  "client/src/components/bowler-layout.tsx": {
-    "@typescript-eslint/consistent-type-assertions": {
-      "count": 1
-    }
-  },
   "client/src/components/change-password-card.tsx": {
     "@typescript-eslint/no-unnecessary-type-assertion": {
       "count": 1
@@ -88,11 +83,6 @@
     }
   },
   "client/src/pages/messaging-page.tsx": {
-    "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 1
-    }
-  },
-  "client/src/pages/organizations-page.tsx": {
     "@typescript-eslint/no-unnecessary-type-assertion": {
       "count": 1
     }

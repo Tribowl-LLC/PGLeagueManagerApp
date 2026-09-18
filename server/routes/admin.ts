@@ -37,7 +37,9 @@ const setAdminStatusSchema = z.object({
 // Get all users (admin only)
 router.get('/users', requireAdmin, async (req, res) => {
   try {
-    const users = await storage.getUsers();
+    const users = req.organizationContextId !== undefined
+      ? await storage.getOrganizationUsers(req.organizationContextId)
+      : await storage.getUsers();
     sendSuccess(res, users.map(sanitizeUser));
   } catch (error) {
     log.error('Error fetching users:', error);
@@ -80,12 +82,15 @@ router.patch('/users/:userId/admin-status', requireAdmin, async (req, res) => {
 router.get('/dashboard', requireAdmin, async (req, res) => {
   try {
     
-    // Fetch data for dashboard (system admin sees all)
-    const [bowlers, leagues, teams, payments] = await Promise.all([
-      storage.getAllBowlersSystemAdmin(),
-      storage.getAllLeaguesSystemAdmin(),
-      storage.getTeams(),
-      storage.getAllPaymentsSystemAdmin()
+    const organizationId = req.organizationContextId;
+    if (organizationId === undefined) {
+      return sendError(res, 'Business context is unavailable', 503, 'SINGLE_TENANT_CONTEXT_UNAVAILABLE');
+    }
+    const leagues = await storage.getLeagues(organizationId);
+    const [bowlers, teams, payments] = await Promise.all([
+      storage.getBowlers({ organizationId, includeUnassigned: true }),
+      Promise.all(leagues.map((league) => storage.getTeams(league.id))).then((rows) => rows.flat()),
+      storage.getAllPaymentsSystemAdmin({ organizationId }),
     ]);
     
     // Get recent payments (last 5). Sanitize at the response boundary
@@ -207,6 +212,8 @@ router.post('/email-templates/:id/send-test', requireAdmin, emailTestLimiter, as
     let organization = undefined;
     if (organizationId) {
       organization = await storage.getOrganization(parseInt(organizationId, 10));
+    } else if (req.organizationContextId !== undefined) {
+      organization = await storage.getOrganization(req.organizationContextId);
     }
     const success = await sendTestEmail(template, toEmail, organization);
     if (success) {

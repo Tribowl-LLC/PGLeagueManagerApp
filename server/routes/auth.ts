@@ -606,6 +606,13 @@ export function registerAuthRoutes(app: Express): void {
           }
         }
 
+        // Owner rows created before organization membership was required may
+        // remain unassigned in storage. Surface the deployment-resolved
+        // business for this session without rewriting that historical row.
+        if (user.role === 'system_admin' && req.organizationContextId !== undefined) {
+          user.organizationId = req.organizationContextId;
+        }
+
         if (isDev) {
           log.info('Login successful', { userId: user.id, email: maskEmail(user.email), hostname: req.hostname, cookieDomain: req.session?.cookie?.domain || 'not set' });
         } else {
@@ -639,7 +646,7 @@ export function registerAuthRoutes(app: Express): void {
       // data, and pending/link state is visible immediately after an admin
       // assignment.
       const sessionUser = req.user as SelectUser;
-      const user = await storage.getUser(sessionUser.id);
+      let user = await storage.getUser(sessionUser.id);
       if (!user) {
         return new Promise<void>((resolve) => {
           req.logout((err) => {
@@ -648,6 +655,9 @@ export function registerAuthRoutes(app: Express): void {
             resolve();
           });
         });
+      }
+      if (user.role === 'system_admin' && req.organizationContextId !== undefined) {
+        user = { ...user, organizationId: req.organizationContextId };
       }
       const subdomainOrg = req.subdomainOrg;
 

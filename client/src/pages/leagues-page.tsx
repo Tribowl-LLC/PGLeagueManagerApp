@@ -86,7 +86,7 @@ export default function LeaguesPage() {
     queryKey: latestScoresRequest?.queryKey ?? ["/api/scores/latest-scored-session", null, null],
     queryFn: async ({ queryKey }) => {
       const scopedUrl = queryKey[3];
-      if (typeof scopedUrl !== "string") throw new Error("No tenant-scoped league selected");
+      if (typeof scopedUrl !== "string") throw new Error("No business-scoped league selected");
       const response = await fetch(scopedUrl);
       await throwIfResNotOk(response);
       return response.json();
@@ -255,7 +255,6 @@ export default function LeaguesPage() {
           open={showForm}
           onClose={() => { setShowForm(false); setSelectedLeague(undefined); }}
           league={selectedLeague}
-          systemAdminOrganizationId={currentUser?.role === "system_admin" ? currentUser.organizationId : undefined}
         />
 
         <ConfirmArchiveDialog

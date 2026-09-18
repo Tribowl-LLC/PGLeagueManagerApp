@@ -1,6 +1,6 @@
 import helmet from "helmet";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { env, isDev } from "../config";
+import { env, isProdLike } from "../config";
 
 /**
  * Helmet middleware with our Content-Security-Policy. Allows Square
@@ -15,7 +15,7 @@ export const securityHeaders: RequestHandler = helmet({
         "https://web.squarecdn.com",
         "https://sandbox.web.squarecdn.com",
         "https://pay.google.com",
-        ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : []),
+        ...(!isProdLike ? ["'unsafe-inline'", "'unsafe-eval'"] : []),
       ],
       styleSrc: [
         "'self'",
@@ -42,7 +42,7 @@ export const securityHeaders: RequestHandler = helmet({
         "https://*.apple-pay-gateway.apple.com",
         "https://*.ingest.sentry.io",
         "https://*.ingest.us.sentry.io",
-        ...(isDev ? ["ws:", "wss:"] : []),
+        ...(!isProdLike ? ["ws:", "wss:"] : []),
       ],
       frameSrc: [
         "'self'",
@@ -62,12 +62,12 @@ export const securityHeaders: RequestHandler = helmet({
       // safe: APP_DOMAIN is normalised to lowercase at parse-time (task #335).
       // CSP host-source matching is case-insensitive per CSP3 §6.6.2.6, but
       // emitting the canonical lowercase form keeps the directive readable.
-      frameAncestors: isDev
+      frameAncestors: !isProdLike
         ? ["*"]
         : ["'self'", `https://${env.APP_DOMAIN}`],
     },
   },
-  frameguard: isDev ? false : { action: 'sameorigin' },
+  frameguard: !isProdLike ? false : { action: 'sameorigin' },
   strictTransportSecurity: false,
   crossOriginEmbedderPolicy: false,
   // Wallet payment popups (Google Pay) need to postMessage their token back
@@ -86,7 +86,7 @@ function getAllowedOrigins(): string[] {
   // parser, so the literal `allowedOrigins.includes(origin)` compare in
   // `isAllowedOrigin` would silently fail if APP_DOMAIN were mixed-case.
   origins.push(`https://${env.APP_DOMAIN}`);
-  if (isDev) {
+  if (!isProdLike) {
     origins.push('http://localhost:5000');
     origins.push('http://localhost:5173');
     origins.push('http://127.0.0.1:5000');
@@ -106,7 +106,7 @@ export function isAllowedOrigin(origin: string): boolean {
 
 /**
  * Sets JSON / no-cache / CORS headers for `/api/*` and short-circuits OPTIONS
- * preflights. Allowed origins include leaguevault.app (and subdomains), local
+ * preflights. Allowed origins include the canonical application domain, local
  * development hosts, and Capacitor/Ionic mobile shells.
  */
 export function apiHeaders(req: Request, res: Response, next: NextFunction): void {

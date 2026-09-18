@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Link } from "wouter";
-import { useSubdomainOrg } from "@/hooks/use-subdomain-org";
+import { useBusinessContext } from "@/hooks/use-business-context";
 import {
   DEFAULT_THROTTLE_FALLBACK_SECONDS,
   formatCountdown,
@@ -23,7 +23,7 @@ import {
 import { AlertCircle, AlertTriangle, ArrowLeft, Loader2, Mail } from "lucide-react";
 
 const ForgotPasswordPage: FC = () => {
-  const { org: subdomainOrg } = useSubdomainOrg();
+  const { business } = useBusinessContext();
   const [email, setEmail] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -102,11 +102,11 @@ const ForgotPasswordPage: FC = () => {
       <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
         <Card className="w-full max-w-md mt-4 sm:mt-0">
           <CardHeader spacing="tight" padding="comfortable">
-            {subdomainOrg?.logo && (
+            {business?.logo && (
               <div className="flex justify-center mb-4">
                 <img
-                  src={subdomainOrg.logo}
-                  alt={subdomainOrg.name}
+                src={business.logo}
+                alt={business.name}
                   className="h-14 w-auto max-w-50 object-contain"
                 />
               </div>

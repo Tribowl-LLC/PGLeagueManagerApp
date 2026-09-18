@@ -73,13 +73,13 @@ describe('sendAccountReadyEmail', () => {
     expect(message.html).toContain('account is connected');
     expect(message.html).toContain('view your leagues');
     expect(message.html).toContain('pay available balances');
-    expect(message.html).toContain('https://perfect-game.leaguevault.test/login');
+    expect(message.html).toContain('https://leaguevault.test/login');
     expect(message.html).not.toContain('password');
     expect(message.html).not.toContain('token');
     expect(message.html).not.toContain('amount');
   });
 
-  it('uses the active template with server-resolved tenant links', async () => {
+  it('uses the active template with canonical business links', async () => {
     getTemplateMock.mockResolvedValue({
       slug: 'admin_claim_complete',
       active: true,
@@ -92,8 +92,8 @@ describe('sendAccountReadyEmail', () => {
     expect(sendMock).toHaveBeenCalledTimes(1);
     const message = sendMock.mock.calls[0][0];
     expect(message.subject).toBe('Ready for Perfect Game');
-    expect(message.html).toContain('https://perfect-game.leaguevault.test/login');
-    expect(message.html).toContain('https://perfect-game.leaguevault.test/bowler-dashboard');
+    expect(message.html).toContain('https://leaguevault.test/login');
+    expect(message.html).toContain('https://leaguevault.test/bowler-dashboard');
     expect(message.html).not.toContain('internal-perfect-game.leaguevault.test');
   });
 

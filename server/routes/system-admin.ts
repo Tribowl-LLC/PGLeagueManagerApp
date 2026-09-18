@@ -83,7 +83,9 @@ router.post('/create/:id', requireAdmin, async (req: Request, res: Response) => 
 
 router.get('/', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const users = await storage.getUsers();
+    const users = req.organizationContextId !== undefined
+      ? await storage.getOrganizationUsers(req.organizationContextId)
+      : await storage.getUsers();
     const systemAdmins = users.filter(user => user.role === 'system_admin');
     sendSuccess(res, systemAdmins.map(sanitizeUser));
   } catch (error) {
@@ -104,7 +106,9 @@ router.post('/revoke/:id', requireAdmin, async (req: Request, res: Response) => 
       return sendError(res, 'User not found', 404, 'USER_NOT_FOUND');
     }
 
-    const users = await storage.getUsers();
+    const users = req.organizationContextId !== undefined
+      ? await storage.getOrganizationUsers(req.organizationContextId)
+      : await storage.getUsers();
     const systemAdmins = users.filter(u => u.role === 'system_admin');
     
     if (systemAdmins.length <= 1 && systemAdmins.some(admin => admin.id === userId)) {

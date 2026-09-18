@@ -40,8 +40,8 @@ async function authorizedStandingsScope(req: Request): Promise<{
 
   let organizationId: number;
   if (req.user.role === "system_admin") {
-    if (requestedOrganizationId === undefined || requestedOrganizationId === null) return "invalid_request";
-    organizationId = requestedOrganizationId;
+    organizationId = req.organizationContextId ?? requestedOrganizationId ?? req.user.organizationId ?? 0;
+    if (!organizationId) return "invalid_request";
   } else {
     const sessionOrganizationId = req.user.organizationId;
     if (!sessionOrganizationId
@@ -78,7 +78,7 @@ router.get("/:leagueId/standings", async (req, res) => {
     if (scope === "invalid_request") {
       return sendError(
         res,
-        req.user?.role === "system_admin" && req.query.organizationId === undefined
+        req.user?.role === "system_admin" && req.organizationContextId === undefined && req.query.organizationId === undefined
           ? "System administrators must select one organization with ?organizationId=<id>"
           : "A valid league and organization scope is required",
         400,

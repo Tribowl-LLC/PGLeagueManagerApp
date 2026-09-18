@@ -12,7 +12,7 @@
  *
  * The page uses raw `fetch`, so we mock the global fetch with a
  * route table — /api/org-context returns an empty org so
- * useSubdomainOrg resolves cleanly, and /api/auth/forgot-password
+ * useBusinessContext resolves cleanly, and /api/auth/forgot-password
  * is choreographed per-test.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';

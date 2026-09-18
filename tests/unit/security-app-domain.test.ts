@@ -18,6 +18,7 @@ function mockConfig(appDomain: string): void {
       SENDGRID_API_KEY: undefined,
     },
     isDev: false,
+    isProdLike: true,
   }));
 }
 
@@ -28,6 +29,7 @@ function mockDevConfig(appDomain: string): void {
       SENDGRID_API_KEY: undefined,
     },
     isDev: true,
+    isProdLike: false,
   }));
 }
 
@@ -46,11 +48,11 @@ describe('isAllowedOrigin honors APP_DOMAIN', () => {
     expect(isAllowedOrigin('https://staging.example')).toBe(true);
   });
 
-  it('allows any subdomain of APP_DOMAIN over https', async () => {
+  it('rejects subdomains of APP_DOMAIN over https', async () => {
     mockConfig('staging.example');
     const { isAllowedOrigin } = await import('../../server/middleware/security');
-    expect(isAllowedOrigin('https://acme.staging.example')).toBe(true);
-    expect(isAllowedOrigin('https://perfect-game.staging.example')).toBe(true);
+    expect(isAllowedOrigin('https://acme.staging.example')).toBe(false);
+    expect(isAllowedOrigin('https://perfect-game.staging.example')).toBe(false);
   });
 
   it('rejects the legacy leaguevault.app suffix when APP_DOMAIN is different', async () => {
@@ -66,11 +68,11 @@ describe('isAllowedOrigin honors APP_DOMAIN', () => {
     expect(isAllowedOrigin('http://acme.staging.example')).toBe(false);
   });
 
-  it('still allows leaguevault.app subdomains by default (production)', async () => {
+  it('rejects leaguevault.app subdomains by default (production)', async () => {
     mockConfig('leaguevault.app');
     const { isAllowedOrigin } = await import('../../server/middleware/security');
     expect(isAllowedOrigin('https://leaguevault.app')).toBe(true);
-    expect(isAllowedOrigin('https://acme.leaguevault.app')).toBe(true);
+    expect(isAllowedOrigin('https://acme.leaguevault.app')).toBe(false);
   });
 });
 
@@ -116,7 +118,7 @@ describe('CSP frame-ancestors honors APP_DOMAIN', () => {
     expect(directive).toBeDefined();
     expect(directive).toContain("'self'");
     expect(directive).toContain('https://staging.example');
-    expect(directive).toContain('https://*.staging.example');
+    expect(directive).not.toContain('https://*.staging.example');
     expect(directive).not.toContain('leaguevault.app');
   });
 
@@ -130,7 +132,7 @@ describe('CSP frame-ancestors honors APP_DOMAIN', () => {
       .find((d) => d.startsWith('frame-ancestors'));
     expect(directive).toBeDefined();
     expect(directive).toContain('https://leaguevault.app');
-    expect(directive).toContain('https://*.leaguevault.app');
+    expect(directive).not.toContain('https://*.leaguevault.app');
   });
 });
 
@@ -147,7 +149,7 @@ describe('isAllowedOrigin in dev mode', () => {
   });
 
   it('does not allow-list dev loopback origins in production', async () => {
-    // mockConfig sets isDev: false. The dev branch is gated on isDev,
+    // mockConfig sets isDev/isProdLike to production. The dev branch is gated on isProdLike,
     // so loopback origins must be rejected when the server thinks it's
     // running in production — even on the same machine.
     mockConfig('staging.example');

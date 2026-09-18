@@ -4,6 +4,9 @@ import { getPaymentProvider, ProviderNotConfiguredError } from "./payment-provid
 import { hasWalletSupport } from "./payment-provider";
 import { applePayRecoveryAlerter } from "./apple-pay-alerts";
 import { canonicalApplePayDomain } from "./apple-pay-domains";
+import { isProdLike, isSingletonOrganizationMode } from "../config";
+import { SingleTenantContextError } from "./single-tenant-context";
+import { resolveConfiguredOrganization } from "./single-tenant-context";
 import type { ApplePayJob, ApplePayJobItem } from "@shared/schema";
 import { isTransientDatabaseError, getPgErrorCode } from "../utils/db-errors.js";
 
@@ -305,7 +308,15 @@ class ApplePayWorker {
   }
 
   private async enumerateItems(jobId: number): Promise<void> {
-    const organizations = await storage.getOrganizations();
+    if (isProdLike && !isSingletonOrganizationMode) {
+      throw new SingleTenantContextError(
+        "configuration_missing",
+        "APP_ORGANIZATION_ID is required before background operations can run.",
+      );
+    }
+    const organizations = isSingletonOrganizationMode
+      ? [await resolveConfiguredOrganization()]
+      : await storage.getOrganizations();
     const items: Array<{
       organizationId: number | null;
       locationId: number | null;

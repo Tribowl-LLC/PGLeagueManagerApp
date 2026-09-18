@@ -647,7 +647,7 @@ describe("Square webhook parsing and log safety", () => {
     const source = readFileSync(new URL("../../server/app.ts", import.meta.url), "utf8");
     const receiverIndex = source.indexOf("registerSquareWebhookReceiver(app);");
     expect(receiverIndex).toBeGreaterThan(-1);
-    expect(receiverIndex).toBeLessThan(source.indexOf("app.use(subdomainDetection);"));
+    expect(receiverIndex).toBeLessThan(source.indexOf("app.use(singletonOrganizationContext);"));
     expect(receiverIndex).toBeLessThan(source.indexOf("limit: '256kb'"));
   });
 });

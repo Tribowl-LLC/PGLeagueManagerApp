@@ -305,18 +305,18 @@ function validateEnv(): Env {
       log.error("Environment validation failed: ROSTER_STANDING_AUTOPAY_ENABLED requires SCHEDULED_PAYMENT_EXECUTION_MODE=ledger_execute");
       process.exit(1);
     }
-    if ((parsed.NODE_ENV === 'production' || parsed.APP_ENV === 'prod') && !parsed.APP_ORGANIZATION_ID) {
-      log.error("Environment validation failed: APP_ORGANIZATION_ID must be set in production-like deployments");
-      process.exit(1);
-    }
     return parsed;
   };
 
   if (!result.success) {
+    const organizationConfigurationIssues = result.error.issues.filter(
+      (issue) => issue.path[0] === "APP_ORGANIZATION_ID",
+    );
     const errors = result.error.issues
       .filter((issue) => {
         const path = issue.path[0] as string;
-        return !optionalWarnings.some((w) => w.key === path);
+        return path !== "APP_ORGANIZATION_ID"
+          && !optionalWarnings.some((w) => w.key === path);
       });
 
     if (errors.length > 0) {
@@ -327,14 +327,24 @@ function validateEnv(): Env {
       process.exit(1);
     }
 
-    return requireExecutionMode(envSchema.parse({
+    const parsed = envSchema.parse({
       ...process.env,
+      // Keep liveness available when the singleton deployment setting is
+      // missing or malformed. Business middleware and workers fail closed
+      // until the operator supplies a valid value.
+      APP_ORGANIZATION_ID: organizationConfigurationIssues.length > 0
+        ? undefined
+        : process.env.APP_ORGANIZATION_ID,
       ...Object.fromEntries(
         result.error.issues
           .filter((issue) => optionalWarnings.some((w) => w.key === issue.path[0]))
           .map((issue) => [issue.path[0], undefined])
       ),
-    }));
+    });
+    if (organizationConfigurationIssues.length > 0) {
+      log.error("APP_ORGANIZATION_ID is missing or invalid; business operations will remain unavailable until it is configured");
+    }
+    return requireExecutionMode(parsed);
   }
 
   return requireExecutionMode(result.data);

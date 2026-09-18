@@ -21,7 +21,6 @@ export default function LeaguePastDuePage() {
   const params = useParams();
   const leagueId = parseInt(params.leagueId!);
   const { data: userResponse } = useQuery<{ data: User }>({ queryKey: ["/api/user"], staleTime: 1000 * 60 * 5 });
-  const systemScope = userResponse?.data?.role === "system_admin" && userResponse.data.organizationId ? `?organizationId=${encodeURIComponent(userResponse.data.organizationId)}` : "";
 
   const { data: league, isLoading: loadingLeague } = useQuery<{ data: League }>({
     queryKey: [`/api/leagues/${leagueId}`],
@@ -61,9 +60,9 @@ export default function LeaguePastDuePage() {
   });
 
   const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: CanonicalDuePastDueResponseV2 }>({
-    queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2${systemScope}`],
+    queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`],
     queryFn: async () => {
-      const response = await fetch(`/api/financials/leagues/${leagueId}/canonical-due-past-due/2${systemScope}`);
+      const response = await fetch(`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`);
       await throwIfResNotOk(response);
       return response.json();
     },
