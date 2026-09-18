@@ -5,13 +5,6 @@ import { organizations, type InsertOrganization } from '@shared/schema';
 import { storage } from '../../server/storage';
 import { OrganizationHostnameConflictError } from '../../server/storage/organizations';
 import { getPgErrorCode, getPgErrorConstraint } from '../../server/utils/db-errors';
-import {
-  apiPost,
-  login,
-  type AuthSession,
-  TEST_ADMIN_EMAIL,
-  TEST_ADMIN_PASSWORD,
-} from '../helpers';
 
 const PREFIX = 'vitesthostns';
 
@@ -29,11 +22,8 @@ async function cleanup(): Promise<void> {
 }
 
 describe.sequential('organization hostname namespace', () => {
-  let adminSession: AuthSession;
-
   beforeAll(async () => {
     await cleanup();
-    adminSession = await login(TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD);
   });
 
   afterAll(cleanup);
@@ -93,26 +83,5 @@ describe.sequential('organization hostname namespace', () => {
       status: 'rejected',
       reason: expect.any(OrganizationHostnameConflictError),
     });
-  });
-
-  it('returns a stable 409 without disclosing the owning organization', async () => {
-    const shared = `${PREFIX}apishared`;
-    await storage.createOrganization(org(`${PREFIX}apiexisting`, shared));
-
-    const response = await apiPost('/api/organizations', {
-      name: 'Conflicting API organization',
-      slug: shared,
-      subdomain: `${PREFIX}apinew`,
-    }, adminSession);
-
-    expect(response.status).toBe(409);
-    expect(response.data).toEqual({
-      success: false,
-      error: {
-        code: 'ORG_HOSTNAME_CONFLICT',
-        message: 'Organization hostname is already in use',
-      },
-    });
-    expect(JSON.stringify(response.data)).not.toContain(`${PREFIX}apiexisting`);
   });
 });

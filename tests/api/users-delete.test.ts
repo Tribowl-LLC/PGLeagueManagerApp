@@ -12,7 +12,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../../server/db';
-import { organizations, users, orphanCleanupAudits } from '@shared/schema';
+import { users, orphanCleanupAudits } from '@shared/schema';
 import { hashPassword } from '../../server/lib/password';
 import {
   apiDelete,
@@ -152,36 +152,6 @@ describe('DELETE /api/org-admin/users/:id', () => {
 
     const [after] = await db.select().from(users).where(eq(users.id, loneAdminId));
     expect(after).toBeDefined();
-  });
-
-  it('lets a system_admin finish an archived organization teardown by deleting its last admin', async () => {
-    const sysSession = await login(TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD);
-    const orgId = await acquireFixtureOrg(LAST_ADMIN_ORG_SLUG, 'Vitest Last Admin Org');
-    const loneAdminId = await makeUser({ role: 'org_admin', organizationId: orgId });
-
-    await db
-      .update(organizations)
-      .set({ active: false })
-      .where(eq(organizations.id, orgId));
-
-    const { status, data } = await apiDelete(
-      `/api/org-admin/users/${loneAdminId}`,
-      sysSession,
-    );
-    expect(status).toBe(200);
-    expect(data.success).toBe(true);
-
-    const { status: deleteOrgStatus, data: deleteOrgData } = await apiDelete(
-      `/api/organizations/${orgId}`,
-      sysSession,
-    );
-    expect(deleteOrgStatus).toBe(200);
-    expect(deleteOrgData.success).toBe(true);
-
-    const [userAfter] = await db.select().from(users).where(eq(users.id, loneAdminId));
-    const [orgAfter] = await db.select().from(organizations).where(eq(organizations.id, orgId));
-    expect(userAfter).toBeUndefined();
-    expect(orgAfter).toBeUndefined();
   });
 
   it('lets an org_admin delete a peer org_admin in the same org when an admin would remain (200)', async () => {

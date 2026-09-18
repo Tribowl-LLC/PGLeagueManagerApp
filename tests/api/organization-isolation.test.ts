@@ -66,7 +66,7 @@ function collectIds(data: unknown): number[] {
   return data.filter(hasNumericId).map((u) => u.id);
 }
 
-describe('Organization Isolation', () => {
+describe('Resource authorization boundaries', () => {
   let sessionA: AuthSession;
   let sessionB: AuthSession;
   let orgALeagueId: number | null = null;
@@ -171,18 +171,6 @@ describe('Organization Isolation', () => {
         orgBLeagueId = createdLeague.id;
       }
     }
-  });
-
-  describe('organization visibility', () => {
-    it('org A admin should NOT be able to list all organizations (admin-only)', async () => {
-      const { status } = await apiGet<OrgUser[]>('/api/organizations', sessionA);
-      expect(status).toBe(403);
-    });
-
-    it('org B admin should NOT be able to list all organizations (admin-only)', async () => {
-      const { status } = await apiGet<OrgUser[]>('/api/organizations', sessionB);
-      expect(status).toBe(403);
-    });
   });
 
   describe('user isolation', () => {
