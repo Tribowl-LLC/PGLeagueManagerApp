@@ -70,8 +70,8 @@ import { sanitizedSentryIdentity } from '@shared/sentry-context';
 import { getPgErrorCode } from './utils/db-errors.js';
 import { resolveBackgroundOrganizationId } from './services/single-tenant-context';
 import {
-  applePayVerificationFileCandidates,
   APPLE_PAY_DOMAIN_VERIFICATION_FILENAME,
+  readApplePayVerificationFile,
 } from './utils/apple-pay-verification';
 
 const log = createLogger("Server");
@@ -291,31 +291,26 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   });
 
   app.get('/.well-known/apple-developer-merchantid-domain-association', async (_req, res) => {
-    const { access } = await import('fs/promises');
-    for (const staticPath of applePayVerificationFileCandidates({
+    const verificationFile = await readApplePayVerificationFile({
       moduleDir: import.meta.dirname,
-    })) {
-      try {
-        await access(staticPath);
-        res.set('Content-Type', 'application/octet-stream');
-        res.set(
-          'Content-Disposition',
-          `attachment; filename="${APPLE_PAY_DOMAIN_VERIFICATION_FILENAME}"`,
-        );
-        return res.sendFile(staticPath);
-      } catch {
-        // Try the next deployment layout before falling back to configuration.
-      }
+    });
+    if (verificationFile) {
+      res.set({
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${APPLE_PAY_DOMAIN_VERIFICATION_FILENAME}"`,
+        'Content-Length': String(verificationFile.byteLength),
+      });
+      return res.end(verificationFile);
     }
     const verification = process.env.APPLE_PAY_DOMAIN_VERIFICATION;
     if (verification) {
-      res.set('Content-Type', 'application/octet-stream');
-      res.set(
-        'Content-Disposition',
-        `attachment; filename="${APPLE_PAY_DOMAIN_VERIFICATION_FILENAME}"`,
-      );
-      res.send(verification);
-      return;
+      const verificationBytes = Buffer.from(verification);
+      res.set({
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${APPLE_PAY_DOMAIN_VERIFICATION_FILENAME}"`,
+        'Content-Length': String(verificationBytes.byteLength),
+      });
+      return res.end(verificationBytes);
     }
     res.status(404).type('text/plain').send('Not configured');
   });
