@@ -220,6 +220,13 @@ function sign(body: string, key = signatureKey, url = notificationUrl): string {
   return createHmac("sha256", key).update(url, "utf8").update(body, "utf8").digest("base64");
 }
 
+function zeroDollarPaymentBody(): string {
+  return readFileSync(
+    new URL("../fixtures/square-zero-dollar-payment-updated.json", import.meta.url),
+    "utf8",
+  );
+}
+
 let server: Server;
 let baseUrl: string;
 
@@ -503,16 +510,22 @@ describe("Square webhook in-memory origin prefilter", () => {
     expect(ingest).toHaveBeenCalledTimes(3);
   });
 
-  it("keeps a potentially owned malformed payment fail-closed", async () => {
-    const response = await post(JSON.stringify(paymentEvent(
-      "event-owned-zero-fixture",
-      "location-fixture-1",
-      { amount: 0, applicationId, referenceId: operationId },
-    )));
+  it("accepts the supplied zero-dollar payment as ignored webhook evidence", async () => {
+    const body = zeroDollarPaymentBody();
+    const response = await post(body);
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
     expect(databaseLimiter).toHaveBeenCalledTimes(1);
-    expect(ingest).not.toHaveBeenCalled();
+    expect(ingest).toHaveBeenCalledWith(expect.objectContaining({
+      providerEventId: "ce7ce96e-a2bd-3acb-a1b1-b5e31f19a082",
+      providerObjectId: "VCOLfhtd4tg0PI39CxekAuYAuaB",
+      providerOrderId: "tk2eFqDNNt7dulEJ1EBHkqZrfDDZY",
+      amountMinor: 0,
+      currency: "USD",
+      ignored: true,
+      ignoredCode: "ZERO_VALUE_PAYMENT",
+    }));
+    expect(processEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -742,21 +755,20 @@ describe("Square webhook rejection diagnostics", () => {
     });
   });
 
-  it("classifies an owned zero-value payment during full normalization", async () => {
-    const event = paymentEvent("event-owned-zero-diagnostic", "location-fixture-1", {
-      amount: 0,
-      applicationId,
-    });
-    const response = await post(JSON.stringify(event));
+  it("accepts a zero-value payment during full normalization", async () => {
+    const response = await post(zeroDollarPaymentBody());
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
     expect(databaseLimiter).toHaveBeenCalledTimes(1);
-    expect(ingest).not.toHaveBeenCalled();
-    expect(rejectedLog()).toMatchObject({
-      stage: "full_normalize",
-      reason: "invalid_amount_currency",
-      eventType: "payment.updated",
-    });
+    expect(ingest).toHaveBeenCalledWith(expect.objectContaining({
+      amountMinor: 0,
+      ignored: true,
+      ignoredCode: "ZERO_VALUE_PAYMENT",
+    }));
+    expect(fakeLogger.warn).not.toHaveBeenCalledWith(
+      "Square webhook request rejected",
+      expect.objectContaining({ event: "square_webhook_rejected" }),
+    );
   });
 
   it("classifies a required timestamp failure during full normalization", async () => {
@@ -911,6 +923,54 @@ describe("Square webhook reconciliation activation", () => {
         processDisputes: false,
       }));
       expect(rearm).toHaveBeenCalledTimes(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("durably ignores the supplied zero-dollar payment without processing or rearming", async () => {
+    ingest.mockResolvedValueOnce({
+      event: {
+        ...webhookEventFixture("ignored"),
+        errorCode: "ZERO_VALUE_PAYMENT",
+      },
+      duplicate: false,
+    });
+    const reconcileApp = express();
+    registerSquareWebhookReceiver(reconcileApp, {
+      config: { ...config, mode: "reconcile_payments" },
+      limiter: databaseLimiter,
+      ingest,
+      process: processEvent,
+      rearm,
+    });
+    const listener = await new Promise<Server>((resolve) => {
+      const value = reconcileApp.listen(0, "127.0.0.1", () => resolve(value));
+    });
+    try {
+      const body = zeroDollarPaymentBody();
+      const response = await fetch(
+        `http://127.0.0.1:${(listener.address() as AddressInfo).port}${SQUARE_WEBHOOK_PATH}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [SQUARE_WEBHOOK_SIGNATURE_HEADER]: sign(body),
+            "x-forwarded-for": "203.0.113.244",
+          },
+          body,
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect((await response.json()).data).toMatchObject({ status: "ignored" });
+      expect(ingest).toHaveBeenCalledWith(expect.objectContaining({
+        amountMinor: 0,
+        ignored: true,
+        ignoredCode: "ZERO_VALUE_PAYMENT",
+      }));
+      expect(processEvent).not.toHaveBeenCalled();
+      expect(rearm).not.toHaveBeenCalled();
     } finally {
       await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
     }

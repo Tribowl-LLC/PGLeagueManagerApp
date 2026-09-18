@@ -28,6 +28,10 @@ export type SquareWebhookDiagnosticReason = (typeof SQUARE_WEBHOOK_DIAGNOSTIC_RE
 
 export type SquareWebhookDiagnosticEventType = (typeof SQUARE_WEBHOOK_EVENT_TYPES)[number] | "other";
 
+export type SquareWebhookIgnoreCode =
+  | "EVENT_TYPE_NOT_SUPPORTED"
+  | "ZERO_VALUE_PAYMENT";
+
 const supportedTypes = new Set<string>(SQUARE_WEBHOOK_EVENT_TYPES);
 const safeProviderString = z.string().trim().min(1).max(255).refine(
   (value) => !/[\u0000-\u001f\u007f]/.test(value),
@@ -58,6 +62,10 @@ const moneySchema = z.object({
   currency: z.string().trim().regex(/^[A-Z]{3}$/),
 });
 
+const paymentMoneySchema = moneySchema.extend({
+  amount: z.number().int().nonnegative().max(2_147_483_647),
+});
+
 const refundSchema = z.object({
   id: safeProviderString,
   payment_id: safeProviderString,
@@ -72,7 +80,7 @@ const paymentSchema = z.object({
   id: safeProviderString,
   location_id: safeProviderString,
   status: z.string().trim().min(1).max(50),
-  amount_money: moneySchema,
+  amount_money: paymentMoneySchema,
   updated_at: timestampSchema.optional(),
   order_id: safeProviderString.optional(),
   reference_id: z.string().trim().min(1).max(40).optional(),
@@ -145,6 +153,7 @@ export interface NormalizedSquareWebhookEvent {
   providerObjectVersion: number | null;
   providerObjectUpdatedAt: string | null;
   ignored: boolean;
+  ignoredCode: SquareWebhookIgnoreCode | null;
   providerStatus: string | null;
   amountMinor: number | null;
   currency: string | null;
@@ -291,12 +300,12 @@ function isValidTimestamp(value: unknown): boolean {
     && Number.isFinite(new Date(value).getTime());
 }
 
-function hasInvalidMoney(value: unknown): boolean {
+function hasInvalidMoney(value: unknown, allowZero = false): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return true;
   const money = value as Record<string, unknown>;
   return typeof money.amount !== "number"
     || !Number.isInteger(money.amount)
-    || money.amount <= 0
+    || (allowZero ? money.amount < 0 : money.amount <= 0)
     || money.amount > 2_147_483_647
     || typeof money.currency !== "string"
     || !/^[A-Z]{3}$/.test(money.currency.trim());
@@ -308,7 +317,7 @@ function objectFailureReason(
   kind: ObjectValidationKind,
 ): SquareWebhookDiagnosticReason {
   if (typeof object.id === "string" && object.id !== dataId) return "object_id_mismatch";
-  if (kind !== "payment_origin" && hasInvalidMoney(object.amount_money)) {
+  if (kind !== "payment_origin" && hasInvalidMoney(object.amount_money, kind === "payment")) {
     return object.amount_money === undefined
       ? "required_field_or_timestamp_invalid"
       : "invalid_amount_currency";
@@ -443,6 +452,7 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
       providerObjectVersion: result.data.version ?? null,
       providerObjectUpdatedAt: result.data.updated_at ? iso(result.data.updated_at) : null,
       ignored: false,
+      ignoredCode: null,
       providerStatus: result.data.status,
       amountMinor: Number(result.data.amount_money.amount),
       currency: result.data.amount_money.currency,
@@ -483,7 +493,8 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
       providerPaymentId: result.data.id,
       providerObjectVersion: null,
       providerObjectUpdatedAt: result.data.updated_at ? iso(result.data.updated_at) : null,
-      ignored: false,
+      ignored: result.data.amount_money.amount === 0,
+      ignoredCode: result.data.amount_money.amount === 0 ? "ZERO_VALUE_PAYMENT" : null,
       providerStatus: result.data.status,
       amountMinor: Number(result.data.amount_money.amount),
       currency: result.data.amount_money.currency,
@@ -525,6 +536,7 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
       providerObjectVersion: result.data.version ?? null,
       providerObjectUpdatedAt: result.data.updated_at ? iso(result.data.updated_at) : null,
       ignored: false,
+      ignoredCode: null,
       providerStatus: result.data.state,
       amountMinor: Number(result.data.amount_money.amount),
       currency: result.data.amount_money.currency,
@@ -569,6 +581,7 @@ export function normalizeSquareWebhookEvent(rawBody: string): NormalizedSquareWe
     providerObjectVersion: null,
     providerObjectUpdatedAt: null,
     ignored: true,
+    ignoredCode: "EVENT_TYPE_NOT_SUPPORTED",
     providerStatus: null,
     amountMinor: null,
     currency: null,
