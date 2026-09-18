@@ -97,9 +97,17 @@ export interface AccountEmailDeliveryCustomArgs {
   account_delivery_job_id: number | string;
 }
 
+export interface AccountGuidanceEmailDeliveryCustomArgs {
+  account_guidance_job_id: number | string;
+}
+
+export type EmailDeliveryCustomArgs =
+  | AccountEmailDeliveryCustomArgs
+  | AccountGuidanceEmailDeliveryCustomArgs;
+
 export interface EmailSendOptions {
-  /** Only these non-PII correlation fields may reach SendGrid custom_args. */
-  customArgs?: AccountEmailDeliveryCustomArgs;
+  /** Only these validated, non-PII correlation fields may reach SendGrid custom_args. */
+  customArgs?: EmailDeliveryCustomArgs;
   /** Return provider metadata while preserving boolean results for old callers. */
   returnDetails?: boolean;
 }
@@ -114,14 +122,18 @@ function safeCorrelationId(value: number | string): string | null {
 }
 
 /**
- * Convert the queue's numeric IDs to the string values required by SendGrid.
- * A partial or malformed pair is dropped as a unit so arbitrary provider
- * custom arguments can never be smuggled through this shared sender.
+ * Convert durable job IDs to the string values required by SendGrid.
+ * A partial or malformed correlation is dropped as a unit so arbitrary
+ * provider custom arguments can never be smuggled through this shared sender.
  */
 export function safeAccountEmailDeliveryCustomArgs(
-  value: AccountEmailDeliveryCustomArgs | undefined,
-): { account_action_id: string; account_delivery_job_id: string } | undefined {
+  value: EmailDeliveryCustomArgs | undefined,
+): { account_action_id: string; account_delivery_job_id: string } | { account_guidance_job_id: string } | undefined {
   if (!value) return undefined;
+  if ('account_guidance_job_id' in value) {
+    const jobId = safeCorrelationId(value.account_guidance_job_id);
+    return jobId ? { account_guidance_job_id: jobId } : undefined;
+  }
   const actionId = safeCorrelationId(value.account_action_id);
   const jobId = safeCorrelationId(value.account_delivery_job_id);
   return actionId && jobId
@@ -335,8 +347,13 @@ export function replaceVariables(text: string, variables: Record<string, string>
 
 export function replaceVariablesPlainText(text: string, variables: Record<string, string>): string {
   return text.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-    return variables[key] !== undefined ? variables[key] : match;
-  });
+    // Subjects are handed to SendGrid as mail headers. Keep their normal
+    // human-readable form, but remove header-breaking control characters from
+    // values that originate in user or organization data.
+    return variables[key] !== undefined
+      ? variables[key].replace(/[\r\n\u0000-\u001f\u007f]/g, ' ')
+      : match;
+  }).replace(/[\r\n\u0000-\u001f\u007f]/g, ' ');
 }
 
 export function sanitizeTemplateBody(html: string): string {
@@ -552,24 +569,24 @@ function formatEmailResult(
 
 export function sendTemplatedEmail(
   slug: string,
-  toEmail: string,
+  toEmail: string | string[],
   variables: Record<string, string>,
 ): Promise<boolean>;
 export function sendTemplatedEmail(
   slug: string,
-  toEmail: string,
+  toEmail: string | string[],
   variables: Record<string, string>,
   options: EmailSendOptions & { returnDetails: true },
 ): Promise<EmailDispatchResult>;
 export function sendTemplatedEmail(
   slug: string,
-  toEmail: string,
+  toEmail: string | string[],
   variables: Record<string, string>,
   options: EmailSendOptions,
 ): Promise<boolean | EmailDispatchResult>;
 export async function sendTemplatedEmail(
   slug: string,
-  toEmail: string,
+  toEmail: string | string[],
   variables: Record<string, string>,
   options?: EmailSendOptions,
 ): Promise<boolean | EmailDispatchResult> {
@@ -582,6 +599,10 @@ export async function sendTemplatedEmail(
     const template = await storage.getEmailTemplateBySlug(slug);
     if (!template || !template.active) {
       log.info(`Template '${slug}' not found or inactive, skipping`);
+      // Preserve the long-standing bootstrap contract: a missing or inactive
+      // editable template lets the sender use its built-in fallback. Account-
+      // ready notifications intentionally handle inactive templates before
+      // reaching this generic helper and remain a deliberate no-op.
       return formatEmailResult({ accepted: false, failureReason: "template_missing" }, options);
     }
 
@@ -611,7 +632,10 @@ export async function sendTemplatedEmail(
       // correlation but supplied malformed IDs.
       log.info(`Templated email '${slug}' sent`, { deliveryCorrelation: "invalid" });
     } else {
-      log.info(`Templated email '${slug}' sent to:`, maskEmail(toEmail));
+      const recipient = Array.isArray(toEmail)
+        ? `${toEmail.length} recipient(s)`
+        : maskEmail(toEmail);
+      log.info(`Templated email '${slug}' sent to:`, recipient);
     }
     return formatEmailResult(result, options);
   } catch (error) {

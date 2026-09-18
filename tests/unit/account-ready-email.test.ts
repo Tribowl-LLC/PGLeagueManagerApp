@@ -38,7 +38,7 @@ vi.mock('../../server/logger', () => ({
   }),
 }));
 
-const { sendAccountReadyEmail } = await import('../../server/services/email-core');
+const { sendAccountReadyEmail, sendTemplatedEmail } = await import('../../server/services/email-core');
 
 const options = {
   toEmail: 'bowler@example.com',
@@ -106,6 +106,23 @@ describe('sendAccountReadyEmail', () => {
     });
 
     await expect(sendAccountReadyEmail(options)).resolves.toBe('not_sent');
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('treats inactive editable templates as unavailable to generic senders', async () => {
+    getTemplateMock.mockResolvedValue({
+      slug: 'password_reset',
+      active: false,
+      subject: 'Disabled',
+      body: 'Disabled',
+    });
+
+    await expect(sendTemplatedEmail(
+      'password_reset',
+      'bowler@example.com',
+      { bowler_name: 'Alex' },
+      { returnDetails: true },
+    )).resolves.toMatchObject({ accepted: false, failureReason: 'template_missing' });
     expect(sendMock).not.toHaveBeenCalled();
   });
 

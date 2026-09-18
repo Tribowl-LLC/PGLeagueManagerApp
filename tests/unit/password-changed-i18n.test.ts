@@ -87,7 +87,13 @@ vi.mock('../../server/config', () => ({
   isDev: false,
 }));
 
-vi.mock('../../server/storage', () => ({ storage: {} }));
+vi.mock('../../server/storage', () => ({
+  storage: {
+    // The production sender now checks the editable template catalog first;
+    // this test intentionally exercises the locale-aware built-in fallback.
+    getEmailTemplateBySlug: vi.fn(async () => undefined),
+  },
+}));
 vi.mock('../../server/utils/pii', () => ({ maskEmail: (e: string) => e }));
 
 // `getBaseUrl` builds a URL from req-ish data; we just need a stable

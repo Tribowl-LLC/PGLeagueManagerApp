@@ -10,6 +10,7 @@ import {
   escapeHtml,
   getBaseUrl,
   getOrgLogoUrl,
+  sendTemplatedEmail,
   replaceVariables,
   replaceVariablesPlainText,
   sanitizeTemplateBody,
@@ -27,15 +28,66 @@ export async function sendTestEmail(
   }
 
   const sampleVariables: Record<string, string> = {
+    inviter_name: 'Jane Bowler',
+    invitee_name: 'John Smith',
     bowler_name: 'John Smith',
     admin_name: 'Jane Admin',
     user_name: 'Alex User',
     organization_name: organization?.name || 'Sample Bowling Center',
     organization_logo_url: organization?.logo ? getOrgLogoUrl(organization) : '',
     league_name: 'Wednesday Night Mixed',
+    amount: '$42.00',
+    receipt_number: 'R-10042',
+    receipt_label: ' (receipt #R-10042)',
+    receipt_url: getBaseUrl() + '/receipt/sample',
     invite_link: getBaseUrl() + '/set-password?token=sample-test-token',
+    reset_link: getBaseUrl() + '/set-password?token=sample-reset-token',
+    register_link: getBaseUrl() + '/sign-up',
+    confirm_link: getBaseUrl() + '/confirm-email?token=sample-confirm-token',
     login_link: getBaseUrl() + '/login',
     dashboard_link: getBaseUrl() + '/bowler-dashboard',
+    accept_link: getBaseUrl() + '/api/bowler-link-respond/accept?token=sample-link-token',
+    decline_link: getBaseUrl() + '/api/bowler-link-respond/decline?token=sample-link-token',
+    app_link: getBaseUrl() + '/bowler-dashboard',
+    support_link: getBaseUrl() + '/support',
+    forgot_link: getBaseUrl() + '/forgot-password',
+    edit_link: getBaseUrl() + '/leagues?editLeague=42',
+    review_link: getBaseUrl() + '/admin/deletion-requests',
+    new_email_masked: 'j***@example.com',
+    subject: 'Your LeagueVault security notice',
+    greeting: 'Hi Alex User,',
+    intro: 'Your LeagueVault security notice is ready.',
+    performed_by_admin: 'This change was performed by an administrator on your account.',
+    when_label: 'When',
+    changed_at: 'Fri, 24 Apr 2026 15:00:00 GMT',
+    locked_at: 'Fri, 24 Apr 2026 15:00:00 GMT',
+    unlocks_at_label: 'Lock lifts at',
+    unlocks_at: 'Fri, 24 Apr 2026 15:15:00 GMT',
+    from_ip_label: 'From IP',
+    ip_address: '203.0.113.9',
+    browser_label: 'Browser',
+    user_agent: 'Mozilla/5.0',
+    if_this_was_you: 'If this was you, no action is needed.',
+    if_this_wasnt_you: "If this wasn't you, contact support immediately.",
+    reset_cta: 'Reset your password',
+    footer: 'Powered by LeagueVault',
+    email: 'alex@example.com',
+    executed_at: 'Fri, 24 Apr 2026 15:00:00 GMT',
+    bowlers_anonymized: '3',
+    account_status: 'Your LeagueVault login account was deleted.',
+    payment_records_deleted: '1',
+    email_change_requests_deleted: '0',
+    request_email: 'alex@example.com',
+    created_at: 'Fri, 24 Apr 2026 15:00:00 GMT',
+    reason: 'No longer using the service',
+    item_count: '2',
+    job_ids: '101, 102',
+    item_ids: '2001, 2002',
+    suppressed_line: '',
+    organization_id: '7',
+    location_id: '42',
+    context: 'catalog sync',
+    missing_items: 'Lineage: Weekly Lineage (variation-1)',
   };
 
   const subject = `[TEST] ${replaceVariablesPlainText(template.subject, sampleVariables)}`;
@@ -70,6 +122,20 @@ export async function sendDeletionRequestNotification(
   }
   if (toEmails.length === 0) return false;
 
+  const templated = await sendTemplatedEmail(
+    'deletion_request_notification',
+    toEmails,
+    {
+      request_email: request.email,
+      created_at: request.createdAt,
+      reason: request.reason || 'No reason provided',
+      review_link: `${getBaseUrl()}/admin/deletion-requests`,
+    },
+    { returnDetails: true },
+  );
+  if (typeof templated !== 'boolean' && templated.accepted) return true;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return false;
+
   const baseUrl = getBaseUrl();
   const reviewUrl = `${baseUrl}/admin/deletion-requests`;
   const safeEmail = escapeHtml(request.email);
@@ -79,7 +145,10 @@ export async function sendDeletionRequestNotification(
   const msg = {
     to: toEmails,
     from: { email: FROM_EMAIL, name: FROM_NAME },
-    subject: `[LeagueVault] New account deletion request from ${request.email}`,
+    subject: replaceVariablesPlainText(
+      '[LeagueVault] New account deletion request from {{request_email}}',
+      { request_email: request.email },
+    ),
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #1a1a2e; margin-top: 0;">New account deletion request</h2>
@@ -123,6 +192,23 @@ export async function sendApplePayRecoveryAlert(
     return false;
   }
   if (toEmails.length === 0) return false;
+
+  const templated = await sendTemplatedEmail(
+    'apple_pay_recovery_alert',
+    toEmails,
+    {
+      item_count: String(details.itemCount),
+      job_ids: details.affectedJobIds.join(', '),
+      item_ids: details.itemIds.slice(0, 25).join(', ') + (details.itemIds.length > 25 ? ` (+${details.itemIds.length - 25} more)` : ''),
+      suppressed_line: details.suppressedSinceLastAlert > 0
+        ? `${details.suppressedSinceLastAlert} additional recovery event(s) were suppressed by rate-limiting since the last alert.`
+        : '',
+      review_link: `${getBaseUrl()}/admin/apple-pay-jobs`,
+    },
+    { returnDetails: true },
+  );
+  if (typeof templated !== 'boolean' && templated.accepted) return true;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return false;
 
   const baseUrl = getBaseUrl();
   const reviewUrl = `${baseUrl}/admin/apple-pay-jobs`;
@@ -200,6 +286,24 @@ export async function sendSquareCatalogCapAlert(
     return false;
   }
   if (toEmails.length === 0) return false;
+
+  const templated = await sendTemplatedEmail(
+    'square_catalog_cap_alert',
+    toEmails,
+    {
+      organization_id: details.organizationId === null ? '(unknown)' : String(details.organizationId),
+      location_id: String(details.locationId),
+      reason: details.reason,
+      context: details.context,
+      suppressed_line: details.suppressedSinceLastAlert > 0
+        ? `${details.suppressedSinceLastAlert} additional cap event(s) for this location were suppressed by rate-limiting since the last alert.`
+        : '',
+      review_link: `${getBaseUrl()}/admin/locations/${details.locationId}`,
+    },
+    { returnDetails: true },
+  );
+  if (typeof templated !== 'boolean' && templated.accepted) return true;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return false;
 
   const baseUrl = getBaseUrl();
   const reviewUrl = `${baseUrl}/admin/locations/${details.locationId}`;
@@ -279,6 +383,20 @@ export async function sendLeagueSquareCatalogMissingAlert(
   }
   if (toEmails.length === 0) return false;
 
+  const templated = await sendTemplatedEmail(
+    'square_catalog_missing_alert',
+    toEmails,
+    {
+      league_name: details.leagueName,
+      organization_name: details.organizationName || 'your organization',
+      missing_items: details.missing.map((m) => `${m.kind === 'lineage' ? 'Lineage' : 'Prize fund'}: ${m.itemName || '(unnamed item)'} (${m.variationId})`).join('\n'),
+      edit_link: `${getBaseUrl()}/leagues?editLeague=${details.leagueId}`,
+    },
+    { returnDetails: true },
+  );
+  if (typeof templated !== 'boolean' && templated.accepted) return true;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return false;
+
   const baseUrl = getBaseUrl();
   const editUrl = `${baseUrl}/leagues?editLeague=${details.leagueId}`;
   const safeLeague = escapeHtml(details.leagueName);
@@ -293,7 +411,10 @@ export async function sendLeagueSquareCatalogMissingAlert(
   const msg = {
     to: toEmails,
     from: { email: FROM_EMAIL, name: FROM_NAME },
-    subject: `[LeagueVault] Square item missing for league "${details.leagueName}"`,
+    subject: replaceVariablesPlainText(
+      '[LeagueVault] Square item missing for league "{{league_name}}"',
+      { league_name: details.leagueName },
+    ),
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #1a1a2e; margin-top: 0;">A Square item used by your league is no longer available</h2>
