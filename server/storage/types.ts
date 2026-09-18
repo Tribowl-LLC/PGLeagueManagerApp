@@ -242,6 +242,7 @@ export interface IUserStorage {
   getUserByBowlerId(bowlerId: number): Promise<User | undefined>;
   hasAdminUsers(): Promise<boolean>;
   countOrgAdmins(organizationId: number): Promise<number>;
+  countUnclaimedUsers(organizationId: number): Promise<number>;
   getOrgAdmins(organizationId: number): Promise<User[]>;
   setUserLocation(userId: number, locationId: number | null): Promise<User>;
   // Task #357: change-password lockout

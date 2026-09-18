@@ -19,6 +19,8 @@ const orgAdminUsersKey = () => ["/api/org-admin/users"] as const;
 
 const unclaimedUsersKey = () => ["/api/admin/unclaimed-users"] as const;
 
+const unclaimedUsersCountKey = () => ["/api/admin/unclaimed-users/count"] as const;
+
 export const applePayJobKeys = {
   /** Listing of Apple Pay registration jobs. */
   list: () => ["/api/payments-provider/apple-pay/jobs"] as const,
@@ -35,9 +37,10 @@ export function invalidateOrgAdminUsers() {
   queryClient.invalidateQueries({ queryKey: orgAdminUsersKey() });
 }
 
-/** Refresh the unclaimed self-registered users list after a triage action. */
+/** Refresh the unclaimed self-registered users list and sidebar badge after a triage action. */
 export function invalidateUnclaimedUsers() {
   queryClient.invalidateQueries({ queryKey: unclaimedUsersKey() });
+  queryClient.invalidateQueries({ queryKey: unclaimedUsersCountKey() });
 }
 
 /**

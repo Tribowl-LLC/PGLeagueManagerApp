@@ -16,6 +16,8 @@ import {
   apiGet,
   apiPost,
   apiDelete,
+  TEST_ADMIN_EMAIL,
+  TEST_ADMIN_PASSWORD,
   TEST_ORG_A_EMAIL,
   TEST_ORG_B_EMAIL,
   TEST_ORG_PASSWORD,
@@ -223,6 +225,58 @@ describe('Admin claim of self-registered users (Task #667)', () => {
     const ids = (res.data.data ?? []).map((u) => u.id);
     expect(ids).toContain(userA.id);
     expect(ids).not.toContain(userB.id);
+  });
+
+  it('GET /unclaimed-users/count is tenant-scoped and counts only role=user rows without a bowler', async () => {
+    const beforeA = await apiGet<{ count: number }>('/api/admin/unclaimed-users/count', sessionA);
+    const beforeB = await apiGet<{ count: number }>('/api/admin/unclaimed-users/count', sessionB);
+    expect(beforeA.status).toBe(200);
+    expect(beforeB.status).toBe(200);
+
+    await insertUnclaimedUser({ organizationId: orgAId, label: 'count-included-A' });
+    await insertUnclaimedUser({ organizationId: orgBId, label: 'count-included-B' });
+
+    const linkedUser = await insertUnclaimedUser({ organizationId: orgAId, label: 'count-linked' });
+    const [linkedBowler] = await db
+      .insert(bowlersTable)
+      .values({
+        name: `Vitest Count Linked Bowler ${stamp}`,
+        email: `vitest-count-linked-${stamp}@example.com`,
+        phone: '555-0101',
+        organizationId: orgAId,
+      })
+      .returning({ id: bowlersTable.id });
+    createdBowlerIds.push(linkedBowler.id);
+    await db.update(users).set({ bowlerId: linkedBowler.id }).where(eq(users.id, linkedUser.id));
+
+    const promotedUser = await insertUnclaimedUser({ organizationId: orgAId, label: 'count-promoted' });
+    await db.update(users).set({ role: 'org_admin' }).where(eq(users.id, promotedUser.id));
+
+    const afterA = await apiGet<{ count: number }>('/api/admin/unclaimed-users/count', sessionA);
+    const afterB = await apiGet<{ count: number }>('/api/admin/unclaimed-users/count', sessionB);
+    expect(afterA.status).toBe(200);
+    expect(afterB.status).toBe(200);
+    expect(afterA.data.data?.count).toBe((beforeA.data.data?.count ?? 0) + 1);
+    expect(afterB.data.data?.count).toBe((beforeB.data.data?.count ?? 0) + 1);
+  });
+
+  it('count preserves the list route authorization boundary and system-admin organization targeting', async () => {
+    const ownOrg = await apiGet<{ count: number }>('/api/admin/unclaimed-users/count', sessionA);
+    const overriddenOrg = await apiGet<{ count: number }>(
+      `/api/admin/unclaimed-users/count?organizationId=${orgBId}`,
+      sessionA,
+    );
+    expect(ownOrg.status).toBe(200);
+    expect(overriddenOrg.status).toBe(200);
+    expect(overriddenOrg.data.data?.count).toBe(ownOrg.data.data?.count);
+
+    const systemSession = await login(TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD);
+    const targeted = await apiGet<{ count: number }>(
+      `/api/admin/unclaimed-users/count?organizationId=${orgAId}`,
+      systemSession,
+    );
+    expect(targeted.status).toBe(200);
+    expect(targeted.data.data?.count).toBe(ownOrg.data.data?.count);
   });
 
   it('POST /create-bowler atomically creates a bowler, links it to the team, and sets users.bowlerId', async () => {

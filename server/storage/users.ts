@@ -1,4 +1,4 @@
-import { eq, and, count, isNotNull, or, sql } from "drizzle-orm";
+import { eq, and, count, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   users,
@@ -438,6 +438,18 @@ export async function countOrgAdmins(organizationId: number): Promise<number> {
     .select({ count: count() })
     .from(users)
     .where(and(eq(users.organizationId, organizationId), eq(users.role, 'org_admin')));
+  return Number(row?.count ?? 0);
+}
+
+export async function countUnclaimedUsers(organizationId: number): Promise<number> {
+  const [row] = await db
+    .select({ count: count() })
+    .from(users)
+    .where(and(
+      eq(users.organizationId, organizationId),
+      eq(users.role, 'user'),
+      isNull(users.bowlerId),
+    ));
   return Number(row?.count ?? 0);
 }
 
