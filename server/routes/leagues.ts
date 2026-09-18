@@ -1028,9 +1028,10 @@ router.get("/:id/season-history", async (req: Request, res) => {
     // Cross-org leak guard (task #399): the rest of this handler walks
     // the entire season chain via `storage.getLeagues(league.organizationId)`,
     // which would happily return another org's full season history when
-    // the caller passes a foreign league id. Gate on league access first
-    // (system admins bypass, matching the rest of this file).
-    if (req.user?.role !== 'system_admin') {
+    // the caller passes a foreign league id. Owners must still be pinned to
+    // the configured business in singleton mode.
+    if (!requireOrganizationAccess(req, league.organizationId, 'league', id)
+      || !isOrgOrHigher(req.user)) {
       const allowed = await hasAccessToLeague(req, id);
       if (!allowed) {
         return sendError(res, "You don't have access to this league", 403, "FORBIDDEN");

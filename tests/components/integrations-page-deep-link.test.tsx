@@ -100,7 +100,7 @@ function installFetch(opts: { locationLookupStatus?: number } = {}) {
       });
     }
 
-    if (url.startsWith(`/api/locations?organizationId=${ORG_ID}`)) {
+    if (url === '/api/locations') {
       return jsonResponse({ success: true, data: LOCATIONS });
     }
 

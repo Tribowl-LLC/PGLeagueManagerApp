@@ -124,6 +124,7 @@ router.post("/:id/refund", paymentWriteLimiter, async (req, res) => {
       requestedByUserId: req.user.id,
       requestedByRole: req.user.role,
       requestedByOrganizationId: req.user.organizationId ?? null,
+      authorizedOrganizationId: req.organizationContextId,
     });
     prepared = true;
     await respondWithRefundOperation(res, snapshot.organizationId, id, operation);

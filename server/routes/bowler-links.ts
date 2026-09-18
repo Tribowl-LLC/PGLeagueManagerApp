@@ -5,7 +5,7 @@ import * as links from "../storage/bowler-payment-links";
 import { sendSuccess, sendError, handleZodError } from "../utils/api.js";
 import { singleRouteParam } from "../utils/route-params.js";
 import { adminWriteLimiter, inviteLimiter } from "../middleware/rate-limit.js";
-import { isOrgOrHigher, isPaymentManager, isSystemAdmin } from "../utils/access-control.js";
+import { isOrgOrHigher, isPaymentManager, isSystemAdmin, requireOrganizationAccess } from "../utils/access-control.js";
 import { signLinkActionToken } from "../utils/bowler-link-tokens.js";
 import { getBaseUrl, sendTemplatedEmail } from "../services/email";
 import { env } from "../config";
@@ -409,8 +409,8 @@ router.delete("/:id", async (req, res) => {
     if (!link) return sendError(res, "Link not found", 404, "NOT_FOUND");
 
     const isAdmin =
-      isSystemAdmin(user) ||
-      (isOrgOrHigher(user) && user.organizationId === link.organizationId);
+      isOrgOrHigher(user) &&
+      requireOrganizationAccess(req, link.organizationId, "bowler link", id);
     const isParty =
       !!user.bowlerId &&
       user.organizationId === link.organizationId &&
@@ -498,7 +498,7 @@ router.post("/admin", adminWriteLimiter, async (req, res) => {
     if (a.organizationId !== b.organizationId) {
       return sendError(res, "Cross-org links are not allowed", 403, "CROSS_ORG_DENIED");
     }
-    if (a.organizationId !== user.organizationId && !isSystemAdmin(user)) {
+    if (!requireOrganizationAccess(req, a.organizationId, "bowler", a.id)) {
       return sendError(res, "Outside your organization", 403, "CROSS_ORG_DENIED");
     }
 

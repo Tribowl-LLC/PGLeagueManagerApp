@@ -122,7 +122,7 @@ describe('HomePage F1 financial boundary', () => {
     expect(screen.getByText('1 review required (excluded)')).toBeInTheDocument();
   });
 
-  it('scopes the system-admin org-wide request and query key to the selected organization', async () => {
+  it('uses the canonical business endpoint for the system-admin org-wide request', async () => {
     const requestedUrls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       requestedUrls.push(String(input));
@@ -137,8 +137,8 @@ describe('HomePage F1 financial boundary', () => {
 
     render(<QueryClientProvider client={queryClient}><HomePage /></QueryClientProvider>);
 
-    await waitFor(() => expect(requestedUrls).toContain('/api/financials/due-past-due?organizationId=77'));
-    expect(queryClient.getQueryCache().find({ queryKey: ['/api/financials/due-past-due?organizationId=77'] })).toBeDefined();
+    await waitFor(() => expect(requestedUrls).toContain('/api/financials/due-past-due'));
+    expect(queryClient.getQueryCache().find({ queryKey: ['/api/financials/due-past-due'] })).toBeDefined();
     vi.unstubAllGlobals();
   });
 });

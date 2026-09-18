@@ -90,7 +90,7 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByText(/Refunded:/)).toBeInTheDocument();
     expect(screen.getByText(/Dispute:/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Receipt" }));
-    await waitFor(() => expect(csrfFetchMock).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt?organizationId=11"));
+    await waitFor(() => expect(csrfFetchMock).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt"));
     open.mockRestore();
   });
 

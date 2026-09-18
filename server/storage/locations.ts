@@ -70,8 +70,12 @@ export async function getFirstSquareConfiguredLocation(orgId: number): Promise<L
   });
 }
 
-export async function getAllSquareConfiguredLocations(): Promise<Location[]> {
-  const all = await db.select().from(locations).orderBy(locations.id);
+export async function getAllSquareConfiguredLocations(organizationId?: number): Promise<Location[]> {
+  const all = await db
+    .select()
+    .from(locations)
+    .where(organizationId === undefined ? undefined : eq(locations.organizationId, organizationId))
+    .orderBy(locations.id);
   return all.filter((loc) => {
     const parsed = locationSquareCredentialsSchema.safeParse(loc.squareCredentials);
     if (!parsed.success || !parsed.data) return false;

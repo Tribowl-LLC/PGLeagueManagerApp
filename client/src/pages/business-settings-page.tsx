@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { PageErrorState, PageLoadingState } from '@/components/page-states';
 import { useToast } from '@/hooks/use-toast';
+import { BUSINESS_CONTEXT_QUERY_KEY } from '@/hooks/use-business-context';
 import { BUSINESS_SETTINGS_QUERY_KEY, useBusinessSettings } from '@/hooks/use-business-settings';
 import { apiRequest } from '@/lib/queryClient';
 
@@ -113,6 +114,7 @@ function BusinessSettingsForm({ business }: { business: Organization }) {
       } else {
         void queryClient.invalidateQueries({ queryKey: BUSINESS_SETTINGS_QUERY_KEY });
       }
+      void queryClient.invalidateQueries({ queryKey: BUSINESS_CONTEXT_QUERY_KEY });
       setSavedMessage('Business settings saved.');
       toast({ title: 'Business Settings Saved', description: 'Your business details and branding are up to date.' });
     },

@@ -17,7 +17,7 @@ import {
 } from '../utils/api.js';
 import { getPaymentProvider, ProviderNotConfiguredError } from '../services/payment-provider-factory';
 import type { PaymentProvider } from '../services/payment-provider';
-import { getPaymentManagerAccessibleBowlerIds, getPaymentManagerAccessibleLeagueIds, hasAccessToTeam, hasAccessToBowler, hasAccessToBowlers, hasPaymentManagerAccessToBowler, hasSelfOrAdminAccessToBowler, isOrgOrHigher, isPaymentManager } from '../utils/access-control.js';
+import { getPaymentManagerAccessibleBowlerIds, getPaymentManagerAccessibleLeagueIds, hasAccessToTeam, hasAccessToBowler, hasAccessToBowlers, hasPaymentManagerAccessToBowler, hasSelfOrAdminAccessToBowler, isOrgOrHigher, isPaymentManager, requireOrganizationAccess } from '../utils/access-control.js';
 import { canUserPayForBowler } from '../utils/bowler-payment-authz.js';
 import { bowlerSearchLimiter } from '../middleware/rate-limit.js';
 import { runBowlerPostCreateSync } from '../services/bowler-sync.js';
@@ -410,6 +410,10 @@ router.get("/:id/details", async (req, res) => {
       return sendError(res, "Bowler not found", 404, 'NOT_FOUND');
     }
 
+    if (!requireOrganizationAccess(req, bowler.organizationId, 'bowler', id)) {
+      return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
+    }
+
     const includePayments = req.query.includePayments === 'true';
     if (includePayments) {
       // Payment data is sensitive: require self-access, admin role, OR
@@ -533,6 +537,10 @@ router.get("/:id", async (req, res) => {
     
     if (!bowler) {
       return sendError(res, "Bowler not found", 404, 'NOT_FOUND');
+    }
+
+    if (!requireOrganizationAccess(req, bowler.organizationId, 'bowler', id)) {
+      return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
     }
     
     // Check organization access

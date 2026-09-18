@@ -5,6 +5,7 @@ import { singleRouteParam } from '../utils/route-params';
 import { storage } from '../storage';
 import { insertLocationSchema, updateLocationSchema, locationSquareCredentialsSchema } from '@shared/schema';
 import { filterByOrganization } from '../middleware/organization.js';
+import { requireOrganizationAccess } from '../utils/access-control.js';
 import { createLogger } from '../logger';
 import { clearProviderCache } from '../services/payment-provider-factory';
 import type { User } from '@shared/schema';
@@ -22,6 +23,10 @@ const router = Router();
 // system_admin and org_admin.
 function isOrgOrSysAdmin(user: User | undefined): boolean {
   return user?.role === 'system_admin' || user?.role === 'org_admin';
+}
+
+function canManageLocation(req: Request, location: { organizationId: number | null }): boolean {
+  return isOrgOrSysAdmin(req.user) && requireOrganizationAccess(req, location.organizationId);
 }
 
 router.get('/', filterByOrganization, async (req: Request, res) => {
@@ -62,7 +67,7 @@ router.get('/:id', async (req: Request, res) => {
       return sendError(res, 'Location not found', 404, 'NOT_FOUND');
     }
 
-    if (!isOrgOrSysAdmin(req.user) || (req.user?.role !== 'system_admin' && req.user?.organizationId !== location.organizationId)) {
+    if (!canManageLocation(req, location)) {
       return sendError(res, 'You do not have access to this location', 403, 'Forbidden');
     }
 
@@ -78,15 +83,21 @@ router.post('/', async (req: Request, res) => {
     if (!isOrgOrSysAdmin(req.user)) {
       return sendError(res, 'You do not have access to this location', 403, 'Forbidden');
     }
-    const organizationId = req.user?.organizationId;
+    const organizationId = req.organizationContextId ?? req.user?.organizationId;
     if (!organizationId && req.user?.role !== 'system_admin') {
       return sendError(res, 'Organization required', 400, 'InvalidRequest');
     }
 
-    const body = { ...req.body, organizationId: req.body.organizationId || organizationId };
+    const body = {
+      ...req.body,
+      organizationId: req.organizationContextId ?? req.body.organizationId ?? organizationId,
+    };
     const validatedData = insertLocationSchema.parse(body);
 
-    if (req.user?.role !== 'system_admin' && (req.user?.role !== 'org_admin' || validatedData.organizationId !== organizationId)) {
+    if (
+      !requireOrganizationAccess(req, validatedData.organizationId)
+      || (req.user?.role !== 'system_admin' && validatedData.organizationId !== organizationId)
+    ) {
       return sendError(res, 'Cannot create location for another organization', 403, 'Forbidden');
     }
 
@@ -125,7 +136,7 @@ router.patch('/:id', async (req: Request, res) => {
       return sendError(res, 'Location not found', 404, 'NOT_FOUND');
     }
 
-    if (!isOrgOrSysAdmin(req.user) || (req.user?.role !== 'system_admin' && req.user?.organizationId !== location.organizationId)) {
+    if (!canManageLocation(req, location)) {
       return sendError(res, 'You do not have access to this location', 403, 'Forbidden');
     }
 
@@ -163,7 +174,7 @@ router.patch('/:id/archive', async (req: Request, res) => {
       return sendError(res, 'Location not found', 404, 'NOT_FOUND');
     }
 
-    if (!isOrgOrSysAdmin(req.user) || (req.user?.role !== 'system_admin' && req.user?.organizationId !== location.organizationId)) {
+    if (!canManageLocation(req, location)) {
       return sendError(res, 'You do not have access to this location', 403, 'Forbidden');
     }
 
@@ -187,7 +198,7 @@ router.patch('/:id/restore', async (req: Request, res) => {
       return sendError(res, 'Location not found', 404, 'NOT_FOUND');
     }
 
-    if (!isOrgOrSysAdmin(req.user) || (req.user?.role !== 'system_admin' && req.user?.organizationId !== location.organizationId)) {
+    if (!canManageLocation(req, location)) {
       return sendError(res, 'You do not have access to this location', 403, 'Forbidden');
     }
 
@@ -211,7 +222,7 @@ router.delete('/:id', async (req: Request, res) => {
       return sendError(res, 'Location not found', 404, 'NOT_FOUND');
     }
 
-    if (!isOrgOrSysAdmin(req.user) || (req.user?.role !== 'system_admin' && req.user?.organizationId !== location.organizationId)) {
+    if (!canManageLocation(req, location)) {
       return sendError(res, 'You do not have access to this location', 403, 'Forbidden');
     }
 
@@ -248,7 +259,7 @@ router.get('/:id/square-config', async (req: Request, res) => {
     if (!location) return sendError(res, 'Location not found', 404, 'NOT_FOUND');
 
     const isOrgAdmin = req.user?.role === 'org_admin' || req.user?.role === 'system_admin';
-    const hasAccess = req.user?.role === 'system_admin' || (isOrgOrSysAdmin(req.user) && req.user?.organizationId === location.organizationId);
+    const hasAccess = canManageLocation(req, location);
     if (!isOrgAdmin || !hasAccess) {
       return sendError(res, 'You do not have access to this location', 403, 'Forbidden');
     }
@@ -274,7 +285,7 @@ router.patch('/:id/square-config', async (req: Request, res) => {
     if (!location) return sendError(res, 'Location not found', 404, 'NOT_FOUND');
 
     const isOrgAdmin = req.user?.role === 'org_admin' || req.user?.role === 'system_admin';
-    const hasAccess = req.user?.role === 'system_admin' || (isOrgOrSysAdmin(req.user) && req.user?.organizationId === location.organizationId);
+    const hasAccess = canManageLocation(req, location);
     if (!isOrgAdmin || !hasAccess) {
       return sendError(res, 'You do not have access to this location', 403, 'Forbidden');
     }

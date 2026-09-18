@@ -107,7 +107,12 @@ vi.mock("passport", () => ({
   },
 }));
 vi.mock("../../server/utils/rate-limit-store", () => ({ createSharedRateLimitStore: () => undefined }));
-vi.mock("../../server/config", () => ({ isDev: true, env: {} }));
+vi.mock("../../server/config", () => ({
+  isDev: true,
+  isProdLike: false,
+  isSingletonOrganizationMode: false,
+  env: {},
+}));
 
 const { registerAuthRoutes } = await import("../../server/routes/auth");
 

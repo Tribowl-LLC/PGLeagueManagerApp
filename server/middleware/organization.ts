@@ -14,6 +14,54 @@ type OrgScopedRequest = Request & {
 };
 
 /**
+ * Check the authenticated account's durable membership against the
+ * deployment-resolved business. The only null-membership exception is an
+ * Owner created before organization membership became mandatory; those rows
+ * remain unassigned in storage but are represented by the effective
+ * singleton organization on the request.
+ */
+export function hasConfiguredOrganizationMembership(
+  user: Express.User | undefined,
+  organizationId: number,
+): boolean {
+  if (!user) return false;
+  if (user.organizationId === organizationId) return true;
+  return user.role === 'system_admin' && user.organizationId == null;
+}
+
+/**
+ * Enforce the singleton membership boundary after Passport has hydrated the
+ * session. Anonymous requests continue to public/auth routes; authenticated
+ * accounts from retained organizations cannot use the configured business.
+ */
+export function requireOrganizationMembership(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  if (
+    !isSingletonOrganizationMode
+    || req.organizationContextId === undefined
+    || !req.user
+  ) {
+    next();
+    return;
+  }
+
+  if (!hasConfiguredOrganizationMembership(req.user, req.organizationContextId)) {
+    sendError(
+      res,
+      'You do not have access to this business',
+      403,
+      'ORG_ACCESS_DENIED',
+    );
+    return;
+  }
+
+  next();
+}
+
+/**
  * Middleware to filter resources by the user's organization
  * This automatically adds the organization filter to the request
  */
@@ -25,6 +73,14 @@ export function filterByOrganization(req: OrgScopedRequest, res: Response, next:
   }
 
   if (isSingletonOrganizationMode && req.organizationContextId !== undefined) {
+    if (!hasConfiguredOrganizationMembership(req.user, req.organizationContextId)) {
+      return sendError(
+        res,
+        'You do not have access to this business',
+        403,
+        'ORG_ACCESS_DENIED',
+      );
+    }
     req.organizationFilter = req.organizationContextId;
     return next();
   }
@@ -78,7 +134,9 @@ export function getOrganizationFilter(req: OrgScopedRequest): number | null {
   }
 
   if (isSingletonOrganizationMode && req.organizationContextId !== undefined) {
-    return req.organizationContextId;
+    return hasConfiguredOrganizationMembership(req.user, req.organizationContextId)
+      ? req.organizationContextId
+      : null;
   }
 
   // System admins default to their org, or all if unassigned

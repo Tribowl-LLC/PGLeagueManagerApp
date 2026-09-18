@@ -23,13 +23,15 @@ import { storage } from '../storage';
 import { getPaymentProvider } from './payment-provider-factory';
 import { SquarePaymentProvider } from './square-provider';
 import { createLogger } from '../logger';
+import { resolveBackgroundOrganizationId } from './single-tenant-context';
 
 const log = createLogger('SquareCustomAttrBootstrap');
 
-export async function bootstrapAllSquareCustomAttributeDefinitions(): Promise<void> {
+export async function bootstrapAllSquareCustomAttributeDefinitions(organizationId?: number): Promise<void> {
   let locations;
   try {
-    locations = await storage.getAllSquareConfiguredLocations();
+    const scope = organizationId ?? await resolveBackgroundOrganizationId();
+    locations = await storage.getAllSquareConfiguredLocations(scope);
   } catch (err) {
     log.warn('Skipping custom-attribute bootstrap: failed to list locations', {
       error: err instanceof Error ? { name: err.name, message: err.message } : err,

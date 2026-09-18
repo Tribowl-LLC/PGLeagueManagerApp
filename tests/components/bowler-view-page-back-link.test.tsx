@@ -103,8 +103,6 @@ const DETAILS: BowlerDetailsResponse = {
 function renderPage(search: string, role: 'user' | 'org_admin' | 'system_admin' = 'user') {
   currentSearch = search;
   currentPath = `/bowlers/${BOWLER_ID}${search ? `?${search}` : ''}`;
-  const systemScope = role === 'system_admin' ? '&organizationId=1' : '';
-
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: Infinity } },
   });
@@ -113,7 +111,7 @@ function renderPage(search: string, role: 'user' | 'org_admin' | 'system_admin' 
     { success: true, data: DETAILS },
   );
   qc.setQueryData(['/api/user'], { success: true, data: { role, organizationId: 1 } });
-  qc.setQueryData(["/api/financials/leagues", LEAGUE_ID, "canonical-due-past-due/2", BOWLER_ID, systemScope], {
+  qc.setQueryData(["/api/financials/leagues", LEAGUE_ID, "canonical-due-past-due/2", BOWLER_ID], {
     success: true,
     data: {
       contractVersion: "canonical-due-past-due/2",

@@ -88,6 +88,8 @@ vi.mock('../../server/middleware/csrf', () => ({
 // import graph resolves without trying to validate real env vars.
 vi.mock('../../server/config', () => ({
   isDev: false,
+  isProdLike: false,
+  isSingletonOrganizationMode: false,
   env: {
     NODE_ENV: 'test',
     SESSION_SECRET: 'x'.repeat(64),

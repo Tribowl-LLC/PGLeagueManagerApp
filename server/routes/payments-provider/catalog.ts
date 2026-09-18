@@ -13,6 +13,7 @@ import { getPaymentProvider, ProviderNotConfiguredError } from '../../services/p
 import { hasCatalogSupport } from '../../services/payment-provider';
 import { SQUARE_CATALOG_CAP_ALERT_KIND_PREFIX } from '../../services/square-catalog-cap-alerts';
 import type { SquareCatalogCapAlerterSummary } from '@shared/schema';
+import { requireOrganizationAccess } from '../../utils/access-control.js';
 
 const log = createLogger('Payments');
 
@@ -47,9 +48,7 @@ router.get('/catalog/categories', async (req, res) => {
     if (lvLocationId) {
       const loc = await storage.getLocation(lvLocationId);
       if (!loc) return sendError(res, 'Location not found', 404, 'NOT_FOUND');
-      const isAuthorized =
-        req.user?.role === 'system_admin' ||
-        (req.user?.organizationId != null && req.user.organizationId === loc.organizationId);
+      const isAuthorized = requireOrganizationAccess(req, loc.organizationId, 'location', lvLocationId);
       if (!isAuthorized) return sendError(res, 'Forbidden', 403, 'FORBIDDEN');
     }
 
@@ -91,9 +90,7 @@ router.get('/catalog/items', async (req, res) => {
     if (lvLocationId) {
       const loc = await storage.getLocation(lvLocationId);
       if (!loc) return sendError(res, 'Location not found', 404, 'NOT_FOUND');
-      const isAuthorized =
-        req.user?.role === 'system_admin' ||
-        (req.user?.organizationId != null && req.user.organizationId === loc.organizationId);
+      const isAuthorized = requireOrganizationAccess(req, loc.organizationId, 'location', lvLocationId);
       if (!isAuthorized) return sendError(res, 'Forbidden', 403, 'FORBIDDEN');
     }
 
@@ -149,6 +146,10 @@ router.get('/catalog/cap-alerts/recent', async (req, res) => {
         // shaped payload that happened to share the prefix.
         const s = e.summary as Partial<SquareCatalogCapAlerterSummary> | null;
         if (!s || typeof s.locationId !== 'number') return null;
+        if (
+          req.organizationContextId !== undefined
+          && s.organizationId !== req.organizationContextId
+        ) return null;
         return {
           sentAt: e.lastSentAt.toISOString(),
           organizationId: s.organizationId ?? null,

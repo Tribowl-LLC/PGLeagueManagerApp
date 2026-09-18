@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "../db.js";
 import { env, isProdLike, isSingletonOrganizationMode } from "../config.js";
@@ -35,10 +35,7 @@ const SINGLETON_ORGANIZATION_SCOPE = isProdLike && configuredOrganizationId === 
   ? sql`false`
   : configuredOrganizationId === undefined
   ? undefined
-  : or(
-    eq(accountGuidanceDeliveryJobs.organizationId, configuredOrganizationId),
-    isNull(accountGuidanceDeliveryJobs.organizationId),
-  );
+  : eq(accountGuidanceDeliveryJobs.organizationId, configuredOrganizationId);
 
 function normalizeRecipientEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -189,7 +186,7 @@ export async function claimNextAccountGuidanceDeliveryJob(
         ${isProdLike && configuredOrganizationId === undefined
           ? sql`AND false`
           : isSingletonOrganizationMode
-          ? sql`AND (organization_id = ${configuredOrganizationId} OR organization_id IS NULL)`
+          ? sql`AND organization_id = ${configuredOrganizationId}`
           : sql``}
       ORDER BY next_attempt_at ASC, created_at ASC, id ASC
       LIMIT 1

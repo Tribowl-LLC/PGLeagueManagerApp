@@ -5,6 +5,26 @@ import {
   parseSingleTenantPreflightConfiguration,
 } from "../../scripts/single-tenant-preflight";
 
+const cleanOwnership = {
+  orphanedUsers: 0,
+  unassignedOwners: 0,
+  orphanedBowlers: 0,
+  orphanedLeagues: 0,
+  orphanedLocations: 0,
+  orphanedTeams: 0,
+  orphanedBowlerLeagues: 0,
+  orphanedPayments: 0,
+  orphanedPendingJobs: 0,
+  orphanedApplePayJobs: 0,
+  mismatchedUserBowlers: 0,
+  mismatchedUserLocations: 0,
+  mismatchedLeagueLocations: 0,
+  mismatchedBowlerPaymentLocations: 0,
+  mismatchedPaymentLeagues: 0,
+  mismatchedPaymentBowlers: 0,
+  mismatchedPendingJobOwners: 0,
+};
+
 describe("single-tenant preflight pure helpers", () => {
   it("requires a positive safe APP_ORGANIZATION_ID", () => {
     expect(parseSingleTenantPreflightConfiguration({})).toMatchObject({
@@ -48,6 +68,7 @@ describe("single-tenant preflight pure helpers", () => {
         hostnames: ["main"],
         counts: { users: 2, bowlers: 3, leagues: 1, locations: 2, pendingJobs: 4, hostnames: 1 },
       }],
+      ownership: cleanOwnership,
       totals: { users: 2, bowlers: 3, leagues: 1, locations: 2, pendingJobs: 4, hostnames: 1 },
     });
   });
@@ -62,6 +83,58 @@ describe("single-tenant preflight pure helpers", () => {
       blockers: [{
         code: "multiple_active_organizations",
         message: "Expected exactly one active organization; found 2.",
+      }],
+    });
+  });
+
+  it("blocks ordinary orphaned records but permits unassigned Owners", () => {
+    const report = buildSingleTenantPreflightReport(7, [{
+      organizationId: 7,
+      active: true,
+      slug: "main",
+      subdomain: null,
+      users: 1,
+      bowlers: 1,
+      leagues: 1,
+      locations: 1,
+      pendingJobs: 0,
+    }], {
+      ...cleanOwnership,
+      unassignedOwners: 2,
+      orphanedUsers: 1,
+    });
+
+    expect(report.readiness).toEqual({
+      ok: false,
+      blockers: [{
+        code: "orphaned_resources",
+        message: "One or more business records or pending jobs have no resolvable organization owner.",
+      }],
+    });
+    expect(report.ownership.unassignedOwners).toBe(2);
+  });
+
+  it("blocks ownership relationships that disagree even when every row has an owner", () => {
+    const report = buildSingleTenantPreflightReport(7, [{
+      organizationId: 7,
+      active: true,
+      slug: "main",
+      subdomain: null,
+      users: 1,
+      bowlers: 1,
+      leagues: 1,
+      locations: 1,
+      pendingJobs: 0,
+    }], {
+      ...cleanOwnership,
+      mismatchedUserLocations: 1,
+    });
+
+    expect(report.readiness).toEqual({
+      ok: false,
+      blockers: [{
+        code: "ownership_mismatch",
+        message: "One or more related records have conflicting organization ownership.",
       }],
     });
   });

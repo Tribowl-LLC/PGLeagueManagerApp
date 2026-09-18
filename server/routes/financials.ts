@@ -8,7 +8,7 @@ import {
   TeamEnvelopeReportError,
   teamEnvelopeFilename,
 } from "../services/team-envelope-report.js";
-import { hasAdminAccessToLeague, hasAccessToLeague, hasPaymentManagerAccessToLeague, isPaymentManager } from "../utils/access-control.js";
+import { hasAdminAccessToLeague, hasAccessToLeague, hasPaymentManagerAccessToLeague, isPaymentManager, requireOrganizationAccess } from "../utils/access-control.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { storage } from "../storage/index.js";
 
@@ -31,6 +31,9 @@ router.get("/leagues/:leagueId/team-envelope-slips.pdf", async (req, res) => {
 
   const league = await storage.getLeague(leagueId);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  if (!requireOrganizationAccess(req, league.organizationId, "league", leagueId)) {
+    return sendError(res, "Not found", 404, "NOT_FOUND");
+  }
   if (req.user.role === "system_admin") {
     const selectedOrg = req.organizationContextId ?? requestedOrg ?? req.user.organizationId ?? undefined;
     if (!selectedOrg) {
@@ -94,7 +97,7 @@ router.get("/leagues/:leagueId/due-past-due", async (req, res) => {
   if (!leagueId) return sendError(res, "Not found", 404, "NOT_FOUND");
   const league = await storage.getLeague(leagueId);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
   if ((!privileged && !(await hasAccessToLeague(req, leagueId))) || (req.user.role !== "system_admin" && req.user.organizationId !== league.organizationId)) return sendError(res, "Not found", 404, "NOT_FOUND");
   const requested = positive(req.query.bowlerId);
   if (requested === null) return sendError(res, "Invalid bowler", 400, "INVALID_SCOPE");

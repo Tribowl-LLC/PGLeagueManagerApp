@@ -63,7 +63,9 @@ describe('Password recovery from the rendered email — real browser and API', (
           role: tenantHost ? 'user' : 'system_admin', organizationId: tenantHost ? organizationId : null,
         }).returning();
         createdUserIds.push(user.id);
-        const expectedHost = tenantHost ? 'recoverybrowser.leaguevault.test' : 'leaguevault.test';
+        // Password-recovery links use the canonical application domain for
+        // every account; account ownership is resolved server-side.
+        const expectedHost = 'leaguevault.test';
         const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
         // Keep the exact HTTPS URL from the email while routing its real HTTP
         // traffic to this isolated app. This supplies transport, not API mocks.

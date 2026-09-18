@@ -282,7 +282,7 @@ export interface ILocationStorage {
   getLocationSquareConfig(locationId: number): Promise<LocationSquareCredentials | null>;
   updateLocationSquareConfig(locationId: number, creds: LocationSquareCredentials): Promise<Location>;
   getFirstSquareConfiguredLocation(orgId: number): Promise<Location | undefined>;
-  getAllSquareConfiguredLocations(): Promise<Location[]>;
+  getAllSquareConfiguredLocations(organizationId?: number): Promise<Location[]>;
   getFirstPaymentConfiguredLocation(orgId: number): Promise<Location | undefined>;
 }
 
@@ -369,19 +369,20 @@ export interface IAccountActionStorage {
 
 export interface IApplePayJobStorage {
   createApplePayJob(createdBy: number | null): Promise<ApplePayJob>;
-  getApplePayJob(id: number): Promise<ApplePayJob | undefined>;
-  listApplePayJobs(limit?: number): Promise<ApplePayJob[]>;
-  countApplePayJobsNeedingAttention(): Promise<number>;
-  getApplePayJobsRecoveredItemTotals(jobIds: number[]): Promise<Map<number, number>>;
-  claimNextApplePayJob(opts?: { onlyJobIds?: number[] }): Promise<ApplePayJob | undefined>;
-  recoverInterruptedApplePayJobs(opts?: { onlyJobIds?: number[] }): Promise<import("./apple-pay-jobs").ApplePayRecoveryResult>;
-  countApplePayJobItems(jobId: number): Promise<number>;
-  claimApplePayJobItemForProcessing(itemId: number): Promise<boolean>;
+  getApplePayJob(id: number, organizationId?: number): Promise<ApplePayJob | undefined>;
+  listApplePayJobs(limit?: number, organizationId?: number): Promise<ApplePayJob[]>;
+  countApplePayJobsNeedingAttention(organizationId?: number): Promise<number>;
+  getApplePayJobsRecoveredItemTotals(jobIds: number[], organizationId?: number): Promise<Map<number, number>>;
+  claimNextApplePayJob(opts?: { onlyJobIds?: number[]; organizationId?: number }): Promise<ApplePayJob | undefined>;
+  recoverInterruptedApplePayJobs(opts?: { onlyJobIds?: number[]; organizationId?: number }): Promise<import("./apple-pay-jobs").ApplePayRecoveryResult>;
+  countApplePayJobItems(jobId: number, organizationId?: number): Promise<number>;
+  claimApplePayJobItemForProcessing(itemId: number, organizationId?: number): Promise<boolean>;
   claimAndCompleteApplePayJobItem(
     itemId: number,
     patch: { status: Exclude<ApplePayJobItemStatus, "pending" | "processing">; message?: string | null },
+    organizationId?: number,
   ): Promise<boolean>;
-  getApplePayJobItemCounts(jobId: number): Promise<{
+  getApplePayJobItemCounts(jobId: number, organizationId?: number): Promise<{
     succeeded: number;
     failed: number;
     skipped: number;
@@ -397,9 +398,9 @@ export interface IApplePayJobStorage {
       message?: string | null;
     }>,
   ): Promise<void>;
-  setApplePayJobTotal(jobId: number, total: number): Promise<void>;
-  getPendingApplePayJobItems(jobId: number): Promise<ApplePayJobItem[]>;
-  getApplePayJobItems(jobId: number): Promise<ApplePayJobItem[]>;
+  setApplePayJobTotal(jobId: number, total: number, organizationId?: number): Promise<void>;
+  getPendingApplePayJobItems(jobId: number, organizationId?: number): Promise<ApplePayJobItem[]>;
+  getApplePayJobItems(jobId: number, organizationId?: number): Promise<ApplePayJobItem[]>;
   getRegisteredApplePayDomainsForOrg(organizationId: number): Promise<string[]>;
   updateApplePayJobItem(
     itemId: number,
@@ -414,15 +415,17 @@ export interface IApplePayJobStorage {
       skippedCount: number;
       errorMessage?: string | null;
     },
+    organizationId?: number,
   ): Promise<void>;
-  reopenApplePayJobForRetry(jobId: number): Promise<boolean>;
-  getApplePayJobStatus(jobId: number): Promise<ApplePayJobStatus | undefined>;
-  cancelApplePayJob(jobId: number): Promise<ApplePayJob | undefined>;
-  deleteApplePayJob(jobId: number): Promise<boolean>;
-  retryApplePayJob(jobId: number): Promise<{ job: ApplePayJob; resetCount: number } | undefined>;
+  reopenApplePayJobForRetry(jobId: number, organizationId?: number): Promise<boolean>;
+  getApplePayJobStatus(jobId: number, organizationId?: number): Promise<ApplePayJobStatus | undefined>;
+  cancelApplePayJob(jobId: number, organizationId?: number): Promise<ApplePayJob | undefined>;
+  deleteApplePayJob(jobId: number, organizationId?: number): Promise<boolean>;
+  retryApplePayJob(jobId: number, organizationId?: number): Promise<{ job: ApplePayJob; resetCount: number } | undefined>;
   retryApplePayJobItem(
     jobId: number,
     itemId: number,
+    organizationId?: number,
   ): Promise<{ item: ApplePayJobItem; job: ApplePayJob } | undefined>;
 }
 

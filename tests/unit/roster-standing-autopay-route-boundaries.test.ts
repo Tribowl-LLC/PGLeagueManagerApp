@@ -26,6 +26,8 @@ vi.mock("../../server/utils/access-control.js", () => ({
   hasAccessToLeague: (...args: unknown[]) => mocks.hasAccess(...args),
   hasAdminAccessToLeague: vi.fn(),
   hasPaymentManagerAccessToLeague: vi.fn(),
+  requireOrganizationAccess: (req: { user?: { organizationId?: number | null }; organizationContextId?: number }, organizationId: number | null) =>
+    organizationId !== null && (req.organizationContextId ?? req.user?.organizationId) === organizationId,
 }));
 vi.mock("../../server/middleware/rate-limit.js", () => ({ paymentWriteLimiter: mocks.paymentWriteLimiter }));
 vi.mock("../../server/services/roster-standing-autopay.js", () => ({

@@ -67,7 +67,10 @@ vi.mock('../../server/utils/access-control', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../server/utils/access-control')>();
   return {
     ...actual,
-    requireOrganizationAccess: () => true,
+    requireOrganizationAccess: (req: { user?: { role?: string; organizationId?: number | null }; organizationContextId?: number }, organizationId: number | null) =>
+      organizationId !== null && (req.user?.role === 'system_admin' && req.organizationContextId === undefined
+        ? true
+        : (req.organizationContextId ?? req.user?.organizationId) === organizationId),
     hasAccessToLeague: vi.fn().mockResolvedValue(true),
     hasAccessToTeam: vi.fn().mockResolvedValue(true),
     hasAccessToBowler: vi.fn().mockResolvedValue(true),
@@ -80,7 +83,10 @@ vi.mock('../../server/utils/access-control.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../server/utils/access-control')>();
   return {
     ...actual,
-    requireOrganizationAccess: () => true,
+    requireOrganizationAccess: (req: { user?: { role?: string; organizationId?: number | null }; organizationContextId?: number }, organizationId: number | null) =>
+      organizationId !== null && (req.user?.role === 'system_admin' && req.organizationContextId === undefined
+        ? true
+        : (req.organizationContextId ?? req.user?.organizationId) === organizationId),
     hasAccessToLeague: vi.fn().mockResolvedValue(true),
     hasAccessToTeam: vi.fn().mockResolvedValue(true),
     hasAccessToBowler: vi.fn().mockResolvedValue(true),

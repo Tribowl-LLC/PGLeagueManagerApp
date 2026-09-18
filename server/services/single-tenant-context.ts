@@ -1,5 +1,5 @@
 import type { Organization } from "@shared/schema";
-import { env } from "../config.js";
+import { env, isProdLike, isSingletonOrganizationMode } from "../config.js";
 
 export interface SingleTenantOrganizationRecord {
   id: number;
@@ -202,6 +202,20 @@ export async function resolveConfiguredOrganization(): Promise<Organization> {
     );
   }
   return organization;
+}
+
+/**
+ * Resolve the organization scope required before a background operation can
+ * claim work or call a provider. Legacy local development without singleton
+ * configuration keeps its existing behavior; production-like and explicitly
+ * singleton deployments must satisfy the database-backed invariant first.
+ */
+export async function resolveBackgroundOrganizationId(): Promise<number | undefined> {
+  if (!isProdLike && !isSingletonOrganizationMode) return undefined;
+
+  const result = await resolveSingleTenantContext();
+  if (!result.ok) throw result.error;
+  return result.context.organizationId;
 }
 
 export function configuredOrganizationId(): number | undefined {

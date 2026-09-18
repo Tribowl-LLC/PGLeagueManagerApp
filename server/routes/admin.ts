@@ -23,6 +23,7 @@ import {
   linkUserToBowler,
 } from '../services/identity-link.js';
 import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-scheduler';
+import { requireOrganizationAccess } from '../utils/access-control.js';
 
 const log = createLogger("Admin");
 
@@ -63,6 +64,14 @@ router.patch('/users/:userId/admin-status', requireAdmin, async (req, res) => {
     if (requestingUser.id === parsedData.userId) {
       log.error('User attempted to change their own admin status');
       return sendError(res, 'Cannot modify your own admin status', 403, 'SELF_MODIFICATION_DENIED');
+    }
+
+    const targetUser = await storage.getUser(parsedData.userId);
+    if (!targetUser) {
+      return sendError(res, 'User not found', 404, 'NOT_FOUND');
+    }
+    if (!requireOrganizationAccess(req, targetUser.organizationId)) {
+      return sendError(res, 'You can only manage users in the configured organization', 403, 'FORBIDDEN');
     }
     
     const newRole = parsedData.makeSystemAdmin ? 'system_admin' : 'user';
@@ -264,6 +273,14 @@ function resolveAdminOrgId(
   const isSystemAdmin = actor.role === 'system_admin';
   const queryOrgIdRaw = req.query.organizationId;
   const queryOrgId = typeof queryOrgIdRaw === 'string' ? parseInt(queryOrgIdRaw, 10) : NaN;
+
+  // The singleton middleware has already resolved and validated the
+  // configured business. It is authoritative for Owners too; an old query
+  // parameter must never select a retained organization, and an unassigned
+  // Owner must still get the configured business without supplying one.
+  if (req.organizationContextId !== undefined) {
+    return { orgId: req.organizationContextId, isSystemAdmin };
+  }
 
   if (isSystemAdmin) {
     if (Number.isFinite(queryOrgId) && queryOrgId > 0) {

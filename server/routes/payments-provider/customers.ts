@@ -11,7 +11,7 @@ import { paymentLimiter } from '../../middleware/rate-limit.js';
 import { createLogger } from '../../logger';
 import { getPaymentProvider, ProviderNotConfiguredError, PaymentProviderError, isHandledPaymentProviderError } from '../../services/payment-provider-factory';
 import { getProviderForLeague } from './shared.js';
-import { isOrgOrHigher } from '../../utils/access-control';
+import { isOrgOrHigher, requireOrganizationAccess } from '../../utils/access-control';
 
 const log = createLogger('Payments');
 
@@ -42,8 +42,8 @@ router.post('/customers', paymentLimiter, async (req, res) => {
       // customer IDs / vault metadata). Restrict to org_admin /
       // system_admin in the league's owning org.
       const userHasAccess =
-        req.user?.role === 'system_admin' ||
-        (isOrgOrHigher(req.user) && req.user?.organizationId === league.organizationId);
+        requireOrganizationAccess(req, league.organizationId, 'league', team.leagueId)
+        && isOrgOrHigher(req.user);
       if (!userHasAccess) {
         return sendError(res, "You don't have access to this team", 403, 'FORBIDDEN');
       }

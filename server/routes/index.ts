@@ -110,7 +110,6 @@ export function registerRoutes(app: Express): void {
   registerAuthRoutes(app);
 
   app.use('/api/organizations', organizationsPublicRouter);
-  app.use('/api/business-settings', requireAuth, businessSettingsRouter);
   // Task #704: one-click accept/decline for bowler-payment-link invites.
   // Mounted BEFORE requirePasswordRotated/requireAuth because the link
   // recipient may not be logged in (or may be logged in as a different
@@ -127,6 +126,11 @@ export function registerRoutes(app: Express): void {
   // flag is cleared. See the middleware doc for the full allowlist
   // and the security rationale.
   app.use('/api', requirePasswordRotated);
+
+  // Business Settings is an authenticated, Owner-only surface. It must be
+  // mounted after the forced-password-rotation gate so a recently reset
+  // Owner cannot mutate business data before completing rotation.
+  app.use('/api/business-settings', requireAuth, businessSettingsRouter);
 
   app.use('/api/leagues', requireAuth, leagueOccurrenceScheduleRouter);
   app.use('/api/leagues', requireAuth, standingsRouter);

@@ -57,6 +57,7 @@ import { createLogger } from './logger';
 import { csrfProtection, csrfTokenEndpoint } from './middleware/csrf';
 import { singletonOrganizationContext } from './middleware/single-tenant';
 import { rejectForeignOrganizationInput } from './middleware/organization-input';
+import { requireOrganizationMembership } from './middleware/organization';
 import { securityHeaders, apiHeaders } from './middleware/security';
 import { requestTracker, registerShutdownHandlers } from './lib/shutdown';
 import manifestRouter from './routes/manifest';
@@ -67,6 +68,7 @@ import { registerSquareWebhookReceiver } from './routes/payments-provider/square
 import { registerSendgridWebhookReceiver } from './routes/email/sendgrid-webhook';
 import { sanitizedSentryIdentity } from '@shared/sentry-context';
 import { getPgErrorCode } from './utils/db-errors.js';
+import { resolveBackgroundOrganizationId } from './services/single-tenant-context';
 
 const log = createLogger("Server");
 
@@ -227,11 +229,13 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   app.use((req, _res, next) => {
     if (env.APP_ORGANIZATION_ID !== undefined
       && req.user?.role === 'system_admin'
+      && req.user.organizationId == null
       && req.organizationContextId !== undefined) {
       req.user.organizationId = req.organizationContextId;
     }
     next();
   });
+  app.use(requireOrganizationMembership);
   app.use(rejectForeignOrganizationInput);
 
   // Load the SDK only after the core middleware is ready. Production has
@@ -454,6 +458,19 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
     process.exit(1);
   }
 
+  let backgroundOrganizationId: number | undefined;
+  let backgroundOperationsReady = true;
+  if (!suppress || opts.enableAccountActionDeliveryWorker) {
+    try {
+      backgroundOrganizationId = await resolveBackgroundOrganizationId();
+    } catch (error) {
+      backgroundOperationsReady = false;
+      log.error('Background workers are disabled because business context is unavailable', {
+        errorCode: error instanceof Error ? error.name : 'unknown',
+      });
+    }
+  }
+
   if (!suppress) {
     ensureAvatarsDirectory();
 
@@ -466,10 +483,12 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
       log.error('Error running avatar migration:', error);
     }
 
-    try {
-      await backfillMissingPaymentCustomers();
-    } catch (error) {
-      log.error('Error backfilling missing payment customers:', error);
+    if (backgroundOperationsReady) {
+      try {
+        await backfillMissingPaymentCustomers(backgroundOrganizationId);
+      } catch (error) {
+        log.error('Error backfilling missing payment customers:', error);
+      }
     }
 
     try {
@@ -490,11 +509,11 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
     });
   });
 
-  if (!suppress || opts.enableAccountActionDeliveryWorker) {
+  if (backgroundOperationsReady && (!suppress || opts.enableAccountActionDeliveryWorker)) {
     await startAccountActionDelivery();
   }
 
-  if (!suppress) {
+  if (!suppress && backgroundOperationsReady) {
     try {
       await paymentOperationRetryExecutor.start(scheduledPaymentExecutionMode);
       await rosterStandingAutopayOperationExecutor.start();
@@ -510,11 +529,11 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
         log.error('Third-party pin verifier sweep threw at boot:', err);
       });
 
-      bootstrapAllSquareCustomAttributeDefinitions().catch((err) => {
+      bootstrapAllSquareCustomAttributeDefinitions(backgroundOrganizationId).catch((err) => {
         log.error('Square custom-attribute bootstrap failed:', err);
       });
 
-      applePayWorker.resumeOnStartup().catch((err) => {
+      applePayWorker.resumeOnStartup(backgroundOrganizationId).catch((err) => {
         reportApplePayResumeFailure(err);
       });
 
@@ -523,6 +542,9 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
       log.error('Error initializing schedulers:', error);
     }
 
+  }
+
+  if (!suppress) {
     // Production / dev gets the SIGTERM/SIGINT shutdown hook. The
     // test harness owns its own SIGTERM handling in
     // `server/test-entry.ts` so we don't double-register here.

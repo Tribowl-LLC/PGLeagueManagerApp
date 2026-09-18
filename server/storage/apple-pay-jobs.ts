@@ -18,8 +18,52 @@ export async function createApplePayJob(createdBy: number | null): Promise<Apple
   return row;
 }
 
-export async function getApplePayJob(id: number): Promise<ApplePayJob | undefined> {
-  const [row] = await db.select().from(applePayJobs).where(eq(applePayJobs.id, id));
+/**
+ * A parent Apple Pay job predates the singleton refactor and has no durable
+ * organization column. In scoped mode, it is eligible only when its creator
+ * belongs to the configured organization and every existing item belongs to
+ * that organization. Foreign and org-less jobs/items are never claimed or
+ * exposed by scoped callers. A deleted creator leaves an ambiguous historical
+ * job; the preflight reports it as a blocker and the worker fails closed.
+ */
+function organizationJobScope(organizationId: number | undefined) {
+  if (organizationId === undefined) return undefined;
+  return sql`NOT EXISTS (
+    SELECT 1
+    FROM apple_pay_job_items scoped_item
+    LEFT JOIN locations scoped_location
+      ON scoped_location.id = scoped_item.location_id
+    WHERE scoped_item.job_id = ${applePayJobs.id}
+      AND (
+        scoped_item.organization_id IS DISTINCT FROM ${organizationId}
+        OR (
+          scoped_item.location_id IS NOT NULL
+          AND scoped_location.organization_id IS DISTINCT FROM ${organizationId}
+        )
+      )
+  )
+  AND (
+    EXISTS (
+      SELECT 1
+      FROM users scoped_creator
+      WHERE scoped_creator.id = ${applePayJobs.createdBy}
+        AND (
+          scoped_creator.organization_id = ${organizationId}
+          OR (
+            scoped_creator.role::text = 'system_admin'
+            AND scoped_creator.organization_id IS NULL
+          )
+        )
+    )
+  )`;
+}
+
+export async function getApplePayJob(id: number, organizationId?: number): Promise<ApplePayJob | undefined> {
+  const scope = organizationJobScope(organizationId);
+  const [row] = await db
+    .select()
+    .from(applePayJobs)
+    .where(scope ? and(eq(applePayJobs.id, id), scope) : eq(applePayJobs.id, id));
   return row;
 }
 
@@ -153,11 +197,12 @@ export const excludeStaleEmptyJobsPredicate = sql`(
  */
 const adminListingFilter = and(excludeAllSentinelJobs, excludeStaleEmptyJobsPredicate);
 
-export async function listApplePayJobs(limit = 25): Promise<ApplePayJob[]> {
+export async function listApplePayJobs(limit = 25, organizationId?: number): Promise<ApplePayJob[]> {
+  const scope = organizationJobScope(organizationId);
   return db
     .select()
     .from(applePayJobs)
-    .where(adminListingFilter)
+    .where(scope ? and(adminListingFilter, scope) : adminListingFilter)
     .orderBy(desc(applePayJobs.createdAt))
     .limit(limit);
 }
@@ -185,11 +230,14 @@ const ATTENTION_STATUSES: ApplePayJobStatus[] = [
   "partial",
 ];
 
-export async function countApplePayJobsNeedingAttention(): Promise<number> {
+export async function countApplePayJobsNeedingAttention(organizationId?: number): Promise<number> {
+  const scope = organizationJobScope(organizationId);
   const [row] = await db
     .select({ count: sql<number>`COUNT(*)::int` })
     .from(applePayJobs)
-    .where(and(inArray(applePayJobs.status, ATTENTION_STATUSES), adminListingFilter));
+    .where(scope
+      ? and(inArray(applePayJobs.status, ATTENTION_STATUSES), adminListingFilter, scope)
+      : and(inArray(applePayJobs.status, ATTENTION_STATUSES), adminListingFilter));
   return row?.count ?? 0;
 }
 
@@ -201,15 +249,18 @@ export async function countApplePayJobsNeedingAttention(): Promise<number> {
  */
 export async function getApplePayJobsRecoveredItemTotals(
   jobIds: number[],
+  organizationId?: number,
 ): Promise<Map<number, number>> {
   if (jobIds.length === 0) return new Map();
+  const predicates = [inArray(applePayJobItems.jobId, jobIds)];
+  if (organizationId !== undefined) predicates.push(eq(applePayJobItems.organizationId, organizationId));
   const rows = await db
     .select({
       jobId: applePayJobItems.jobId,
       total: sql<number>`COALESCE(SUM(${applePayJobItems.recoveredCount}), 0)::int`,
     })
     .from(applePayJobItems)
-    .where(inArray(applePayJobItems.jobId, jobIds))
+    .where(and(...predicates))
     .groupBy(applePayJobItems.jobId);
   return new Map(rows.map((r) => [r.jobId, Number(r.total) || 0]));
 }
@@ -234,7 +285,7 @@ export async function getApplePayJobsRecoveredItemTotals(
  * Production callers do not pass this option and behaviour is unchanged.
  */
 export async function claimNextApplePayJob(
-  opts?: { onlyJobIds?: number[] },
+  opts?: { onlyJobIds?: number[]; organizationId?: number },
 ): Promise<ApplePayJob | undefined> {
   const onlyJobIds = opts?.onlyJobIds;
   if (onlyJobIds && onlyJobIds.length === 0) return undefined;
@@ -242,10 +293,14 @@ export async function claimNextApplePayJob(
     const scope = onlyJobIds
       ? sql`AND id IN (${sql.join(onlyJobIds.map((id) => sql`${id}`), sql`, `)})`
       : sql``;
+    const organizationScope = opts?.organizationId === undefined
+      ? sql``
+      : sql`AND ${organizationJobScope(opts.organizationId)}`;
     const candidates = await tx.execute(sql`
       SELECT id FROM apple_pay_jobs
       WHERE status = 'pending'
       ${scope}
+      ${organizationScope}
       ORDER BY created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
@@ -295,16 +350,18 @@ export interface ApplePayRecoveryResult {
 }
 
 export async function recoverInterruptedApplePayJobs(
-  opts?: { onlyJobIds?: number[] },
+  opts?: { onlyJobIds?: number[]; organizationId?: number },
 ): Promise<ApplePayRecoveryResult> {
   const onlyJobIds = opts?.onlyJobIds;
   if (onlyJobIds && onlyJobIds.length === 0) {
     return { revivedJobIds: [], revivedItems: [] };
   }
 
-  const jobScope = onlyJobIds
-    ? and(eq(applePayJobs.status, "running"), inArray(applePayJobs.id, onlyJobIds))
-    : eq(applePayJobs.status, "running");
+  const predicates = [eq(applePayJobs.status, "running")];
+  if (onlyJobIds) predicates.push(inArray(applePayJobs.id, onlyJobIds));
+  const organizationScope = organizationJobScope(opts?.organizationId);
+  if (organizationScope) predicates.push(organizationScope);
+  const jobScope = and(...predicates);
 
   const updatedJobs = await db
     .update(applePayJobs)
@@ -324,6 +381,7 @@ export async function recoverInterruptedApplePayJobs(
     // column existed; `claimed_at < NOW() - lease` is the normal case.
     sql`(${applePayJobItems.claimedAt} IS NULL OR ${applePayJobItems.claimedAt} < NOW() - (${leaseSeconds} || ' seconds')::interval)`,
     ...(onlyJobIds ? [inArray(applePayJobItems.jobId, onlyJobIds)] : []),
+    ...(opts?.organizationId !== undefined ? [eq(applePayJobItems.organizationId, opts.organizationId)] : []),
   );
   const updatedItems = await db
     .update(applePayJobItems)
@@ -372,23 +430,30 @@ export async function insertApplePayJobItems(
     .onConflictDoNothing();
 }
 
-export async function countApplePayJobItems(jobId: number): Promise<number> {
+export async function countApplePayJobItems(jobId: number, organizationId?: number): Promise<number> {
+  const predicates = [eq(applePayJobItems.jobId, jobId)];
+  if (organizationId !== undefined) predicates.push(eq(applePayJobItems.organizationId, organizationId));
   const rows = await db
     .select({ id: applePayJobItems.id })
     .from(applePayJobItems)
-    .where(eq(applePayJobItems.jobId, jobId));
+    .where(and(...predicates));
   return rows.length;
 }
 
-export async function setApplePayJobTotal(jobId: number, total: number): Promise<void> {
-  await db.update(applePayJobs).set({ totalDomains: total }).where(eq(applePayJobs.id, jobId));
+export async function setApplePayJobTotal(jobId: number, total: number, organizationId?: number): Promise<void> {
+  const scope = organizationJobScope(organizationId);
+  await db.update(applePayJobs)
+    .set({ totalDomains: total })
+    .where(scope ? and(eq(applePayJobs.id, jobId), scope) : eq(applePayJobs.id, jobId));
 }
 
-export async function getPendingApplePayJobItems(jobId: number): Promise<ApplePayJobItem[]> {
+export async function getPendingApplePayJobItems(jobId: number, organizationId?: number): Promise<ApplePayJobItem[]> {
+  const predicates = [eq(applePayJobItems.jobId, jobId), eq(applePayJobItems.status, "pending")];
+  if (organizationId !== undefined) predicates.push(eq(applePayJobItems.organizationId, organizationId));
   return db
     .select()
     .from(applePayJobItems)
-    .where(and(eq(applePayJobItems.jobId, jobId), eq(applePayJobItems.status, "pending")))
+    .where(and(...predicates))
     .orderBy(asc(applePayJobItems.id));
 }
 
@@ -418,11 +483,13 @@ export async function getRegisteredApplePayDomainsForOrg(
   return Array.from(seen);
 }
 
-export async function getApplePayJobItems(jobId: number): Promise<ApplePayJobItem[]> {
+export async function getApplePayJobItems(jobId: number, organizationId?: number): Promise<ApplePayJobItem[]> {
+  const predicates = [eq(applePayJobItems.jobId, jobId)];
+  if (organizationId !== undefined) predicates.push(eq(applePayJobItems.organizationId, organizationId));
   return db
     .select()
     .from(applePayJobItems)
-    .where(eq(applePayJobItems.jobId, jobId))
+    .where(and(...predicates))
     .orderBy(asc(applePayJobItems.id));
 }
 
@@ -452,11 +519,16 @@ export async function updateApplePayJobItem(
  * expired. A live sibling instance whose lease is still valid is therefore
  * never disturbed by another instance's startup recovery.
  */
-export async function claimApplePayJobItemForProcessing(itemId: number): Promise<boolean> {
+export async function claimApplePayJobItemForProcessing(itemId: number, organizationId?: number): Promise<boolean> {
+  const predicates = [
+    eq(applePayJobItems.id, itemId),
+    eq(applePayJobItems.status, "pending"),
+  ];
+  if (organizationId !== undefined) predicates.push(eq(applePayJobItems.organizationId, organizationId));
   const updated = await db
     .update(applePayJobItems)
     .set({ status: "processing", claimedAt: sql`NOW()` })
-    .where(and(eq(applePayJobItems.id, itemId), eq(applePayJobItems.status, "pending")))
+    .where(and(...predicates))
     .returning({ id: applePayJobItems.id });
   return updated.length > 0;
 }
@@ -472,7 +544,13 @@ export async function claimApplePayJobItemForProcessing(itemId: number): Promise
 export async function claimAndCompleteApplePayJobItem(
   itemId: number,
   patch: { status: Exclude<ApplePayJobItemStatus, "pending" | "processing">; message?: string | null },
+  organizationId?: number,
 ): Promise<boolean> {
+  const predicates = [
+    eq(applePayJobItems.id, itemId),
+    sql`${applePayJobItems.status} IN ('pending', 'processing')`,
+  ];
+  if (organizationId !== undefined) predicates.push(eq(applePayJobItems.organizationId, organizationId));
   const updated = await db
     .update(applePayJobItems)
     .set({
@@ -483,26 +561,23 @@ export async function claimAndCompleteApplePayJobItem(
       // must not look like a stuck claim to startup recovery.
       claimedAt: null,
     })
-    .where(
-      and(
-        eq(applePayJobItems.id, itemId),
-        sql`${applePayJobItems.status} IN ('pending', 'processing')`,
-      ),
-    )
+    .where(and(...predicates))
     .returning({ id: applePayJobItems.id });
   return updated.length > 0;
 }
 
-export async function getApplePayJobItemCounts(jobId: number): Promise<{
+export async function getApplePayJobItemCounts(jobId: number, organizationId?: number): Promise<{
   succeeded: number;
   failed: number;
   skipped: number;
   pending: number;
 }> {
+  const predicates = [eq(applePayJobItems.jobId, jobId)];
+  if (organizationId !== undefined) predicates.push(eq(applePayJobItems.organizationId, organizationId));
   const items = await db
     .select({ status: applePayJobItems.status })
     .from(applePayJobItems)
-    .where(eq(applePayJobItems.jobId, jobId));
+    .where(and(...predicates));
   const result = { succeeded: 0, failed: 0, skipped: 0, pending: 0 };
   for (const it of items) {
     if (it.status === "succeeded") result.succeeded++;
@@ -518,11 +593,12 @@ export async function getApplePayJobItemCounts(jobId: number): Promise<{
 /**
  * Lightweight status read used by the worker to detect mid-job cancellation.
  */
-export async function getApplePayJobStatus(jobId: number): Promise<ApplePayJobStatus | undefined> {
+export async function getApplePayJobStatus(jobId: number, organizationId?: number): Promise<ApplePayJobStatus | undefined> {
+  const scope = organizationJobScope(organizationId);
   const [row] = await db
     .select({ status: applePayJobs.status })
     .from(applePayJobs)
-    .where(eq(applePayJobs.id, jobId));
+    .where(scope ? and(eq(applePayJobs.id, jobId), scope) : eq(applePayJobs.id, jobId));
   return row?.status as ApplePayJobStatus | undefined;
 }
 
@@ -533,17 +609,20 @@ export async function getApplePayJobStatus(jobId: number): Promise<ApplePayJobSt
  *    and stops issuing new provider calls. Already-claimed items finish.
  * Returns the updated job, or `undefined` if it was not in a cancelable state.
  */
-export async function cancelApplePayJob(jobId: number): Promise<ApplePayJob | undefined> {
+export async function cancelApplePayJob(jobId: number, organizationId?: number): Promise<ApplePayJob | undefined> {
+  const predicates = [
+    eq(applePayJobs.id, jobId),
+    sql`${applePayJobs.status} IN ('pending', 'running')`,
+  ];
+  const scope = organizationJobScope(organizationId);
+  if (scope) predicates.push(scope);
   const [updated] = await db
     .update(applePayJobs)
     .set({
       status: "canceled",
       completedAt: sql`COALESCE(${applePayJobs.completedAt}, NOW())`,
     })
-    .where(and(
-      eq(applePayJobs.id, jobId),
-      sql`${applePayJobs.status} IN ('pending', 'running')`,
-    ))
+    .where(and(...predicates))
     .returning();
   return updated;
 }
@@ -556,13 +635,16 @@ export async function cancelApplePayJob(jobId: number): Promise<ApplePayJob | un
  * row was deleted, false otherwise (active job, unknown id, or already
  * gone). #5104 was the orphan test job that motivated this admin action.
  */
-export async function deleteApplePayJob(jobId: number): Promise<boolean> {
+export async function deleteApplePayJob(jobId: number, organizationId?: number): Promise<boolean> {
+  const predicates = [
+    eq(applePayJobs.id, jobId),
+    sql`${applePayJobs.status} NOT IN ('pending', 'running')`,
+  ];
+  const scope = organizationJobScope(organizationId);
+  if (scope) predicates.push(scope);
   const deleted = await db
     .delete(applePayJobs)
-    .where(and(
-      eq(applePayJobs.id, jobId),
-      sql`${applePayJobs.status} NOT IN ('pending', 'running')`,
-    ))
+    .where(and(...predicates))
     .returning({ id: applePayJobs.id });
   return deleted.length > 0;
 }
@@ -573,9 +655,13 @@ export async function deleteApplePayJob(jobId: number): Promise<boolean> {
  * terminal state. Returns the re-opened job, or `undefined` if not retryable
  * (e.g. already pending/running, or no failed items).
  */
-export async function retryApplePayJob(jobId: number): Promise<{ job: ApplePayJob; resetCount: number } | undefined> {
+export async function retryApplePayJob(jobId: number, organizationId?: number): Promise<{ job: ApplePayJob; resetCount: number } | undefined> {
   return db.transaction(async (tx) => {
-    const [job] = await tx.select().from(applePayJobs).where(eq(applePayJobs.id, jobId));
+    const scope = organizationJobScope(organizationId);
+    const [job] = await tx
+      .select()
+      .from(applePayJobs)
+      .where(scope ? and(eq(applePayJobs.id, jobId), scope) : eq(applePayJobs.id, jobId));
     if (!job) return undefined;
     if (job.status !== "failed" && job.status !== "partial" && job.status !== "canceled") {
       return undefined;
@@ -618,24 +704,31 @@ export async function retryApplePayJob(jobId: number): Promise<{ job: ApplePayJo
 export async function retryApplePayJobItem(
   jobId: number,
   itemId: number,
+  organizationId?: number,
 ): Promise<{ item: ApplePayJobItem; job: ApplePayJob } | undefined> {
   return db.transaction(async (tx) => {
     // Validate parent-job state BEFORE touching the item, so a mismatched
     // (jobId, itemId) or a non-terminal job leaves all rows unchanged.
-    const [job] = await tx.select().from(applePayJobs).where(eq(applePayJobs.id, jobId));
+    const scope = organizationJobScope(organizationId);
+    const [job] = await tx
+      .select()
+      .from(applePayJobs)
+      .where(scope ? and(eq(applePayJobs.id, jobId), scope) : eq(applePayJobs.id, jobId));
     if (!job) return undefined;
     if (job.status !== "failed" && job.status !== "partial" && job.status !== "canceled") {
       return undefined;
     }
 
+    const itemPredicates = [
+      eq(applePayJobItems.id, itemId),
+      eq(applePayJobItems.jobId, jobId),
+      eq(applePayJobItems.status, "failed"),
+    ];
+    if (organizationId !== undefined) itemPredicates.push(eq(applePayJobItems.organizationId, organizationId));
     const [updatedItem] = await tx
       .update(applePayJobItems)
       .set({ status: "pending", message: null, processedAt: null })
-      .where(and(
-        eq(applePayJobItems.id, itemId),
-        eq(applePayJobItems.jobId, jobId),
-        eq(applePayJobItems.status, "failed"),
-      ))
+      .where(and(...itemPredicates))
       .returning();
     if (!updatedItem) return undefined;
 
@@ -662,11 +755,14 @@ export async function retryApplePayJobItem(
  * stale `completedAt`/`errorMessage` so the re-claimed run starts from
  * a clean slate.
  */
-export async function reopenApplePayJobForRetry(jobId: number): Promise<boolean> {
+export async function reopenApplePayJobForRetry(jobId: number, organizationId?: number): Promise<boolean> {
+  const scope = organizationJobScope(organizationId);
   const updated = await db
     .update(applePayJobs)
     .set({ status: "pending", completedAt: null, errorMessage: null })
-    .where(and(eq(applePayJobs.id, jobId), eq(applePayJobs.status, "running")))
+    .where(scope
+      ? and(eq(applePayJobs.id, jobId), eq(applePayJobs.status, "running"), scope)
+      : and(eq(applePayJobs.id, jobId), eq(applePayJobs.status, "running")))
     .returning({ id: applePayJobs.id });
   return updated.length > 0;
 }
@@ -680,7 +776,9 @@ export async function finalizeApplePayJob(
     skippedCount: number;
     errorMessage?: string | null;
   },
+  organizationId?: number,
 ): Promise<void> {
+  const scope = organizationJobScope(organizationId);
   await db
     .update(applePayJobs)
     .set({
@@ -691,5 +789,5 @@ export async function finalizeApplePayJob(
       errorMessage: patch.errorMessage ?? null,
       completedAt: new Date().toISOString(),
     })
-    .where(eq(applePayJobs.id, jobId));
+    .where(scope ? and(eq(applePayJobs.id, jobId), scope) : eq(applePayJobs.id, jobId));
 }

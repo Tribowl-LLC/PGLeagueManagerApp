@@ -6,7 +6,6 @@ import {
   eq,
   gt,
   inArray,
-  isNull,
   lte,
   ne,
   or,
@@ -42,10 +41,7 @@ const SINGLETON_ORGANIZATION_SCOPE = isProdLike && configuredOrganizationId === 
   ? sql`false`
   : configuredOrganizationId === undefined
   ? undefined
-  : or(
-    eq(accountActionDeliveryJobs.organizationId, configuredOrganizationId),
-    isNull(accountActionDeliveryJobs.organizationId),
-  );
+  : eq(accountActionDeliveryJobs.organizationId, configuredOrganizationId);
 
 function assertConfiguredOrganization(organizationId: number | null | undefined): void {
   if (
@@ -481,7 +477,7 @@ export async function claimNextPasswordResetDeliveryJob(
         ${isProdLike && configuredOrganizationId === undefined
           ? sql`AND false`
           : isSingletonOrganizationMode
-          ? sql`AND (organization_id = ${configuredOrganizationId} OR organization_id IS NULL)`
+          ? sql`AND organization_id = ${configuredOrganizationId}`
           : sql``}
       ORDER BY next_attempt_at ASC, created_at ASC, id ASC
       LIMIT 1
