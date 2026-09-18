@@ -74,6 +74,17 @@ uses npm. Do not introduce Yarn, pnpm, or an additional lockfile.
 
 See `docs/ci.md` and `docs/production-runbook.md` for operational details.
 
+## Frontend UI Design Workflow
+
+For new, redesigned, or materially visual frontend work, follow
+[`docs/ui-design-workflow.md`](docs/ui-design-workflow.md). The default
+sequence is `frontend-app-builder` → Impeccable →
+`find-animation-opportunities` → `transitions-dev` → `transitions-polish` →
+`frontend-testing-debugging`; use the workflow's scope gates when a stage is
+not applicable. Read `PRODUCT.md` and `DESIGN.md` when they exist, preserve
+accepted design decisions, and complete the required rendered-browser QA
+before handoff.
+
 ## Task Startup
 
 For a multi-step implementation, follow [`docs/agent-workflow.md`](docs/agent-workflow.md)
