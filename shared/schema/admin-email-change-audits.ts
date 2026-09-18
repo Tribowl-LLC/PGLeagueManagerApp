@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { users } from "./users";
@@ -27,6 +27,9 @@ export const adminEmailChangeAudits = pgTable("admin_email_change_audits", {
   // Both stored already-masked (e.g. "j***@example.com").
   oldEmailMasked: text("old_email_masked").notNull(),
   newEmailMasked: text("new_email_masked").notNull(),
+  /** Required explanation when an administrator waives old-mailbox proof. */
+  reason: text("reason"),
+  oldMailboxWaived: boolean("old_mailbox_waived").notNull().default(false),
   // Link back to the specific email-change request row this audit was
   // written for (task #487). Lets the `/confirm-email-change` handler
   // update the *exact* audit row when the target user finally clicks
@@ -62,6 +65,8 @@ export const insertAdminEmailChangeAuditSchema = createInsertSchema(adminEmailCh
     targetUserId: z.number().int().positive(),
     oldEmailMasked: z.string().min(1),
     newEmailMasked: z.string().min(1),
+    reason: z.string().max(500).nullable().optional(),
+    oldMailboxWaived: z.boolean().optional(),
     // Optional + nullable — the helper passes it for newly-written
     // rows; the column also tolerates null for legacy rows.
     emailChangeRequestId: z.number().int().positive().nullable().optional(),

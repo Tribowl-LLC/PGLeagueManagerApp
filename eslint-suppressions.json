@@ -102,16 +102,6 @@
       "count": 1
     }
   },
-  "server/routes/account-profile.ts": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 3
-    }
-  },
-  "server/routes/account-security.ts": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 1
-    }
-  },
   "server/routes/auth.ts": {
     "@typescript-eslint/no-non-null-assertion": {
       "count": 1
@@ -133,11 +123,6 @@
   "server/routes/payments/payment-reports.ts": {
     "@typescript-eslint/no-non-null-assertion": {
       "count": 1
-    }
-  },
-  "server/routes/system-admin.ts": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 2
     }
   },
   "server/services/account-deletion.ts": {

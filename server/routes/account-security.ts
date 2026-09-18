@@ -13,6 +13,7 @@ import { comparePasswords } from '../lib/password';
 import {
   sendDeletionRequestNotification,
   sendPasswordChangedNotification,
+  sendEmailChangeCompletedNotification,
   sendAccountLockoutAlert,
 } from '../services/email';
 import { testBypassSkip } from '../middleware/rate-limit';
@@ -26,10 +27,14 @@ import {
 } from '../storage/admin-email-change-audits';
 import { createSharedRateLimitStore } from '../utils/rate-limit-store';
 import { db } from '../db';
+import { awaitEmailDelivery } from '../services/email-delivery-outcome';
+import { hasActiveIdentitySecurityHold } from '../storage/profile-claim-notifications.js';
 import { lockAccountCredential } from '../storage/account-action-requests';
 import { requireAuth, hashEmailChangeToken } from './account-shared';
 import {
   applyConfirmEmailChangeTxn,
+  applyApproveOldEmailChangeTxn,
+  EmailChangeSecurityHoldError,
   type ConfirmEmailChangeOutcome,
 } from '../services/account-lifecycle';
 
@@ -286,6 +291,10 @@ router.post('/confirm-email-change', confirmEmailChangeLimiter, async (req: Requ
     }
 
     const tokenHash = hashEmailChangeToken(parsed.data.token);
+    const pendingRequest = await storage.getEmailChangeRequestByTokenHash(tokenHash);
+    if (pendingRequest && await hasActiveIdentitySecurityHold(pendingRequest.userId)) {
+      return sendError(res, 'This account is temporarily restricted while a profile-security report is reviewed.', 423, 'IDENTITY_SECURITY_HOLD');
+    }
 
     // Atomic claim + email swap in a single transaction so we cannot leave
     // the token consumed if the email update fails (or vice versa), and
@@ -329,6 +338,15 @@ router.post('/confirm-email-change', confirmEmailChangeLimiter, async (req: Requ
     if (outcome.kind === 'user_gone') {
       return sendError(res, 'Account no longer exists', 404, 'USER_NOT_FOUND');
     }
+    if (outcome.kind === 'legacy_restart') {
+      return sendError(res, 'This older email-change request must be restarted from account security settings.', 409, 'EMAIL_CHANGE_RESTART_REQUIRED');
+    }
+    if (outcome.kind === 'pending_old') {
+      return sendSuccess(res, {
+        pending: 'old_email_approval',
+        message: 'The current email address must approve this change before it can complete.',
+      }, 202);
+    }
 
     const updatedUser = outcome.user;
 
@@ -352,11 +370,18 @@ router.post('/confirm-email-change', confirmEmailChangeLimiter, async (req: Requ
     let paymentSyncStatus: PaymentSyncStatus = 'not_applicable';
     // Staff accounts are never bowlers. A stale legacy link must not let an
     // email confirmation mutate a global bowler profile via provider sync.
-    if (updatedUser.bowlerId && !isPaymentManager(updatedUser)) {
+    let maySynchronizeRosterEmail = true;
+    if (pendingRequest?.flowVersion === 2 && pendingRequest.oldEmail && updatedUser.bowlerId) {
+      const linkedBowler = await storage.getBowler(updatedUser.bowlerId);
+      maySynchronizeRosterEmail = Boolean(linkedBowler
+        && linkedBowler.email?.trim().toLowerCase() === pendingRequest.oldEmail.trim().toLowerCase());
+    }
+    if (updatedUser.bowlerId && !isPaymentManager(updatedUser) && maySynchronizeRosterEmail) {
       const result = await syncBowlerForUser(updatedUser, {
         nameChanged: false,
         emailChanged: true,
         phoneChanged: false,
+        emailChangeAuthorized: maySynchronizeRosterEmail,
       });
       paymentSyncStatus = result;
     }
@@ -383,6 +408,21 @@ router.post('/confirm-email-change', confirmEmailChangeLimiter, async (req: Requ
       log.error('Failed to record post-confirm payment-sync status on admin audit row (non-fatal):', auditErr);
     }
 
+    const completedOldEmail = pendingRequest?.flowVersion === 2 ? pendingRequest.oldEmail : undefined;
+    if (completedOldEmail) {
+      const notification = await awaitEmailDelivery(() => sendEmailChangeCompletedNotification(
+        completedOldEmail,
+        updatedUser.name,
+        maskEmail(updatedUser.email),
+      ));
+      if (notification !== 'accepted') {
+        log.warn('Completed email-change notification was not confirmed as accepted', {
+          userId: updatedUser.id,
+          outcome: notification,
+        });
+      }
+    }
+
     log.info('Email-change confirmed', {
       userId: updatedUser.id,
       newEmail: maskEmail(updatedUser.email),
@@ -394,7 +434,75 @@ router.post('/confirm-email-change', confirmEmailChangeLimiter, async (req: Requ
       ...(requiresLogin ? { requiresLogin: true } : {}),
     });
   } catch (error) {
+    if (error instanceof EmailChangeSecurityHoldError) {
+      return sendError(res, error.message, 423, 'IDENTITY_SECURITY_HOLD');
+    }
     log.error('Error confirming email change:', error);
+    return sendError(res, 'Internal server error', 500, 'SERVER_ERROR');
+  }
+});
+
+router.post('/approve-email-change', confirmEmailChangeLimiter, async (req: Request, res: Response) => {
+  try {
+    const parsed = z.object({ token: z.string().min(1) }).safeParse(req.body);
+    if (!parsed.success) return handleZodError(res, parsed.error);
+    const tokenHash = hashEmailChangeToken(parsed.data.token);
+    const request = await storage.getEmailChangeRequestByOldTokenHash(tokenHash);
+    if (request && await hasActiveIdentitySecurityHold(request.userId)) {
+      return sendError(res, 'This account is temporarily restricted while a profile-security report is reviewed.', 423, 'IDENTITY_SECURITY_HOLD');
+    }
+    const outcome = await applyApproveOldEmailChangeTxn(tokenHash);
+    if (outcome.kind === 'invalid') return sendError(res, 'Invalid or expired approval link', 400, 'INVALID_TOKEN');
+    if (outcome.kind === 'consumed') return sendError(res, 'This approval link has already been used', 400, 'TOKEN_CONSUMED');
+    if (outcome.kind === 'expired') return sendError(res, 'This approval link has expired', 400, 'TOKEN_EXPIRED');
+    if (outcome.kind === 'user_gone') return sendError(res, 'Account no longer exists', 404, 'USER_NOT_FOUND');
+    if (outcome.kind === 'pending_new') {
+      return sendSuccess(res, { pending: 'new_email_confirmation', message: 'The new email address must confirm before the change can complete.' }, 202);
+    }
+    if (outcome.kind !== 'ok') {
+      return sendError(res, 'Unable to complete this email change', 400, 'INVALID_TOKEN');
+    }
+    const updatedUser = outcome.user;
+    let paymentSyncStatus: PaymentSyncStatus = 'not_applicable';
+    let maySynchronizeRosterEmail = true;
+    if (request?.flowVersion === 2 && request.oldEmail && updatedUser.bowlerId) {
+      const linkedBowler = await storage.getBowler(updatedUser.bowlerId);
+      maySynchronizeRosterEmail = Boolean(linkedBowler
+        && linkedBowler.email?.trim().toLowerCase() === request.oldEmail.trim().toLowerCase());
+    }
+    if (updatedUser.bowlerId && !isPaymentManager(updatedUser) && maySynchronizeRosterEmail) {
+      paymentSyncStatus = await syncBowlerForUser(updatedUser, {
+        nameChanged: false,
+        emailChanged: true,
+        phoneChanged: false,
+        emailChangeAuthorized: maySynchronizeRosterEmail,
+      });
+    }
+    try {
+      await markAdminEmailChangeAuditConfirmed({ emailChangeRequestId: outcome.requestId, status: paymentSyncStatus });
+    } catch (auditError) {
+      log.error('Failed to record post-confirm payment-sync status on old-address approval', auditError);
+    }
+    const approvedOldEmail = request?.flowVersion === 2 ? request.oldEmail : undefined;
+    if (approvedOldEmail) {
+      const notification = await awaitEmailDelivery(() => sendEmailChangeCompletedNotification(
+        approvedOldEmail,
+        updatedUser.name,
+        maskEmail(updatedUser.email),
+      ));
+      if (notification !== 'accepted') {
+        log.warn('Completed email-change notification was not confirmed as accepted', {
+          userId: updatedUser.id,
+          outcome: notification,
+        });
+      }
+    }
+    return sendSuccess(res, { ...sanitizeUser(updatedUser), paymentSyncStatus });
+  } catch (error) {
+    if (error instanceof EmailChangeSecurityHoldError) {
+      return sendError(res, error.message, 423, 'IDENTITY_SECURITY_HOLD');
+    }
+    log.error('Error approving old email change:', error);
     return sendError(res, 'Internal server error', 500, 'SERVER_ERROR');
   }
 });
@@ -447,7 +555,10 @@ const changePasswordLimiter = rateLimit({
 // Change password for the currently authenticated user
 router.post('/change-password', changePasswordLimiter, requireAuth, async (req: Request, res: Response) => {
   try {
-    const user = req.user!;
+    const user = req.user;
+    if (!user) {
+      return sendError(res, 'Authentication required', 401, 'UNAUTHORIZED');
+    }
 
     const schema = z.object({
       currentPassword: z.string().min(1, 'Current password is required'),

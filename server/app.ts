@@ -205,7 +205,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   app.use(singletonOrganizationContext);
   app.use(compression());
   app.use(securityHeaders);
-  app.use(['/set-password', '/api/auth/validate-invite'], (_req, res, next) => {
+  app.use(['/set-password', '/api/auth/validate-invite', '/report-profile-claim', '/api/profile-claims/report'], (_req, res, next) => {
     res.set('Referrer-Policy', 'no-referrer');
     res.set('Cache-Control', 'no-store');
     next();

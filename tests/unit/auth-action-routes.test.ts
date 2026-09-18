@@ -40,6 +40,9 @@ vi.mock("../../server/services/account-action-delivery-scheduler.js", () => ({ n
 vi.mock("../../server/storage/account-action-requests.js", () => ({
   withAccountActionDeliveryLock: vi.fn(),
 }));
+vi.mock("../../server/storage/profile-claim-notifications.js", () => ({
+  hasActiveIdentitySecurityHold: vi.fn(async () => false),
+}));
 
 vi.mock("../../server/logger", () => ({
   createLogger: () => ({

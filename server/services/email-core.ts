@@ -322,11 +322,19 @@ if (SENDGRID_API_KEY) {
 export function getBaseUrl(
   orgOrSlug?: string | { subdomain?: string | null; slug?: string | null } | null,
 ): string {
-  // Retain the optional argument for compatibility with existing callers,
-  // but never derive a link hostname from organization data. All new account,
-  // invitation, registration, reset, and notification links use the one
-  // canonical application domain.
-  void orgOrSlug;
+  // String callers retain the historical canonical URL. When a trusted
+  // organization record is available, use its validated subdomain so a
+  // public registration link still resolves the correct tenant when more
+  // than one organization is active. Never derive a host from an arbitrary
+  // request/query string.
+  if (orgOrSlug && typeof orgOrSlug === "object") {
+    const subdomain = typeof orgOrSlug.subdomain === "string"
+      ? orgOrSlug.subdomain.trim().toLowerCase()
+      : "";
+    if (/^[a-z0-9]+$/.test(subdomain)) {
+      return `https://${subdomain}.${env.APP_DOMAIN}`;
+    }
+  }
   return `https://${env.APP_DOMAIN}`;
 }
 
@@ -408,6 +416,74 @@ export interface AccountReadyEmailOptions {
   } | null;
   leagueName?: string;
   teamName?: string;
+}
+
+export interface ProfileClaimNotificationEmailOptions {
+  toEmail: string;
+  toName: string;
+  bowlerName: string;
+  organizationName?: string | null;
+  reportUrl: string;
+  /** Include the account-ready sign-in section when both notices share a mailbox. */
+  includeAccountReady?: boolean;
+  loginUrl?: string;
+  dashboardUrl?: string;
+}
+
+/**
+ * Notify the address that was on a roster before an account was linked to
+ * that profile. This sender never derives its recipient from the current user
+ * row; the durable job owns the immutable recipient snapshot.
+ */
+export async function sendProfileClaimNotificationEmail(
+  options: ProfileClaimNotificationEmailOptions,
+): Promise<EmailDispatchResult> {
+  const variables = {
+    user_name: options.toName,
+    bowler_name: options.bowlerName,
+    organization_name: options.organizationName ?? "your league",
+    report_link: options.reportUrl,
+    login_link: options.loginUrl ?? "",
+    dashboard_link: options.dashboardUrl ?? options.loginUrl ?? "",
+  };
+  const templated = await sendTemplatedEmail(
+    options.includeAccountReady ? "profile_claim_account_ready" : "profile_claim_notification",
+    options.toEmail,
+    variables,
+    { returnDetails: true },
+  );
+  if (templated.accepted || templated.failureReason !== "template_missing") return templated;
+
+  if (!SENDGRID_API_KEY) return { accepted: false, failureReason: "not_configured" };
+  try {
+    const safeName = escapeHtml(options.toName || "there");
+    const safeBowler = escapeHtml(options.bowlerName || "your roster profile");
+    const safeOrganization = escapeHtml(options.organizationName || "your league");
+    const safeReport = escapeHtml(options.reportUrl);
+    const safeLogin = escapeHtml(options.loginUrl || "");
+    const safeDashboard = escapeHtml(options.dashboardUrl || options.loginUrl || "");
+    const accountReadySection = options.includeAccountReady
+      ? `<p>Your LeagueVault account is ready. <a href="${safeLogin}">Sign in</a> or open your <a href="${safeDashboard}">bowler dashboard</a>.</p>`
+      : "";
+    const html = wrapInHtmlLayout(sanitizeTemplateBody(`
+      <p>Hi ${safeName},</p>
+      <p>An account was connected to <strong>${safeBowler}</strong> in ${safeOrganization}.</p>
+      ${accountReadySection}
+      <p>If you did not make or authorize this connection, use the secure report link below:</p>
+      <p><a href="${safeReport}">This wasn't me</a></p>
+      <p>If you recognize this activity, no action is needed.</p>
+    `), variables);
+    return dispatchMail({
+      to: options.toEmail,
+      from: { email: FROM_EMAIL, name: FROM_NAME },
+      subject: "A LeagueVault profile was connected",
+      html,
+      trackingSettings: { clickTracking: { enable: false, enableText: false } },
+    });
+  } catch (error) {
+    log.error("Profile-claim notification fallback failed:", describeEmailDeliveryError(error));
+    return { accepted: false, failureReason: classifyEmailProviderFailure(error) };
+  }
 }
 
 /**

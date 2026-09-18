@@ -7,6 +7,7 @@
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
 
@@ -62,6 +63,8 @@ describe('ConfirmEmailChangePage session-refresh failure', () => {
       </Router>,
     );
 
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /confirm new email/i }));
     expect(await screen.findByText('Email updated')).toBeInTheDocument();
     expect(screen.getByText(/your sign-in email is now/i)).toHaveTextContent(
       'Your sign-in email is now new-address@example.com. Please log in again to continue.',

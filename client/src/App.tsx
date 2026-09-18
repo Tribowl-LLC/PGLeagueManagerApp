@@ -41,6 +41,8 @@ const UsersPage = lazy(() => import("@/pages/users-page"));
 const SetPasswordPage = lazy(() => import("@/pages/set-password-page"));
 const ForgotPasswordPage = lazy(() => import("@/pages/forgot-password-page"));
 const RegistrationEmailPage = lazy(() => import("@/pages/registration-email-page"));
+const VerifyPhonePage = lazy(() => import("@/pages/verify-phone-page"));
+const ProfileClaimReportPage = lazy(() => import("@/pages/profile-claim-report-page"));
 const ConfirmEmailChangePage = lazy(() => import("@/pages/confirm-email-change-page"));
 const ChangePasswordRequiredPage = lazy(() => import("@/pages/change-password-required-page"));
 const ProfileSettingsPage = lazy(() => import("@/pages/profile-settings-page"));
@@ -169,6 +171,9 @@ function Router() {
         <Route path="/set-password" component={SetPasswordPage} />
         <Route path="/forgot-password" component={ForgotPasswordPage} />
         <Route path="/registration-email" component={RegistrationEmailPage} />
+        <Route path="/verify-phone" component={VerifyPhonePage} />
+        <Route path="/profile-claims/report" component={ProfileClaimReportPage} />
+        <Route path="/report-profile-claim" component={ProfileClaimReportPage} />
         <Route path="/confirm-email-change" component={ConfirmEmailChangePage} />
         <Route path="/privacy-policy" component={PrivacyPolicyPage} />
         <Route path="/delete-account" component={DeleteAccountPage} />

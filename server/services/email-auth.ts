@@ -234,6 +234,65 @@ export async function sendInviteEmail(
   }
 }
 
+/** Ordinary bowler invitations intentionally never create an account or a
+ * bearer setup token. They are a nudge to the public registration flow. */
+export async function sendBowlerRegistrationInviteEmail(
+  toEmail: string,
+  bowlerName: string,
+  organizationName?: string,
+  organizationId?: number,
+  orgSlug?: string | null,
+): Promise<EmailDispatchResult> {
+  const organization = organizationId ? await storage.getOrganization(organizationId) : null;
+  const baseUrl = getBaseUrl(organization ?? orgSlug);
+  const registrationUrl = `${baseUrl}/sign-up`;
+  const variables: Record<string, string> = {
+    bowler_name: bowlerName,
+    register_link: registrationUrl,
+    invite_link: registrationUrl,
+    organization_name: organizationName || 'LeagueVault',
+  };
+  if (organizationId) {
+    if (organization) variables.organization_logo_url = getOrgLogoUrl(organization);
+  }
+
+  const templated = await sendTemplatedEmail('bowler_registration_invite', toEmail, variables, { returnDetails: true });
+  if (typeof templated !== 'boolean' && templated.accepted) return templated;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return templated;
+  if (!SENDGRID_API_KEY) {
+    return { accepted: false, failureReason: 'not_configured' };
+  }
+
+  const safeName = escapeHtml(bowlerName || 'there');
+  const safeOrganization = escapeHtml(organizationName || 'LeagueVault');
+  const safeUrl = escapeHtml(registrationUrl);
+  const message = {
+    to: toEmail,
+    from: { email: FROM_EMAIL, name: FROM_NAME },
+    subject: `Join ${organizationName || 'LeagueVault'} on LeagueVault`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h1 style="color: #1a1a2e;">LeagueVault registration</h1>
+        <p style="font-size: 16px; color: #333;">Hi ${safeName},</p>
+        <p style="font-size: 16px; color: #333;">${safeOrganization} invited you to register with LeagueVault.</p>
+        <p style="font-size: 16px; color: #333;">Use the public registration page to enter your name, email, and phone number. We will text you a verification code.</p>
+        <p><a href="${safeUrl}" style="background: #1a1a2e; color: #fff; padding: 14px 28px; text-decoration: none; border-radius: 6px; display: inline-block;">Register on LeagueVault</a></p>
+        <p style="font-size: 14px; color: #666; word-break: break-all;"><a href="${safeUrl}">${safeUrl}</a></p>
+        <p style="font-size: 14px; color: #666;">If you did not expect this message, you can ignore it.</p>
+      </div>
+    `,
+    trackingSettings: { clickTracking: { enable: false, enableText: false } },
+  };
+  try {
+    await dispatchMail(message);
+    log.info('Ordinary registration invitation submitted', { recipient: maskEmail(toEmail) });
+    return { accepted: true };
+  } catch (error) {
+    log.error('Failed to send ordinary registration invitation:', describeEmailDeliveryError(error));
+    return { accepted: false, failureReason: classifyEmailProviderFailure(error) };
+  }
+}
+
 export async function sendPasswordResetFallbackEmail(
   toEmail: string,
   userName: string,
@@ -515,6 +574,86 @@ export async function sendEmailChangeNotification(
     return true;
   } catch (error) {
     log.error('Failed to send email-change notification:', describeMailError(error));
+    return false;
+  }
+}
+
+export async function sendEmailChangeCompletedNotification(
+  toEmail: string,
+  userName: string,
+  newEmailMasked: string,
+): Promise<boolean> {
+  if (!SENDGRID_API_KEY) {
+    log.error('Cannot send completed email-change notification — SENDGRID_API_KEY not configured');
+    return false;
+  }
+  const templated = await sendTemplatedEmail(
+    'email_change_completed_notification',
+    toEmail,
+    {
+      user_name: userName || 'there',
+      new_email_masked: newEmailMasked,
+      support_link: `${getBaseUrl()}/support`,
+    },
+    { returnDetails: true },
+  );
+  if (typeof templated !== 'boolean' && templated.accepted) return true;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return false;
+
+  const safeName = escapeHtml(userName || 'there');
+  const safeMasked = escapeHtml(newEmailMasked);
+  const supportUrl = escapeHtml(`${getBaseUrl()}/support`);
+  try {
+    await dispatchMail({
+      to: toEmail,
+      from: { email: FROM_EMAIL, name: FROM_NAME },
+      subject: 'Your LeagueVault email was changed',
+      html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px"><p>Hi ${safeName},</p><p>The login email for your LeagueVault account was changed to <strong>${safeMasked}</strong>.</p><p>If you did not authorize this change, contact support immediately: <a href="${supportUrl}">${supportUrl}</a></p></div>`,
+      trackingSettings: { clickTracking: { enable: false, enableText: false } },
+    });
+    return true;
+  } catch (error) {
+    log.error('Failed to send completed email-change notification:', describeEmailDeliveryError(error));
+    return false;
+  }
+}
+
+export async function sendEmailChangeOldAddressApproval(
+  toEmail: string,
+  userName: string,
+  newEmailMasked: string,
+  approvalUrl: string,
+): Promise<boolean> {
+  if (!SENDGRID_API_KEY) {
+    log.error('Cannot send old-address email-change approval — SENDGRID_API_KEY not configured');
+    return false;
+  }
+  const templated = await sendTemplatedEmail(
+    'email_change_old_address_approval',
+    toEmail,
+    {
+      user_name: userName || 'there',
+      new_email_masked: newEmailMasked,
+      approval_link: approvalUrl,
+    },
+    { returnDetails: true },
+  );
+  if (typeof templated !== 'boolean' && templated.accepted) return true;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return false;
+  const safeName = escapeHtml(userName || 'there');
+  const safeMasked = escapeHtml(newEmailMasked);
+  const safeUrl = escapeHtml(approvalUrl);
+  try {
+    await dispatchMail({
+      to: toEmail,
+      from: { email: FROM_EMAIL, name: FROM_NAME },
+      subject: 'Approve a LeagueVault email change',
+      html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px"><p>Hi ${safeName},</p><p>A request was made to change this account's login email to <strong>${safeMasked}</strong>.</p><p>The new address cannot replace this address until you approve the request.</p><p><a href="${safeUrl}">Approve this email change</a></p><p>If you did not request this, take no action and contact your administrator.</p></div>`,
+      trackingSettings: { clickTracking: { enable: false, enableText: false } },
+    });
+    return true;
+  } catch (error) {
+    log.error('Failed to send old-address email-change approval:', describeMailError(error));
     return false;
   }
 }

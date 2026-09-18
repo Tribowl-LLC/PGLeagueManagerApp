@@ -48,6 +48,13 @@ export interface ProfileChanges {
   nameChanged: boolean;
   emailChanged: boolean;
   phoneChanged: boolean;
+  /**
+   * Email changes are credential changes, not ordinary roster edits.  The
+   * caller must prove that the old roster address was covered by the protected
+   * email-change flow (or an audited administrator waiver) before the local
+   * roster/payment contact may follow the login address.
+   */
+  emailChangeAuthorized?: boolean;
 }
 
 export async function syncBowlerForUser(
@@ -63,7 +70,9 @@ export async function syncBowlerForUser(
   const bowlerUpdate: Record<string, unknown> = {};
   if (contactSource === 'user') {
     if (changed.nameChanged) bowlerUpdate.name = user.name;
-    if (changed.emailChanged) bowlerUpdate.email = user.email;
+    if (changed.emailChanged && changed.emailChangeAuthorized === true) {
+      bowlerUpdate.email = user.email;
+    }
     if (changed.phoneChanged) bowlerUpdate.phone = user.phone;
   }
 
@@ -78,7 +87,11 @@ export async function syncBowlerForUser(
   }
 
   const contactName = contactSource === 'bowler' ? bowler.name : user.name;
-  const contactEmail = contactSource === 'bowler' ? bowler.email : user.email;
+  const contactEmail = contactSource === 'bowler'
+    ? bowler.email
+    : changed.emailChanged && changed.emailChangeAuthorized !== true
+      ? bowler.email
+      : user.email;
   const contactPhone = contactSource === 'bowler' ? bowler.phone : user.phone;
   if (!contactEmail) return 'skipped';
 

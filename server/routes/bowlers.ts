@@ -733,6 +733,24 @@ router.patch("/:id", async (req, res) => {
       return sendError(res, 'Only profile fields may be changed by this account', 403, 'FORBIDDEN');
     }
 
+    // Login email changes are credential mutations, not roster-field edits.
+    // Keeping this ordinary-user PATCH path from accepting `email` prevents
+    // a caller from bypassing the authenticated reauthorization,
+    // confirmation, old-address notification, and session invalidation policy
+    // enforced by /api/account/profile/:id.
+    if (!isOrgOrHigher(req.user)
+      && Object.prototype.hasOwnProperty.call(update, 'email')
+      && (typeof update.email === 'string'
+        ? update.email.trim().toLowerCase()
+        : '') !== (bowler.email ?? '').trim().toLowerCase()) {
+      return sendError(
+        res,
+        'Email changes must be requested from account security settings',
+        403,
+        'EMAIL_CHANGE_REQUIRES_ACCOUNT_FLOW',
+      );
+    }
+
     const merged = { ...bowler, ...update };
     let updated = await storage.updateBowler(id, merged, req.user?.id);
     // Set when the email auto-link below commits a queued payment-sync row;
@@ -763,6 +781,10 @@ router.patch("/:id", async (req, res) => {
               // duplicate/shared addresses pending for administrator review.
               requireEmailMatch: true,
               queueAccountReadyEmail: true,
+              // The bowler row was updated immediately before this call. Keep
+              // the claim alert anchored to the roster address that existed
+              // before the administrator's linkage-related contact edit.
+              claimNotificationRecipientEmail: bowler.email?.trim() || null,
             });
             notifyAccountActionDeliveryChanged();
 

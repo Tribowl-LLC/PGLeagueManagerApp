@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(47);
+    expect(migrations).toHaveLength(49);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -515,6 +515,18 @@ describe('normalized migration baseline tools', () => {
       hash: '79f4f3f7df5e5fa36a89f0a03f18023bf1eb8205a6cf07a436891a5d6a8587a8',
     });
     expect(migrations[46]?.sql).toContain('CREATE TABLE "account_ready_delivery_jobs"');
+    expect(migrations[47]).toMatchObject({
+      idx: 47,
+      tag: '0047_profile_claim_security_safeguards',
+      hash: 'e900a35173dab157d99f439e3b9f5abec43028dddbafe9ec145e08210f80d89a',
+    });
+    expect(migrations[47]?.sql).toContain('CREATE TABLE "profile_claim_notifications"');
+    expect(migrations[48]).toMatchObject({
+      idx: 48,
+      tag: '0048_sms_otp_registration_and_email_safeguards',
+      hash: 'c6204daa4e226814703e99829a1da6f9ec45688f75b6ba7b92978483521b1326',
+    });
+    expect(migrations[48]?.sql).toContain('CREATE TABLE "registration_verification_challenges"');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

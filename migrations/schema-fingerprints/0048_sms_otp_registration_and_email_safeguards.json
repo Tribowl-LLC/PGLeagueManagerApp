@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0048_sms_otp_registration_and_email_safeguards",
+    "hash": "c6204daa4e226814703e99829a1da6f9ec45688f75b6ba7b92978483521b1326",
+    "createdAt": 1789758170059
+  },
+  "digest": "fe656ab32baafa48b79329301c4d40c2d93a35806473dbe23c294a1047e69039",
+  "counts": {
+    "tables": 75,
+    "columns": 1049,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 32,
+    "constraints": 566,
+    "indexes": 321,
+    "types": 1,
+    "functions": 19,
+    "triggers": 33,
+    "policies": 0
+  }
+}

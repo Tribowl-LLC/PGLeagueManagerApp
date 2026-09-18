@@ -110,6 +110,20 @@ const productionDependencies: AccountReadyDeliveryWorkerDependencies = {
       return undefined;
     }
 
+    // The profile-claim worker owns the combined message when the immutable
+    // roster recipient is the same mailbox as the new account. Suppressing
+    // this separate intent prevents two automatic emails while preserving the
+    // report capability in the combined notice.
+    const { shouldCombineProfileClaimWithAccountReady } = await import(
+      "../storage/profile-claim-notifications.js"
+    );
+    const combineProfileClaim = await shouldCombineProfileClaimWithAccountReady({
+      identityLinkEventId: job.identityLinkEventId,
+      recipientEmail: user.email,
+      userId: user.id,
+    });
+    if (combineProfileClaim) return undefined;
+
     let leagueName = "";
     let teamName = "";
     const [membership] = await storage.getBowlerLeagues({ bowlerId: bowler.id });

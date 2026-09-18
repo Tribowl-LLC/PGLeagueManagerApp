@@ -87,6 +87,54 @@ export async function queueAccountReadyDeliveryJob(input: {
   return db.transaction(run);
 }
 
+/**
+ * Re-open the latest account-ready intent for an explicit administrator
+ * resend. This preserves the immutable identity-link event while resetting
+ * only the delivery lifecycle; the worker still revalidates that the event
+ * remains the user's current link before sending.
+ */
+export async function requeueAccountReadyDeliveryJob(input: {
+  identityLinkEventId: number;
+}): Promise<AccountReadyDeliveryJob | undefined> {
+  if (!Number.isSafeInteger(input.identityLinkEventId) || input.identityLinkEventId <= 0) {
+    throw new Error("Invalid account-ready identity-link event ID");
+  }
+  return db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select()
+      .from(accountReadyDeliveryJobs)
+      .where(eq(accountReadyDeliveryJobs.identityLinkEventId, input.identityLinkEventId))
+      .limit(1)
+      .for("update");
+    if (!existing) return undefined;
+    if (
+      existing.status === "processing"
+      && existing.leaseExpiresAt
+      && Date.parse(existing.leaseExpiresAt) > Date.now()
+    ) {
+      throw new Error("Account-ready delivery is already in progress");
+    }
+    const [requeued] = await tx
+      .update(accountReadyDeliveryJobs)
+      .set({
+        status: "pending",
+        attemptCount: 0,
+        nextAttemptAt: new Date().toISOString(),
+        lastAttemptAt: null,
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        providerMessageId: null,
+        lastErrorCode: null,
+        completedAt: null,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(accountReadyDeliveryJobs.id, existing.id))
+      .returning();
+    return requeued;
+  });
+}
+
 /** Earliest account-ready intent or lease-recovery due time for the scheduler. */
 export async function getNextAccountReadyDeliveryAt(): Promise<Date | null> {
   const [row] = await db

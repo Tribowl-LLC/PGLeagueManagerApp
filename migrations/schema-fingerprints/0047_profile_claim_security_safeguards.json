@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0047_profile_claim_security_safeguards",
+    "hash": "e900a35173dab157d99f439e3b9f5abec43028dddbafe9ec145e08210f80d89a",
+    "createdAt": 1789757028149
+  },
+  "digest": "ac57282c95392fdeb30be0695f04552cd6cfdc495cabc300ee6fe45ef81122a3",
+  "counts": {
+    "tables": 73,
+    "columns": 1006,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 31,
+    "constraints": 555,
+    "indexes": 310,
+    "types": 1,
+    "functions": 19,
+    "triggers": 33,
+    "policies": 0
+  }
+}

@@ -1,4 +1,4 @@
-import { FC, useEffect, useState } from "react";
+import { FC, useState } from "react";
 import { Link, useSearch } from "wouter";
 import { ErrorBoundary } from "@/components/error-boundary";
 import {
@@ -21,6 +21,8 @@ import { parsePaymentSyncStatus, type PaymentSyncStatus } from "@shared/schema";
 
 type Status =
   | { kind: "pending" }
+  | { kind: "ready"; oldAddress: boolean }
+  | { kind: "proof_pending"; message: string }
   | {
       kind: "success";
       email: string;
@@ -38,79 +40,43 @@ const ERROR_COPY: Record<string, string> = {
   EMAIL_IN_USE:
     "That email address is already in use by another account. Please request another change with a different address.",
   USER_NOT_FOUND: "This account no longer exists.",
+  PENDING_OLD_EMAIL: "The current email address must approve this change before it can complete.",
 };
 
 const ConfirmEmailChangePage: FC = () => {
   const search = useSearch();
   const token = new URLSearchParams(search).get("token") ?? "";
-  const [status, setStatus] = useState<Status>({ kind: "pending" });
+  const oldAddress = new URLSearchParams(search).get("kind") === "old";
+  const [status, setStatus] = useState<Status>(token
+    ? { kind: "ready", oldAddress }
+    : { kind: "error", code: "INVALID_TOKEN", message: ERROR_COPY.INVALID_TOKEN });
 
-  useEffect(() => {
-    if (!token) {
-      setStatus({
-        kind: "error",
-        code: "INVALID_TOKEN",
-        message: ERROR_COPY.INVALID_TOKEN,
+  const submit = async () => {
+    if (!token || status.kind !== "ready") return;
+    setStatus({ kind: "pending" });
+    try {
+      const res = await fetch(oldAddress ? "/api/account/approve-email-change" : "/api/account/confirm-email-change", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
       });
-      return;
-    }
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/account/confirm-email-change", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token }),
-        });
-        const body = await res.json().catch(() => ({}));
-        if (cancelled) return;
-        if (res.ok && body?.success) {
-          const requiresLogin = body?.data?.requiresLogin === true;
-          setStatus({
-            kind: "success",
-            email: body?.data?.email ?? "your new address",
-            // Server defaults to "not_applicable" when there's no linked
-            // bowler. The shared parser (task #374) collapses any
-            // unrecognized value to "not_applicable" too so a future
-            // server-side addition never trips a notice an old client
-            // doesn't know how to interpret.
-            paymentSyncStatus: parsePaymentSyncStatus(
-              body?.data?.paymentSyncStatus,
-            ),
-            requiresLogin,
-          });
-          if (requiresLogin) {
-            // The email transaction committed, but Passport could not save
-            // the refreshed session. Clear cached auth state and require a
-            // normal login rather than leaving the stale session visible.
-            redirectToLoginForExpiredSession({
-              cachedAuthenticated: true,
-              force: true,
-              reason: "credential-changed",
-            });
-          }
-        } else {
-          const code: string = body?.error?.code ?? "INVALID_TOKEN";
-          const message =
-            ERROR_COPY[code] ??
-            body?.error?.message ??
-            "We couldn't confirm this email change.";
-          setStatus({ kind: "error", code, message });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body?.success) {
+        if (res.status === 202 || body?.data?.pending) {
+          setStatus({ kind: "proof_pending", message: body?.data?.message ?? "The other email address must confirm before the change can complete." });
+          return;
         }
-      } catch {
-        if (cancelled) return;
-        setStatus({
-          kind: "error",
-          code: "NETWORK",
-          message: "We couldn't reach the server. Please try again in a moment.",
-        });
+        const requiresLogin = body?.data?.requiresLogin === true;
+        setStatus({ kind: "success", email: body?.data?.email ?? "your new address", paymentSyncStatus: parsePaymentSyncStatus(body?.data?.paymentSyncStatus), requiresLogin });
+        if (requiresLogin) redirectToLoginForExpiredSession({ cachedAuthenticated: true, force: true, reason: "credential-changed" });
+        return;
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
+      const code: string = body?.error?.code ?? "INVALID_TOKEN";
+      setStatus({ kind: "error", code, message: ERROR_COPY[code] ?? body?.error?.message ?? "We couldn't confirm this email change." });
+    } catch {
+      setStatus({ kind: "error", code: "NETWORK", message: "We couldn't reach the server. Please try again in a moment." });
+    }
+  };
 
   return (
     <ErrorBoundary level="section">
@@ -128,14 +94,19 @@ const ConfirmEmailChangePage: FC = () => {
             </div>
             <CardTitle size="2xl" weight="bold">
               {status.kind === "pending"
-                ? "Confirming your new email…"
+                ? "Confirm this email change"
+                : status.kind === "ready"
+                ? "Confirm this email change"
+                : status.kind === "proof_pending"
+                ? "Approval recorded"
                 : status.kind === "success"
                 ? "Email updated"
                 : "Couldn't confirm"}
             </CardTitle>
             <CardDescription>
-              {status.kind === "pending" &&
-                "Hold tight while we finish the change."}
+              {status.kind === "ready" && (status.oldAddress ? "Approve the requested change from this current mailbox." : "Confirm that you own the new mailbox.")}
+              {status.kind === "pending" && "Hold tight while we finish the change."}
+              {status.kind === "proof_pending" && status.message}
               {status.kind === "success" && (
                 <>
                   Your sign-in email is now <strong>{status.email}</strong>.
@@ -145,7 +116,14 @@ const ConfirmEmailChangePage: FC = () => {
               {status.kind === "error" && status.message}
             </CardDescription>
           </CardHeader>
-          {status.kind !== "pending" && (
+          {status.kind === "ready" && (
+            <CardContent padding="bottomTight" spacing="tight" size="sm" tone="muted" className="text-center">
+              <button type="button" onClick={() => void submit()} className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+                {status.oldAddress ? "Approve email change" : "Confirm new email"}
+              </button>
+            </CardContent>
+          )}
+          {(status.kind === "success" || status.kind === "proof_pending" || status.kind === "error") && (
             <CardContent padding="bottomTight" spacing="tight" size="sm" tone="muted" className="text-center">
               {status.kind === "success" && (
                 <>

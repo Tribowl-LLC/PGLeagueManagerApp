@@ -85,6 +85,8 @@ export async function listAdminEmailChangeAudits(
       targetUserId: adminEmailChangeAudits.targetUserId,
       oldEmailMasked: adminEmailChangeAudits.oldEmailMasked,
       newEmailMasked: adminEmailChangeAudits.newEmailMasked,
+      reason: adminEmailChangeAudits.reason,
+      oldMailboxWaived: adminEmailChangeAudits.oldMailboxWaived,
       emailChangeRequestId: adminEmailChangeAudits.emailChangeRequestId,
       postConfirmPaymentSyncStatus: adminEmailChangeAudits.postConfirmPaymentSyncStatus,
       postConfirmedAt: adminEmailChangeAudits.postConfirmedAt,

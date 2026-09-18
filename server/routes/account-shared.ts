@@ -34,6 +34,11 @@ export const SUPPORTED_PREFERRED_LANGUAGES = Object.keys(
 export const profileUpdateSchema = updateUserSchemaBase
   .pick({ name: true, email: true, phone: true })
   .extend({
+    // Email changes require a fresh credential proof in the self-service
+    // flow. Kept optional at the schema boundary so name/phone-only PATCHes
+    // and audited admin edits remain valid; the route enforces it only when
+    // `email` actually changes.
+    currentPassword: z.string().min(1, 'Current password is required').optional(),
     phone: phoneSchema
       .nullable()
       .optional()
