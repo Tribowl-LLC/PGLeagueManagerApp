@@ -5,6 +5,10 @@ validation, exact-main certification, security scanning, and live-deployment
 probing. The complete database-backed suite runs once before merge. A short
 push workflow then certifies the exact `main` tree without repeating that suite.
 
+The commands in this document describe GitHub's full gates. Local contributors
+should follow [`AGENTS.md`](../AGENTS.md#verification) for focused project-and-file
+checks and the explicit user-authorization rule for a full local suite.
+
 ## Workflow layout
 
 | Workflow file | Job name | Triggers | What it runs |
@@ -57,7 +61,7 @@ The repository uses GitHub Dependabot at no additional service cost:
 
 ## What runs in `Tests`
 
-`npm test` invokes `vitest run`, which executes the six projects
+`npm test` invokes `vitest run`, which executes the seven projects
 declared in `vitest.config.ts`:
 
 - **`parallel`** — the default project. Most files under
@@ -77,6 +81,9 @@ declared in `vitest.config.ts`:
   migrated worker database and Express process for each file.
 - **`unit-no-db`** — pure unit tests that must not import database setup or
   require database/application secrets.
+- **`serial-email-browser`** — the email-first registration browser journey,
+  which owns an in-process Express app and Playwright browser and runs without
+  file parallelism.
 
 The two opt-in race files
 (`tests/api/setup-admin-bootstrap-race.test.ts` and

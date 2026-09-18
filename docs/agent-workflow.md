@@ -148,9 +148,18 @@ resuming; do not trust stale prose alone.
 
 Luna owns the routine loop: make the assigned edits, run applicable checks,
 fix task-related failures, run CI or report its result, and keep the handoff
-current. Changes outside owned paths, architecture changes, or release choices
-return to Astra. The root does not duplicate edits while Luna is the active
-writer.
+current. Validation follows the focused policy in
+[`AGENTS.md`](../AGENTS.md#verification): use the smallest explicit Vitest
+project and file, with a prepared disposable migrated test environment for
+database-backed tests. Do not run an unfiltered local suite or approximate it
+with project batches by default; only run a full local suite when the user
+explicitly requests or authorizes it for the task, and GitHub remains the full
+test gate. For documentation-only work,
+record diff, link, and consistency review and mark application checks
+inapplicable. Record commands as run, not applicable, blocked, or failed, and
+never describe a focused pass as a full-suite pass. Changes outside owned paths,
+architecture changes, or release choices return to Astra. The root does not
+duplicate edits while Luna is the active writer.
 
 ## 4. Escalate bounded exceptions
 
@@ -228,7 +237,9 @@ decides whether the result is ready for the GitHub review/release lifecycle.
 
 The completion report states changed files, validation results, skipped or
 blocked checks, database and deployment implications, security or provider
-implications, manual verification, remaining risks, and branch/PR status.
+implications, manual verification, remaining risks, and branch/PR status. It
+must identify each local check that ran or was inapplicable and must not claim
+the complete suite passed unless that full suite actually ran successfully.
 Include completion and cost metrics when the harness provides them; never
 invent costs or claim unavailable telemetry.
 

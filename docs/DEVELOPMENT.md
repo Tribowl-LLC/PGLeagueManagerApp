@@ -236,14 +236,14 @@ repository wrappers for isolated PostgreSQL and race coverage.
 
 | Command | Coverage and intended use |
 | --- | --- |
-| `npm run test:unit-no-db` | Pure unit tests that must not import database setup. Use for fast feedback on isolated logic. |
-| `npm test -- <path-to-test>` | A focused one-shot Vitest file during implementation; for example, `npm test -- tests/unit/zod-v4-migration-contracts.test.ts`. npm forwards the path after `--` to the repository's `vitest run` script. |
-| `npm run test:watch` | Interactive Vitest watch mode while developing. It is not a substitute for the complete suite. |
-| `npm test` | Raw one-shot Vitest run across the configured default projects. It expects its database, environment, and any required app server to have been prepared. Prefer `test:local` for normal full validation. |
-| `npm run test:local` | Recommended complete local suite. It verifies Node.js, starts or reuses the local PostgreSQL 17 test container, applies migrations, builds an exact test template, and runs isolated worker databases. Docker must be available. |
-| `npm run test:race` | Separate serial coverage for shared-state concurrency behavior. It requires Bash, a prepared test database/application environment, and `SETUP_SECRET`; run it when changing the covered bootstrap, locking, payment retry, or shared-state behavior. Never point it at production. |
+| `npm test -- --project unit-no-db tests/unit/zod-v4-migration-contracts.test.ts` | Focused pure unit regression; the explicit project and file keep local feedback bounded. |
+| `npm test -- --project client-components tests/components/provider-not-configured-toast.test.tsx` | Focused React component regression in jsdom. |
+| `npm run test:watch -- --project unit-no-db tests/unit/zod-v4-migration-contracts.test.ts` | Watch one explicitly selected project and file during development. Do not use unfiltered watch mode or project batches to approximate the complete suite. |
+| `npm test` | Raw unfiltered Vitest run across all configured projects. Use only when the user explicitly requests or authorizes a full local suite; GitHub runs the complete gate for normal handoff. |
+| `npm run test:local` | Explicit full-suite local wrapper. It verifies Node.js, starts or reuses the local PostgreSQL 17 test container, applies migrations, builds an exact test template, and runs isolated worker databases. It ignores appended file arguments, so do not use it to filter a file. Docker must be available. |
+| `npm run test:race` | Separate serial coverage for shared-state concurrency behavior. Run it only for an explicitly requested race diagnosis or task scope. It requires Bash, a prepared test database/application environment, and `SETUP_SECRET`; never point it at production. |
 | `npm run db:check` | Migration suite. It validates replay, fingerprints, ordering, adoption/refusal safeguards, and PostgreSQL 17 compatibility on a disposable container. |
-| `npm run test:template:build` | Test-infrastructure diagnostic that rebuilds the canonical test template. Routine contributors should normally let `test:local` manage it. |
+| `npm run test:template:build` | Test-infrastructure diagnostic that rebuilds the canonical test template. Use only for an explicitly scoped test-infrastructure task; it is not a routine focused-test bootstrap. |
 | `npm run db:inventory:validate-local` | Specialized legacy-schema reproduction. Run only when working on the schema inventory/legacy evidence tooling; it is intentionally separate from the normal suite. |
 
 API and integration tests live primarily under `tests/api/`, browser-oriented
@@ -253,32 +253,26 @@ layout, test seeding, opt-in variables, cleanup contract, and server
 requirements are authoritative in [`tests/README.md`](../tests/README.md) and
 [`TEST_INFRA.md`](TEST_INFRA.md).
 
-Before opening a pull request, run the applicable focused tests during
-iteration, then run the normal local validation sequence:
+Before opening a pull request, run the smallest applicable focused test with an
+explicit project and file, then run only the applicable static, build, database,
+or dependency checks described in [`AGENTS.md`](../AGENTS.md#verification):
 
 ```bash
-npm run test:local
 npm run check
 npm run lint
-npm run build
-npm run security:audit:prod
-npm run security:audit:all
 ```
 
-The repository's full validation sequence also includes `npm run db:check`.
-Run it before the pull request when the change touches `shared/schema/`, active
-migrations, database invariants, migration/adoption/fingerprint/inventory
-tooling, or test-template schema construction. For an unrelated documentation,
-frontend-only, or isolated code change that demonstrably cannot affect those
-surfaces, a local `db:check` run may be recorded as inapplicable; CI still runs
-the PostgreSQL 17 migration check for the pull request. When uncertain,
-run it.
-
-Run `npm run test:race` as well when the changed behavior is race-sensitive.
-CI runs its own main test, migration, static-analysis, build, security, and
-race checks; see [`ci.md`](ci.md) for the current job layout. If a
-command is unavailable or fails for an unrelated environmental reason, record
-the exact command and result in the pull request instead of claiming it passed.
+Run `npm run db:check` for changes to `shared/schema/`, active migrations,
+database invariants, migration/adoption/fingerprint/inventory tooling, or
+test-template schema construction. Run `npm run build` for build or runtime
+bundling changes and the security audits for dependency changes. For an
+unrelated documentation, frontend-only, or isolated code change, record
+inapplicable checks; CI still runs the complete required gates. Do not run the
+full local suite by default or approximate it with all project batches. A
+database-focused test requires a prepared disposable local migrated template
+and test environment; if unavailable, record the blocker and rely on CI.
+If a command is unavailable or fails for an environmental reason, record the
+exact command and result instead of claiming it passed.
 
 ## 8. Linting and formatting
 
@@ -458,9 +452,11 @@ does not prove the production-shaped bundle can build.
 
 Read the first failing test and its setup output. Determine whether the failure
 is code, test data cleanup, migration state, Docker availability, a missing
-test variable, or a port collision. Re-run the focused file after fixing the
-cause, then re-run `npm run test:local`. Do not weaken assertions, isolation,
-authorization, or cleanup to obtain a passing result.
+test variable, or a port collision. Re-run the same focused project and file
+after fixing the cause. If a focused database environment is unavailable,
+record the blocker and rely on CI; do not bootstrap a full local suite as an
+automatic retry. Do not weaken assertions, isolation, authorization, or cleanup
+to obtain a passing result.
 
 ## 12. Best practices
 

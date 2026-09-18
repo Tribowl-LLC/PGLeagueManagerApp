@@ -126,44 +126,56 @@ is unsafe or insufficient.
 ## Verification
 
 Use Node.js 22.22 or newer within the 22.x line, as specified by
-`.node-version` and the package engine. Docker Desktop must be running for the
-database-backed suite.
+`.node-version` and the package engine. Use the smallest relevant local check
+for the change, then rely on the full GitHub gates for the complete suite.
 
-The normal local validation sequence is:
+Local validation is focused and proportional:
+
+- Run the smallest relevant explicit Vitest project and file. For example:
+
+  ```bash
+  npm test -- --project unit-no-db tests/unit/zod-v4-migration-contracts.test.ts
+  npm test -- --project client-components tests/components/provider-not-configured-toast.test.tsx
+  ```
+
+  A database-backed focused test requires an already prepared disposable local
+  migrated template and test environment, as described in
+  [`docs/TEST_INFRA.md`](docs/TEST_INFRA.md). Never point it at production. If
+  that environment is unavailable, record the blocker and rely on the required
+  GitHub check rather than bootstrapping it with the full-suite wrapper.
+- Run `npm run check` and `npm run lint` when the changed files can affect
+  TypeScript or lint rules. Run `npm run build` for build or runtime-bundling
+  changes, `npm run db:check` for schema, migration, or database-tooling
+  changes, and the security audit scripts for dependency changes.
+- For documentation-only changes, review the diff, links, and consistency. Do
+  not install dependencies or run application tests when those checks are
+  inapplicable.
+
+Do not run an unfiltered `npm test`, `npx vitest run`, watch mode, project batch,
+or wrapper alias by default, and do not approximate the full suite by running
+every project separately. Only run a full local suite when the user explicitly
+requests or authorizes it for this task:
 
 ```bash
-npm ci
-npm run db:check
 npm run test:local
-npm run check
-npm run lint
-npm run build
-npm run security:audit:prod
-npm run security:audit:all
 ```
 
-Run every applicable command before reporting a task complete. If a command is
-unavailable, inappropriate for the task, or blocked by the environment, report
-that explicitly. Do not silently skip validation.
-
-`npm run test:local` starts or reuses the local
-`leaguevault-test-postgres` PostgreSQL 17 Docker container, applies the schema,
-configures UTC and deterministic local-only secrets, prepares the test
-template, and runs the complete Vitest suite with isolated worker databases.
-No manually exported `DATABASE_URL` or development server is required.
-
-Set `TEST_LOCAL_START_DEV_SERVER=1` only when the full test run also needs a
-development server on port 5000.
-
-Run focused Vitest files locally for fast iteration, then run
-`npm run test:local` before handing off a database-backed change.
-
-`npm test` remains the underlying raw Vitest command, but it does not provide
-the Docker, schema, timezone, or deterministic environment setup supplied by
-`npm run test:local`.
+This wrapper starts or reuses `leaguevault-test-postgres`, applies the schema,
+configures UTC and deterministic local-only secrets, prepares the test template,
+and runs every configured Vitest project with isolated worker databases. It
+ignores appended file arguments; do not add a path expecting a filtered run.
+Full local execution has no automatic exception for authentication, payments,
+migrations, or a CI failure. Diagnose with the smallest focused check first and
+do not habitually ask for full-suite authorization.
 
 GitHub CI runs the complete test suite, database-backed tests, race suite, and
-security workflows.
+security workflows. Record every local command as run, not applicable, blocked,
+or failed. A focused local pass is not a full-suite pass, and a task report must
+not claim the latter unless the complete suite actually ran successfully. Do
+not rerun a passed check without changed code or a new failure to diagnose. For
+a failed CI check, inspect its logs and classify the failure before a focused
+reproduction or fix, then rerun the affected CI check after the fix without
+starting a new review loop.
 
 The main CI checks are:
 

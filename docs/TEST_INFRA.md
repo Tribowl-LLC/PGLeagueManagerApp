@@ -32,6 +32,13 @@ The validation also verifies exact LF migration bytes in the checked-out tree
 and a clean `core.autocrlf=true` clone. PostgreSQL 17 produces the approved
 format-version-2 fingerprint, including all 26 application-owned sequences.
 
+The infrastructure below describes the complete local wrapper. Only run that
+full local suite when the user explicitly requests or authorizes it for the
+task. It is not the default way to bootstrap a focused test: a database-backed
+focused test requires a prepared disposable migrated template and test
+environment. The wrapper runs every configured Vitest project and ignores
+appended file arguments, so do not add a filename expecting filtering.
+
 `npm run test:local` builds the canonical behavioral-test template as an empty
 local database, applies the complete active checked-in history with the guarded
 `db:migrate` runner, verifies the exact journal, and requires a second migration
