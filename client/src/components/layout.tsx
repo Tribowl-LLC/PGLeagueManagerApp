@@ -63,6 +63,8 @@ interface NavItem {
 
 const EMAIL_DELIVERY_ALERTS_PENDING_COUNT_QUERY_KEY =
   ['/api/system-admin/email-delivery-alerts/pending-count'] as const;
+const UNCLAIMED_USERS_COUNT_QUERY_KEY =
+  ['/api/admin/unclaimed-users/count'] as const;
 
 const navItems: NavItem[] = [
   {
@@ -128,7 +130,8 @@ const navItems: NavItem[] = [
     icon: UserPlus,
     label: "Unclaimed Users",
     href: "/admin/unclaimed-users",
-    orgAdminOnly: true
+    orgAdminOnly: true,
+    badgeQueryKey: UNCLAIMED_USERS_COUNT_QUERY_KEY,
   },
   // System-admin-only grouping pinned to the bottom of the sidebar.
   // The parent has no landing page; clicking it expands the sub-menu.
@@ -606,6 +609,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
     refetchOnWindowFocus: true,
     staleTime: 30_000,
   });
+  // Organization-admin only; the endpoint resolves the organization from
+  // the authenticated session and the unclaimed-users page invalidates both
+  // its list and count keys after a triage action.
+  const { data: unclaimedUsersCountResponse } = useQuery<ApiResponse<{ count: number }>>({
+    queryKey: UNCLAIMED_USERS_COUNT_QUERY_KEY,
+    enabled: isOrgAdmin && !!userOrgId,
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+  });
   const badgeCounts = useMemo<Record<string, number>>(() => ({
     [['/api/system-admin/deletion-requests/pending-count'].join('|')]:
       pendingDeletionResponse?.data?.count ?? 0,
@@ -613,10 +625,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
       pendingApplePayResponse?.data?.count ?? 0,
     [EMAIL_DELIVERY_ALERTS_PENDING_COUNT_QUERY_KEY.join('|')]:
       pendingEmailDeliveryAlertsResponse?.data?.count ?? 0,
+    [UNCLAIMED_USERS_COUNT_QUERY_KEY.join('|')]:
+      unclaimedUsersCountResponse?.data?.count ?? 0,
   }), [
     pendingDeletionResponse?.data?.count,
     pendingApplePayResponse?.data?.count,
     pendingEmailDeliveryAlertsResponse?.data?.count,
+    unclaimedUsersCountResponse?.data?.count,
   ]);
 
   const toggleSidebar = useCallback(() => {
