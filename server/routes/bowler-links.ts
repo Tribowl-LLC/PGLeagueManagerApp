@@ -3,6 +3,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import * as links from "../storage/bowler-payment-links";
 import { sendSuccess, sendError, handleZodError } from "../utils/api.js";
+import { singleRouteParam } from "../utils/route-params.js";
 import { adminWriteLimiter, inviteLimiter } from "../middleware/rate-limit.js";
 import { isOrgOrHigher, isPaymentManager, isSystemAdmin } from "../utils/access-control.js";
 import { signLinkActionToken } from "../utils/bowler-link-tokens.js";
@@ -246,6 +247,78 @@ router.post("/invite", inviteLimiter, async (req, res) => {
     if (err instanceof z.ZodError) return handleZodError(res, err);
     log.error("invite error", err);
     return sendError(res, "Failed to create invite");
+  }
+});
+
+/**
+ * Retry delivery for the inviter's existing pending link. This intentionally
+ * never creates a second link or changes link state: the signed response
+ * tokens are derived from the durable pending link id and remain valid until
+ * the invite is accepted, declined, or retired.
+ */
+router.post("/:id/resend-invite", inviteLimiter, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user?.id || user.role !== "user" || !user.organizationId || !user.bowlerId) {
+      return sendError(res, "Only bowlers can resend an invite", 403, "FORBIDDEN");
+    }
+    const rawId = singleRouteParam(req.params.id);
+    if (!/^\d+$/.test(rawId)) {
+      return sendError(res, "Invalid link id", 400, "INVALID_ID");
+    }
+    const linkId = Number(rawId);
+    if (!Number.isSafeInteger(linkId) || linkId <= 0) {
+      return sendError(res, "Invalid link id", 400, "INVALID_ID");
+    }
+
+    const link = await links.getLinkById(linkId);
+    if (!link || link.status !== "pending") {
+      return sendError(res, "Invite is no longer pending", 409, "CONFLICT");
+    }
+    if (link.organizationId !== user.organizationId || link.createdByUserId !== user.id) {
+      return sendError(res, "Invite is not available", 403, "FORBIDDEN");
+    }
+
+    // Re-resolve the creator and both sides from the database. A stale
+    // session bowlerId or a client-supplied partner must never select the
+    // recipient or organization for a resend.
+    const inviter = await storage.getUser(link.createdByUserId);
+    if (
+      !inviter
+      || inviter.role !== "user"
+      || inviter.organizationId !== link.organizationId
+      || inviter.bowlerId !== user.bowlerId
+      || (inviter.bowlerId !== link.bowlerAId && inviter.bowlerId !== link.bowlerBId)
+    ) {
+      return sendError(res, "Invite is not available", 403, "FORBIDDEN");
+    }
+    const inviteeBowlerId = inviter.bowlerId === link.bowlerAId
+      ? link.bowlerBId
+      : link.bowlerAId;
+    const [invitee, inviteeUser] = await Promise.all([
+      storage.getBowler(inviteeBowlerId),
+      storage.getUserByBowlerId(inviteeBowlerId),
+    ]);
+    if (
+      !invitee
+      || invitee.organizationId !== link.organizationId
+      || !inviteeUser
+      || inviteeUser.organizationId !== link.organizationId
+      || inviteeUser.role !== "user"
+    ) {
+      return sendError(res, "Invite recipient is no longer available", 409, "CONFLICT");
+    }
+
+    const emailResult = await sendPartnerInviteEmail({
+      linkId: link.id,
+      inviter: { name: inviter.name, email: inviter.email },
+      invitee: { name: inviteeUser.name ?? invitee.name, email: inviteeUser.email ?? invitee.email },
+      organizationId: link.organizationId,
+    });
+    return sendSuccess(res, emailResult);
+  } catch (err) {
+    log.error("invite resend error", err);
+    return sendError(res, "Failed to resend invite");
   }
 });
 

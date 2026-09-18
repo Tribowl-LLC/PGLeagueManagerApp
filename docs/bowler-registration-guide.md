@@ -83,11 +83,19 @@ the account to an existing unlinked profile. Administrators may resolve
 duplicate/shared-email cases manually, subject to the same organization
 boundaries as every other admin action.
 
-After a successful link, LeagueVault attempts one account-ready message. The
-message confirms account access and links to the organization's sign-in page;
-account readiness is separate from whether any league balance is currently
-payable. Delivery is reported as accepted (submitted to the provider) or
-not_sent; accepted does not guarantee inbox delivery.
+For the two automatic email-match link paths—when a bowler is created for a
+matching registered account, or when a bowler profile email is changed to match
+a pending account—LeagueVault records an account-ready email job in the same
+transaction as the link. The delivery worker makes up to four bounded attempts,
+suppresses a job when the link is no longer current, and retains the completed
+record for 30 days. Account readiness is separate from whether any league
+balance is currently payable. A provider-accepted submission does not guarantee
+inbox delivery.
+
+When an administrator links an account manually, or chooses **Resend
+account-ready email**, the message remains a best-effort action. The result is
+reported as accepted (submitted to the provider) or not sent so the
+administrator can retry it when needed.
 
 ---
 
@@ -121,9 +129,15 @@ is an invitation flow and does not send account-ready messages to existing
 linked users in bulk.
 
 After sending, you will see a summary:
-- How many invites were sent
+- How many invitation records were created
+- How many invitation emails were accepted for submission
+- How many invitation emails were not sent
 - How many bowlers already had accounts
 - How many bowlers had no email on file (these bowlers need their email added first, or they can self-register via QR code)
+
+Accepted means the provider accepted the submission; it does not confirm inbox
+delivery. When an invitation email is not sent, the result lists that bowler
+so an administrator can resend the individual invitation from the result.
 
 ---
 
@@ -162,9 +176,11 @@ For the smoothest experience, we recommend combining both approaches:
 
 Review any pending accounts from the administrator page. Registration setup
 messages are recorded in the durable mail queue and transient failures are
-retried according to the queue policy. Account-ready delivery is a separate
-best-effort notification; if it needs attention, an administrator can use
-**Resend account-ready email** for that ordinary user.
+retried according to the queue policy. The two automatic email-match link
+paths also use the durable account-ready queue, with bounded retries and stale
+link suppression. Manual links and manual account-ready resends remain
+best-effort; if one needs attention, an administrator can use **Resend
+account-ready email** for that ordinary user.
 
 ---
 
@@ -178,8 +194,9 @@ best-effort notification; if it needs attention, an administrator can use
 **Bowler is pending after registration:**
 - A unique matching email was not found, or multiple profiles share that email
 - An administrator must resolve the pending account; name-only self-claims are not available
-- After linking, use the manual account-ready resend action if the original message was not sent
+- If an automatic account-ready job exhausts its retries, or a manual link's message was not sent, use the manual account-ready resend action
 
 **Bulk invite didn't send to a specific bowler:**
 - Check that the bowler has an email address on their profile
 - Check that they don't already have an account (invites are only sent to bowlers without accounts)
+- Use the individual resend action in the invite result; do not rerun the whole batch for that bowler

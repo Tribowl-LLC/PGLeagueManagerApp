@@ -29,13 +29,17 @@ import {
   applyAdminProfileEditTxn,
   type AdminProfileEditFieldChange,
 } from '../services/account-lifecycle';
+import {
+  awaitEmailDelivery,
+  type EmailDeliveryOutcome,
+} from '../services/email-delivery-outcome';
 
 const log = createLogger('Account');
 const router = Router();
 
 // Update user profile (name/phone synchronously; email gated by confirmation).
 //
-// Response contract (200): { ...sanitizedUser, paymentSyncStatus, emailChangeRequested }
+// Response contract (200): { ...sanitizedUser, paymentSyncStatus, emailChangeRequested, emailChangeDelivery? }
 //   paymentSyncStatus is one of:
 //     - 'synced'         : provider customer record updated successfully
 //     - 'skipped'        : no provider configured (informational, not a warning)
@@ -47,6 +51,9 @@ const router = Router();
 //     from the current login email — the email is NOT applied; instead a
 //     confirmation link is sent to the new address and a notification to
 //     the old. The login email only changes after confirmation.
+//   emailChangeDelivery is present when emailChangeRequested is true and
+//     reports each independent post-commit email attempt. A timeout is
+//     reported as unknown because the provider may still accept the request.
 //
 // Note: this confirmation gate applies to **all** callers, including
 // system_admin acting on behalf of another user, to prevent an admin (or
@@ -84,6 +91,10 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
       updateData.email.trim().toLowerCase() !== existingUser.email.toLowerCase();
 
     let emailChangeRequested = false;
+    let emailChangeDelivery: {
+      confirmation: EmailDeliveryOutcome;
+      notification: EmailDeliveryOutcome;
+    } | undefined;
 
     if (emailRequested) {
       const newEmail = updateData.email!.trim().toLowerCase();
@@ -123,22 +134,23 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
       const baseUrl = getBaseUrl(org);
       const confirmUrl = `${baseUrl}/confirm-email-change?token=${rawToken}`;
 
-      // Best-effort email delivery; do not fail the API call if the SMTP
-      // hop fails. We still record the request so the user can retry.
-      try {
-        await sendEmailChangeConfirmation(newEmail, existingUser.name, confirmUrl);
-      } catch (mailErr) {
-        log.error('Failed to send email-change confirmation (non-fatal):', mailErr);
-      }
-      try {
-        await sendEmailChangeNotification(
+      // The request is already committed. Bound both independent provider
+      // calls so the API cannot hang, and preserve the pending request when
+      // either call fails; resubmitting the same address safely issues a fresh
+      // confirmation request without exposing the raw token.
+      const [confirmation, notification] = await Promise.all([
+        awaitEmailDelivery(() => sendEmailChangeConfirmation(
+          newEmail,
+          existingUser.name,
+          confirmUrl,
+        )),
+        awaitEmailDelivery(() => sendEmailChangeNotification(
           existingUser.email,
           existingUser.name,
           isDev ? newEmail : maskEmail(newEmail),
-        );
-      } catch (mailErr) {
-        log.error('Failed to send email-change notification to old address (non-fatal):', mailErr);
-      }
+        )),
+      ]);
+      emailChangeDelivery = { confirmation, notification };
 
       emailChangeRequested = true;
       log.info('Email-change request created', {
@@ -259,6 +271,7 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
       ...sanitizeUser(updatedUser),
       paymentSyncStatus,
       emailChangeRequested,
+      ...(emailChangeDelivery ? { emailChangeDelivery } : {}),
     });
   } catch (error) {
     log.error('Error updating user:', error);

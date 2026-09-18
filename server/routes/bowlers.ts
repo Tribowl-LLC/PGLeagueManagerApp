@@ -24,7 +24,7 @@ import { runBowlerPostCreateSync } from '../services/bowler-sync.js';
 import { syncBowlerLeagueAttributesToProvider } from '../services/bowler-attributes';
 import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-scheduler';
 import { linkUserToBowler } from '../services/identity-link';
-import { sendAccountReadyEmail } from '../services/email';
+import { notifyAccountActionDeliveryChanged } from '../services/account-action-delivery-wake';
 import { createLogger } from '../logger';
 import { isDev } from '../config';
 // reuse the same payer-name lookup the
@@ -752,7 +752,9 @@ router.patch("/:id", async (req, res) => {
               // unique-profile proof while both rows are locked. This keeps
               // duplicate/shared addresses pending for administrator review.
               requireEmailMatch: true,
+              queueAccountReadyEmail: true,
             });
+            notifyAccountActionDeliveryChanged();
 
             // linkUserToBowler without an injected executor returns only after
             // its transaction commits. Build the notification from those
@@ -775,17 +777,6 @@ router.patch("/:id", async (req, res) => {
             linkedSyncQueued = Boolean(
               updated.paymentSyncPendingAt && updated.paymentSyncNextRetryAt,
             );
-            const organization = await storage.getOrganization(linked.bowler.organizationId);
-            try {
-              await sendAccountReadyEmail({
-                toEmail: linked.user.email,
-                toName: linked.user.name,
-                bowlerName: linked.bowler.name,
-                organization: organization ?? null,
-              });
-            } catch (emailError) {
-              log.warn('Account-ready email failed after bowler update auto-link:', emailError);
-            }
             log.info(`Auto-linked user ${matchingUser.id} to updated bowler ${id}`);
           }
         } catch (linkError) {

@@ -7,7 +7,7 @@ import type { PaymentProvider } from './payment-provider';
 import { syncBowlerLeagueAttributesToProvider } from './bowler-attributes';
 import { decideBowlerPhoneSync } from './bowler-phone-sync';
 import { linkUserToBowler } from './identity-link';
-import { sendAccountReadyEmail } from './email';
+import { notifyAccountActionDeliveryChanged } from './account-action-delivery-wake';
 
 const log = createLogger("BowlerSync");
 
@@ -66,7 +66,9 @@ export async function runBowlerPostCreateSync(
           // holds both rows locked; the lookup above is only a candidate
           // optimization and not the ownership boundary.
           requireEmailMatch: true,
+          queueAccountReadyEmail: true,
         });
+        notifyAccountActionDeliveryChanged();
         log.info(`Auto-linked user ${matchingUser.id} to bowler ${current.id}`);
 
         // Task #677: user wins for `phone`. Apply the overwrite
@@ -81,38 +83,6 @@ export async function runBowlerPostCreateSync(
           }
         }
 
-        const bowlerLeagues = await storage.getBowlerLeagues({ bowlerId: current.id });
-        const firstMembership = bowlerLeagues[0];
-        const league = firstMembership
-          ? await storage.getLeague(firstMembership.leagueId)
-          : undefined;
-        // The identity-link transaction has committed before this helper
-        // runs. Account readiness is about access to leagues, not payment
-        // provider/customer readiness, so provider failures below cannot
-        // suppress or duplicate this one post-link notification. Send even
-        // when the new bowler has not been rostered yet; the message still
-        // establishes account access and directs the user to sign in.
-        const organization = effectiveOrganizationId
-          ? await storage.getOrganization(effectiveOrganizationId)
-          : undefined;
-        const team = firstMembership
-          ? await storage.getTeam(firstMembership.teamId)
-          : undefined;
-        try {
-          await sendAccountReadyEmail({
-            toEmail: matchingUser.email,
-            toName: matchingUser.name,
-            bowlerName: current.name,
-            leagueName: league?.organizationId === effectiveOrganizationId ? league.name : '',
-            teamName: league?.organizationId === effectiveOrganizationId
-              && team?.leagueId === league.id
-              ? team.name
-              : '',
-            organization: organization ?? null,
-          });
-        } catch (emailError) {
-          log.warn('Account-ready email failed after bowler auto-link:', emailError);
-        }
       }
     } catch (linkError) {
       log.error('Error auto-linking user to bowler:', linkError);

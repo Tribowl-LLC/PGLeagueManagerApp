@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import type { ApiResponse } from "@shared/schema";
 import type { UsersTableLocation } from "@/components/users-table";
 
 interface Props {
@@ -58,18 +59,19 @@ export function AddUserDialog({ open, onClose, orgLocations }: Props) {
       role: string;
       makeOrgAdmin: boolean;
       locationId: number | null;
-    }): Promise<{ emailSent?: boolean }> => {
-      return apiRequest("/api/org-admin/users/create", "POST", data) as Promise<{ emailSent?: boolean }>;
+    }): Promise<ApiResponse<{ emailSent?: boolean }>> => {
+      return apiRequest<{ emailSent?: boolean }>("/api/org-admin/users/create", "POST", data);
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/org-admin/users"] });
       handleClose();
-      const emailSent = data?.emailSent !== false;
+      const emailSent = data?.data?.emailSent === true;
       toast({
         title: "User created",
         description: emailSent
-          ? "An email has been sent to the user to set up their password."
-          : "User created but the invitation email could not be sent. You can resend it from the user list.",
+          ? "The invitation email was submitted. The user can set up their password from that message."
+          : "User created, but the invitation email was not sent. You can resend it from the user list.",
+        variant: emailSent ? "default" : "destructive",
       });
     },
     onError: (error: Error) => {

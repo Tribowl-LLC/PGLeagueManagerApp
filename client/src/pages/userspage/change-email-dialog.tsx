@@ -19,15 +19,9 @@ import {
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import type { UsersTableUser } from '@/components/users-table';
-import type { PaymentSyncStatus } from '@shared/schema';
+import type { EmailChangeResponse } from '@/pages/users-page';
 
 type ChangeEmailDialogFormValues = { email: string };
-
-type ChangeEmailResponse = {
-  success: boolean;
-  data: { paymentSyncStatus?: PaymentSyncStatus; emailChangeRequested?: boolean };
-  error?: { message: string; code?: string };
-};
 
 interface Props {
   changeEmailUserId: number | null;
@@ -35,7 +29,7 @@ interface Props {
   getUserToChangeEmail: UsersTableUser | undefined | null;
   changeEmailForm: UseFormReturn<ChangeEmailDialogFormValues>;
   changeEmailMutation: UseMutationResult<
-    ChangeEmailResponse,
+    EmailChangeResponse,
     Error,
     { userId: number; email: string }
   >;
@@ -61,7 +55,7 @@ export function ChangeEmailDialog({
             <span className="font-medium">
               {getUserToChangeEmail?.name || getUserToChangeEmail?.email}
             </span>
-            . The new address will receive a confirmation link, and their sign-in email will only change once they click it.
+            . Their sign-in email only changes after the new address confirms. We’ll show whether the email request was accepted.
           </DialogDescription>
         </DialogHeader>
         <Form {...changeEmailForm}>

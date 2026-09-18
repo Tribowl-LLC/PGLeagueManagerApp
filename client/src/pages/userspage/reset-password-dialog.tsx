@@ -19,8 +19,11 @@ import {
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import type { UsersTableUser } from '@/components/users-table';
+import type { ApiResponse } from '@shared/schema';
+import type { EmailNotification } from '@/pages/users-page';
 
 type ResetPasswordDialogFormValues = { newPassword: string };
+type ResetPasswordResponse = ApiResponse<{ emailNotification?: EmailNotification }>;
 
 interface Props {
   resetPasswordUserId: number | null;
@@ -28,7 +31,7 @@ interface Props {
   getUserToReset: UsersTableUser | undefined | null;
   resetPasswordForm: UseFormReturn<ResetPasswordDialogFormValues>;
   resetPasswordMutation: UseMutationResult<
-    void,
+    ResetPasswordResponse,
     Error,
     { userId: number; newPassword: string }
   >;
@@ -54,7 +57,7 @@ export function ResetPasswordDialog({
             <span className="font-medium">
               {getUserToReset?.name || getUserToReset?.email}
             </span>
-            . They will be emailed a security notice and any other active sessions they have will be signed out.
+            . Any other active sessions will be signed out. We’ll report separately whether a security notice was accepted for email.
           </DialogDescription>
         </DialogHeader>
         <Form {...resetPasswordForm}>

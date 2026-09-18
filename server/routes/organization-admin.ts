@@ -21,6 +21,10 @@ import { adminWriteLimiter, inviteLimiter } from '../middleware/rate-limit';
 import { createLogger } from '../logger';
 import { recordAdminPasswordResetAudit } from '../storage/admin-password-reset-audits';
 import { recordAdminRoleChangeAudit } from '../storage/admin-role-change-audits';
+import {
+  awaitEmailDelivery,
+  type EmailDeliveryOutcome,
+} from '../services/email-delivery-outcome';
 import { bowlers, users, type User, type UserRole } from '@shared/schema';
 import { publicAccountInvitation } from '../services/account-invitation.js';
 import {
@@ -979,36 +983,24 @@ router.post('/users/:id/reset-password', requireOrgAdminOrSystemAdmin, adminWrit
     }
 
     // Industry-standard "your password was just changed" notice
-    // (task #416). Best-effort — a SendGrid failure must not roll
-    // back the password rotation that already committed. Sent with
-    // `actor: 'admin'` so the i18n "performed by an administrator"
-    // line is included in the rendered body.
-    try {
-      const rawUa = (req.get('user-agent') ?? '').slice(0, 256);
-      void sendPasswordChangedNotification(targetUser.email, targetUser.name, {
+    // (task #416). The password rotation is already committed, so a provider
+    // failure must remain an email outcome and can never turn this request
+    // into a password-reset error. A bounded wait keeps the response useful;
+    // `unknown` means the provider call may still settle after the deadline.
+    const rawUa = (req.get('user-agent') ?? '').slice(0, 256);
+    const emailNotification: EmailDeliveryOutcome = await awaitEmailDelivery(
+      () => sendPasswordChangedNotification(targetUser.email, targetUser.name, {
         changedAt: new Date(),
         ipAddress: req.ip ?? null,
         userAgent: rawUa || null,
         locale: targetUser.preferredLanguage ?? null,
         actor: 'admin',
-      })
-        .then(ok => {
-          if (!ok) {
-            log.warn('Password-changed notification returned false (admin reset)', {
-              targetUserId: targetUser.id,
-            });
-          }
-        })
-        .catch(err => {
-          log.error('Password-changed notification threw (admin reset)', {
-            targetUserId: targetUser.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-    } catch (notifyError) {
-      log.error('Failed to schedule password-changed notification (admin reset)', {
+      }),
+    );
+    if (emailNotification !== 'accepted') {
+      log.warn('Admin password reset security notice was not confirmed as accepted', {
         targetUserId: targetUser.id,
-        error: notifyError instanceof Error ? notifyError.message : String(notifyError),
+        outcome: emailNotification,
       });
     }
 
@@ -1017,7 +1009,7 @@ router.post('/users/:id/reset-password', requireOrgAdminOrSystemAdmin, adminWrit
       actingUserId: actingUser.id,
     });
 
-    return sendSuccess(res, { id: targetUser.id });
+    return sendSuccess(res, { id: targetUser.id, emailNotification });
   } catch (error) {
     if (handleUserOrgError(res, error)) return;
     log.error('Error resetting user password:', error);

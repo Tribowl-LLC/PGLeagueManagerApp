@@ -96,6 +96,7 @@ export type { User, InsertUser, UpdateUser } from "./users";
 
 export * from "./account-action-delivery-jobs";
 export * from "./account-guidance-delivery-jobs";
+export * from "./account-ready-delivery-jobs";
 export * from "./account-email-delivery-events";
 export * from "./email-delivery-alerts";
 

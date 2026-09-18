@@ -231,7 +231,7 @@ async function patchPhone(phone: string | null) {
 }
 
 describe('PATCH /api/bowlers/:id account-ready auto-link', () => {
-  it('uses locked email proof and sends one notification after a committed link', async () => {
+  it('uses locked email proof and queues one notification inside the committed link', async () => {
     const response = await patchEmail();
 
     expect(response.status).toBe(200);
@@ -241,15 +241,10 @@ describe('PATCH /api/bowlers/:id account-ready auto-link', () => {
       userId: LINKED_USER.id,
       bowlerId: ORIGINAL_BOWLER.id,
       requireEmailMatch: true,
+      queueAccountReadyEmail: true,
     }));
-    expect(mocks.getOrganization).toHaveBeenCalledWith(ORIGINAL_BOWLER.organizationId);
-    expect(mocks.sendAccountReadyEmail).toHaveBeenCalledTimes(1);
-    expect(mocks.sendAccountReadyEmail).toHaveBeenCalledWith({
-      toEmail: LINKED_USER.email,
-      toName: LINKED_USER.name,
-      bowlerName: UPDATED_BOWLER.name,
-      organization: ORGANIZATION,
-    });
+    expect(mocks.getOrganization).not.toHaveBeenCalled();
+    expect(mocks.sendAccountReadyEmail).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -266,14 +261,15 @@ describe('PATCH /api/bowlers/:id account-ready auto-link', () => {
     expect(mocks.getOrganization).not.toHaveBeenCalled();
   });
 
-  it('keeps the PATCH successful when account-ready email fails', async () => {
-    mocks.sendAccountReadyEmail.mockRejectedValueOnce(new Error('provider unavailable'));
-
+  it('keeps the PATCH successful when the durable account-ready queue owns delivery', async () => {
     const response = await patchEmail();
 
     expect(response.status).toBe(200);
     expect(mocks.linkUserToBowler).toHaveBeenCalledTimes(1);
-    expect(mocks.sendAccountReadyEmail).toHaveBeenCalledTimes(1);
+    expect(mocks.linkUserToBowler).toHaveBeenCalledWith(expect.objectContaining({
+      queueAccountReadyEmail: true,
+    }));
+    expect(mocks.sendAccountReadyEmail).not.toHaveBeenCalled();
   });
 
   it('carries the identity-link backfilled phone to the provider, the response, and the customer-id write', async () => {
@@ -372,8 +368,12 @@ describe('PATCH /api/bowlers/:id account-ready auto-link', () => {
 
     expect(response.status).toBe(200);
     expect(mocks.linkUserToBowler).toHaveBeenCalledTimes(1);
-    // The account-ready notification still fires for the committed link.
-    expect(mocks.sendAccountReadyEmail).toHaveBeenCalledTimes(1);
+    // The account-ready notification is queued by the committed identity
+    // link; this route must not send it inline.
+    expect(mocks.sendAccountReadyEmail).not.toHaveBeenCalled();
+    expect(mocks.linkUserToBowler).toHaveBeenCalledWith(expect.objectContaining({
+      queueAccountReadyEmail: true,
+    }));
     // The queued sync is left to the durable queue worker: no competing
     // foreground provider call.
     expect(mocks.getFirstSquareConfiguredLocation).not.toHaveBeenCalled();

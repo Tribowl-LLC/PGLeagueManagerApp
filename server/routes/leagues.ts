@@ -824,9 +824,12 @@ router.post("/:id/send-invites", async (req: Request, res) => {
     const bowlerLeagueEntries = await storage.getBowlerLeagues({ leagueId });
 
     let sent = 0;
+    let createdCount = 0;
+    let emailAccepted = 0;
     let alreadyRegistered = 0;
     let noEmail = 0;
     let deliveryFailed = 0;
+    const failedInvitations: Array<{ userId: number; name: string }> = [];
 
     for (const bl of bowlerLeagueEntries) {
       const bowler = await storage.getBowler(bl.bowlerId);
@@ -904,12 +907,32 @@ router.post("/:id/send-invites", async (req: Request, res) => {
         created.invitation.request.id,
         emailSent ? 'sent' : 'failed',
       );
-      if (!emailSent) deliveryFailed++;
+      createdCount++;
+      if (emailSent) {
+        emailAccepted++;
+      } else {
+        deliveryFailed++;
+        failedInvitations.push({
+          userId: created.newUser.id,
+          name: created.newUser.name,
+        });
+      }
 
+      // Legacy clients interpret `sent` as the number of new invitation
+      // records created. Keep that field stable while newer clients use the
+      // explicit created/emailAccepted/deliveryFailed fields below.
       sent++;
     }
 
-    sendSuccess(res, { sent, alreadyRegistered, noEmail, deliveryFailed });
+    sendSuccess(res, {
+      sent,
+      created: createdCount,
+      emailAccepted,
+      deliveryFailed,
+      failedInvitations,
+      alreadyRegistered,
+      noEmail,
+    });
   } catch (error) {
     sendError(res, 'Failed to send invites');
   }

@@ -102,8 +102,8 @@ beforeEach(() => {
   toastFn.mockReset();
   clearCsrfToken();
   installFetchMock();
-  // Default handler: success.
-  resetHandler = () => jsonRes({ success: true, data: null });
+  // Default handler: password reset succeeds and the notice request is accepted.
+  resetHandler = () => jsonRes({ success: true, data: { emailNotification: 'accepted' } });
 });
 
 afterEach(() => {
@@ -144,9 +144,32 @@ describe('UsersPage — Reset Password dialog', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('input-reset-password')).toBeNull();
     });
-    expect(toastFn).toHaveBeenCalledWith(
-      expect.objectContaining({ title: expect.stringMatching(/password reset/i) }),
-    );
+    expect(toastFn).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Password reset; security notice submitted',
+      description: expect.stringMatching(/No additional password reset is needed/i),
+    }));
+  });
+
+  it.each([
+    ['not_sent', 'could not send the security notice email'],
+    ['unknown', 'could not confirm whether the security notice email was accepted'],
+    [undefined, 'could not confirm whether the security notice email was accepted'],
+  ])('reports a completed reset without claiming a security email for %s', async (emailNotification, expectedCopy) => {
+    resetHandler = () => jsonRes({ success: true, data: emailNotification === undefined ? {} : { emailNotification } });
+    const user = userEvent.setup();
+    renderPage();
+    const input = await openResetDialogFor(TARGET.id, user);
+    await user.type(input, STRONG_PASSWORD);
+    await user.click(screen.getByTestId('button-confirm-reset-password'));
+
+    await waitFor(() => {
+      expect(toastFn).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Password reset complete',
+        description: expect.stringMatching(new RegExp(expectedCopy)),
+        variant: 'destructive',
+      }));
+    });
+    expect(screen.queryByTestId('input-reset-password')).toBeNull();
   });
 
   it('keeps the dialog open and shows a destructive toast when the backend rejects', async () => {

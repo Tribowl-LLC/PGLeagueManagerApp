@@ -15,7 +15,7 @@ import { Link } from 'wouter';
 import { UsersTable, type UsersTableUser, type UsersTableLocation } from '@/components/users-table';
 import { AddUserDialog } from '@/components/add-user-dialog';
 import { passwordSchema } from '@shared/password-validation';
-import { parsePaymentSyncStatus, type PaymentSyncStatus } from '@shared/schema';
+import { parsePaymentSyncStatus, type ApiResponse, type PaymentSyncStatus } from '@shared/schema';
 import { ResetPasswordDialog } from './userspage/reset-password-dialog';
 import { ChangeEmailDialog } from './userspage/change-email-dialog';
 import { DeleteUserDialog } from './userspage/delete-user-dialog';
@@ -38,7 +38,26 @@ interface BowlerAccountNotificationUser {
   bowlerId: number;
 }
 
-type EmailNotification = 'accepted' | 'not_sent';
+export type EmailNotification = 'accepted' | 'not_sent' | 'unknown';
+export type EmailChangeDelivery = {
+  confirmation: EmailNotification;
+  notification: EmailNotification;
+};
+export type EmailChangeResponseData = {
+  paymentSyncStatus?: PaymentSyncStatus;
+  emailChangeRequested?: boolean;
+  emailChangeDelivery?: EmailChangeDelivery;
+};
+export type EmailChangeResponse = ApiResponse<EmailChangeResponseData>;
+
+const parseEmailNotification = (value: unknown): EmailNotification =>
+  value === 'accepted' || value === 'not_sent' ? value : 'unknown';
+
+const emailNotificationCopy = (outcome: EmailNotification, subject: string) => {
+  if (outcome === 'accepted') return `${subject} email was submitted.`;
+  if (outcome === 'not_sent') return `We could not send the ${subject.toLowerCase()} email.`;
+  return `We could not confirm whether the ${subject.toLowerCase()} email was accepted.`;
+};
 
 export default function UsersPage() {
   const { toast } = useToast();
@@ -166,13 +185,21 @@ export default function UsersPage() {
 
   const resetPasswordMutation = useMutation({
     mutationFn: async ({ userId, newPassword }: { userId: number; newPassword: string }) => {
-      await apiRequest(`/api/org-admin/users/${userId}/reset-password`, 'POST', { newPassword });
+      return apiRequest<{ emailNotification?: EmailNotification }>(
+        `/api/org-admin/users/${userId}/reset-password`,
+        'POST',
+        { newPassword },
+      );
     },
-    onSuccess: () => {
+    onSuccess: (response) => {
       setResetPasswordUserId(null);
+      const notification = parseEmailNotification(response?.data?.emailNotification);
       toast({
-        title: 'Password reset',
-        description: "The user's password has been reset and they have been emailed a security notice.",
+        title: notification === 'accepted'
+          ? 'Password reset; security notice submitted'
+          : 'Password reset complete',
+        description: `The user's password has been reset. ${emailNotificationCopy(notification, 'Security notice')} No additional password reset is needed.`,
+        variant: notification === 'accepted' ? 'default' : 'destructive',
       });
     },
     onError: (error: Error) => {
@@ -190,7 +217,7 @@ export default function UsersPage() {
   // already show on `pending_retry` (#373).
   const changeEmailMutation = useMutation({
     mutationFn: async ({ userId, email }: { userId: number; email: string }) => {
-      return apiRequest<{ paymentSyncStatus?: PaymentSyncStatus; emailChangeRequested?: boolean }>(
+      return apiRequest<EmailChangeResponseData>(
         `/api/account/profile/${userId}`,
         'PATCH',
         { email },
@@ -198,11 +225,19 @@ export default function UsersPage() {
     },
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ['/api/org-admin/users'] });
-      setChangeEmailUserId(null);
+      const pending = response?.data?.emailChangeRequested === true;
+      const confirmation = parseEmailNotification(response?.data?.emailChangeDelivery?.confirmation);
+      const notification = parseEmailNotification(response?.data?.emailChangeDelivery?.notification);
+      // Keep the dialog and entered address available when delivery was not
+      // accepted or could not be confirmed. The pending request is already
+      // committed, and submitting the same address again is a safe retry.
+      if (pending && confirmation === 'accepted') setChangeEmailUserId(null);
       toast({
-        title: 'Confirmation email sent',
-        description:
-          "We've emailed the user's new address. Their sign-in email will only change once they click the confirmation link.",
+        title: pending ? 'Email change pending' : 'Email change was not submitted',
+        description: pending
+          ? `${emailNotificationCopy(confirmation, 'Confirmation')} Their sign-in email will only change after the new address confirms. ${emailNotificationCopy(notification, 'Security notification')}`
+          : 'The sign-in email was not changed. You can leave this form open and try again.',
+        variant: pending && confirmation === 'accepted' ? 'default' : 'destructive',
       });
       // Wording mirrors the toast in client/src/components/profile-info-card.tsx
       // and the alert in client/src/pages/confirm-email-change-page.tsx so an

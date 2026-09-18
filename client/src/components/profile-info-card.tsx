@@ -26,6 +26,23 @@ export type CurrentUserWithSyncStatus = User & {
   paymentSyncStatus?: 'pending_retry' | null;
 };
 
+export type EmailDeliveryOutcome = 'accepted' | 'not_sent' | 'unknown';
+export type PendingEmailChange = {
+  originalEmail: string;
+  requestedEmail: string;
+  confirmation: EmailDeliveryOutcome;
+  notification: EmailDeliveryOutcome;
+};
+
+const parseEmailDeliveryOutcome = (value: unknown): EmailDeliveryOutcome =>
+  value === 'accepted' || value === 'not_sent' ? value : 'unknown';
+
+const emailDeliveryCopy = (outcome: EmailDeliveryOutcome, subject: string) => {
+  if (outcome === 'accepted') return `${subject} email was submitted.`;
+  if (outcome === 'not_sent') return `We could not send the ${subject.toLowerCase()} email.`;
+  return `We could not confirm whether the ${subject.toLowerCase()} email was accepted.`;
+};
+
 const profileSchema = z.object({
   name: z.string().min(2, "Name must be at least 2 characters"),
   email: z.string().email("Please enter a valid email"),
@@ -69,6 +86,19 @@ const RETRY_FLICKER_GUARD_MS = 30_000;
 export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithSyncStatus }) {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
+  const [pendingEmailChange, setPendingEmailChange] = useState<PendingEmailChange | null>(null);
+  const [emailChangeEditMode, setEmailChangeEditMode] = useState<"normal" | "retry">("normal");
+
+  useEffect(() => {
+    if (!pendingEmailChange) return;
+    const currentEmail = currentUser.email.trim().toLowerCase();
+    if (
+      currentEmail === pendingEmailChange.requestedEmail
+      || currentEmail !== pendingEmailChange.originalEmail
+    ) {
+      setPendingEmailChange(null);
+    }
+  }, [currentUser.email, pendingEmailChange]);
   // Tracks the most recent payment-sync outcome so the "Retry now"
   // button (task #323) shows up immediately after a profile edit
   // returns `pending_retry`, and disappears once a manual retry
@@ -202,7 +232,9 @@ export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithS
     defaultValues: { name: "", email: "", phone: "", preferredLanguage: LANGUAGE_AUTO },
     values: {
       name: currentUser.name,
-      email: currentUser.email,
+      email: emailChangeEditMode === "retry" && pendingEmailChange !== null && pendingEmailChange.confirmation !== "accepted"
+        ? pendingEmailChange.requestedEmail
+        : currentUser.email,
       phone: currentUser.phone || "",
       // null/empty in the DB = "auto / follow default", which the
       // Select represents with a non-empty sentinel. Any legacy /
@@ -211,6 +243,19 @@ export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithS
       preferredLanguage: normalizeStoredLanguage(currentUser.preferredLanguage),
     },
   });
+
+  const beginEdit = (mode: "normal" | "retry") => {
+    setEmailChangeEditMode(mode);
+    form.reset({
+      name: currentUser.name,
+      email: mode === "retry" && pendingEmailChange !== null && pendingEmailChange.confirmation !== "accepted"
+        ? pendingEmailChange.requestedEmail
+        : currentUser.email,
+      phone: currentUser.phone || "",
+      preferredLanguage: normalizeStoredLanguage(currentUser.preferredLanguage),
+    });
+    setIsEditing(true);
+  };
 
   const mutation = useMutation({
     mutationFn: async (data: ProfileFormData) => {
@@ -223,16 +268,56 @@ export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithS
         // "no preference" rather than a bogus locale code.
         preferredLanguage: languageSelectionToWire(data.preferredLanguage),
       };
-      return apiRequest<{ paymentSyncStatus?: PaymentSyncStatus }>(
+      return apiRequest<{
+        paymentSyncStatus?: PaymentSyncStatus;
+        emailChangeRequested?: boolean;
+        emailChangeDelivery?: {
+          confirmation?: EmailDeliveryOutcome;
+          notification?: EmailDeliveryOutcome;
+        };
+      }>(
         `/api/account/profile/${currentUser.id}`,
         "PATCH",
         payload,
       );
     },
-    onSuccess: (response) => {
+    onSuccess: (response, submittedData) => {
       queryClient.invalidateQueries({ queryKey: ["/api/user"] });
-      setIsEditing(false);
+      const emailChanged = submittedData.email.trim().toLowerCase() !== currentUser.email.trim().toLowerCase();
+      const emailChangeRequested = response?.data?.emailChangeRequested === true;
+      const confirmation = parseEmailDeliveryOutcome(response?.data?.emailChangeDelivery?.confirmation);
+      const notification = parseEmailDeliveryOutcome(response?.data?.emailChangeDelivery?.notification);
+
+      if (emailChangeRequested) {
+        setPendingEmailChange({
+          originalEmail: currentUser.email.trim().toLowerCase(),
+          requestedEmail: submittedData.email.trim().toLowerCase(),
+          confirmation,
+          notification,
+        });
+        setIsEditing(false);
+        setEmailChangeEditMode("normal");
+      } else if (emailChanged) {
+        // Keep the form open if an email change was requested but the server
+        // did not create a pending confirmation request. The user can fix or
+        // retry the same address without losing their entered value.
+        setIsEditing(true);
+        toast({
+          title: "Email change was not submitted",
+          description: "Your sign-in email was not changed. Check the address and try again.",
+          variant: "destructive",
+        });
+      } else {
+        setIsEditing(false);
+      }
       toast({ title: "Profile Updated", description: "Your profile has been saved successfully." });
+      if (emailChangeRequested) {
+        toast({
+          title: "Email change pending",
+          description: `${emailDeliveryCopy(confirmation, "Confirmation")} Your sign-in email remains unchanged until the new address confirms. ${emailDeliveryCopy(notification, "Security notification")}`,
+          variant: confirmation === "accepted" ? "default" : "destructive",
+        });
+      }
       // Coerce any unknown server value to `not_applicable` via the
       // shared parser (task #374) so an old client + future server
       // adding a fifth state stays silent rather than rendering a
@@ -340,11 +425,13 @@ export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithS
         {!isEditing ? (
           <ProfileInfoView
             currentUser={currentUser}
+            pendingEmailChange={pendingEmailChange}
             showRetry={showRetry}
             inRetryCooldown={inRetryCooldown}
             cooldownSecondsLeft={cooldownSecondsLeft}
             retryPending={retryMutation.isPending}
-            onEdit={() => setIsEditing(true)}
+            onEdit={() => beginEdit("normal")}
+            onRetryEmailChange={() => beginEdit("retry")}
             onRetry={() => retryMutation.mutate()}
           />
         ) : (
@@ -352,7 +439,11 @@ export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithS
             form={form}
             isSaving={mutation.isPending}
             onSubmit={(data) => mutation.mutate(data)}
-            onCancel={() => { form.reset(); setIsEditing(false); }}
+            onCancel={() => {
+              form.reset();
+              setEmailChangeEditMode("normal");
+              setIsEditing(false);
+            }}
           />
         )}
       </CardContent>

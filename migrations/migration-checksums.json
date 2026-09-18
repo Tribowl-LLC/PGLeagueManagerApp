@@ -276,6 +276,12 @@
       "tag": "0045_account_guidance_delivery_queue",
       "createdAt": 1789684823944,
       "hash": "fa5757a94f488d054fe283f9b2aaad9c6f5e5d25790088e65e9d9c6ba1b4d55b"
+    },
+    {
+      "idx": 46,
+      "tag": "0046_account_ready_delivery_queue",
+      "createdAt": 1789689082378,
+      "hash": "79f4f3f7df5e5fa36a89f0a03f18023bf1eb8205a6cf07a436891a5d6a8587a8"
     }
   ]
 }
