@@ -163,6 +163,9 @@ const UNIT_NO_DB = [
   'tests/unit/bowler-financial-summary.test.ts',
   'tests/unit/team-envelope-report.test.ts',
   'tests/unit/team-envelope-report-route.test.ts',
+  // Season-label and Square custom-attribute bootstrap tests use only
+  // in-process fakes; keep them out of the database-backed project.
+  'tests/unit/season-label-and-square-attrs.test.ts',
 ];
 
 const PARALLEL_ISOLATED = [

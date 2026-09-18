@@ -16,10 +16,9 @@ const log = createLogger("SquareService");
 // Per-Square-seller bootstrap cache for the league_name/league_season
 // custom attribute definitions (task #429). Keyed by locationId
 // because that's the unit our credentials are addressed by, even
-// though definitions are seller-scoped on Square's side. In the
-// multi-location-same-seller case we may issue a couple of redundant
-// "already exists" requests on first hits — those return fast and
-// are treated as success by `ensureDefinitions`.
+// though definitions are seller-scoped on Square's side. The
+// definition list preflight avoids the normal duplicate creates; the
+// 409 handling in `ensureDefinitions` remains as a race-safe fallback.
 //
 // We deliberately only cache a TRUE result. A false (failure) flips
 // the cache to absent so the next call retries — otherwise a brief
@@ -30,6 +29,7 @@ const log = createLogger("SquareService");
 // per-process singleton shared across every SquarePaymentProvider
 // instance, identical to the previous class-static map.
 const definitionsBootstrapped = new Map<number, true>();
+const definitionsBootstrapInFlight = new Map<number, Promise<boolean>>();
 
 /**
  * Test-only: clear the per-process bootstrap cache so unit tests
@@ -37,6 +37,7 @@ const definitionsBootstrapped = new Map<number, true>();
  */
 export function clearDefinitionsBootstrapCacheForTests(): void {
   definitionsBootstrapped.clear();
+  definitionsBootstrapInFlight.clear();
 }
 
 async function ensureDefinitionsOnce(
@@ -46,11 +47,25 @@ async function ensureDefinitionsOnce(
   if (definitionsBootstrapped.get(ctx.locationId)) {
     return true;
   }
-  const ok = await ensureDefinitions(client);
-  if (ok) {
-    definitionsBootstrapped.set(ctx.locationId, true);
+
+  const inFlight = definitionsBootstrapInFlight.get(ctx.locationId);
+  if (inFlight) {
+    return inFlight;
   }
-  return ok;
+
+  let bootstrap: Promise<boolean>;
+  bootstrap = ensureDefinitions(client)
+    .then((ok) => {
+      if (ok) definitionsBootstrapped.set(ctx.locationId, true);
+      return ok;
+    })
+    .finally(() => {
+      if (definitionsBootstrapInFlight.get(ctx.locationId) === bootstrap) {
+        definitionsBootstrapInFlight.delete(ctx.locationId);
+      }
+    });
+  definitionsBootstrapInFlight.set(ctx.locationId, bootstrap);
+  return bootstrap;
 }
 
 /**
@@ -121,7 +136,7 @@ export async function syncCustomerLeagueAttributes(
   }
 
   // Lazy bootstrap. The first call per cold-start per Square seller
-  // pays the cost of two definition-create round trips; everything
+  // lists the definitions and creates only any missing keys; everything
   // after that is in-memory cached.
   let bootstrapped = await ensureDefinitionsOnce(ctx, client);
 
@@ -171,9 +186,8 @@ export async function syncCustomerLeagueAttributes(
       definitionsBootstrapped.delete(ctx.locationId);
     }
     log.info('Custom-attr sync: retrying after forced bootstrap', { bowlerId, customerId });
-    bootstrapped = await ensureDefinitions(client);
+    bootstrapped = await ensureDefinitionsOnce(ctx, client);
     if (bootstrapped) {
-      definitionsBootstrapped.set(ctx.locationId, true);
       result = await writeBoth();
     }
   }

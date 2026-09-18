@@ -1,5 +1,6 @@
 /**
- * Unit tests for the two pure helpers introduced by task #429:
+ * Unit tests for the season-label and Square custom-attribute helpers
+ * introduced by task #429 and their bootstrap safeguards:
  *
  *   1. `getSeasonLabel` (`shared/season-utils.ts`) — moved from the
  *      client into shared so the server-side Square custom-attribute
@@ -14,11 +15,15 @@
  *      be classified as success, otherwise every cold start would
  *      log a spurious bootstrap failure.
  *
+ *   3. Definition preflight and bootstrap single-flight behavior —
+ *      existing seller definitions should be read rather than recreated,
+ *      and concurrent first callers should share one bootstrap.
+ *
  * Both helpers are stateless and dependency-free, so this file does
  * not need any storage / Express / Square mocks.
  */
-import { describe, expect, it } from 'vitest';
-import { SquareError } from 'square';
+import { afterEach, describe, expect, it } from 'vitest';
+import { SquareClient, SquareError } from 'square';
 import { getSeasonLabel } from '../../shared/season-utils';
 import {
   isAlreadyExistsError,
@@ -26,6 +31,14 @@ import {
   ensureDefinitions,
   type SquareCustomAttrDefinitionsClient,
 } from '../../server/services/square-custom-attributes';
+import {
+  clearDefinitionsBootstrapCacheForTests,
+  ensureCustomAttributeDefinitions,
+} from '../../server/services/square-attributes';
+
+afterEach(() => {
+  clearDefinitionsBootstrapCacheForTests();
+});
 
 describe('getSeasonLabel', () => {
   it('labels a December start as Winter (current year suffix)', () => {
@@ -292,6 +305,100 @@ describe('ensureDefinitions schema shape (task #680)', () => {
         $ref: 'https://developer-production-s.squarecdn.com/schemas/v1/common.json#squareup.common.String',
       });
     }
+  });
+});
+
+describe('ensureDefinitions preflight (task #cleanup-square-attr-bootstrap)', () => {
+  it('does not POST definitions that the seller already has', async () => {
+    let listCalls = 0;
+    let createCalls = 0;
+    const fakeClient: SquareCustomAttrDefinitionsClient = {
+      customers: {
+        customAttributeDefinitions: {
+          async list() {
+            listCalls++;
+            return {
+              data: [{ key: 'league_name' }, { key: 'league_season' }],
+            };
+          },
+          async create() {
+            createCalls++;
+            return { customAttributeDefinition: { key: 'unexpected' } };
+          },
+          async delete() {
+            return { success: true };
+          },
+        },
+      },
+    };
+
+    expect(await ensureDefinitions(fakeClient)).toBe(true);
+    expect(listCalls).toBe(1);
+    expect(createCalls).toBe(0);
+  });
+
+  it('creates only the definitions missing from the preflight response', async () => {
+    const createdKeys: string[] = [];
+    const fakeClient: SquareCustomAttrDefinitionsClient = {
+      customers: {
+        customAttributeDefinitions: {
+          async list() {
+            return { data: [{ key: 'league_name' }] };
+          },
+          async create(input) {
+            createdKeys.push(input.customAttributeDefinition.key);
+            return {
+              customAttributeDefinition: { key: input.customAttributeDefinition.key },
+            };
+          },
+          async delete() {
+            return { success: true };
+          },
+        },
+      },
+    };
+
+    expect(await ensureDefinitions(fakeClient)).toBe(true);
+    expect(createdKeys).toEqual(['league_season']);
+  });
+});
+
+describe('custom-attribute bootstrap concurrency', () => {
+  it('coalesces concurrent first bootstraps for one location', async () => {
+    let listCalls = 0;
+    let createCalls = 0;
+    const definitionClient = {
+      async list() {
+        listCalls++;
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        return { data: [] };
+      },
+      async create() {
+        createCalls++;
+        return { customAttributeDefinition: { key: 'created' } };
+      },
+      async delete() {
+        return { success: true };
+      },
+    };
+    const client = new SquareClient({ token: 'unit-test-token' });
+    Object.defineProperty(client, 'customers', {
+      configurable: true,
+      value: { customAttributeDefinitions: definitionClient },
+    });
+    const context = {
+      locationId: 999,
+      getClient: async () => client,
+      getLocationId: async () => 'square-location-999',
+    };
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => ensureCustomAttributeDefinitions(context)),
+    );
+
+    expect(results).toEqual([true, true, true, true, true]);
+    expect(listCalls).toBe(1);
+    expect(createCalls).toBe(2);
   });
 });
 
