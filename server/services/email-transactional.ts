@@ -8,6 +8,7 @@ import {
   dispatchMail,
   describeMailError,
   escapeHtml,
+  replaceVariablesPlainText,
   sendTemplatedEmail,
 } from './email-core';
 
@@ -31,6 +32,7 @@ export async function sendReceiptResendEmail(
   const templateVars: Record<string, string> = {
     receipt_url: context.receiptUrl,
     receipt_number: context.receiptNumber || '',
+    receipt_label: context.receiptNumber ? `(receipt #${context.receiptNumber})` : '',
     amount: `$${dollars}`,
     league_name: context.leagueName || 'your league',
     organization_name: context.organizationName || 'LeagueVault',
@@ -39,8 +41,10 @@ export async function sendReceiptResendEmail(
     'payment_receipt_resend',
     toEmail,
     templateVars,
+    { returnDetails: true },
   );
-  if (sentViaTemplate) return true;
+  if (typeof sentViaTemplate !== 'boolean' && sentViaTemplate.accepted) return true;
+  if (typeof sentViaTemplate !== 'boolean' && sentViaTemplate.failureReason !== 'template_missing') return false;
 
   if (!SENDGRID_API_KEY) {
     log.error('Cannot send receipt resend — SENDGRID_API_KEY not configured');
@@ -55,7 +59,13 @@ export async function sendReceiptResendEmail(
   const msg = {
     to: toEmail,
     from: { email: FROM_EMAIL, name: FROM_NAME },
-    subject: `Your receipt for ${context.organizationName || 'LeagueVault'}${context.receiptNumber ? ` (#${context.receiptNumber})` : ''}`,
+    subject: replaceVariablesPlainText(
+      'Your receipt for {{organization_name}}{{receipt_suffix}}',
+      {
+        organization_name: context.organizationName || 'LeagueVault',
+        receipt_suffix: context.receiptNumber ? ` (#${context.receiptNumber})` : '',
+      },
+    ),
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <p style="font-size: 16px; color: #333;">Hi,</p>
