@@ -109,7 +109,7 @@ describe('sendAccountReadyEmail', () => {
     expect(sendMock).not.toHaveBeenCalled();
   });
 
-  it('reports inactive templates distinctly so senders do not use bootstrap fallbacks', async () => {
+  it('treats inactive editable templates as unavailable to generic senders', async () => {
     getTemplateMock.mockResolvedValue({
       slug: 'password_reset',
       active: false,
@@ -122,7 +122,7 @@ describe('sendAccountReadyEmail', () => {
       'bowler@example.com',
       { bowler_name: 'Alex' },
       { returnDetails: true },
-    )).resolves.toMatchObject({ accepted: false, failureReason: 'template_inactive' });
+    )).resolves.toMatchObject({ accepted: false, failureReason: 'template_missing' });
     expect(sendMock).not.toHaveBeenCalled();
   });
 

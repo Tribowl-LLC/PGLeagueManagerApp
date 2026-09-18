@@ -89,7 +89,7 @@ function describeSubject(msg: MailDataRequired): string {
 export interface EmailDispatchResult {
   accepted: boolean;
   providerMessageId?: string | null;
-  failureReason?: "not_configured" | "template_missing" | "template_inactive" | "provider_error" | "provider_rejected" | "provider_rate_limited" | "render_error";
+  failureReason?: "not_configured" | "template_missing" | "provider_error" | "provider_rejected" | "provider_rate_limited" | "render_error";
 }
 
 export interface AccountEmailDeliveryCustomArgs {
@@ -608,16 +608,13 @@ export async function sendTemplatedEmail(
 
   try {
     const template = await storage.getEmailTemplateBySlug(slug);
-    if (!template) {
-      log.info(`Template '${slug}' not found, skipping`);
+    if (!template || !template.active) {
+      log.info(`Template '${slug}' not found or inactive, skipping`);
+      // Preserve the long-standing bootstrap contract: a missing or inactive
+      // editable template lets the sender use its built-in fallback. Account-
+      // ready notifications intentionally handle inactive templates before
+      // reaching this generic helper and remain a deliberate no-op.
       return formatEmailResult({ accepted: false, failureReason: "template_missing" }, options);
-    }
-    // Inactive is an intentional administrator-controlled no-op. Callers may
-    // use a built-in fallback only for a genuinely missing row, never when an
-    // administrator has explicitly disabled a template.
-    if (!template.active) {
-      log.info(`Template '${slug}' is inactive, skipping`);
-      return formatEmailResult({ accepted: false, failureReason: "template_inactive" }, options);
     }
 
     const subject = replaceVariablesPlainText(template.subject, variables);

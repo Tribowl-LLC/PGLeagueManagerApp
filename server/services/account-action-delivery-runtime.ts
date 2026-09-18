@@ -42,11 +42,9 @@ export function emailProviderOutcome(result: EmailDispatchResult, action: "passw
     // revoked safely. Provider failures remain retryable and retain the
     // action because submission may have happened before the error surfaced.
     retryable: result.failureReason !== 'not_configured'
-      && result.failureReason !== 'template_inactive'
       && result.failureReason !== 'render_error'
       && (action !== "account_registration" || result.failureReason !== 'provider_rejected'),
     deliveryDisposition: result.failureReason === 'not_configured'
-      || result.failureReason === 'template_inactive'
       || result.failureReason === 'render_error'
       || (action === "account_registration" && (result.failureReason === 'provider_rejected'
         || result.failureReason === 'provider_rate_limited'))

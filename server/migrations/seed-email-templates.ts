@@ -9,10 +9,10 @@ const log = createLogger("SeedEmailTemplates");
  * lockstep with calls to sendTemplatedEmail: startup seeding is deliberately
  * additive, so an administrator's edits are never overwritten on restart.
  *
- * Missing rows have a sender-specific bootstrap fallback where a message must
- * continue to work during a rolling deployment. An explicitly inactive row is
- * always a no-op (see sendTemplatedEmail), which lets system administrators
- * intentionally disable that message.
+ * Missing or inactive rows use a sender-specific bootstrap fallback where a
+ * message must continue to work during a rolling deployment. Account-ready
+ * notifications are the deliberate exception: their inactive row suppresses
+ * delivery, preserving that workflow's existing opt-out behavior.
  */
 export const DEFAULT_TEMPLATES: InsertEmailTemplate[] = [
   {
