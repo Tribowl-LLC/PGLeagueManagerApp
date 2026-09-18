@@ -94,6 +94,8 @@ const UNIT_NO_DB = [
   'tests/unit/account-action-delivery-worker.test.ts',
   'tests/unit/account-action-delivery-scheduler.test.ts',
   'tests/unit/account-guidance-delivery-worker.test.ts',
+  'tests/unit/account-ready-delivery-worker.test.ts',
+  'tests/unit/email-delivery-outcome.test.ts',
   'tests/unit/sendgrid-webhook.test.ts',
   'tests/unit/email-delivery-alerts.test.ts',
   'tests/unit/auth-action-routes.test.ts',
@@ -155,7 +157,6 @@ const UNIT_NO_DB = [
 
 const PARALLEL_ISOLATED = [
   'tests/e2e/password-reset-journey.test.ts',
-  'tests/e2e/email-first-registration-journey.test.ts',
   'server/routes/__tests__/leagues-square-missing-alerts.test.ts',
   'server/services/__tests__/apple-pay-worker.test.ts',
   'server/services/__tests__/square.test.ts',
@@ -169,6 +170,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/admin-reset-password-notification.test.ts',
   'tests/unit/account-action-requests-postgres.test.ts',
   'tests/unit/account-action-delivery-jobs-postgres.test.ts',
+  'tests/unit/account-ready-delivery-jobs-postgres.test.ts',
   'tests/unit/account-email-delivery-events-postgres.test.ts',
   'tests/unit/email-delivery-alerts-postgres.test.ts',
   'tests/unit/credential-generation-postgres.test.ts',
@@ -248,6 +250,13 @@ const PARALLEL_ISOLATED = [
   'tests/unit/team-deletion-safety-postgres.test.ts',
 ];
 
+// This browser journey owns an in-process Express app and browser routing
+// state. Keep it in a dedicated serial DB-only project so no other suite can
+// overlap its shared active-organization fixture while it is running.
+const SERIAL_EMAIL_BROWSER = [
+  'tests/e2e/email-first-registration-journey.test.ts',
+];
+
 const sharedAlias = {
   '@shared': new URL('./shared', import.meta.url).pathname,
   '@server': new URL('./server', import.meta.url).pathname,
@@ -322,6 +331,7 @@ export default defineConfig({
             ...SHARED_TABLE_WRITERS,
             ...PARALLEL_ISOLATED,
             ...PARALLEL_ISOLATED_WITH_APP,
+            ...SERIAL_EMAIL_BROWSER,
             ...UNIT_NO_DB,
           ],
           setupFiles: ['./tests/setup/per-worker-setup.ts'],
@@ -456,6 +466,25 @@ export default defineConfig({
           include: UNIT_NO_DB,
           setupFiles: ['./tests/setup/error-log-guard.ts'],
           pool: 'forks',
+        },
+      },
+      {
+        // This journey starts its own in-process Express app and browser, so
+        // it needs a private DB worker but must not use the full app setup.
+        oxc: { jsx: { runtime: 'automatic' } },
+        test: {
+          name: 'serial-email-browser',
+          sequence: { groupOrder: 6 },
+          globals: true,
+          environment: 'node',
+          testTimeout: 30000,
+          hookTimeout: 30000,
+          globalSetup: ['./tests/setup/global-setup.ts'],
+          alias: sharedAlias,
+          include: SERIAL_EMAIL_BROWSER,
+          setupFiles: ['./tests/setup/per-worker-db-only.ts'],
+          pool: 'forks',
+          fileParallelism: false,
         },
       },
     ],

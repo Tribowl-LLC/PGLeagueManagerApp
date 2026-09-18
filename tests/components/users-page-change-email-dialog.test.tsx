@@ -113,7 +113,14 @@ beforeEach(() => {
   clearCsrfToken();
   installFetchMock();
   profileHandler = () =>
-    jsonRes({ success: true, data: { paymentSyncStatus: 'not_applicable' } });
+    jsonRes({
+      success: true,
+      data: {
+        paymentSyncStatus: 'not_applicable',
+        emailChangeRequested: true,
+        emailChangeDelivery: { confirmation: 'accepted', notification: 'accepted' },
+      },
+    });
   resendHandler = () =>
     jsonRes({ success: true, data: { emailNotification: 'accepted' } });
 });
@@ -129,7 +136,7 @@ async function openChangeEmailDialogFor(targetId: number, user: ReturnType<typeo
 }
 
 describe('UsersPage — Change Email dialog', () => {
-  it('PATCHes the new email, closes the dialog, and shows a confirmation toast', async () => {
+  it('PATCHes the new email, closes the dialog, and reports a submitted confirmation request', async () => {
     const user = userEvent.setup();
     renderPage();
     const input = await openChangeEmailDialogFor(TARGET.id, user);
@@ -143,7 +150,7 @@ describe('UsersPage — Change Email dialog', () => {
       expect(screen.queryByTestId('input-change-email')).toBeNull();
     });
     expect(toastFn).toHaveBeenCalledWith(
-      expect.objectContaining({ title: expect.stringMatching(/confirmation email sent/i) }),
+      expect.objectContaining({ title: 'Email change pending' }),
     );
     // No retry notice for `not_applicable`.
     expect(toastFn).not.toHaveBeenCalledWith(
@@ -153,7 +160,14 @@ describe('UsersPage — Change Email dialog', () => {
 
   it('also shows the verbatim "Payment record will be retried" toast on pending_retry', async () => {
     profileHandler = () =>
-      jsonRes({ success: true, data: { paymentSyncStatus: 'pending_retry' } });
+      jsonRes({
+        success: true,
+        data: {
+          paymentSyncStatus: 'pending_retry',
+          emailChangeRequested: true,
+          emailChangeDelivery: { confirmation: 'accepted', notification: 'accepted' },
+        },
+      });
     const user = userEvent.setup();
     renderPage();
     const input = await openChangeEmailDialogFor(TARGET.id, user);
@@ -175,7 +189,14 @@ describe('UsersPage — Change Email dialog', () => {
     for (const status of ['synced', 'skipped'] as const) {
       toastFn.mockReset();
       profileHandler = () =>
-        jsonRes({ success: true, data: { paymentSyncStatus: status } });
+        jsonRes({
+          success: true,
+          data: {
+            paymentSyncStatus: status,
+            emailChangeRequested: true,
+            emailChangeDelivery: { confirmation: 'accepted', notification: 'accepted' },
+          },
+        });
       const user = userEvent.setup();
       const { unmount } = renderPage();
       const input = await openChangeEmailDialogFor(TARGET.id, user);
@@ -184,7 +205,7 @@ describe('UsersPage — Change Email dialog', () => {
 
       await waitFor(() => {
         expect(toastFn).toHaveBeenCalledWith(
-          expect.objectContaining({ title: expect.stringMatching(/confirmation email sent/i) }),
+          expect.objectContaining({ title: 'Email change pending' }),
         );
       });
       expect(toastFn).not.toHaveBeenCalledWith(
@@ -192,6 +213,49 @@ describe('UsersPage — Change Email dialog', () => {
       );
       unmount();
     }
+  });
+
+  it('keeps the dialog usable and does not claim an email when delivery was not sent', async () => {
+    profileHandler = () =>
+      jsonRes({
+        success: true,
+        data: {
+          emailChangeRequested: true,
+          emailChangeDelivery: { confirmation: 'not_sent', notification: 'unknown' },
+        },
+      });
+    const user = userEvent.setup();
+    renderPage();
+    const input = await openChangeEmailDialogFor(TARGET.id, user);
+    await user.type(input, NEW_EMAIL);
+    await user.click(screen.getByTestId('button-confirm-change-email'));
+
+    await waitFor(() => {
+      expect(toastFn).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Email change pending',
+        variant: 'destructive',
+        description: expect.stringMatching(/could not send the confirmation email/i),
+      }));
+    });
+    expect(screen.getByTestId('input-change-email')).toBeInTheDocument();
+    expect(toastFn).not.toHaveBeenCalledWith(expect.objectContaining({ title: /confirmation email sent/i }));
+  });
+
+  it('does not close or claim a confirmation when the outcome is missing', async () => {
+    profileHandler = () => jsonRes({ success: true, data: {} });
+    const user = userEvent.setup();
+    renderPage();
+    const input = await openChangeEmailDialogFor(TARGET.id, user);
+    await user.type(input, NEW_EMAIL);
+    await user.click(screen.getByTestId('button-confirm-change-email'));
+
+    await waitFor(() => {
+      expect(toastFn).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Email change was not submitted',
+        variant: 'destructive',
+      }));
+    });
+    expect(screen.getByTestId('input-change-email')).toBeInTheDocument();
   });
 
   it('shows an inline validation error and does NOT fire a PATCH for an invalid email', async () => {

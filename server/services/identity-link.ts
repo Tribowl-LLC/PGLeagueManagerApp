@@ -31,7 +31,14 @@ export interface IdentityLinkInput {
   requireEmailMatch?: boolean;
   /** `link` is the ordinary self-service event. */
   eventType?: "link" | "admin_assignment";
+  /** Queue the automatic account-ready email atomically with this link. */
+  queueAccountReadyEmail?: boolean;
 }
+
+const ACCOUNT_READY_AUTO_LINK_SOURCES = new Set([
+  "bowler-post-create-email-auto-link",
+  "bowler-profile-email-auto-link",
+]);
 
 export interface IdentityUnlinkInput {
   organizationId: number;
@@ -348,6 +355,23 @@ async function linkInTransaction(
     source: input.source,
     reason: input.reason,
   });
+  if (input.queueAccountReadyEmail) {
+    if (!ACCOUNT_READY_AUTO_LINK_SOURCES.has(input.source ?? "")) {
+      throw new Error("Account-ready delivery is restricted to automatic email-link sources");
+    }
+    // Keep the queue's database/runtime dependencies out of ordinary identity
+    // linking and no-DB callers. The automatic paths opt in explicitly after
+    // the identity event has been written inside this transaction.
+    const { queueAccountReadyDeliveryJob } = await import(
+      "../storage/account-ready-delivery-jobs.js"
+    );
+    await queueAccountReadyDeliveryJob({
+      identityLinkEventId: event.id,
+      userId: updatedUser.id,
+      bowlerId: linkedBowler.id,
+      organizationId: input.organizationId,
+    }, executor);
+  }
   return { user: updatedUser, bowler: linkedBowler, oldBowler: null, event };
 }
 

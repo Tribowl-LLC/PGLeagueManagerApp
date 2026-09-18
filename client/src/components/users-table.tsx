@@ -124,12 +124,12 @@ export function UsersTable({ users, currentUser, orgLocations, onDeleteUser, onR
     },
     onSuccess: (response) => {
       invalidateOrgAdminUsers();
-      const emailSent = response?.data?.emailSent !== false;
+      const emailSent = response?.data?.emailSent === true;
       toast({
         title: emailSent ? "Invite sent" : "Invite delivery failed",
         description: emailSent
-          ? "A new invitation email has been sent."
-          : "A new invitation is active, but email delivery failed. You can retry safely.",
+          ? "The new invitation email was submitted."
+          : "A new invitation is active, but the invitation email was not sent. You can retry safely.",
         variant: emailSent ? "default" : "destructive",
       });
     },

@@ -23,7 +23,7 @@ import { useParams, Link, useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getSeasonLabel } from "@shared/season-utils";
-import { InviteResultCard } from "./league-view-page/invite-result-card";
+import { InviteResultCard, type InviteResult } from "./league-view-page/invite-result-card";
 import { LeagueActionCards } from "./league-view-page/league-action-cards";
 import { SeasonHistoryCard } from "./league-view-page/season-history-card";
 import { NewSeasonDialog, type NewSeasonFormValues } from "./league-view-page/new-season-dialog";
@@ -38,7 +38,8 @@ export default function LeagueViewPage() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const leagueId = parseInt(params.leagueId!);
-  const [inviteResult, setInviteResult] = useState<{ sent: number; alreadyRegistered: number; noEmail: number } | null>(null);
+  const [inviteResult, setInviteResult] = useState<InviteResult | null>(null);
+  const [inviteRun, setInviteRun] = useState(0);
   const [showNewSeason, setShowNewSeason] = useState(false);
   const newSeasonSetupIdempotency = useRef(createSetupIdempotencyKeyRetainer());
 
@@ -124,7 +125,7 @@ export default function LeagueViewPage() {
 
   const sendInvitesMutation = useMutation({
     mutationFn: async () => {
-      return await apiRequest<{ sent: number; alreadyRegistered: number; noEmail: number }>(
+      return await apiRequest<InviteResult>(
         `/api/leagues/${leagueId}/send-invites`,
         "POST"
       );
@@ -132,9 +133,10 @@ export default function LeagueViewPage() {
     onSuccess: (data) => {
       const result = data.data;
       setInviteResult(result);
+      setInviteRun((run) => run + 1);
       toast({
-        title: "Invites Sent",
-        description: `Sent ${result.sent} invite(s). ${result.alreadyRegistered} already registered. ${result.noEmail} have no email.`,
+        title: "Invitation results ready",
+        description: `${result.created ?? result.sent} invitation record(s) created. ${result.emailAccepted ?? result.sent} email(s) submitted; ${result.deliveryFailed ?? 0} email(s) not sent.`,
       });
     },
     onError: (error: Error) => {
@@ -220,7 +222,7 @@ export default function LeagueViewPage() {
           </div>
         </div>
 
-        {inviteResult && <InviteResultCard inviteResult={inviteResult} />}
+        {inviteResult && <InviteResultCard key={inviteRun} inviteResult={inviteResult} />}
 
         <ErrorBoundary level="section">
           <LeagueActionCards

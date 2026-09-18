@@ -36,6 +36,27 @@ interface LinksResponse {
   hasAny: boolean;
 }
 
+interface PartnerInviteEmailResult {
+  emailSent: boolean;
+  reason?: string;
+}
+
+function partnerInviteOutcome(result: PartnerInviteEmailResult | undefined, action: "created" | "resent") {
+  if (result?.emailSent === true) {
+    return action === "created"
+      ? "The payment partner invitation was created and the email was submitted."
+      : "The pending payment partner email was submitted again.";
+  }
+
+  if (result?.reason === "NO_EMAIL_ON_FILE") {
+    return "The payment partner invitation is available here, but no email address is on file.";
+  }
+
+  return action === "created"
+    ? "The payment partner invitation was created, but no email was sent."
+    : "The pending payment partner invitation remains active, but no email was sent. You can try again later.";
+}
+
 /**
  * – adult-bowler partner linking UI.
  *
@@ -59,13 +80,34 @@ export const BowlerPaymentLinksSection: FC<{
 
   const inviteMutation = useMutation({
     mutationFn: async (inviteeBowlerId: number) =>
-      apiRequest("/api/bowler-links/invite", "POST", { inviteeBowlerId }),
-    onSuccess: () => {
+      apiRequest<PartnerInviteEmailResult>("/api/bowler-links/invite", "POST", { inviteeBowlerId }),
+    onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ["/api/bowler-links"] });
-      toast({ title: "Invite sent" });
+      const emailSent = response?.data?.emailSent === true;
+      toast({
+        title: emailSent ? "Payment partner invitation created" : "Payment partner invitation created without email",
+        description: partnerInviteOutcome(response?.data, "created"),
+        variant: emailSent ? "default" : "destructive",
+      });
     },
     onError: (err: Error) =>
       toast({ title: "Invite failed", description: err.message, variant: "destructive" }),
+  });
+
+  const resendInvite = useMutation({
+    mutationFn: async (linkId: number) =>
+      apiRequest<PartnerInviteEmailResult>(`/api/bowler-links/${linkId}/resend-invite`, "POST"),
+    onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/bowler-links"] });
+      const emailSent = response?.data?.emailSent === true;
+      toast({
+        title: emailSent ? "Invitation email submitted" : "Invitation email not sent",
+        description: partnerInviteOutcome(response?.data, "resent"),
+        variant: emailSent ? "default" : "destructive",
+      });
+    },
+    onError: (err: Error) =>
+      toast({ title: "Invitation email failed", description: err.message, variant: "destructive" }),
   });
 
   const respond = useMutation({
@@ -154,6 +196,7 @@ export const BowlerPaymentLinksSection: FC<{
             {pending.map((l) => {
               // Invitee = the side that did NOT initiate the invite.
               // inviterBowlerId is resolved server-side from createdByUserId.
+              const isOutbound = l.inviterBowlerId === currentBowlerId;
               const isInvitee =
                 l.inviterBowlerId !== null && l.inviterBowlerId !== currentBowlerId;
               return (
@@ -189,16 +232,28 @@ export const BowlerPaymentLinksSection: FC<{
                         </Button>
                       </>
                     )}
-                    {!isInvitee && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        data-testid={`button-cancel-${l.id}`}
-                        disabled={unlink.isPending}
-                        onClick={() => unlink.mutate(l.id)}
-                      >
-                        <X className="size-4" />
-                      </Button>
+                    {!isInvitee && isOutbound && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          data-testid={`button-resend-invite-${l.id}`}
+                          disabled={resendInvite.isPending}
+                          onClick={() => resendInvite.mutate(l.id)}
+                        >
+                          {resendInvite.isPending ? <Loader2 className="size-4 mr-1 animate-spin" /> : <Mail className="size-4 mr-1" />}
+                          Resend email
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          data-testid={`button-cancel-${l.id}`}
+                          disabled={unlink.isPending}
+                          onClick={() => unlink.mutate(l.id)}
+                        >
+                          <X className="size-4" />
+                        </Button>
+                      </>
                     )}
                   </div>
                 </div>

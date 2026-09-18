@@ -116,8 +116,10 @@ const RegistrationCompletePage: FC = () => {
               <MailCheck className="size-5 text-primary mt-0.5 shrink-0" aria-hidden="true" />
               <p className="text-sm text-muted-foreground">
                 Your sign-in account has been created. A league administrator
-                needs to connect it to your bowler profile. We’ll email you
-                when your account is ready.
+                needs to connect it to your bowler profile. We’ll request an
+                email notification when your account is ready. This page
+                checks automatically, and you can return here to check the
+                status yourself.
               </p>
             </div>
 

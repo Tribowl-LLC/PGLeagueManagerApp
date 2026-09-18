@@ -457,6 +457,30 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
       if (!row.emailSent) {
         expect(['NO_EMAIL_ON_FILE', 'TEMPLATE_NOT_CONFIGURED', 'SEND_FAILED']).toContain(row.reason);
       }
+
+      // Recovery reuses the same durable pending link: it must not create a
+      // second row, and a different tenant cannot replay the invite id.
+      const resend = await apiPost<{ emailSent: boolean; reason?: string }>(
+        `/api/bowler-links/${row.id}/resend-invite`,
+        {},
+        sessionA,
+      );
+      expect(resend.status, JSON.stringify(resend.data)).toBe(200);
+      expect(typeof resend.data.data?.emailSent).toBe('boolean');
+      const crossTenantResend = await apiPost(
+        `/api/bowler-links/${row.id}/resend-invite`,
+        {},
+        sessionB,
+      );
+      expect(crossTenantResend.status).toBe(403);
+      const inviteeSession = await login(targetEmail, password);
+      const inviteeResend = await apiPost(
+        `/api/bowler-links/${row.id}/resend-invite`,
+        {},
+        inviteeSession,
+      );
+      expect(inviteeResend.status).toBe(403);
+
       // Confirm persistence — email failure must not roll back the invite.
       const persisted = await db
         .select({ id: bowlerPaymentLinks.id, status: bowlerPaymentLinks.status })
@@ -479,6 +503,13 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
         .from(bowlerPaymentLinks)
         .where(eq(bowlerPaymentLinks.id, row.id));
       expect(afterAccept[0]?.status).toBe('accepted');
+
+      const resendAfterAccept = await apiPost(
+        `/api/bowler-links/${row.id}/resend-invite`,
+        {},
+        sessionA,
+      );
+      expect(resendAfterAccept.status).toBe(409);
 
       // Replaying a decline token after acceptance must NOT delete an
       // already-accepted link — single-use scoping by state.

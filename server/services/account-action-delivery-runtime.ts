@@ -19,6 +19,10 @@ import {
   runAccountGuidanceFairSweep,
   type AccountGuidanceProviderOutcome,
 } from './account-guidance-delivery-worker';
+import {
+  AccountReadyDeliveryWorker,
+  type AccountReadyDeliveryRunResult,
+} from './account-ready-delivery-worker';
 
 export function emailProviderOutcome(result: EmailDispatchResult, action: "password_reset" | "account_registration") {
   if (result.accepted) {
@@ -119,10 +123,32 @@ export const accountGuidanceDeliveryWorker = new AccountGuidanceDeliveryWorker({
 // shared scheduler sweep small so a provider outage or recipient flood cannot
 // hold a newly queued password reset behind 100 sequential 30-second timeouts.
 export const ACCOUNT_GUIDANCE_SWEEP_BATCH_SIZE = 5;
+export const ACCOUNT_READY_SWEEP_BATCH_SIZE = 5;
+
+export async function runAccountReadyFairSweep(input: {
+  runCredentialOne: () => Promise<unknown>;
+  runAccountReadyOne: () => Promise<AccountReadyDeliveryRunResult>;
+  maxJobs: number;
+}): Promise<AccountReadyDeliveryRunResult[]> {
+  if (!Number.isSafeInteger(input.maxJobs) || input.maxJobs < 1 || input.maxJobs > 10_000) {
+    throw new Error("maxJobs must be between 1 and 10000");
+  }
+  const results: AccountReadyDeliveryRunResult[] = [];
+  for (let count = 0; count < input.maxJobs; count += 1) {
+    await input.runCredentialOne();
+    const result = await input.runAccountReadyOne();
+    results.push(result);
+    if (result.kind === "idle") break;
+  }
+  return results;
+}
+
+export const accountReadyDeliveryWorker = new AccountReadyDeliveryWorker();
 
 export async function startAccountActionDelivery(): Promise<void> {
   await accountActionDeliveryWorker.start();
   await accountGuidanceDeliveryWorker.start();
+  await accountReadyDeliveryWorker.start();
   await startAccountActionDeliveryScheduler(async () => {
     await accountActionDeliveryWorker.recoverOnStartup();
     await accountActionDeliveryWorker.runUntilIdle();
@@ -132,6 +158,12 @@ export async function startAccountActionDelivery(): Promise<void> {
       runGuidanceOne: () => accountGuidanceDeliveryWorker.runOne(),
       maxJobs: ACCOUNT_GUIDANCE_SWEEP_BATCH_SIZE,
     });
+    await accountReadyDeliveryWorker.recoverOnStartup();
+    await runAccountReadyFairSweep({
+      runCredentialOne: () => accountActionDeliveryWorker.runOne(),
+      runAccountReadyOne: () => accountReadyDeliveryWorker.runOne(),
+      maxJobs: ACCOUNT_READY_SWEEP_BATCH_SIZE,
+    });
   });
 }
 
@@ -139,4 +171,5 @@ export async function stopAccountActionDelivery(): Promise<void> {
   stopAccountActionDeliveryScheduler();
   await accountActionDeliveryWorker.stopAndDrain();
   await accountGuidanceDeliveryWorker.stopAndDrain();
+  await accountReadyDeliveryWorker.stopAndDrain();
 }

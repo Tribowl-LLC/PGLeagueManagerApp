@@ -141,12 +141,20 @@ describe('PATCH /api/account/profile/:id with email change', () => {
     const res = await apiPatch<{
       email: string;
       emailChangeRequested: boolean;
+      emailChangeDelivery?: {
+        confirmation: 'accepted' | 'not_sent' | 'unknown';
+        notification: 'accepted' | 'not_sent' | 'unknown';
+      };
       paymentSyncStatus: string;
     }>(`/api/account/profile/${userId}`, { email: newEmail }, session);
 
     expect(res.status).toBe(200);
     expect(res.data.success).toBe(true);
     expect(res.data.data?.emailChangeRequested).toBe(true);
+    expect(res.data.data?.emailChangeDelivery).toMatchObject({
+      confirmation: expect.stringMatching(/^(accepted|not_sent|unknown)$/),
+      notification: expect.stringMatching(/^(accepted|not_sent|unknown)$/),
+    });
     // Returned record still shows the OLD email — login has not changed.
     expect(res.data.data?.email).toBe(oldEmail);
 

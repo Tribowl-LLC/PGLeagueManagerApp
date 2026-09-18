@@ -3,8 +3,8 @@
  * security email (task #416). This is the third companion to
  * tests/unit/change-password-notification.test.ts (task #353) and
  * tests/unit/set-password-notification.test.ts (task #409): same
- * `sendPasswordChangedNotification` helper, fired AFTER the
- * password row is persisted, but with `actor: 'admin'` so the
+ * `sendPasswordChangedNotification` helper, awaited with a bounded outcome
+ * AFTER the password row is persisted, but with `actor: 'admin'` so the
  * recipient sees the "performed by an administrator" line.
  *
  * Mounts the real `organization-admin` router on an isolated
@@ -226,6 +226,10 @@ describe('POST /api/organization-admin/users/:id/reset-password — admin-driven
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
+    expect(body.data).toMatchObject({
+      id: TARGET_USER.id,
+      emailNotification: 'accepted',
+    });
 
     await flushFireAndForget();
 
@@ -373,16 +377,22 @@ describe('POST /api/organization-admin/users/:id/reset-password — admin-driven
     expect(updatePatch.mustChangePassword).toBe(true);
   });
 
-  it('still returns 200 when the email helper rejects (best-effort contract — password rotation is not rolled back)', async () => {
-    // The route logs the swallowed email failure at [ERROR] on purpose.
-    expectErrorLog(/Password-changed notification threw \(admin reset\)/);
+  it('returns not_sent when the provider rejects while preserving the committed password rotation', async () => {
     mockSendPasswordChangedNotification.mockRejectedValueOnce(
       new Error('SendGrid 503'),
     );
     const res = await postReset(TARGET_USER.id, { newPassword: 'BrandNewPw!2026XX' });
     expect(res.status).toBe(200);
-    await flushFireAndForget();
+    expect((await res.json()).data.emailNotification).toBe('not_sent');
     expect(mockSendPasswordChangedNotification).toHaveBeenCalledTimes(1);
+    expect(mockUpdateUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns not_sent when the provider explicitly declines after the password commit', async () => {
+    mockSendPasswordChangedNotification.mockResolvedValueOnce(false);
+    const res = await postReset(TARGET_USER.id, { newPassword: 'BrandNewPw!2026XX' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.emailNotification).toBe('not_sent');
     expect(mockUpdateUser).toHaveBeenCalledTimes(1);
   });
 

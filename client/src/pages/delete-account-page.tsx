@@ -85,8 +85,8 @@ const DeleteAccountPage: FC = () => {
             <CardDescription>
               Your account deletion request has been submitted. If an account exists with the provided email, we will process your request within 30 days.{" "}
               {notifyOnCompletion
-                ? "You will receive a confirmation email once your account and associated data have been deleted."
-                : "Per your request, we will not send a confirmation email when your data is deleted."}
+                ? "After processing, we will request a confirmation email. Delivery may vary."
+                : "Per your request, we will not request a confirmation email after processing."}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex justify-center">
