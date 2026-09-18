@@ -2,20 +2,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  formatCountdown,
-} from '@/hooks/use-throttle-countdown';
-import {
-  LANGUAGE_AUTO,
-  LANGUAGE_OPTIONS,
-} from '@/lib/preferred-language';
+import { formatCountdown } from '@/hooks/use-throttle-countdown';
 import { AlertTriangle, Loader2, Check, X, Eye, EyeOff } from 'lucide-react';
 
 interface PasswordRequirement {
@@ -30,8 +17,6 @@ interface SetPasswordFormProps {
   setConfirmPassword: (value: string) => void;
   showPassword: boolean;
   setShowPassword: (value: boolean) => void;
-  preferredLanguage: string;
-  handleLanguageChange: (value: string) => void;
   requirements: PasswordRequirement[];
   allMet: boolean;
   passwordsMatch: boolean;
@@ -49,8 +34,6 @@ export function SetPasswordForm({
   setConfirmPassword,
   showPassword,
   setShowPassword,
-  preferredLanguage,
-  handleLanguageChange,
   requirements,
   allMet,
   passwordsMatch,
@@ -96,42 +79,6 @@ export function SetPasswordForm({
         {confirmPassword && !passwordsMatch && (
           <p className="text-sm text-destructive">Passwords do not match</p>
         )}
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="preferredLanguage">Preferred language</Label>
-        <Select
-          value={preferredLanguage}
-          onValueChange={handleLanguageChange}
-        >
-          <SelectTrigger
-            id="preferredLanguage"
-            data-testid="select-set-password-language"
-          >
-            <SelectValue placeholder="Auto (follow my browser)" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem
-              value={LANGUAGE_AUTO}
-              data-testid="option-set-password-language-auto"
-            >
-              Auto (follow my browser)
-            </SelectItem>
-            {LANGUAGE_OPTIONS.map((opt) => (
-              <SelectItem
-                key={opt.value}
-                value={opt.value}
-                data-testid={`option-set-password-language-${opt.value}`}
-              >
-                {opt.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <p className="text-xs text-muted-foreground">
-          Used for security and onboarding emails. You can change this
-          later in your account settings.
-        </p>
       </div>
 
       {password.length > 0 && (

@@ -1,5 +1,4 @@
 import { Router, Request } from 'express';
-import { randomBytes } from 'crypto';
 import { storage } from '../storage';
 import {
   insertLeagueSchema,
@@ -20,16 +19,8 @@ import { sendSuccess, sendError, handleZodError, parseOptionalIntParam } from '.
 import { singleRouteParam } from '../utils/route-params';
 import { requireOrganizationAccess, hasAccessToLeague, hasAdminAccessToLeague, isOrgOrHigher, isPaymentManager } from '../utils/access-control';
 import { getOrganizationFilter, filterByOrganization } from '../middleware/organization';
-import { hashPassword } from '../auth';
-import { sendInviteEmail } from '../services/email';
-import { linkUserToBowler } from '../services/identity-link.js';
-import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-scheduler';
-import { cacheInvalidate } from '../utils/cache.js';
+import { sendBowlerRegistrationInviteEmail } from '../services/email';
 import { calculateSeasonEnd } from '@shared/schedule-utils';
-import { db } from '../db.js';
-import { payments as paymentsTable } from '@shared/schema';
-import { eq, isNull, and } from 'drizzle-orm';
-import { sql } from 'drizzle-orm';
 import { createLogger } from '../logger';
 import {
   fireBowlerExternalResync,
@@ -56,6 +47,7 @@ import { FallDraftGenerationError } from '../services/fall-draft-generation.js';
 import { CanonicalLeagueScheduleEditError, editCanonicalLeagueSchedule, readCanonicalLeagueScheduleRevision } from '../services/canonical-league-schedule-edit.js';
 import { hasCompleteOperationalLeagueSchedule } from '../services/league-occurrence-schedule.js';
 import { notifyStandingAutopayMutation } from '../services/roster-standing-autopay.js';
+import { cacheInvalidate } from '../utils/cache.js';
 
 const log = createLogger("Leagues");
 
@@ -825,12 +817,12 @@ router.post("/:id/send-invites", async (req: Request, res) => {
     const bowlerLeagueEntries = await storage.getBowlerLeagues({ leagueId });
 
     let sent = 0;
-    let createdCount = 0;
+    let attempted = 0;
     let emailAccepted = 0;
     let alreadyRegistered = 0;
     let noEmail = 0;
     let deliveryFailed = 0;
-    const failedInvitations: Array<{ userId: number; name: string }> = [];
+    const failedInvitations: Array<{ leagueId: number; bowlerId: number; name: string }> = [];
 
     for (const bl of bowlerLeagueEntries) {
       const bowler = await storage.getBowler(bl.bowlerId);
@@ -853,81 +845,38 @@ router.post("/:id/send-invites", async (req: Request, res) => {
         return sendError(res, 'League organization context is required for invitations', 409, 'ORG_REQUIRED');
       }
 
-      const placeholderPassword = await hashPassword(randomBytes(32).toString('hex'));
       const organization = await storage.getOrganization(leagueOrganizationId);
-      const created = await db.transaction(async (tx) => {
-        const newUser = await storage.createUser({
-          email,
-          password: placeholderPassword,
-          name: bowler.name,
-          role: 'user',
-          organizationId: leagueOrganizationId,
-          locationId: null,
-        }, tx);
-        const invitation = await storage.issueAccountAction({
-          userId: newUser.id,
-          action: 'account_invite',
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-          organizationId: leagueOrganizationId,
-          createdByUserId: req.user?.id ?? null,
-        }, tx);
-        await linkUserToBowler({
-          organizationId: leagueOrganizationId,
-          userId: newUser.id,
-          bowlerId: bowler.id,
-          actorUserId: req.user?.id ?? null,
-          source: 'league-bulk-invite',
-          reason: 'league-roster-invitation',
-          eventType: 'admin_assignment',
-        }, tx);
-        return { newUser, invitation };
-      });
-      // The identity service defers cache invalidation for injected
-      // executors so the enclosing compound transaction can decide when the
-      // write is committed. At this point the user/link/event transaction has
-      // committed successfully.
-      cacheInvalidate(`user:${created.newUser.id}`);
-      cacheInvalidate('bowlers:');
-      notifyPaymentSyncRetryChanged();
-
       const firstName = bowler.name.split(' ')[0];
+      attempted++;
       let emailSent = false;
       try {
-        emailSent = await sendInviteEmail(
+        emailSent = (await sendBowlerRegistrationInviteEmail(
           email,
           firstName,
-          created.invitation.token,
           organization?.name,
           organization?.id,
           organization?.slug,
-        );
+        )).accepted;
       } catch {
         emailSent = false;
       }
-      await storage.updateAccountActionDeliveryStatus(
-        created.invitation.request.id,
-        emailSent ? 'sent' : 'failed',
-      );
-      createdCount++;
       if (emailSent) {
         emailAccepted++;
       } else {
         deliveryFailed++;
         failedInvitations.push({
-          userId: created.newUser.id,
-          name: created.newUser.name,
+          leagueId,
+          bowlerId: bowler.id,
+          name: bowler.name,
         });
       }
-
-      // Legacy clients interpret `sent` as the number of new invitation
-      // records created. Keep that field stable while newer clients use the
-      // explicit created/emailAccepted/deliveryFailed fields below.
       sent++;
     }
 
     sendSuccess(res, {
       sent,
-      created: createdCount,
+      attempted,
+      created: 0,
       emailAccepted,
       deliveryFailed,
       failedInvitations,
@@ -936,6 +885,46 @@ router.post("/:id/send-invites", async (req: Request, res) => {
     });
   } catch (error) {
     sendError(res, 'Failed to send invites');
+  }
+});
+
+// Retry an ordinary bowler invitation by authoritative league/bowler identity.
+// No user ID or previously-created setup token is accepted here.
+router.post("/:id/send-invite/:bowlerId", async (req: Request, res) => {
+  try {
+    const leagueId = Number(singleRouteParam(req.params.id));
+    const bowlerId = Number(singleRouteParam(req.params.bowlerId));
+    if (!Number.isSafeInteger(leagueId) || leagueId <= 0 || !Number.isSafeInteger(bowlerId) || bowlerId <= 0) {
+      return sendError(res, "Invalid invitation target", 400, "INVALID_ID");
+    }
+    if (!(await hasAdminAccessToLeague(req, leagueId))) {
+      return sendError(res, "You don't have access to this league", 403, "FORBIDDEN");
+    }
+    const league = await storage.getLeague(leagueId);
+    const bowler = await storage.getBowler(bowlerId);
+    if (!league || !bowler || bowler.organizationId !== league.organizationId) {
+      return sendError(res, "Invitation target not found", 404, "NOT_FOUND");
+    }
+    const membership = (await storage.getBowlerLeagues({ leagueId }))
+      .some((entry) => entry.bowlerId === bowlerId);
+    if (!membership) return sendError(res, "Invitation target not found", 404, "NOT_FOUND");
+    const email = bowler.email?.trim().toLowerCase() ?? "";
+    if (!email) return sendSuccess(res, { emailSent: false, reason: "missing_email" });
+    if (await storage.getUserByEmail(email)) {
+      return sendSuccess(res, { emailSent: false, reason: "already_registered" });
+    }
+    const organization = league.organizationId ? await storage.getOrganization(league.organizationId) : null;
+    const outcome = await sendBowlerRegistrationInviteEmail(
+      email,
+      bowler.name.split(" ")[0],
+      organization?.name,
+      organization?.id,
+      organization?.slug,
+    );
+    return sendSuccess(res, { emailSent: outcome.accepted, reason: outcome.accepted ? "accepted" : "not_sent" });
+  } catch (error) {
+    log.error("Failed to retry ordinary registration invitation", error);
+    return sendError(res, "Failed to send invitation", 500, "SERVER_ERROR");
   }
 });
 

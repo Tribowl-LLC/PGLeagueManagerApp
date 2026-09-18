@@ -1,20 +1,18 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { randomBytes } from 'crypto';
 import { db } from '../db';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import { storage } from '../storage';
 import { sendSuccess, sendError, sanitizeUser, handleZodError, handleUserOrgError } from '../utils/api';
 import { singleRouteParam } from '../utils/route-params';
 import { hashPassword, destroyOtherSessionsForUser } from '../auth';
 import {
   sendInviteEmail,
-  sendAccountReadyEmail,
   sendTemplatedEmail,
   getBaseUrl,
   getOrgLogoUrl,
   sendPasswordChangedNotification,
 } from '../services/email';
-import type { EmailNotification } from '../services/email';
 import { passwordSchema } from '@shared/password-validation';
 import { z } from 'zod';
 import { adminWriteLimiter, inviteLimiter } from '../middleware/rate-limit';
@@ -25,7 +23,7 @@ import {
   awaitEmailDelivery,
   type EmailDeliveryOutcome,
 } from '../services/email-delivery-outcome';
-import { bowlers, users, type User, type UserRole } from '@shared/schema';
+import { bowlers, identityLinkEvents, users, type User, type UserRole } from '@shared/schema';
 import { publicAccountInvitation } from '../services/account-invitation.js';
 import {
   lockAccountCredential,
@@ -33,6 +31,12 @@ import {
 } from '../storage/account-action-requests.js';
 import { isNormalizedUserEmailConflict } from '../utils/db-errors.js';
 import { requireOrganizationAccess } from '../utils/access-control.js';
+import {
+  AccountReadyDeliveryInProgressError,
+  queueAccountReadyDeliveryJob,
+  requeueAccountReadyDeliveryJob,
+} from '../storage/account-ready-delivery-jobs.js';
+import { notifyAccountActionDeliveryChanged } from '../services/account-action-delivery-scheduler.js';
 
 const log = createLogger("OrgAdmin");
 
@@ -1119,9 +1123,8 @@ router.post('/users/:id/resend-invite', requireOrgAdminOrSystemAdmin, inviteLimi
 
 /**
  * Manually resend the account-ready message for an ordinary user whose
- * account is already linked. This is intentionally a user-selected action:
- * the first-link paths own the automatic notification and no durable queue or
- * automatic retry is introduced here.
+ * account is already linked. The request only re-opens a durable delivery
+ * intent; recipient and organization data are re-resolved by the worker.
  */
 router.post('/users/:id/resend-account-ready', requireOrgAdminOrSystemAdmin, inviteLimiter, async (req: Request, res: Response) => {
   try {
@@ -1168,40 +1171,58 @@ router.post('/users/:id/resend-account-ready', requireOrgAdminOrSystemAdmin, inv
       return sendError(res, 'Linked account is not available in this organization', 409, 'LINK_INVALID');
     }
 
-    let leagueName = '';
-    let teamName = '';
-    const [membership] = await storage.getBowlerLeagues({ bowlerId: bowler.id });
-    if (membership) {
-      const [league, team] = await Promise.all([
-        storage.getLeague(membership.leagueId),
-        storage.getTeam(membership.teamId),
-      ]);
-      if (league?.organizationId === user.organizationId) {
-        leagueName = league.name;
-        if (team?.leagueId === league.id) teamName = team.name;
-      }
+    const [latestLinkEvent] = await db
+      .select({
+        id: identityLinkEvents.id,
+        eventType: identityLinkEvents.eventType,
+        newBowlerId: identityLinkEvents.newBowlerId,
+        organizationId: identityLinkEvents.organizationId,
+      })
+      .from(identityLinkEvents)
+      .where(and(
+        eq(identityLinkEvents.subjectUserId, user.id),
+        eq(identityLinkEvents.newBowlerId, bowler.id),
+      ))
+      .orderBy(desc(identityLinkEvents.createdAt), desc(identityLinkEvents.id))
+      .limit(1);
+    if (
+      !latestLinkEvent
+      || !['link', 'admin_assignment'].includes(latestLinkEvent.eventType)
+      || latestLinkEvent.newBowlerId !== bowler.id
+      || latestLinkEvent.organizationId !== user.organizationId
+    ) {
+      return sendError(res, 'The current bowler assignment has no resendable link event', 409, 'LINK_HISTORY_UNAVAILABLE');
     }
 
-    let emailNotification: EmailNotification = 'not_sent';
-    try {
-      emailNotification = await sendAccountReadyEmail({
-        toEmail: user.email,
-        toName: user.name,
-        bowlerName: bowler.name,
-        leagueName,
-        teamName,
-        organization,
-      });
-    } catch (error) {
-      log.warn('Account-ready resend email failed (non-fatal):', error);
+    const existingJob = await queueAccountReadyDeliveryJob({
+      identityLinkEventId: latestLinkEvent.id,
+      userId: user.id,
+      bowlerId: bowler.id,
+      organizationId: user.organizationId,
+      standaloneDeliveryRequested: true,
+    });
+    const job = existingJob.kind === 'enqueued'
+      ? existingJob.job
+      : await requeueAccountReadyDeliveryJob({ identityLinkEventId: latestLinkEvent.id });
+    if (!job) {
+      return sendError(res, 'The account-ready delivery could not be queued', 409, 'DELIVERY_UNAVAILABLE');
     }
+    notifyAccountActionDeliveryChanged();
 
     return sendSuccess(res, {
       userId: user.id,
       bowlerId: bowler.id,
-      emailNotification,
+      deliveryStatus: job.status,
+      deliveryQueued: true,
+      // Retain the legacy response field for older admin clients. This
+      // "accepted" value now means the durable internal delivery intent was
+      // accepted; delivery itself is performed and retried by the worker.
+      emailNotification: 'accepted',
     });
   } catch (error) {
+    if (error instanceof AccountReadyDeliveryInProgressError) {
+      return sendError(res, 'Account-ready delivery is already in progress', 409, 'DELIVERY_IN_PROGRESS');
+    }
     log.error('Error resending account-ready email:', error);
     return sendError(res, 'Failed to resend account-ready email', 500, 'internal_error');
   }

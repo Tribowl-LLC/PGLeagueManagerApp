@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { z } from 'zod';
 import { sendError, sendSuccess, sanitizeUser, handleZodError } from '../utils/api';
 import { singleRouteParam } from '../utils/route-params';
 import { storage } from '../storage';
@@ -8,14 +9,16 @@ import { isDev } from '../config';
 import {
   sendEmailChangeConfirmation,
   sendEmailChangeNotification,
+  sendEmailChangeOldAddressApproval,
   getBaseUrl,
 } from '../services/email';
 import { requireSystemAdmin } from '../middleware/auth';
-import { isPaymentManager, requireOrganizationAccess } from '../utils/access-control.js';
+import { isOrgOrHigher, isPaymentManager, requireOrganizationAccess } from '../utils/access-control.js';
 import { syncBowlerForUser } from '../services/payment-customer-sync';
+import { comparePasswords } from '../lib/password';
 import { maskEmail } from '../utils/pii';
 import { randomBytes } from 'crypto';
-import { type PaymentSyncStatus } from '@shared/schema';
+import { emailSchema, type PaymentSyncStatus } from '@shared/schema';
 import { cacheInvalidate } from '../utils/cache';
 import { createSharedRateLimitStore } from '../utils/rate-limit-store';
 import {
@@ -28,14 +31,44 @@ import {
   applyEmailChangeRequestTxn,
   applyAdminProfileEditTxn,
   type AdminProfileEditFieldChange,
+  EmailChangeSecurityHoldError,
 } from '../services/account-lifecycle';
 import {
   awaitEmailDelivery,
   type EmailDeliveryOutcome,
 } from '../services/email-delivery-outcome';
+import {
+  getUserVerificationProvenance,
+  resetPhoneVerificationProvenance,
+} from '../services/verification-provenance.js';
+import { hasActiveIdentitySecurityHold } from '../storage/profile-claim-notifications.js';
 
 const log = createLogger('Account');
 const router = Router();
+
+// Email-change reauthentication is deliberately rate-limited across replicas.
+// A stolen authenticated session must not be able to turn the current-password
+// check into an unlimited online guessing oracle. The target and actor are
+// both part of the key so one account cannot be exhausted by requests aimed at
+// another profile, while the IP component bounds distributed account probing.
+const emailChangeReauthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: createSharedRateLimitStore('email-change-reauth'),
+  keyGenerator: (req: Request) => {
+    const actorId = (req.user as { id?: number } | undefined)?.id ?? 'unknown';
+    const targetId = singleRouteParam(req.params.id) || 'unknown';
+    return `actor:${actorId}:target:${targetId}:ip:${ipKeyGenerator(req.ip || 'unknown')}`;
+  },
+  handler: (_req, res) => sendError(
+    res,
+    'Too many email-change attempts. Please wait before trying again.',
+    429,
+    'RATE_LIMITED',
+  ),
+});
 
 // Update user profile (name/phone synchronously; email gated by confirmation).
 //
@@ -61,14 +94,15 @@ const router = Router();
 // user's login email to an attacker-controlled address. If admins ever
 // need to swap an email without confirmation, build a separate, audited
 // admin-only endpoint — do not relax this one.
-router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) => {
+router.patch('/profile/:id', requireAuth, emailChangeReauthLimiter, async (req: Request, res: Response) => {
   try {
     const userId = parseInt(singleRouteParam(req.params.id), 10);
     if (isNaN(userId)) {
       return sendError(res, 'Invalid user ID', 400, 'INVALID_ID');
     }
 
-    const user = req.user!;
+    const user = req.user;
+    if (!user) return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
     if (user.id !== userId && user.role !== 'system_admin') {
       return sendError(res, 'Unauthorized', 403, 'UNAUTHORIZED');
     }
@@ -105,7 +139,23 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
     } | undefined;
 
     if (emailRequested) {
-      const newEmail = updateData.email!.trim().toLowerCase();
+      // A self-service email reroute is a credential mutation. Require a
+      // current-password proof before creating any pending request; an admin
+      // acting on another user follows the existing audited admin path and
+      // still cannot bypass the new-address confirmation.
+      if (user.id === userId) {
+        if (!updateData.currentPassword) {
+          return sendError(res, 'Current password is required to change your email', 400, 'REAUTH_REQUIRED');
+        }
+        const passwordMatches = await comparePasswords(updateData.currentPassword, existingUser.password);
+        if (!passwordMatches) {
+          return sendError(res, 'Current password is incorrect', 400, 'INVALID_PASSWORD');
+        }
+      }
+      const newEmail = typeof updateData.email === 'string'
+        ? updateData.email.trim().toLowerCase()
+        : '';
+      if (!newEmail) return sendError(res, 'A replacement email is required', 400, 'VALIDATION_ERROR');
       const userWithEmail = await storage.getUserByEmail(newEmail);
       if (userWithEmail && userWithEmail.id !== userId) {
         return sendError(res, 'Email already in use', 400, 'EMAIL_IN_USE');
@@ -114,6 +164,17 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
       const rawToken = randomBytes(32).toString('hex');
       const tokenHash = hashEmailChangeToken(rawToken);
       const expiresAt = new Date(Date.now() + EMAIL_CHANGE_TOKEN_TTL_MS).toISOString();
+      const provenance = await getUserVerificationProvenance(existingUser.id);
+      const currentEmail = existingUser.email.trim().toLowerCase();
+      const needsOldMailboxProof = !provenance
+        || provenance.emailStatus !== 'verified'
+        || provenance.email.trim().toLowerCase() !== currentEmail;
+      const rawOldToken = needsOldMailboxProof ? randomBytes(32).toString('hex') : null;
+      const oldTokenHash = rawOldToken ? hashEmailChangeToken(rawOldToken) : null;
+      const oldTokenExpiresAt = rawOldToken
+        ? new Date(Date.now() + EMAIL_CHANGE_TOKEN_TTL_MS).toISOString()
+        : null;
+      const requestedAt = new Date().toISOString();
 
       // Supersede any older pending request and create the new one
       // (and, when adminInitiated, the audit row) in a single
@@ -125,6 +186,13 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
         newEmail,
         tokenHash,
         expiresAt,
+        oldEmail: existingUser.email,
+        oldEmailTokenHash: oldTokenHash,
+        oldEmailTokenExpiresAt: oldTokenExpiresAt,
+        oldEmailApprovedAt: needsOldMailboxProof ? null : requestedAt,
+        reauthenticatedAt: user.id === userId ? requestedAt : null,
+        credentialGeneration: existingUser.credentialGeneration,
+        flowVersion: 2,
         audit: adminInitiated
           ? {
               actorUserId: user.id,
@@ -134,13 +202,18 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
           : null,
       });
 
-      // Build confirmation URL using the org's subdomain when known so the
-      // resulting click lands in the right tenant.
+      // Build confirmation URLs from the canonical deployment host.  The
+      // production singleton rejects organization-subdomain hosts with HTTP
+      // 421, so organization context is retained in the request/session rather
+      // than encoded as an email-link hostname.
       const org = existingUser.organizationId
         ? await storage.getOrganization(existingUser.organizationId)
         : null;
       const baseUrl = getBaseUrl(org);
       const confirmUrl = `${baseUrl}/confirm-email-change?token=${rawToken}`;
+      const oldApprovalUrl = rawOldToken
+        ? `${baseUrl}/confirm-email-change?kind=old&token=${rawOldToken}`
+        : null;
 
       // The request is already committed. Bound both independent provider
       // calls so the API cannot hang, and preserve the pending request when
@@ -152,11 +225,18 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
           existingUser.name,
           confirmUrl,
         )),
-        awaitEmailDelivery(() => sendEmailChangeNotification(
-          existingUser.email,
-          existingUser.name,
-          isDev ? newEmail : maskEmail(newEmail),
-        )),
+        awaitEmailDelivery(() => rawOldToken && oldApprovalUrl
+          ? sendEmailChangeOldAddressApproval(
+            existingUser.email,
+            existingUser.name,
+            isDev ? newEmail : maskEmail(newEmail),
+            oldApprovalUrl,
+          )
+          : sendEmailChangeNotification(
+            existingUser.email,
+            existingUser.name,
+            isDev ? newEmail : maskEmail(newEmail),
+          )),
       ]);
       emailChangeDelivery = { confirmation, notification };
 
@@ -226,6 +306,18 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
     }
 
     let updatedUser = existingUser;
+    if (
+      updateData.phone !== undefined
+      && updateData.phone !== existingUser.phone
+    ) {
+      // The signup phone proved possession only at registration. Clear that
+      // proof before accepting a later edit so a changed number cannot inherit
+      // the original verification timestamp/source.
+      await resetPhoneVerificationProvenance({
+        userId,
+        phone: updateData.phone ?? null,
+      });
+    }
     if (Object.keys(storagePatch).length > 0) {
       if (profileFieldChanges.length > 0) {
         // Atomic admin-initiated edit: user update + per-field audit
@@ -282,8 +374,104 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
       ...(emailChangeDelivery ? { emailChangeDelivery } : {}),
     });
   } catch (error) {
+    if (error instanceof EmailChangeSecurityHoldError) {
+      return sendError(res, error.message, 423, 'IDENTITY_SECURITY_HOLD');
+    }
     log.error('Error updating user:', error);
     return sendError(res, 'Internal server error', 500, 'SERVER_ERROR');
+  }
+});
+
+/**
+ * Admin-assisted recovery for a user who cannot access the old mailbox.
+ * This is intentionally separate from the ordinary profile PATCH: only an
+ * org/system administrator may waive old-mailbox proof, the actor must
+ * reauthenticate with their own password, and the replacement mailbox still
+ * has to confirm the pending request before the login address changes.
+ */
+router.post('/profile/:id/email-recovery', requireAuth, emailChangeReauthLimiter, async (req: Request, res: Response) => {
+  try {
+    const userId = Number.parseInt(singleRouteParam(req.params.id), 10);
+    const actor = req.user;
+    if (!actor) return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      return sendError(res, 'Invalid user ID', 400, 'INVALID_ID');
+    }
+    if (!isOrgOrHigher(actor) || actor.id === userId) {
+      return sendError(res, 'Administrator-assisted recovery is required for another user', 403, 'FORBIDDEN');
+    }
+    const parsed = z.object({
+      newEmail: emailSchema,
+      currentPassword: z.string().min(1, 'Current password is required'),
+      reason: z.string().trim().min(1, 'A recovery reason is required').max(500),
+    }).safeParse(req.body);
+    if (!parsed.success) return handleZodError(res, parsed.error);
+
+    const target = await storage.getUser(userId);
+    if (!target) return sendError(res, 'User not found', 404, 'USER_NOT_FOUND');
+    if (!requireOrganizationAccess(req, target.organizationId, 'user', userId)) {
+      return sendError(res, 'You do not have access to recover this user', 403, 'FORBIDDEN');
+    }
+    if (await hasActiveIdentitySecurityHold(target.id)) {
+      return sendError(res, 'This account is temporarily restricted while a profile-security report is reviewed.', 423, 'IDENTITY_SECURITY_HOLD');
+    }
+
+    const actorRecord = await storage.getUser(actor.id);
+    if (!actorRecord?.password || !(await comparePasswords(parsed.data.currentPassword, actorRecord.password))) {
+      return sendError(res, 'Current administrator password is incorrect', 400, 'INVALID_PASSWORD');
+    }
+
+    const newEmail = parsed.data.newEmail.trim().toLowerCase();
+    const existingEmailOwner = await storage.getUserByEmail(newEmail);
+    if (existingEmailOwner && existingEmailOwner.id !== target.id) {
+      return sendError(res, 'Email already in use', 400, 'EMAIL_IN_USE');
+    }
+    if (newEmail === target.email.trim().toLowerCase()) {
+      return sendError(res, 'The replacement email must be different from the current email', 400, 'EMAIL_UNCHANGED');
+    }
+
+    const rawToken = randomBytes(32).toString('hex');
+    const requestedAt = new Date().toISOString();
+    await applyEmailChangeRequestTxn({
+      userId: target.id,
+      newEmail,
+      tokenHash: hashEmailChangeToken(rawToken),
+      expiresAt: new Date(Date.now() + EMAIL_CHANGE_TOKEN_TTL_MS).toISOString(),
+      oldEmail: target.email,
+      oldEmailTokenHash: null,
+      oldEmailTokenExpiresAt: null,
+      // The waiver is explicit and attributable to the reauthenticated admin;
+      // the destination mailbox still has to complete its own proof.
+      oldEmailApprovedAt: requestedAt,
+      reauthenticatedAt: requestedAt,
+      credentialGeneration: target.credentialGeneration,
+      flowVersion: 2,
+      audit: {
+        actorUserId: actor.id,
+        oldEmailMasked: maskEmail(target.email),
+        newEmailMasked: maskEmail(newEmail),
+        reason: parsed.data.reason,
+        oldMailboxWaived: true,
+      },
+    });
+
+    const org = target.organizationId ? await storage.getOrganization(target.organizationId) : null;
+    const baseUrl = getBaseUrl(org);
+    const confirmUrl = `${baseUrl}/confirm-email-change?token=${rawToken}`;
+    const [confirmation, notification] = await Promise.all([
+      awaitEmailDelivery(() => sendEmailChangeConfirmation(newEmail, target.name, confirmUrl)),
+      awaitEmailDelivery(() => sendEmailChangeNotification(target.email, target.name, isDev ? newEmail : maskEmail(newEmail))),
+    ]);
+    return sendSuccess(res, {
+      emailChangeRequested: true,
+      emailChangeDelivery: { confirmation, notification },
+    }, 202);
+  } catch (error) {
+    if (error instanceof EmailChangeSecurityHoldError) {
+      return sendError(res, error.message, 423, 'IDENTITY_SECURITY_HOLD');
+    }
+    log.error('Error creating administrator-assisted email recovery:', error);
+    return sendError(res, 'Unable to start administrator-assisted email recovery', 500, 'SERVER_ERROR');
   }
 });
 
@@ -522,7 +710,8 @@ router.post(
   requireAuth,
   async (req: Request, res: Response) => {
     try {
-      const user = req.user!;
+      const user = req.user;
+      if (!user) return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
       if (isPaymentManager(user)) {
         return sendError(res, 'Staff accounts cannot sync bowler profiles', 403, 'FORBIDDEN');
       }

@@ -20,6 +20,7 @@ vi.mock('../../server/config', () => ({
     BLOCK_EMAIL_DOMAINS: [],
   },
   isDev: false,
+  isProdLike: false,
 }));
 
 vi.mock('../../server/storage', () => ({

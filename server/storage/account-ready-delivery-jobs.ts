@@ -15,6 +15,13 @@ import {
 
 export type AccountReadyDeliveryExecutor = AccountActionExecutor;
 
+export class AccountReadyDeliveryInProgressError extends Error {
+  constructor() {
+    super("Account-ready delivery is already in progress");
+    this.name = "AccountReadyDeliveryInProgressError";
+  }
+}
+
 export type AccountReadyEnqueueResult =
   | { kind: "enqueued"; job: AccountReadyDeliveryJob }
   | { kind: "existing"; job: AccountReadyDeliveryJob };
@@ -39,6 +46,7 @@ export async function queueAccountReadyDeliveryJob(input: {
   bowlerId: number;
   organizationId: number;
   expiresAt?: Date;
+  standaloneDeliveryRequested?: boolean;
 }, executor?: AccountReadyDeliveryExecutor): Promise<AccountReadyEnqueueResult> {
   const expiresAt = input.expiresAt ?? new Date(Date.now() + ACCOUNT_READY_DELIVERY_RETENTION_MS);
   if (
@@ -66,6 +74,7 @@ export async function queueAccountReadyDeliveryJob(input: {
         userId: input.userId,
         bowlerId: input.bowlerId,
         organizationId: input.organizationId,
+        standaloneDeliveryRequested: input.standaloneDeliveryRequested ?? false,
         expiresAt: expiresAt.toISOString(),
       })
       .onConflictDoNothing({ target: accountReadyDeliveryJobs.identityLinkEventId })
@@ -85,6 +94,56 @@ export async function queueAccountReadyDeliveryJob(input: {
     return "transaction" in executor ? executor.transaction(run) : run(executor);
   }
   return db.transaction(run);
+}
+
+/**
+ * Re-open the latest account-ready intent for an explicit administrator
+ * resend. This preserves the immutable identity-link event while resetting
+ * only the delivery lifecycle; the worker still revalidates that the event
+ * remains the user's current link before sending.
+ */
+export async function requeueAccountReadyDeliveryJob(input: {
+  identityLinkEventId: number;
+}): Promise<AccountReadyDeliveryJob | undefined> {
+  if (!Number.isSafeInteger(input.identityLinkEventId) || input.identityLinkEventId <= 0) {
+    throw new Error("Invalid account-ready identity-link event ID");
+  }
+  return db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select()
+      .from(accountReadyDeliveryJobs)
+      .where(eq(accountReadyDeliveryJobs.identityLinkEventId, input.identityLinkEventId))
+      .limit(1)
+      .for("update");
+    if (!existing) return undefined;
+    if (
+      existing.status === "processing"
+      && existing.leaseExpiresAt
+      && Date.parse(existing.leaseExpiresAt) > Date.now()
+    ) {
+      throw new AccountReadyDeliveryInProgressError();
+    }
+    const [requeued] = await tx
+      .update(accountReadyDeliveryJobs)
+      .set({
+        status: "pending",
+        standaloneDeliveryRequested: true,
+        attemptCount: 0,
+        nextAttemptAt: new Date().toISOString(),
+        lastAttemptAt: null,
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        providerMessageId: null,
+        lastErrorCode: null,
+        expiresAt: new Date(Date.now() + ACCOUNT_READY_DELIVERY_RETENTION_MS).toISOString(),
+        completedAt: null,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(accountReadyDeliveryJobs.id, existing.id))
+      .returning();
+    return requeued;
+  });
 }
 
 /** Earliest account-ready intent or lease-recovery due time for the scheduler. */

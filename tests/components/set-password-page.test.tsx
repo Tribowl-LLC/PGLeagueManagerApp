@@ -265,7 +265,7 @@ describe('SetPasswordPage throttle UX (task #418)', () => {
   });
 });
 
-describe('SetPasswordPage preferred-language picker (task #420)', () => {
+describe('SetPasswordPage English-only onboarding', () => {
   // Capture every body the form posts so we can assert what
   // landed on the wire after each interaction.
   let capturedBody: Record<string, unknown> | null;
@@ -315,61 +315,16 @@ describe('SetPasswordPage preferred-language picker (task #420)', () => {
 
     await fillAndSubmit(user);
 
+    expect(screen.queryByTestId('select-set-password-language')).not.toBeInTheDocument();
     await waitFor(() => expect(capturedBody).not.toBeNull());
     expect(capturedBody).toMatchObject({ password: STRONG_PASSWORD });
     expect(capturedBody && 'preferredLanguage' in capturedBody).toBe(false);
   });
 
-  it('sends the chosen locale code when the user picks a language', async () => {
-    // Brand-new invitee picks Spanish before clicking "Set
-    // Password" — the wire payload must carry preferredLanguage:
-    // 'es' so the server persists it AND uses it as the locale on
-    // the very first onboarding email.
-    const user = userEvent.setup();
+  it('does not render a preferred-language selector for legacy password setup', async () => {
     renderPage();
-
-    const pwInput = await screen.findByLabelText(/^Password$/i);
-    const confirmInput = await screen.findByLabelText(/confirm password/i);
-    await user.type(pwInput, STRONG_PASSWORD);
-    await user.type(confirmInput, STRONG_PASSWORD);
-
-    // Open the language Select and click the Spanish option.
-    await user.click(screen.getByTestId('select-set-password-language'));
-    await user.click(await screen.findByTestId('option-set-password-language-es'));
-
-    await user.click(screen.getByTestId('button-set-password-submit'));
-
-    await waitFor(() => expect(capturedBody).not.toBeNull());
-    expect(capturedBody).toMatchObject({ preferredLanguage: 'es' });
-  });
-
-  it('sends preferredLanguage: null when the user switches to a language and back to Auto', async () => {
-    // Models a returning user who initially picks Spanish, then
-    // changes their mind and clears it back to Auto before
-    // submitting. The final wire value must be an explicit null —
-    // that's the signal the server distinguishes from "field
-    // omitted" and uses to CLEAR the stored column. (Radix Select
-    // only fires onValueChange when the value actually changes,
-    // so we can't test "click Auto when Auto is already
-    // selected"; that path correctly stays untouched and would
-    // omit the field.)
-    const user = userEvent.setup();
-    renderPage();
-
-    const pwInput = await screen.findByLabelText(/^Password$/i);
-    const confirmInput = await screen.findByLabelText(/confirm password/i);
-    await user.type(pwInput, STRONG_PASSWORD);
-    await user.type(confirmInput, STRONG_PASSWORD);
-
-    await user.click(screen.getByTestId('select-set-password-language'));
-    await user.click(await screen.findByTestId('option-set-password-language-es'));
-    await user.click(screen.getByTestId('select-set-password-language'));
-    await user.click(await screen.findByTestId('option-set-password-language-auto'));
-
-    await user.click(screen.getByTestId('button-set-password-submit'));
-
-    await waitFor(() => expect(capturedBody).not.toBeNull());
-    expect(capturedBody).toHaveProperty('preferredLanguage', null);
+    expect(await screen.findByText(/Set Your Password/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('select-set-password-language')).not.toBeInTheDocument();
   });
 });
 

@@ -33,7 +33,9 @@ import financialsRouter from './financials.js';
 import rosterPaymentsRouter from './roster-payments.js';
 import rosterStandingAutopayRouter from './roster-standing-autopay.js';
 import financialsF5Router from './financials-f5.js';
+import profileClaimsRouter from './profile-claims.js';
 import { requireAuth, requireOrgAdmin, requireSystemAdmin, requirePasswordRotated } from '../middleware/auth.js';
+import { requireNoIdentitySecurityHold } from '../middleware/identity-security-hold.js';
 import { createLogger } from '../logger';
 import { isSingletonOrganizationMode } from '../config';
 
@@ -110,6 +112,9 @@ export function registerRoutes(app: Express): void {
   registerAuthRoutes(app);
 
   app.use('/api/organizations', organizationsPublicRouter);
+  // Claim-report GET/POST uses the report capability and a stateless CSRF
+  // proof; it intentionally does not require a reporter login.
+  app.use('/api/profile-claims', profileClaimsRouter);
   // Task #704: one-click accept/decline for bowler-payment-link invites.
   // Mounted BEFORE requirePasswordRotated/requireAuth because the link
   // recipient may not be logged in (or may be logged in as a different
@@ -126,6 +131,7 @@ export function registerRoutes(app: Express): void {
   // flag is cleared. See the middleware doc for the full allowlist
   // and the security rationale.
   app.use('/api', requirePasswordRotated);
+  app.use('/api', requireNoIdentitySecurityHold);
 
   // Business Settings is an authenticated, Owner-only surface. It must be
   // mounted after the forced-password-rotation gate so a recently reset

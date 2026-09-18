@@ -86,13 +86,34 @@ async function requestJson(
   return { response, body: await response.json() as JsonObject };
 }
 
+async function requestJsonWithCsrf(
+  path: string,
+  init: RequestInit = {},
+  cookie?: string,
+): Promise<{ response: Response; body: JsonObject }> {
+  // Registration initiation is session-mutating and now requires the same
+  // double-submit CSRF proof as the rest of the public mutations.  Obtain the
+  // token on the exact host used for the POST so tenant resolution remains
+  // part of the test boundary.
+  const csrf = await requestJson('/api/csrf-token', {
+    headers: init.headers,
+  }, cookie);
+  const csrfToken = typeof csrf.body.data?.token === 'string' ? csrf.body.data.token : '';
+  expect(csrfToken).toBeTruthy();
+  const csrfCookie = cookiesFrom(csrf.response);
+  const headers = new Headers(init.headers);
+  headers.set('x-csrf-token', csrfToken);
+  const mergedCookie = [cookie, csrfCookie].filter(Boolean).join('; ');
+  return requestJson(path, { ...init, headers }, mergedCookie || undefined);
+}
+
 async function register(input: {
   email: string;
   name?: string;
   phone?: string;
 }): Promise<{ response: Response; body: JsonObject; cookies: string }> {
   return withSoleActiveOrganization(organizationId, async () => {
-    const result = await requestJson("/api/auth/register", {
+    const result = await requestJsonWithCsrf("/api/auth/register", {
       method: "POST",
       body: JSON.stringify({
         email: input.email,
@@ -112,7 +133,7 @@ async function registerAtCanonicalRoot(input: {
   bodyExtras?: Record<string, unknown>;
 }): Promise<{ response: Response; body: JsonObject; cookies: string }> {
   const { host, bodyExtras, ...fields } = input;
-  const result = await requestJson("/api/auth/register", {
+  const result = await requestJsonWithCsrf("/api/auth/register", {
     method: "POST",
     headers: host ? { Host: host } : undefined,
     body: JSON.stringify({
@@ -134,7 +155,7 @@ async function registerAtTenantHost(
     bodyExtras?: Record<string, unknown>;
   },
 ): Promise<{ response: Response; body: JsonObject; cookies: string }> {
-  const result = await requestJson(registrationPath("/api/auth/register", slug), {
+  const result = await requestJsonWithCsrf(registrationPath("/api/auth/register", slug), {
     method: "POST",
     headers: { "X-Forwarded-Host": `${slug}.${TEST_APP_DOMAIN}` },
     body: JSON.stringify({

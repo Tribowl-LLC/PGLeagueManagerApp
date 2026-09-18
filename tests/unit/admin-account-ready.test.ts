@@ -67,6 +67,9 @@ const mockGetOrganization = vi.fn();
 const mockGetBowlerLeagues = vi.fn(async () => []);
 const mockGetLeague = vi.fn(async () => undefined);
 const mockGetTeam = vi.fn(async () => undefined);
+const mockQueueAccountReadyDeliveryJob = vi.fn();
+const mockRequeueAccountReadyDeliveryJob = vi.fn();
+const mockDbSelect = vi.fn();
 
 vi.mock('../../server/services/email', () => ({
   sendAccountReadyEmail: (...args: unknown[]) =>
@@ -89,9 +92,23 @@ vi.mock('../../server/storage', () => ({
   },
 }));
 
+vi.mock('../../server/storage/account-ready-delivery-jobs', () => ({
+  AccountReadyDeliveryInProgressError: class AccountReadyDeliveryInProgressError extends Error {
+    constructor() {
+      super('Account-ready delivery is already in progress');
+      this.name = 'AccountReadyDeliveryInProgressError';
+    }
+  },
+  queueAccountReadyDeliveryJob: (...args: unknown[]) =>
+    mockQueueAccountReadyDeliveryJob.apply(null, args as never),
+  requeueAccountReadyDeliveryJob: (...args: unknown[]) =>
+    mockRequeueAccountReadyDeliveryJob.apply(null, args as never),
+}));
+
 vi.mock('../../server/db', () => ({
   db: {
     transaction: vi.fn(),
+    select: (...args: unknown[]) => mockDbSelect.apply(null, args as never),
   },
   pool: {},
 }));
@@ -166,6 +183,38 @@ beforeEach(() => {
   mockGetTeam.mockResolvedValue(undefined);
   mockSendAccountReadyEmail.mockReset();
   mockSendAccountReadyEmail.mockResolvedValue('accepted');
+  mockQueueAccountReadyDeliveryJob.mockReset();
+  mockQueueAccountReadyDeliveryJob.mockResolvedValue({
+    kind: 'enqueued',
+    job: {
+      id: 901,
+      identityLinkEventId: 801,
+      userId: TARGET_USER.id,
+      bowlerId: TARGET_BOWLER.id,
+      organizationId: TARGET_USER.organizationId,
+      status: 'pending',
+    },
+  });
+  mockRequeueAccountReadyDeliveryJob.mockReset();
+  mockRequeueAccountReadyDeliveryJob.mockResolvedValue({
+    id: 901,
+    status: 'pending',
+  });
+  mockDbSelect.mockReset();
+  mockDbSelect.mockReturnValue({
+    from: () => ({
+      where: () => ({
+        orderBy: () => ({
+          limit: async () => [{
+            id: 801,
+            eventType: 'admin_assignment',
+            newBowlerId: TARGET_BOWLER.id,
+            organizationId: TARGET_USER.organizationId,
+          }],
+        }),
+      }),
+    }),
+  });
 });
 
 async function resend(id: string | number, body: unknown = {}) {
@@ -190,28 +239,53 @@ describe('POST /api/organization-admin/users/:id/resend-account-ready', () => {
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
     expect(body.data.emailNotification).toBe('accepted');
+    expect(body.data.deliveryQueued).toBe(true);
     expect(mockGetUser).toHaveBeenCalledWith(TARGET_USER.id);
     expect(mockGetBowler).toHaveBeenCalledWith(TARGET_USER.bowlerId);
     expect(mockGetOrganization).toHaveBeenCalledWith(TARGET_USER.organizationId);
-    expect(mockSendAccountReadyEmail).toHaveBeenCalledWith({
-      toEmail: TARGET_USER.email,
-      toName: TARGET_USER.name,
-      bowlerName: TARGET_BOWLER.name,
-      leagueName: '',
-      teamName: '',
-      organization: TARGET_ORGANIZATION,
+    expect(mockQueueAccountReadyDeliveryJob).toHaveBeenCalledWith({
+      identityLinkEventId: 801,
+      userId: TARGET_USER.id,
+      bowlerId: TARGET_BOWLER.id,
+      organizationId: TARGET_USER.organizationId,
+      standaloneDeliveryRequested: true,
     });
+    expect(mockSendAccountReadyEmail).not.toHaveBeenCalled();
   });
 
-  it('returns not_sent while preserving success when the provider/helper rejects', async () => {
-    mockSendAccountReadyEmail.mockResolvedValue('not_sent');
+  it('reopens an existing durable delivery intent for an explicit resend', async () => {
+    mockQueueAccountReadyDeliveryJob.mockResolvedValue({
+      kind: 'existing',
+      job: { id: 901, status: 'failed' },
+    });
 
     const response = await resend(TARGET_USER.id);
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
-    expect(body.data.emailNotification).toBe('not_sent');
+    expect(body.data.emailNotification).toBe('accepted');
+    expect(body.data.deliveryQueued).toBe(true);
+    expect(mockRequeueAccountReadyDeliveryJob).toHaveBeenCalledWith({ identityLinkEventId: 801 });
+    expect(mockSendAccountReadyEmail).not.toHaveBeenCalled();
+  });
+
+  it('returns a conflict when the durable delivery lease is active', async () => {
+    const { AccountReadyDeliveryInProgressError } = await import(
+      '../../server/storage/account-ready-delivery-jobs'
+    );
+    mockQueueAccountReadyDeliveryJob.mockResolvedValue({
+      kind: 'existing',
+      job: { id: 901, status: 'processing' },
+    });
+    mockRequeueAccountReadyDeliveryJob.mockRejectedValue(new AccountReadyDeliveryInProgressError());
+
+    const response = await resend(TARGET_USER.id);
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.error.code).toBe('DELIVERY_IN_PROGRESS');
+    expect(mockSendAccountReadyEmail).not.toHaveBeenCalled();
   });
 
   it('rejects an unlinked ordinary account without dispatching', async () => {
@@ -244,7 +318,8 @@ describe('POST /api/organization-admin/users/:id/resend-account-ready', () => {
 
     expect(response.status).toBe(200);
     expect(body.data.emailNotification).toBe('accepted');
-    expect(mockSendAccountReadyEmail).toHaveBeenCalledTimes(1);
+    expect(mockQueueAccountReadyDeliveryJob).toHaveBeenCalledTimes(1);
+    expect(mockSendAccountReadyEmail).not.toHaveBeenCalled();
   });
 
   it('rejects elevated-role targets and malformed ids', async () => {

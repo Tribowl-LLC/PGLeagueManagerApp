@@ -316,6 +316,7 @@ export interface IDeletionRequestStorage {
 export interface IEmailChangeRequestStorage {
   createEmailChangeRequest(data: InsertEmailChangeRequest): Promise<EmailChangeRequest>;
   getEmailChangeRequestByTokenHash(tokenHash: string): Promise<EmailChangeRequest | undefined>;
+  getEmailChangeRequestByOldTokenHash(tokenHash: string): Promise<EmailChangeRequest | undefined>;
   consumeEmailChangeRequest(id: number): Promise<void>;
   claimEmailChangeRequest(tokenHash: string): Promise<EmailChangeRequest | undefined>;
   invalidatePendingEmailChangeRequestsForUser(

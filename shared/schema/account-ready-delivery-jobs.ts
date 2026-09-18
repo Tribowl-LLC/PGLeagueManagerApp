@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   index,
   integer,
@@ -52,6 +53,12 @@ export const accountReadyDeliveryJobs = pgTable("account_ready_delivery_jobs", {
   status: text("status", { enum: ACCOUNT_READY_DELIVERY_JOB_STATUSES })
     .notNull()
     .default("pending"),
+  // Explicit administrator resends must remain standalone even when the
+  // profile-claim notice targets the same mailbox.  This durable flag keeps
+  // that intent across worker restarts and retry scheduling.
+  standaloneDeliveryRequested: boolean("standalone_delivery_requested")
+    .notNull()
+    .default(false),
   attemptCount: integer("attempt_count").notNull().default(0),
   nextAttemptAt: timestamp("next_attempt_at", { mode: "string" }).notNull().defaultNow(),
   lastAttemptAt: timestamp("last_attempt_at", { mode: "string" }),
@@ -116,6 +123,7 @@ export const insertAccountReadyDeliveryJobSchema = createInsertSchema(accountRea
   .omit({
     id: true,
     status: true,
+    standaloneDeliveryRequested: true,
     attemptCount: true,
     nextAttemptAt: true,
     lastAttemptAt: true,

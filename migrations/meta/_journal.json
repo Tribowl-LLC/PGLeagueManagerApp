@@ -330,6 +330,27 @@
       "when": 1789689082378,
       "tag": "0046_account_ready_delivery_queue",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1789757028149,
+      "tag": "0047_profile_claim_security_safeguards",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1789758170059,
+      "tag": "0048_sms_otp_registration_and_email_safeguards",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1789769091560,
+      "tag": "0049_account_ready_standalone_resend",
+      "breakpoints": true
     }
   ]
 }

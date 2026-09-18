@@ -52,6 +52,12 @@ import {
   listEmailDeliveryAlerts,
   toEmailDeliveryAlertDto,
 } from '../storage/email-delivery-alerts';
+import {
+  listIdentitySecurityHolds,
+  resolveIdentitySecurityHold,
+} from '../storage/profile-claim-notifications';
+import { destroyAllSessionsForUser } from '../auth.js';
+import { notifyAccountActionDeliveryChanged } from '../services/account-action-delivery-scheduler.js';
 
 const log = createLogger("SystemAdmin");
 
@@ -502,15 +508,16 @@ router.post('/orphaned-data-audits/:id/undo', requireAdmin, async (req: Request,
     if (audit.organizationId === null) {
       return sendError(res, 'Audit row is missing the org it reassigned to; cannot undo safely', 409, 'AUDIT_INCOMPLETE');
     }
+    const organizationId = audit.organizationId;
     if (audit.resourceType !== 'leagues' && audit.resourceType !== 'users') {
       return sendError(res, 'Only league or user reassigns can be undone', 400, 'UNDO_UNSUPPORTED');
     }
 
     await db.transaction(async (tx) => {
       if (audit.resourceType === 'leagues') {
-        await undoReassignLeague(audit.resourceId, audit.organizationId!, audit.previousOrganizationId, tx);
+        await undoReassignLeague(audit.resourceId, organizationId, audit.previousOrganizationId, tx);
       } else {
-        await undoReassignUser(audit.resourceId, audit.organizationId!, audit.previousOrganizationId, tx);
+        await undoReassignUser(audit.resourceId, organizationId, audit.previousOrganizationId, tx);
       }
       const undoEntry = await recordOrphanCleanupAudit(
         {
@@ -564,6 +571,65 @@ router.get('/admin-email-change-audits', requireAdmin, async (req: Request, res:
   } catch (error) {
     log.error('Error listing admin email change audits:', error);
     sendError(res, 'Failed to list admin email change audits', 500, 'SERVER_ERROR');
+  }
+});
+
+// Anonymous "This wasn't me" reports are visible only to system admins and
+// remain durable audit rows until explicitly resolved or rejected. The
+// reporter never authenticates and never receives the target account session.
+router.get('/profile-claims/holds', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const activeOnly = req.query.activeOnly !== 'false';
+    const rows = await listIdentitySecurityHolds({
+      organizationId: req.organizationContextId,
+      activeOnly,
+    });
+    return sendSuccess(res, { rows });
+  } catch (error) {
+    log.error('Error listing profile-claim security holds:', error);
+    return sendError(res, 'Failed to list profile-claim security holds', 500, 'SERVER_ERROR');
+  }
+});
+
+router.post('/profile-claims/holds/:id/resolve', requireAdmin, async (req: Request, res: Response) => {
+  const holdId = Number(singleRouteParam(req.params.id));
+  if (!Number.isSafeInteger(holdId) || holdId <= 0) return sendError(res, 'Invalid hold ID', 400, 'INVALID_ID');
+  const parsed = z.object({
+    status: z.enum(['resolved', 'rejected']),
+    assignmentAction: z.enum(['uphold', 'revoke']).optional(),
+    resolution: z.string().trim().min(1).max(500),
+  }).safeParse(req.body);
+  if (!parsed.success) return handleZodError(res, parsed.error);
+  const actorUserId = req.user?.id;
+  if (!actorUserId) return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
+  try {
+    const row = await resolveIdentitySecurityHold({
+      holdId,
+      actorUserId,
+      organizationId: req.organizationContextId,
+      status: parsed.data.status,
+      assignmentAction: parsed.data.assignmentAction,
+      resolution: parsed.data.resolution,
+    });
+    if (!row) return sendError(res, 'Security hold not found or already resolved', 404, 'NOT_FOUND');
+    try {
+      await destroyAllSessionsForUser(row.userId);
+    } catch (sessionError) {
+      log.error('Failed to destroy sessions after profile-claim hold resolution:', {
+        userId: row.userId,
+        errorCode: sessionError instanceof Error ? sessionError.name : 'unknown',
+      });
+    }
+    notifyAccountActionDeliveryChanged();
+    log.info('Profile-claim security hold resolved', {
+      holdId: row.id,
+      actorUserId,
+      status: row.status,
+    });
+    return sendSuccess(res, row);
+  } catch (error) {
+    log.error('Error resolving profile-claim security hold:', error);
+    return sendError(res, 'Failed to resolve profile-claim security hold', 500, 'SERVER_ERROR');
   }
 });
 

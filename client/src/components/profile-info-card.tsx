@@ -47,6 +47,7 @@ const profileSchema = z.object({
   name: z.string().min(2, "Name must be at least 2 characters"),
   email: z.string().email("Please enter a valid email"),
   phone: z.string().nullable().optional(),
+  currentPassword: z.string().optional(),
   // Captured as a string by the form (Select can't bind null). The
   // mutation below maps the LANGUAGE_AUTO sentinel back to null
   // before sending the payload.
@@ -229,13 +230,14 @@ export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithS
 
   const form = useForm<ProfileFormData>({
     resolver: zodResolver(profileSchema),
-    defaultValues: { name: "", email: "", phone: "", preferredLanguage: LANGUAGE_AUTO },
+    defaultValues: { name: "", email: "", phone: "", currentPassword: "", preferredLanguage: LANGUAGE_AUTO },
     values: {
       name: currentUser.name,
       email: emailChangeEditMode === "retry" && pendingEmailChange !== null && pendingEmailChange.confirmation !== "accepted"
         ? pendingEmailChange.requestedEmail
         : currentUser.email,
       phone: currentUser.phone || "",
+      currentPassword: "",
       // null/empty in the DB = "auto / follow default", which the
       // Select represents with a non-empty sentinel. Any legacy /
       // unknown code is also coerced to AUTO so a save isn't blocked
@@ -252,6 +254,7 @@ export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithS
         ? pendingEmailChange.requestedEmail
         : currentUser.email,
       phone: currentUser.phone || "",
+      currentPassword: "",
       preferredLanguage: normalizeStoredLanguage(currentUser.preferredLanguage),
     });
     setIsEditing(true);
@@ -264,6 +267,7 @@ export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithS
         name: data.name,
         email: data.email,
         phone: trimmedPhone === "" ? null : trimmedPhone,
+        ...(data.currentPassword?.trim() ? { currentPassword: data.currentPassword } : {}),
         // Map the Select sentinel back to null so the backend stores
         // "no preference" rather than a bogus locale code.
         preferredLanguage: languageSelectionToWire(data.preferredLanguage),

@@ -32,6 +32,7 @@ function makeJob(overrides: Partial<AccountReadyDeliveryJob> = {}): AccountReady
     bowlerId: 902,
     organizationId: 903,
     status: "processing",
+    standaloneDeliveryRequested: false,
     attemptCount: 1,
     nextAttemptAt: NOW,
     lastAttemptAt: NOW,

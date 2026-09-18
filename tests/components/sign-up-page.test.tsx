@@ -106,7 +106,7 @@ describe("SignUpPage API outcomes", () => {
     }));
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({
       title: "Registration request received",
-      description: expect.stringMatching(/if registration can continue/i),
+      description: expect.stringMatching(/six-digit verification code|password-reset instructions/i),
     }));
   });
 

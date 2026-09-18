@@ -23,6 +23,7 @@ import {
   AccountReadyDeliveryWorker,
   type AccountReadyDeliveryRunResult,
 } from './account-ready-delivery-worker';
+import { ProfileClaimNotificationWorker } from './profile-claim-notification-worker';
 
 export function emailProviderOutcome(result: EmailDispatchResult, action: "password_reset" | "account_registration") {
   if (result.accepted) {
@@ -144,11 +145,13 @@ export async function runAccountReadyFairSweep(input: {
 }
 
 export const accountReadyDeliveryWorker = new AccountReadyDeliveryWorker();
+export const profileClaimNotificationWorker = new ProfileClaimNotificationWorker();
 
 export async function startAccountActionDelivery(): Promise<void> {
   await accountActionDeliveryWorker.start();
   await accountGuidanceDeliveryWorker.start();
   await accountReadyDeliveryWorker.start();
+  await profileClaimNotificationWorker.start();
   await startAccountActionDeliveryScheduler(async () => {
     await accountActionDeliveryWorker.recoverOnStartup();
     await accountActionDeliveryWorker.runUntilIdle();
@@ -164,6 +167,8 @@ export async function startAccountActionDelivery(): Promise<void> {
       runAccountReadyOne: () => accountReadyDeliveryWorker.runOne(),
       maxJobs: ACCOUNT_READY_SWEEP_BATCH_SIZE,
     });
+    await profileClaimNotificationWorker.recoverOnStartup();
+    await profileClaimNotificationWorker.runUntilIdle({ maxJobs: ACCOUNT_READY_SWEEP_BATCH_SIZE });
   });
 }
 
@@ -172,4 +177,5 @@ export async function stopAccountActionDelivery(): Promise<void> {
   await accountActionDeliveryWorker.stopAndDrain();
   await accountGuidanceDeliveryWorker.stopAndDrain();
   await accountReadyDeliveryWorker.stopAndDrain();
+  await profileClaimNotificationWorker.stopAndDrain();
 }

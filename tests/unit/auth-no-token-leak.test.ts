@@ -171,6 +171,10 @@ vi.mock('../../server/middleware/csrf', () => ({
   csrfProtection: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 
+vi.mock('../../server/storage/profile-claim-notifications.js', () => ({
+  hasActiveIdentitySecurityHold: vi.fn(async () => false),
+}));
+
 // Bypass rate limiters — rate-limit behaviour is covered elsewhere; we
 // only care about the no-leak contract on the reject branches.
 vi.mock('express-rate-limit', () => ({
@@ -205,6 +209,7 @@ vi.mock('../../server/utils/rate-limit-store', () => ({
 
 vi.mock('../../server/config', () => ({
   isDev: true,
+  isProdLike: false,
   env: {},
 }));
 

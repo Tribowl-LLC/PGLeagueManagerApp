@@ -18,19 +18,24 @@ export {
   getBaseUrl,
   getOrgLogoUrl,
   sendAccountReadyEmail,
+  sendProfileClaimNotificationEmail,
   sendTemplatedEmail,
 } from './email-core';
 
 export type {
   AccountReadyEmailOptions,
+  ProfileClaimNotificationEmailOptions,
   EmailNotification,
 } from './email-core';
 
 export {
   sendInviteEmail,
+  sendBowlerRegistrationInviteEmail,
   sendPasswordResetFallbackEmail,
   sendEmailChangeConfirmation,
   sendEmailChangeNotification,
+  sendEmailChangeCompletedNotification,
+  sendEmailChangeOldAddressApproval,
   sendPasswordChangedNotification,
   sendAccountDeletionConfirmation,
   sendAccountLockoutAlert,

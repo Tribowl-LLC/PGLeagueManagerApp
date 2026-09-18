@@ -52,9 +52,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { getTestDb } from '../setup/test-db';
 const db = getTestDb();
-import { emailChangeRequests, users } from '@shared/schema';
+import { emailChangeRequests, userVerificationProvenance, users } from '@shared/schema';
 import { hashPassword } from '../../server/lib/password';
-import { applyConfirmEmailChangeTxn } from '../../server/routes/account';
+import { applyConfirmEmailChangeTxn, applyApproveOldEmailChangeTxn } from '../../server/services/account-lifecycle';
 import { getPgErrorCode } from '../../server/utils/db-errors';
 import { getBaselineOrgAId } from '../helpers';
 
@@ -63,6 +63,7 @@ const SUFFIX = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 let createdOrgId = 0;
 let targetUserId = 0;
 let conflictUserId = 0;
+let targetCredentialGeneration = 0;
 const targetOriginalEmail = `confirm-target-${SUFFIX}@example.com`;
 const conflictEmail = `confirm-conflict-${SUFFIX}@example.com`;
 
@@ -86,6 +87,7 @@ beforeAll(async () => {
     })
     .returning();
   targetUserId = target.id;
+  targetCredentialGeneration = target.credentialGeneration;
 
   // A SECOND user that already owns the address `target` is trying to
   // move to. Test A relies on this row to force a unique_violation on
@@ -129,6 +131,11 @@ describe('applyConfirmEmailChangeTxn atomicity (task #494)', () => {
       newEmail: conflictEmail,
       tokenHash,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      oldEmail: targetOriginalEmail,
+      oldEmailApprovedAt: new Date().toISOString(),
+      reauthenticatedAt: new Date().toISOString(),
+      credentialGeneration: targetCredentialGeneration,
+      flowVersion: 2,
     });
 
     let caught: unknown = undefined;
@@ -184,6 +191,11 @@ describe('applyConfirmEmailChangeTxn atomicity (task #494)', () => {
       newEmail,
       tokenHash,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      oldEmail: targetOriginalEmail,
+      oldEmailApprovedAt: new Date().toISOString(),
+      reauthenticatedAt: new Date().toISOString(),
+      credentialGeneration: targetCredentialGeneration,
+      flowVersion: 2,
     });
 
     const outcome = await applyConfirmEmailChangeTxn(tokenHash);
@@ -212,5 +224,58 @@ describe('applyConfirmEmailChangeTxn atomicity (task #494)', () => {
       .update(users)
       .set({ email: targetOriginalEmail })
       .where(eq(users.id, targetUserId));
+    await db
+      .delete(userVerificationProvenance)
+      .where(eq(userVerificationProvenance.userId, targetUserId));
+  });
+
+  it('serializes simultaneous old- and new-mailbox confirmations into one completed change', async () => {
+    const [currentTarget] = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, targetUserId));
+    if (!currentTarget) throw new Error('confirmation race target was not found');
+    await db
+      .delete(userVerificationProvenance)
+      .where(eq(userVerificationProvenance.userId, targetUserId));
+
+    const newEmail = `confirm-dual-${SUFFIX}@example.com`;
+    const newTokenHash = `vitest-confirm-dual-new-${SUFFIX}`;
+    const oldTokenHash = `vitest-confirm-dual-old-${SUFFIX}`;
+    await db.insert(emailChangeRequests).values({
+      userId: targetUserId,
+      newEmail,
+      tokenHash: newTokenHash,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      oldEmail: currentTarget.email,
+      oldEmailTokenHash: oldTokenHash,
+      oldEmailTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      reauthenticatedAt: new Date().toISOString(),
+      credentialGeneration: currentTarget.credentialGeneration,
+      flowVersion: 2,
+    });
+
+    const [newMailbox, oldMailbox] = await Promise.all([
+      applyConfirmEmailChangeTxn(newTokenHash),
+      applyApproveOldEmailChangeTxn(oldTokenHash),
+    ]);
+
+    expect([newMailbox.kind, oldMailbox.kind].filter(kind => kind === 'ok')).toHaveLength(1);
+    expect(['pending_old', 'pending_new']).toContain(
+      newMailbox.kind === 'ok' ? oldMailbox.kind : newMailbox.kind,
+    );
+
+    const [targetRow] = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, targetUserId));
+    expect(targetRow.email).toBe(newEmail);
+
+    // eslint-disable-next-line leaguevault/no-unscoped-table-query-in-test-assertion -- scoped by the unique per-test token hash.
+    const [requestRow] = await db
+      .select()
+      .from(emailChangeRequests)
+      .where(eq(emailChangeRequests.tokenHash, newTokenHash));
+    expect(requestRow.consumedAt).not.toBeNull();
   });
 });

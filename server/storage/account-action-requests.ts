@@ -23,6 +23,7 @@ import {
   isIdentityLinkError,
 } from "../services/identity-link.js";
 import { notifyPaymentSyncRetryChanged } from "../services/payment-sync-retry-scheduler";
+import { markEmailProvenanceVerified } from "../services/verification-provenance.js";
 
 /** The only token representation that may be persisted. */
 export function hashAccountActionToken(token: string): string {
@@ -753,6 +754,24 @@ export async function consumeAccountActionAndSetPassword(input: {
 
     if (!updatedUser) {
       throw new Error(`Account action user ${claimed.userId} no longer exists`);
+    }
+
+    if (claimed.action === "account_registration") {
+      // A legacy email-registration bearer is an explicit proof of the
+      // address that was on the registration request. Record that provenance
+      // so the strengthened email-change workflow does not unnecessarily ask
+      // a user to prove the same mailbox again. SMS registrations deliberately
+      // use the separate unknown-email path in completeRegistration().
+      if (registrationOrganizationId === null) {
+        throw new Error("Registration account lost its organization context");
+      }
+      await markEmailProvenanceVerified({
+        userId: updatedUser.id,
+        organizationId: registrationOrganizationId,
+        oldEmail: currentUser.email,
+        newEmail: currentUser.email,
+        source: "registration.email_link",
+      }, tx);
     }
 
     let completedUser = updatedUser;

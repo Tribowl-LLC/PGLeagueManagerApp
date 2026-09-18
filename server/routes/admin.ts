@@ -14,7 +14,7 @@ import { singleRouteParam } from '../utils/route-params';
 import { z } from 'zod';
 import { updateEmailTemplateSchema } from '@shared/schema/email-templates';
 import { requireAdmin } from '../middleware/admin';
-import { sendTestEmail, sendAccountReadyEmail, type EmailNotification } from '../services/email';
+import { sendTestEmail } from '../services/email';
 import { emailTestLimiter, adminWriteLimiter } from '../middleware/rate-limit';
 import { cacheInvalidate } from '../utils/cache';
 import { createLogger } from '../logger';
@@ -24,6 +24,9 @@ import {
 } from '../services/identity-link.js';
 import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-scheduler';
 import { requireOrganizationAccess } from '../utils/access-control.js';
+import { listIdentitySecurityHolds, resolveIdentitySecurityHold } from '../storage/profile-claim-notifications.js';
+import { notifyAccountActionDeliveryChanged } from '../services/account-action-delivery-scheduler.js';
+import { destroyAllSessionsForUser } from '../auth.js';
 
 const log = createLogger("Admin");
 
@@ -349,6 +352,60 @@ router.get('/unclaimed-users/count', async (req, res) => {
   }
 });
 
+router.get('/profile-claims/holds', async (req, res) => {
+  const ctx = resolveAdminOrgId(req, res);
+  if (!ctx) return;
+  try {
+    const rows = await listIdentitySecurityHolds({
+      organizationId: ctx.orgId,
+      activeOnly: req.query.activeOnly !== 'false',
+    });
+    return sendSuccess(res, { rows });
+  } catch (error) {
+    log.error('Error listing profile-claim holds:', error);
+    return sendError(res, 'Failed to list profile-claim holds', 500, 'SERVER_ERROR');
+  }
+});
+
+router.post('/profile-claims/holds/:id/resolve', adminWriteLimiter, async (req, res) => {
+  const ctx = resolveAdminOrgId(req, res);
+  if (!ctx) return;
+  const holdId = Number(singleRouteParam(req.params.id));
+  if (!Number.isSafeInteger(holdId) || holdId <= 0) return sendError(res, 'Invalid hold ID', 400, 'INVALID_ID');
+  const parsed = z.object({
+    status: z.enum(['resolved', 'rejected']),
+    assignmentAction: z.enum(['uphold', 'revoke']).optional(),
+    resolution: z.string().trim().min(1).max(500),
+  }).safeParse(req.body);
+  if (!parsed.success) return handleZodError(res, parsed.error);
+  const actorUserId = req.user?.id;
+  if (!actorUserId) return sendError(res, 'Authentication required', 401, 'AUTH_REQUIRED');
+  try {
+    const row = await resolveIdentitySecurityHold({
+      holdId,
+      actorUserId,
+      organizationId: ctx.orgId,
+      status: parsed.data.status,
+      assignmentAction: parsed.data.assignmentAction,
+      resolution: parsed.data.resolution,
+    });
+    if (!row) return sendError(res, 'Security hold not found or already resolved', 404, 'NOT_FOUND');
+    try {
+      await destroyAllSessionsForUser(row.userId);
+    } catch (sessionError) {
+      log.error('Failed to destroy sessions after profile-claim hold resolution:', {
+        userId: row.userId,
+        errorCode: sessionError instanceof Error ? sessionError.name : 'unknown',
+      });
+    }
+    notifyAccountActionDeliveryChanged();
+    return sendSuccess(res, row);
+  } catch (error) {
+    log.error('Error resolving profile-claim hold:', error);
+    return sendError(res, 'Failed to resolve profile-claim hold', 500, 'SERVER_ERROR');
+  }
+});
+
 /**
  * List self-registered users that have not yet been linked to a bowler.
  * Scoped to the actor's organization (or `?organizationId=` for
@@ -382,35 +439,6 @@ router.get('/unclaimed-users', async (req, res) => {
     sendError(res, 'Failed to list unclaimed users');
   }
 });
-
-async function notifyAccountReady(opts: {
-  toEmail: string;
-  toName: string;
-  bowlerName: string;
-  leagueName: string;
-  teamName: string;
-  organizationId: number | null;
-}): Promise<EmailNotification> {
-  try {
-    const organization = opts.organizationId
-      ? await storage.getOrganization(opts.organizationId)
-      : undefined;
-    return await sendAccountReadyEmail({
-      toEmail: opts.toEmail,
-      toName: opts.toName,
-      bowlerName: opts.bowlerName,
-      leagueName: opts.leagueName,
-      teamName: opts.teamName,
-      // Pass the complete server-resolved organization so getBaseUrl can
-      // prefer the DNS subdomain over the internal slug.
-      organization: organization ?? null,
-    });
-  } catch (err) {
-    // Best-effort notify — never fail the admin write because of email.
-    log.warn('Account-ready email failed (non-fatal):', err);
-    return 'not_sent';
-  }
-}
 
 /**
  * Create a new bowler for an unlinked user and assign them to the
@@ -505,6 +533,7 @@ router.post('/unclaimed-users/:userId/create-bowler', async (req, res) => {
           source: 'admin-unclaimed-create',
           reason: 'admin-assigned-new-bowler',
           eventType: 'admin_assignment',
+          queueAccountReadyEmail: true,
         }, tx);
       } catch (error) {
         rethrowIdentityLinkAsHttp(error);
@@ -519,22 +548,14 @@ router.post('/unclaimed-users/:userId/create-bowler', async (req, res) => {
     cacheInvalidate('bowlers:');
     cacheInvalidate(`user:${userId}`);
     notifyPaymentSyncRetryChanged();
-
-    const emailNotification = await notifyAccountReady({
-      toEmail: result.user.email,
-      toName: result.user.name,
-      bowlerName: result.bowler.name,
-      leagueName: result.league.name,
-      teamName: result.team.name,
-      organizationId: ctx.orgId,
-    });
+    notifyAccountActionDeliveryChanged();
 
     sendSuccess(res, {
       userId: result.user.id,
       bowlerId: result.bowler.id,
       leagueId: result.league.id,
       teamId: result.team.id,
-      emailNotification,
+      emailNotification: 'queued',
     });
   } catch (error) {
     if (error instanceof HttpError) {
@@ -650,6 +671,7 @@ router.post('/unclaimed-users/:userId/link-existing', async (req, res) => {
           source: 'admin-unclaimed-link',
           reason: 'admin-assigned-existing-bowler',
           eventType: 'admin_assignment',
+          queueAccountReadyEmail: true,
         }, tx);
       } catch (error) {
         rethrowIdentityLinkAsHttp(error);
@@ -664,22 +686,14 @@ router.post('/unclaimed-users/:userId/link-existing', async (req, res) => {
     cacheInvalidate('bowlers:');
     cacheInvalidate(`user:${userId}`);
     notifyPaymentSyncRetryChanged();
-
-    const emailNotification = await notifyAccountReady({
-      toEmail: result.user.email,
-      toName: result.user.name,
-      bowlerName: result.bowler.name,
-      leagueName: result.league?.name ?? '',
-      teamName: result.team?.name ?? '',
-      organizationId: ctx.orgId,
-    });
+    notifyAccountActionDeliveryChanged();
 
     sendSuccess(res, {
       userId: result.user.id,
       bowlerId: result.bowler.id,
       leagueId: result.league?.id ?? null,
       teamId: result.team?.id ?? null,
-      emailNotification,
+      emailNotification: 'queued',
     });
   } catch (error) {
     if (error instanceof HttpError) {

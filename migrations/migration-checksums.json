@@ -282,6 +282,24 @@
       "tag": "0046_account_ready_delivery_queue",
       "createdAt": 1789689082378,
       "hash": "79f4f3f7df5e5fa36a89f0a03f18023bf1eb8205a6cf07a436891a5d6a8587a8"
+    },
+    {
+      "idx": 47,
+      "tag": "0047_profile_claim_security_safeguards",
+      "createdAt": 1789757028149,
+      "hash": "e900a35173dab157d99f439e3b9f5abec43028dddbafe9ec145e08210f80d89a"
+    },
+    {
+      "idx": 48,
+      "tag": "0048_sms_otp_registration_and_email_safeguards",
+      "createdAt": 1789758170059,
+      "hash": "c6204daa4e226814703e99829a1da6f9ec45688f75b6ba7b92978483521b1326"
+    },
+    {
+      "idx": 49,
+      "tag": "0049_account_ready_standalone_resend",
+      "createdAt": 1789769091560,
+      "hash": "3542cd98ff47e3c276c2ec9b0d1e11a2118a269d274d983a81c1eea97cb11a69"
     }
   ]
 }

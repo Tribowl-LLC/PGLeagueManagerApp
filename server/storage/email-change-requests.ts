@@ -31,6 +31,14 @@ export async function getEmailChangeRequestByTokenHash(
   return row;
 }
 
+export async function getEmailChangeRequestByOldTokenHash(
+  tokenHash: string,
+): Promise<EmailChangeRequest | undefined> {
+  const [row] = await db.select().from(emailChangeRequests)
+    .where(eq(emailChangeRequests.oldEmailTokenHash, tokenHash)).limit(1);
+  return row;
+}
+
 export async function consumeEmailChangeRequest(
   id: number,
   exec: Executor = db,

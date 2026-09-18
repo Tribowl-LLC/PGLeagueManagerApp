@@ -58,6 +58,7 @@ const { SETUP_SECRET, WRONG_SECRET } = vi.hoisted(() => ({
 vi.mock('../../server/config', () => ({
   env: { SETUP_SECRET },
   isDev: true,
+  isProdLike: false,
 }));
 
 // Pulled in AFTER the mocks so the mocked logger / config are wired.
@@ -140,6 +141,7 @@ describe('checkSetupSecret with SETUP_SECRET unset', () => {
     vi.doMock('../../server/config', () => ({
       env: { SETUP_SECRET: undefined },
       isDev: true,
+      isProdLike: false,
     }));
     vi.doMock('../../server/logger', () => ({
       createLogger: () => ({

@@ -93,10 +93,12 @@ export type {
 
 export { users, insertUserSchema, updateUserSchema, updateUserSchemaBase } from "./users";
 export type { User, InsertUser, UpdateUser } from "./users";
+export * from "./user-verification-provenance";
 
 export * from "./account-action-delivery-jobs";
 export * from "./account-guidance-delivery-jobs";
 export * from "./account-ready-delivery-jobs";
+export * from "./profile-claim-notifications";
 export * from "./account-email-delivery-events";
 export * from "./email-delivery-alerts";
 
@@ -193,6 +195,17 @@ export { bowlerPaymentLinks, insertBowlerPaymentLinkSchema, LINK_STATUSES } from
 export type { BowlerPaymentLink, InsertBowlerPaymentLink, LinkStatus } from "./bowler-payment-links";
 
 export { rateLimitBuckets } from "./rate-limit-buckets";
+
+export {
+  registrationVerificationChallenges,
+  insertRegistrationVerificationChallengeSchema,
+  REGISTRATION_VERIFICATION_CHALLENGE_STATUSES,
+} from "./registration-verification-challenges";
+export type {
+  RegistrationVerificationChallenge,
+  InsertRegistrationVerificationChallenge,
+  RegistrationVerificationChallengeStatus,
+} from "./registration-verification-challenges";
 
 export {
   leagueScheduleCommands,

@@ -31,6 +31,7 @@ import {
   paymentDisputeNotifications,
   paymentDisputeReplayAudits,
   identityLinkEvents,
+  identitySecurityHolds,
   accountActionRequests,
   paymentDisputes,
   paymentOperations,
@@ -226,6 +227,15 @@ export async function deleteOrganization(id: number): Promise<void> {
     await tx.delete(applePayJobItems).where(eq(applePayJobItems.organizationId, id));
     await tx.delete(adminRoleChangeAudits).where(eq(adminRoleChangeAudits.organizationId, id));
     await tx.delete(adminPasswordResetAudits).where(eq(adminPasswordResetAudits.organizationId, id));
+
+    // Profile-claim reports retain restrictive references to the immutable
+    // notification/token records and to the organization itself.  A hold is
+    // an audit record even after it is resolved or rejected, so it must be
+    // removed before deleting identity-link events (whose cascade would
+    // otherwise try to delete a referenced notification) and before the
+    // organization row.  This is scoped to the explicit full-tenant teardown;
+    // ordinary report resolution keeps the evidence intact.
+    await tx.delete(identitySecurityHolds).where(eq(identitySecurityHolds.organizationId, id));
     await tx.delete(identityLinkEvents).where(eq(identityLinkEvents.organizationId, id));
     await tx.delete(accountActionRequests).where(eq(accountActionRequests.organizationId, id));
     await tx

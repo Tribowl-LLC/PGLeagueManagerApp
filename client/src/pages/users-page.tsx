@@ -143,22 +143,31 @@ export default function UsersPage() {
   const orgLocations = locations.filter(l => l.organizationId === organizationId);
 
   const resendAccountReadyMutation = useMutation({
-    mutationFn: async (userId: number) => apiRequest<{ emailNotification?: EmailNotification }>(
+    mutationFn: async (userId: number) => apiRequest<{
+      deliveryQueued?: boolean;
+      deliveryStatus?: string;
+      emailNotification?: EmailNotification;
+    }>(
       `/api/org-admin/users/${userId}/resend-account-ready`,
       'POST',
       {},
     ),
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ['/api/org-admin/users'] });
-      const accepted = response?.data?.emailNotification === 'accepted';
+      const queued = response?.data?.deliveryQueued === true;
+      const accepted = queued || response?.data?.emailNotification === 'accepted';
       toast({
-        title: accepted
-          ? 'Account linked; email submitted'
+        title: queued
+          ? 'Account-ready email queued'
+          : accepted
+            ? 'Account linked; email submitted'
           : 'Account linked, but notification could not be sent',
-        description: accepted
-          ? 'The account-ready email was submitted.'
+        description: queued
+          ? 'The durable delivery queue will submit the account-ready email and retry transient failures.'
+          : accepted
+            ? 'The account-ready email was submitted.'
           : 'The account-ready notification could not be sent. You can retry safely.',
-        variant: accepted ? 'default' : 'destructive',
+        variant: queued || accepted ? 'default' : 'destructive',
       });
     },
     onError: (error: Error) => {

@@ -15,6 +15,11 @@ export const SCHEDULED_PAYMENT_EXECUTION_MODES = [
 ] as const;
 export type ScheduledPaymentExecutionMode = (typeof SCHEDULED_PAYMENT_EXECUTION_MODES)[number];
 
+/** Public self-registration delivery modes. Legacy invite/reset links remain
+ * available in both modes; this switch only controls ordinary sign-up. */
+export const REGISTRATION_MODES = ["email_link", "sms_otp"] as const;
+export type RegistrationMode = (typeof REGISTRATION_MODES)[number];
+
 const APP_ORGANIZATION_ID_ERROR =
   "APP_ORGANIZATION_ID must be a positive safe integer when set (for example, '42').";
 
@@ -98,6 +103,17 @@ export const envSchema = z.object({
     z.coerce.number().min(0).max(1).default(0.1),
   ),
   SETUP_SECRET: z.string().min(1).optional(),
+
+  // Public registration defaults to the legacy flow during rollout. The
+  // release process explicitly switches production to sms_otp after Twilio
+  // configuration and device acceptance are complete.
+  REGISTRATION_MODE: z.enum(REGISTRATION_MODES).default("email_link"),
+  TWILIO_ACCOUNT_SID: z.string().trim().min(1).optional(),
+  TWILIO_AUTH_TOKEN: z.string().trim().min(1).optional(),
+  TWILIO_API_KEY: z.string().trim().min(1).optional(),
+  TWILIO_API_SECRET: z.string().trim().min(1).optional(),
+  TWILIO_VERIFY_SERVICE_SID: z.string().trim().min(1).optional(),
+  TWILIO_VERIFY_TEMPLATE_SID: z.string().trim().min(1).optional(),
 
   SQUARE_PROD_TOKEN: z.string().min(1).optional(),
   SQUARE_PRODUCTION_ACCESS_TOKEN: z.string().min(1).optional(),
@@ -235,6 +251,31 @@ export function validateScheduledPaymentExecutionMode(input: {
   return { ok: true, mode: input.mode ?? 'ledger_paused' };
 }
 
+export function validateRegistrationConfiguration(input: {
+  mode: RegistrationMode;
+  /** Retained in the helper contract for rollout/test callers. SMS mode is
+   * intentionally strict in every environment, not only production-like
+   * deployments. */
+  productionLike: boolean;
+  accountSid?: string;
+  apiKey?: string;
+  apiSecret?: string;
+  verifyServiceSid?: string;
+  templateSid?: string;
+}): { ok: true } | { ok: false; reason: string } {
+  if (input.mode !== "sms_otp") return { ok: true };
+  const missing = [
+    ["TWILIO_ACCOUNT_SID", input.accountSid],
+    ["TWILIO_API_KEY", input.apiKey],
+    ["TWILIO_API_SECRET", input.apiSecret],
+    ["TWILIO_VERIFY_SERVICE_SID", input.verifyServiceSid],
+    ["TWILIO_VERIFY_TEMPLATE_SID", input.templateSid],
+  ].filter(([, value]) => !value?.trim()).map(([key]) => key);
+  return missing.length === 0
+    ? { ok: true }
+    : { ok: false, reason: `REGISTRATION_MODE=sms_otp requires: ${missing.join(", ")}` };
+}
+
 // Minimum SETUP_SECRET length in characters. 32 chars of base64 is ~24 bytes
 // of entropy; we want at least 32 bytes, which is 44 base64 chars, but we
 // keep the floor at 32 chars so operators can also use 32-byte hex-ish
@@ -303,6 +344,19 @@ function validateEnv(): Env {
     }
     if (parsed.ROSTER_STANDING_AUTOPAY_ENABLED && executionMode.mode !== "ledger_execute") {
       log.error("Environment validation failed: ROSTER_STANDING_AUTOPAY_ENABLED requires SCHEDULED_PAYMENT_EXECUTION_MODE=ledger_execute");
+      process.exit(1);
+    }
+    const registration = validateRegistrationConfiguration({
+      mode: parsed.REGISTRATION_MODE,
+      productionLike: parsed.NODE_ENV === "production" || parsed.APP_ENV === "prod",
+      accountSid: parsed.TWILIO_ACCOUNT_SID,
+      apiKey: parsed.TWILIO_API_KEY,
+      apiSecret: parsed.TWILIO_API_SECRET,
+      verifyServiceSid: parsed.TWILIO_VERIFY_SERVICE_SID,
+      templateSid: parsed.TWILIO_VERIFY_TEMPLATE_SID,
+    });
+    if (!registration.ok) {
+      log.error(`Environment validation failed: ${registration.reason}`);
       process.exit(1);
     }
     return parsed;

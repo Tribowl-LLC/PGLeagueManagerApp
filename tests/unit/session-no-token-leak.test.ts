@@ -147,6 +147,7 @@ vi.mock('../../server/lib/password', () => ({
 }));
 
 vi.mock('../../server/config', () => ({
+  isProdLike: false,
   get isDev() {
     return process.env.NODE_ENV !== 'production';
   },

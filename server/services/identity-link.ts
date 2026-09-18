@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   bowlers,
+  identitySecurityHolds,
   identityLinkEvents,
   users,
   type IdentityLinkBowlerSnapshot,
@@ -33,11 +34,20 @@ export interface IdentityLinkInput {
   eventType?: "link" | "admin_assignment";
   /** Queue the automatic account-ready email atomically with this link. */
   queueAccountReadyEmail?: boolean;
+  /**
+   * Immutable roster-email snapshot captured before a caller performs a
+   * linkage-related bowler contact update. `null` deliberately means that no
+   * independent roster address existed, so the notification must use the
+   * account fallback rather than a newly supplied address.
+   */
+  claimNotificationRecipientEmail?: string | null;
 }
 
 const ACCOUNT_READY_AUTO_LINK_SOURCES = new Set([
   "bowler-post-create-email-auto-link",
   "bowler-profile-email-auto-link",
+  "admin-unclaimed-create",
+  "admin-unclaimed-link",
 ]);
 
 export interface IdentityUnlinkInput {
@@ -91,8 +101,9 @@ export class IdentityLinkError extends Error {
       | "BOWLER_TAKEN"
       | "EMAIL_MISMATCH"
       | "ORG_REQUIRED"
+      | "SECURITY_HOLD"
       | "INVALID_INPUT",
-    public readonly status: 400 | 403 | 404 | 409,
+    public readonly status: 400 | 403 | 404 | 409 | 423,
   ) {
     super(message);
     this.name = "IdentityLinkError";
@@ -160,6 +171,27 @@ async function lockUser(
     throw new IdentityLinkError("User not found", "USER_NOT_FOUND", 404);
   }
   return user;
+}
+
+async function assertNoActiveIdentitySecurityHold(
+  executor: IdentityLinkExecutor,
+  userId: number,
+): Promise<void> {
+  const [hold] = await executor
+    .select({ id: identitySecurityHolds.id })
+    .from(identitySecurityHolds)
+    .where(and(
+      eq(identitySecurityHolds.userId, userId),
+      eq(identitySecurityHolds.status, "active"),
+    ))
+    .limit(1);
+  if (hold) {
+    throw new IdentityLinkError(
+      "Account is temporarily restricted while a profile-security report is reviewed",
+      "SECURITY_HOLD",
+      423,
+    );
+  }
 }
 
 async function lockBowler(
@@ -261,6 +293,7 @@ async function linkInTransaction(
   // given target serializes on the same bowler row; the user lock prevents a
   // single account from winning two competing claims.
   const user = await lockUser(executor, input.userId);
+  await assertNoActiveIdentitySecurityHold(executor, user.id);
   assertOrdinaryUser(user, input.organizationId);
   if (user.bowlerId !== null) {
     throw new IdentityLinkError(
@@ -355,6 +388,40 @@ async function linkInTransaction(
     source: input.source,
     reason: input.reason,
   });
+
+  // Capture the original roster address before contact backfill. A claim
+  // notification must go to the address that was on the roster at the time
+  // of the assignment; re-reading bowler/user after this transaction would
+  // otherwise silently redirect the warning to the newly linked account.
+  // When a legacy roster row has no address, the account address is an
+  // explicit, recorded fallback rather than an implicit re-read.
+  const hasRecipientSnapshot = Object.prototype.hasOwnProperty.call(
+    input,
+    "claimNotificationRecipientEmail",
+  );
+  const rosterRecipientEmail = hasRecipientSnapshot
+    ? input.claimNotificationRecipientEmail?.trim() || ""
+    : bowler.email?.trim() || "";
+  const originalRecipientEmail = rosterRecipientEmail || user.email?.trim() || "";
+  if (originalRecipientEmail) {
+    const { profileClaimReportTokenHashForEvent, queueProfileClaimNotification } = await import(
+      "../storage/profile-claim-notifications.js"
+    );
+    const reportTokenHash = profileClaimReportTokenHashForEvent(event.id);
+    const reportTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await queueProfileClaimNotification({
+      identityLinkEventId: event.id,
+      userId: updatedUser.id,
+      bowlerId: linkedBowler.id,
+      organizationId: input.organizationId,
+      recipientEmail: originalRecipientEmail,
+      recipientSource: rosterRecipientEmail ? "roster" : "account_fallback",
+      recipientName: bowler.name,
+      bowlerName: bowler.name,
+      reportTokenHash,
+      reportTokenExpiresAt,
+    }, executor);
+  }
   if (input.queueAccountReadyEmail) {
     if (!ACCOUNT_READY_AUTO_LINK_SOURCES.has(input.source ?? "")) {
       throw new Error("Account-ready delivery is restricted to automatic email-link sources");
@@ -403,6 +470,7 @@ async function unlinkInTransaction(
   validateInputText(input);
 
   const user = await lockUser(executor, input.userId);
+  await assertNoActiveIdentitySecurityHold(executor, user.id);
   assertOrdinaryUser(user, input.organizationId);
   if (user.bowlerId === null) {
     return { user, bowler: null, oldBowler: null, event: null };
@@ -454,6 +522,7 @@ export async function replaceUserBowler(
     assertOrganizationId(input.organizationId);
     validateInputText(input);
     const user = await lockUser(tx, input.userId);
+    await assertNoActiveIdentitySecurityHold(tx, user.id);
     assertOrdinaryUser(user, input.organizationId);
     if (user.bowlerId === null) {
       throw new IdentityLinkError(

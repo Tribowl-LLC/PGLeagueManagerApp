@@ -15,6 +15,7 @@ import * as emailChangeRequestStorage from "./email-change-requests";
 import * as accountActionStorage from "./account-action-requests";
 import * as applePayJobStorage from "./apple-pay-jobs";
 import * as alerterStateStorage from "./alerter-state";
+import * as profileClaimNotificationStorage from "./profile-claim-notifications";
 
 export type { IStorage };
 
@@ -178,6 +179,7 @@ export class DatabaseStorage implements IStorage {
 
   createEmailChangeRequest!: IStorage["createEmailChangeRequest"];
   getEmailChangeRequestByTokenHash!: IStorage["getEmailChangeRequestByTokenHash"];
+  getEmailChangeRequestByOldTokenHash!: IStorage["getEmailChangeRequestByOldTokenHash"];
   consumeEmailChangeRequest!: IStorage["consumeEmailChangeRequest"];
   claimEmailChangeRequest!: IStorage["claimEmailChangeRequest"];
   invalidatePendingEmailChangeRequestsForUser!: IStorage["invalidatePendingEmailChangeRequestsForUser"];
@@ -242,6 +244,7 @@ export class DatabaseStorage implements IStorage {
       ...accountActionStorage,
       ...applePayJobStorage,
       ...alerterStateStorage,
+      ...profileClaimNotificationStorage,
     });
   }
 }

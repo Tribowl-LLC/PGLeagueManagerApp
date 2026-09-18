@@ -83,6 +83,10 @@ vi.mock('../../server/middleware/csrf', () => ({
   csrfProtection: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 
+vi.mock('../../server/storage/profile-claim-notifications.js', () => ({
+  hasActiveIdentitySecurityHold: vi.fn(async () => false),
+}));
+
 // auth.ts only directly imports `isDev`, but transitive imports
 // (security middleware, etc.) pull in `env` — mock both so the
 // import graph resolves without trying to validate real env vars.

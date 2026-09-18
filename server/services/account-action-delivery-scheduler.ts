@@ -2,6 +2,7 @@ import { createLogger } from "../logger.js";
 import { getNextPasswordResetDeliveryAt } from "../storage/account-action-delivery-jobs.js";
 import { getNextAccountGuidanceDeliveryAt } from "../storage/account-guidance-delivery-jobs.js";
 import { getNextAccountReadyDeliveryAt } from "../storage/account-ready-delivery-jobs.js";
+import { getNextProfileClaimNotificationAt } from "../storage/profile-claim-notifications.js";
 import { registerAccountActionDeliveryWakeHandler } from "./account-action-delivery-wake.js";
 
 const log = createLogger("AccountActionDeliveryScheduler");
@@ -26,12 +27,13 @@ export interface AccountActionDeliverySchedulerDependencies {
 
 const defaultDependencies: AccountActionDeliverySchedulerDependencies = {
   findNextDueAt: async () => {
-    const [passwordReset, accountGuidance, accountReady] = await Promise.all([
+    const [passwordReset, accountGuidance, accountReady, profileClaim] = await Promise.all([
       getNextPasswordResetDeliveryAt(),
       getNextAccountGuidanceDeliveryAt(),
       getNextAccountReadyDeliveryAt(),
+      getNextProfileClaimNotificationAt(),
     ]);
-    return [passwordReset, accountGuidance, accountReady]
+    return [passwordReset, accountGuidance, accountReady, profileClaim]
       .filter((value): value is Date => value !== null)
       .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
   },

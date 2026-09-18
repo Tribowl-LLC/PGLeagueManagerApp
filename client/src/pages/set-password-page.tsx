@@ -5,16 +5,13 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
-import { isAbortError, parseRetryAfterSeconds } from '@/lib/queryClient';
+import { apiRequest, isAbortError, parseRetryAfterSeconds } from '@/lib/queryClient';
+import { getApiErrorCode } from '@/lib/api-error';
 import {
   DEFAULT_THROTTLE_FALLBACK_SECONDS,
   formatCountdown,
   useThrottleCountdown,
 } from '@/hooks/use-throttle-countdown';
-import {
-  LANGUAGE_AUTO,
-  languageSelectionToWire,
-} from '@/lib/preferred-language';
 import { PageLoadingState } from "@/components/page-states";
 import { AlertCircle } from 'lucide-react';
 import { SetPasswordForm } from './set-password-page/set-password-form';
@@ -37,6 +34,7 @@ type ApiResponse = {
   data?: {
     email?: unknown;
     action?: unknown;
+    phase?: unknown;
     loginFailed?: unknown;
   };
   error?: {
@@ -114,6 +112,7 @@ function retrySecondsFromResponse(response: Response): number {
 export default function SetPasswordPage() {
   const [, setLocation] = useLocation();
   const search = useSearch();
+  const smsRegistration = new URLSearchParams(search).get('registration') === 'sms';
   const { toast } = useToast();
 
   const [token, setToken] = useState('');
@@ -128,21 +127,11 @@ export default function SetPasswordPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  // Task #420: keep the user's preferred-language tri-state semantics. The
-  // field is omitted until the picker is touched, and Auto becomes null only
-  // after an explicit choice.
-  const [preferredLanguage, setPreferredLanguage] = useState<string>(LANGUAGE_AUTO);
-  const [languageTouched, setLanguageTouched] = useState(false);
   const [validationAttempt, setValidationAttempt] = useState(0);
   const requestIdRef = useRef(0);
   const validationControllerRef = useRef<AbortController | null>(null);
   const submitControllerRef = useRef<AbortController | null>(null);
   const { isThrottled, remainingSeconds, throttle, clear: clearThrottle } = useThrottleCountdown();
-
-  const handleLanguageChange = (value: string) => {
-    setPreferredLanguage(value);
-    setLanguageTouched(true);
-  };
 
   const requirements = [
     { label: 'At least 8 characters', met: password.length >= 8 },
@@ -161,10 +150,56 @@ export default function SetPasswordPage() {
     submitControllerRef.current?.abort();
 
     const params = new URLSearchParams(search);
-    const nextToken = params.get('token') ?? '';
     const controller = new AbortController();
     validationControllerRef.current = controller;
-
+    if (params.get('registration') === 'sms') {
+      setToken('');
+      setState({ kind: 'loading' });
+      setValid(false);
+      setUserEmail('your account');
+      setAction('account_registration');
+      setPassword('');
+      setConfirmPassword('');
+      setShowPassword(false);
+      setSubmitting(false);
+      clearThrottle();
+      void (async () => {
+        try {
+          const response = await fetch('/api/auth/registration/status', {
+            credentials: 'include',
+            headers: { Accept: 'application/json' },
+            signal: controller.signal,
+          });
+          if (requestId !== requestIdRef.current) return;
+          const data = await readApiResponse(response);
+          if (response.ok && data.success === true && data.data?.action !== 'email') {
+            const phase = typeof data.data?.phase === 'string'
+              ? data.data.phase
+              : undefined;
+            if (phase === 'set_password') {
+              setValid(true);
+              setState({ kind: 'ready' });
+              return;
+            }
+            if (phase === 'verify_phone') {
+              setLocation('/verify-phone');
+              return;
+            }
+          }
+          setState({ kind: 'expired', message: 'Your phone verification session is no longer available. Please start registration again.' });
+        } catch (error) {
+          if (requestId !== requestIdRef.current || isAbortError(error)) return;
+          setState({ kind: 'temporary', source: 'validation', message: 'We could not restore your registration. Please try again.' });
+        }
+      })();
+      return () => {
+        requestIdRef.current += 1;
+        controller.abort();
+        submitControllerRef.current?.abort();
+        if (validationControllerRef.current === controller) validationControllerRef.current = null;
+      };
+    }
+    const nextToken = params.get('token') ?? '';
     // A URL change starts a completely new flow. Clear form data as well as
     // server-derived data so a prior token cannot be submitted accidentally.
     setToken(nextToken);
@@ -175,8 +210,6 @@ export default function SetPasswordPage() {
     setPassword('');
     setConfirmPassword('');
     setShowPassword(false);
-    setPreferredLanguage(LANGUAGE_AUTO);
-    setLanguageTouched(false);
     setSubmitting(false);
     clearThrottle();
 
@@ -257,7 +290,7 @@ export default function SetPasswordPage() {
       submitControllerRef.current?.abort();
       if (validationControllerRef.current === controller) validationControllerRef.current = null;
     };
-  }, [search, validationAttempt, clearThrottle, throttle]);
+  }, [search, validationAttempt, clearThrottle, throttle, setLocation]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -271,13 +304,43 @@ export default function SetPasswordPage() {
     setState({ kind: 'ready' });
 
     try {
-      const body: { token: string; password: string; preferredLanguage?: string | null } = {
+      if (smsRegistration) {
+        let result: { success: boolean; data: { linked?: boolean; loginFailed?: boolean } };
+        try {
+          result = await apiRequest<{ linked?: boolean; loginFailed?: boolean }>(
+            '/api/auth/registration/complete',
+            'POST',
+            { password },
+          );
+        } catch (error) {
+          if (getApiErrorCode(error) === 'ACCOUNT_EXISTS') {
+            toast({
+              title: 'Check your email',
+              description: 'This email already has an account. Password-reset instructions were sent to that address.',
+            });
+            setLocation('/login');
+            return;
+          }
+          throw error;
+        }
+        if (requestId !== requestIdRef.current) return;
+        if (result.success) {
+          toast({
+            title: 'Registration complete',
+            description: result.data?.loginFailed ? 'Your account is ready. Please log in.' : 'Your account is ready.',
+          });
+          if (result.data?.loginFailed) setLocation('/login');
+          else setLocation(result.data?.linked ? '/bowler-dashboard' : '/registration-complete');
+          return;
+        }
+        setState({ kind: 'ready' });
+        toast({ title: 'Could not finish registration', description: 'Please try again.', variant: 'destructive' });
+        return;
+      }
+      const body: { token: string; password: string } = {
         token,
         password,
       };
-      if (languageTouched) {
-        body.preferredLanguage = languageSelectionToWire(preferredLanguage);
-      }
 
       const response = await fetch('/api/auth/set-password', {
         method: 'POST',
@@ -453,8 +516,6 @@ export default function SetPasswordPage() {
               setConfirmPassword={setConfirmPassword}
               showPassword={showPassword}
               setShowPassword={setShowPassword}
-              preferredLanguage={preferredLanguage}
-              handleLanguageChange={handleLanguageChange}
               requirements={requirements}
               allMet={allMet}
               passwordsMatch={passwordsMatch}

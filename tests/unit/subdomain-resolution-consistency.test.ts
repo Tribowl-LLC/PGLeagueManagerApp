@@ -21,6 +21,7 @@ vi.mock('../../server/storage', () => ({
 
 vi.mock('../../server/config', () => ({
   env: { APP_DOMAIN: 'leaguevault.app' },
+  isProdLike: false,
 }));
 
 vi.mock('../../server/logger', () => ({

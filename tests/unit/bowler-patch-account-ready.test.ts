@@ -96,6 +96,7 @@ vi.mock('../../server/utils/bowler-payment-authz', () => ({
 
 vi.mock('../../server/config', () => ({
   isDev: false,
+  isProdLike: false,
 }));
 
 vi.mock('../../server/logger', () => ({

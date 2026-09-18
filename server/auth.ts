@@ -21,6 +21,18 @@ declare module 'express-session' {
       credentialGeneration: number;
       createdAt: number;
     };
+    /**
+     * Server-only capability for the SMS registration flow. The challenge
+     * identifier is never rendered or accepted from the browser; all reads
+     * re-check its organization/session binding and durable state.
+     */
+    registrationChallenge?: {
+      challengeId: string;
+      organizationId: number;
+      /** Random per-registration capability; never rendered to the browser. */
+      bindingSecret: string;
+      createdAt: number;
+    };
   }
 }
 

@@ -58,6 +58,27 @@ export function ProfileInfoForm({ form, isSaving, onSubmit, onCancel }: ProfileI
         />
         <FormField
           control={form.control}
+          name="currentPassword"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Current password</FormLabel>
+              <FormControl>
+                <Input
+                  type="password"
+                  autoComplete="current-password"
+                  placeholder="Required only when changing email"
+                  {...field}
+                />
+              </FormControl>
+              <p className="text-xs text-muted-foreground">
+                Re-enter your password to authorize a sign-in email change.
+              </p>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
           name="phone"
           render={({ field }) => (
             <FormItem>

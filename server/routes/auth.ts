@@ -16,7 +16,7 @@ import { csrfProtection } from "../middleware/csrf";
 import { createLogger } from "../logger";
 import { hashPassword } from "../lib/password";
 import { destroyOtherSessionsForUser } from "../auth";
-import { sendTemplatedEmail, getBaseUrl, getOrgLogoUrl, sendPasswordChangedNotification } from "../services/email.js";
+import { sendPasswordChangedNotification } from "../services/email.js";
 import { maskEmail } from "../utils/pii.js";
 import { cacheInvalidate } from "../utils/cache.js";
 import { createSharedRateLimitStore } from "../utils/rate-limit-store";
@@ -37,6 +37,32 @@ import { enqueueAccountGuidanceNotice } from "../storage/account-guidance-delive
 import { notifyAccountActionDeliveryChanged } from "../services/account-action-delivery-scheduler.js";
 import { isNormalizedUserEmailConflict } from "../utils/db-errors.js";
 import { phoneSchema } from "@shared/schema/constants";
+import {
+  createRegistrationChallenge,
+  acquireRegistrationProviderLease,
+  releaseRegistrationProviderLease,
+  getRegistrationChallengeForSession,
+  markRegistrationChallengeVerified,
+  markRegistrationVerificationSent,
+  markRegistrationRecoverySent,
+  cancelRegistrationChallenge,
+  recordRegistrationVerificationAttempt,
+  registrationChallengePhase,
+  challengeResendCooldownSeconds,
+  RegistrationDeliveryLimitExceededError,
+  RegistrationVerificationAttemptsExceededError,
+  RegistrationChallengeError,
+} from "../storage/registration-verification-challenges.js";
+import {
+  completeRegistration,
+  isPasswordValidForRegistration,
+  maskRegistrationPhone,
+  normalizeRegistrationPhone,
+  RegistrationExistingAccountError,
+  RegistrationPasswordError,
+} from "../services/registration-verification.js";
+import { getTwilioVerifyAdapter, TwilioVerifyError } from "../services/twilio-verify.js";
+import { hasActiveIdentitySecurityHold } from "../storage/profile-claim-notifications.js";
 // Same allowlist account.ts uses for /api/account/profile (task #420).
 // We pull it from the password-changed email bundle directly rather
 // than re-importing it from `./account` so the unauthenticated
@@ -184,6 +210,319 @@ function sendAccountActionError(
   );
 }
 
+type SmsRegistrationSession = {
+  challengeId: string;
+  organizationId: number;
+  bindingSecret: string;
+  createdAt: number;
+};
+
+function smsRegistrationSession(req: Request): SmsRegistrationSession | undefined {
+  const capability = req.session.registrationChallenge;
+  if (
+    !capability
+    || typeof capability.challengeId !== "string"
+    || !/^[a-f0-9]{64}$/i.test(capability.challengeId)
+    || !Number.isSafeInteger(capability.organizationId)
+    || capability.organizationId <= 0
+    || typeof capability.bindingSecret !== "string"
+    || !/^[a-f0-9]{64}$/i.test(capability.bindingSecret)
+    || !Number.isSafeInteger(capability.createdAt)
+  ) return undefined;
+  return capability;
+}
+
+function registrationChallengeErrorResponse(
+  res: Parameters<typeof sendError>[0],
+  error: unknown,
+): boolean {
+  if (!(error instanceof RegistrationChallengeError)) return false;
+  switch (error.code) {
+    case "EXPIRED":
+    case "SETUP_EXPIRED":
+      sendError(res, "This registration session has expired. Please start again.", 410, "CHALLENGE_EXPIRED");
+      return true;
+    case "CONSUMED":
+      sendError(res, "This registration session has already been completed.", 409, "CHALLENGE_CONSUMED");
+      return true;
+    case "NOT_VERIFIED":
+      sendError(res, "Verify your phone before setting a password.", 409, "PHONE_NOT_VERIFIED");
+      return true;
+    case "RESEND_COOLDOWN":
+      res.set("Retry-After", "30");
+      sendError(res, "Please wait before requesting another code.", 429, "RESEND_COOLDOWN");
+      return true;
+    case "PROVIDER_BUSY":
+      res.set("Retry-After", "5");
+      sendError(res, "Another verification request is still being processed. Please try again shortly.", 429, "PROVIDER_BUSY");
+      return true;
+    case "PROVIDER_LEASE_LOST":
+      sendError(res, "That verification request is no longer current. Please request a new code and try again.", 409, "VERIFICATION_RETRY");
+      return true;
+    case "REPLACED":
+    case "CANCELLED":
+    case "NOT_FOUND":
+    case "ORG_MISMATCH":
+    case "SESSION_MISMATCH":
+      sendError(res, "Registration status is unavailable.", 404, "NOT_FOUND");
+      return true;
+    default:
+      return false;
+  }
+}
+
+async function getSmsRegistrationChallenge(req: Request) {
+  const capability = smsRegistrationSession(req);
+  if (!capability || !registrationHostMatchesOrganization(req, capability.organizationId)) return undefined;
+  return getRegistrationChallengeForSession(
+    capability.bindingSecret,
+    capability.challengeId,
+    capability.organizationId,
+  );
+}
+
+function smsRegistrationStatus(
+  row: Awaited<ReturnType<typeof getRegistrationChallengeForSession>>,
+  existingAccount: boolean,
+) {
+  if (!row) return undefined;
+  const phase = existingAccount ? "email" : registrationChallengePhase(row);
+  const expiresAt = existingAccount
+    ? null
+    : phase === "set_password" ? row.setupExpiresAt : row.expiresAt;
+  return {
+    status: existingAccount ? "email" : row.status,
+    registrationMode: "sms_otp",
+    phase,
+    delivery: existingAccount ? "email" : "sms",
+    // The phone is the value the person just submitted in this anonymous
+    // server-bound flow. Returning the normalized value lets the UI show the
+    // complete destination while never exposing roster contact details or a
+    // provider identifier. Existing-account recovery deliberately returns no
+    // phone because that number is not a trusted recovery destination.
+    phone: existingAccount ? null : row.phone,
+    phoneMasked: existingAccount ? null : maskRegistrationPhone(row.phone),
+    verificationExpiresAt: existingAccount ? null : row.expiresAt,
+    passwordSetupExpiresAt: existingAccount ? null : row.setupExpiresAt,
+    expiresAt,
+    cooldownSeconds: existingAccount ? 0 : challengeResendCooldownSeconds(row),
+    resendAvailableAt: existingAccount && row.lastSentAt
+      ? new Date(Date.parse(row.lastSentAt) + 30_000).toISOString()
+      : row.lastSentAt
+        ? new Date(Date.parse(row.lastSentAt) + 30_000).toISOString()
+        : null,
+  };
+}
+
+/**
+ * A user can win the email-ownership race after the completion transaction's
+ * preflight lookup but before its unique index insert. Treat that loser the
+ * same as the ordinary existing-account branch: enqueue recovery guidance,
+ * retire the anonymous capability, and never mutate the winning account.
+ */
+async function recoverRegistrationEmailConflict(
+  req: Request,
+  capability: SmsRegistrationSession | undefined,
+  email: string | undefined,
+): Promise<void> {
+  if (email) {
+    try {
+      const existingUser = await storage.getUserByEmail(email);
+      if (existingUser?.password) {
+        const reset = await enqueuePasswordResetDelivery({
+          userId: existingUser.id,
+          organizationId: existingUser.organizationId,
+          credentialGeneration: existingUser.credentialGeneration,
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        });
+        if (reset.kind === "enqueued") notifyAccountActionDeliveryChanged();
+      }
+    } catch (error) {
+      // The account-conflict response remains safe even if a provider/job
+      // enqueue is temporarily unavailable. The challenge is still retired
+      // below, and the user can use the normal recovery page later.
+      log.warn("Failed to queue password recovery after registration conflict", {
+        errorCode: error instanceof Error ? error.name : "unknown",
+      });
+    }
+  }
+  if (capability) {
+    await cancelRegistrationChallenge({
+      challengeId: capability.challengeId,
+      bindingSecret: capability.bindingSecret,
+      organizationId: capability.organizationId,
+    }).catch((error) => {
+      log.warn("Failed to cancel registration challenge after email conflict", {
+        errorCode: error instanceof Error ? error.name : "unknown",
+      });
+    });
+  }
+  req.session.registrationChallenge = undefined;
+  req.session.pendingRegistration = undefined;
+}
+
+async function sendSmsRegistrationCode(req: Request, res: Parameters<typeof sendSuccess>[0]) {
+  const capability = smsRegistrationSession(req);
+  const row = await getSmsRegistrationChallenge(req);
+  if (!row || !capability) {
+    res.set("Cache-Control", "no-store");
+    return sendError(res, "Registration status is unavailable.", 404, "NOT_FOUND");
+  }
+  const existingUser = row.existingUserId
+    ? await storage.getUser(row.existingUserId)
+    : await storage.getUserByEmail(row.email);
+  let lease: Awaited<ReturnType<typeof acquireRegistrationProviderLease>> | undefined;
+  try {
+    lease = await acquireRegistrationProviderLease({
+      challengeId: capability.challengeId,
+      bindingSecret: capability.bindingSecret,
+      organizationId: capability.organizationId,
+      operation: "send",
+    });
+    if (existingUser) {
+      // Existing accounts do not receive an SMS to an untrusted number. Queue
+      // the ordinary reset flow and expose only the deliberate email branch.
+      if (existingUser.password) {
+        const reset = await enqueuePasswordResetDelivery({
+          userId: existingUser.id,
+          organizationId: existingUser.organizationId,
+          credentialGeneration: existingUser.credentialGeneration,
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        });
+        if (reset.kind === "enqueued") notifyAccountActionDeliveryChanged();
+      }
+      const updated = await markRegistrationRecoverySent({
+        challengeId: capability.challengeId,
+        bindingSecret: capability.bindingSecret,
+        organizationId: capability.organizationId,
+        leaseToken: lease.leaseToken,
+      });
+      lease = undefined;
+      return sendSuccess(res, {
+        status: "pending",
+        registrationMode: "sms_otp",
+        phase: "email",
+        delivery: "email",
+        message: "This email already has an account. Check your email for password-reset instructions.",
+        cooldownSeconds: challengeResendCooldownSeconds(updated),
+      }, 202);
+    }
+
+    const sent = await getTwilioVerifyAdapter().sendSmsVerification(lease.row.phone);
+    const updated = await markRegistrationVerificationSent({
+      challengeId: capability.challengeId,
+      bindingSecret: capability.bindingSecret,
+      organizationId: capability.organizationId,
+      leaseToken: lease.leaseToken,
+      providerVerificationSid: sent.sid,
+    });
+    lease = undefined;
+    res.set("Cache-Control", "no-store");
+    return sendSuccess(res, {
+      status: "pending",
+      registrationMode: "sms_otp",
+      phase: "verify_phone",
+      delivery: "sms",
+      phone: updated.phone,
+      phoneMasked: maskRegistrationPhone(updated.phone),
+      cooldownSeconds: challengeResendCooldownSeconds(updated),
+      expiresAt: updated.expiresAt,
+    }, 202);
+  } catch (error) {
+    if (lease) {
+      await releaseRegistrationProviderLease({
+        challengeId: capability.challengeId,
+        bindingSecret: capability.bindingSecret,
+        organizationId: capability.organizationId,
+        leaseToken: lease.leaseToken,
+      }).catch(() => undefined);
+    }
+    if (registrationChallengeErrorResponse(res, error)) return;
+    if (error instanceof RegistrationDeliveryLimitExceededError) {
+      res.set("Retry-After", "3600");
+      return sendError(res, existingUser
+        ? "Too many recovery messages were requested. Please try again later."
+        : "Too many verification messages were requested. Please try again later.", 429, "DELIVERY_LIMIT");
+    }
+    if (error instanceof TwilioVerifyError && error.code === "not_configured") {
+      return sendError(res, "Text verification is temporarily unavailable. Please try again later.", 503, "SMS_NOT_CONFIGURED");
+    }
+    log.warn("Registration SMS delivery failed", {
+      errorCode: error instanceof TwilioVerifyError ? error.code : "provider_unavailable",
+    });
+    return sendError(res, "We could not send a verification code. Please try again later.", 503, "SMS_UNAVAILABLE");
+  }
+}
+
+async function startSmsRegistration(req: Request, res: Parameters<typeof sendSuccess>[0]) {
+  const registrationOrganization = await resolveRegistrationOrganization(req);
+  if (!registrationOrganization) {
+    return sendError(res, registrationUnavailableMessage, 503, "SIGNUP_UNAVAILABLE");
+  }
+  const registrationSchema = z.object({
+    email: emailSchema,
+    name: nameSchema,
+    phone: z.string().trim().min(1).max(50),
+  });
+  const result = registrationSchema.safeParse({
+    email: typeof req.body?.email === "string" ? req.body.email.trim() : req.body?.email,
+    name: req.body?.name,
+    phone: req.body?.phone,
+  });
+  if (!result.success) {
+    return sendError(res, "Registration validation failed", 400, "VALIDATION_ERROR", result.error.issues.map((issue) => ({
+      field: issue.path.join("."),
+      message: issue.message,
+    })));
+  }
+  const phone = normalizeRegistrationPhone(result.data.phone);
+  if (!phone) {
+    return sendError(res, "Enter a valid US or Canadian phone number.", 400, "INVALID_PHONE");
+  }
+  // A corrected submission supersedes the anonymous capability that was
+  // already in this browser. Cancel it before creating the replacement so
+  // the old phone/email cannot remain an active provider challenge.
+  const previousCapability = smsRegistrationSession(req);
+  if (previousCapability) {
+    await cancelRegistrationChallenge({
+      challengeId: previousCapability.challengeId,
+      bindingSecret: previousCapability.bindingSecret,
+      organizationId: previousCapability.organizationId,
+    }).catch((error) => {
+      log.warn("Failed to cancel superseded registration challenge", {
+        errorCode: error instanceof Error ? error.name : "unknown",
+      });
+    });
+  }
+  const bindingSecret = randomBytes(32).toString("hex");
+  const existingUser = await storage.getUserByEmail(result.data.email.trim().toLowerCase());
+  const challenge = await createRegistrationChallenge({
+    bindingSecret,
+    organizationId: registrationOrganization.id,
+    existingUserId: existingUser?.id ?? null,
+    email: result.data.email.trim().toLowerCase(),
+    name: result.data.name,
+    phone,
+  });
+  req.session.pendingRegistration = undefined;
+  req.session.registrationChallenge = {
+    challengeId: challenge.id,
+    organizationId: challenge.organizationId,
+    bindingSecret,
+    createdAt: Date.now(),
+  };
+  res.set("Cache-Control", "no-store");
+  return sendSuccess(res, {
+    status: "pending",
+    registrationMode: "sms_otp",
+    phase: "verify_phone",
+    delivery: "sms",
+    phone: challenge.phone,
+    phoneMasked: maskRegistrationPhone(challenge.phone),
+    message: "Your registration is ready for phone verification.",
+  }, 202);
+}
+
 function logAccountActionOutcome(
   event: "validation" | "consumption",
   record: AccountActionWithUser | undefined,
@@ -227,6 +566,18 @@ const registerLimiter = rateLimit({
   message: {
     success: false,
     error: { message: "Too many requests, please try again later", code: "RATE_LIMITED" },
+  },
+});
+
+const registrationVerificationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: createSharedRateLimitStore('registration-verification'),
+  message: {
+    success: false,
+    error: { message: "Too many verification attempts, please try again later", code: "RATE_LIMITED" },
   },
 });
 
@@ -300,7 +651,10 @@ export function registerAuthRoutes(app: Express): void {
     res.set("Cache-Control", "no-store");
     try {
       const registrationOrganization = await resolveRegistrationOrganization(req);
-      return sendSuccess(res, { available: Boolean(registrationOrganization) });
+      return sendSuccess(res, {
+        available: Boolean(registrationOrganization),
+        registrationMode: env.REGISTRATION_MODE,
+      });
     } catch (error) {
       log.error("Registration availability error", { errorCode: error instanceof Error ? error.name : "unknown" });
       return sendError(res, registrationUnavailableMessage, 503, "SIGNUP_UNAVAILABLE");
@@ -310,8 +664,11 @@ export function registerAuthRoutes(app: Express): void {
   // Email-first registration deliberately has no password field. The
   // placeholder hash makes the account non-loginable until the email action
   // is consumed; it is never returned to the browser or sent to a provider.
-  authRouter.post("/register", registerLimiter, async (req, res) => {
+  authRouter.post("/register", registerLimiter, csrfProtection, async (req, res) => {
     try {
+      if (env.REGISTRATION_MODE === "sms_otp") {
+        return await startSmsRegistration(req, res);
+      }
       const registrationOrganization = await resolveRegistrationOrganization(req);
       if (!registrationOrganization) {
         return sendError(res, registrationUnavailableMessage, 503, "SIGNUP_UNAVAILABLE");
@@ -377,7 +734,12 @@ export function registerAuthRoutes(app: Express): void {
           });
           if (guidance.kind === "enqueued") notifyAccountActionDeliveryChanged();
         }
-        return sendSuccess(res, { status: "pending", email: maskEmail(email), message: registrationGenericMessage }, 202);
+        return sendSuccess(res, {
+          status: "pending",
+          email: maskEmail(email),
+          registrationMode: "email_link",
+          message: registrationGenericMessage,
+        }, 202);
       }
 
       let user: SelectUser;
@@ -403,7 +765,12 @@ export function registerAuthRoutes(app: Express): void {
         }));
       } catch (createError) {
         if (isNormalizedUserEmailConflict(createError)) {
-          return sendSuccess(res, { status: "pending", email: maskEmail(email), message: registrationGenericMessage }, 202);
+          return sendSuccess(res, {
+            status: "pending",
+            email: maskEmail(email),
+            registrationMode: "email_link",
+            message: registrationGenericMessage,
+          }, 202);
         }
         if (handleUserOrgError(res, createError)) return;
         throw createError;
@@ -419,6 +786,7 @@ export function registerAuthRoutes(app: Express): void {
       return sendSuccess(res, {
         status: "pending",
         email: maskEmail(email),
+        registrationMode: "email_link",
         message: registrationGenericMessage,
       }, 202);
     } catch (error) {
@@ -473,9 +841,207 @@ export function registerAuthRoutes(app: Express): void {
     return { pending, user, origin };
   }
 
+  authRouter.post("/registration/send", registrationVerificationLimiter, csrfProtection, async (req, res) => {
+    if (env.REGISTRATION_MODE !== "sms_otp" && !smsRegistrationSession(req)) {
+      return sendError(res, "Registration delivery is unavailable.", 404, "NOT_FOUND");
+    }
+    try {
+      return await sendSmsRegistrationCode(req, res);
+    } catch (error) {
+      log.error("Registration verification send error", { errorCode: error instanceof Error ? error.name : "unknown" });
+      return sendError(res, "Unable to send the verification message. Please try again.", 503, "RETRYABLE_ERROR");
+    }
+  });
+
+  authRouter.post("/registration/verify", registrationVerificationLimiter, csrfProtection, async (req, res) => {
+    if (env.REGISTRATION_MODE !== "sms_otp" && !smsRegistrationSession(req)) {
+      return sendError(res, "Registration verification is unavailable.", 404, "NOT_FOUND");
+    }
+    try {
+      const capability = smsRegistrationSession(req);
+      const row = await getSmsRegistrationChallenge(req);
+      if (!capability || !row) return sendError(res, "Registration status is unavailable.", 404, "NOT_FOUND");
+      if (registrationChallengePhase(row) === "expired") {
+        return sendError(res, "This verification session has expired. Please start again.", 410, "CHALLENGE_EXPIRED");
+      }
+      if (row.status === "verified") {
+        return sendSuccess(res, {
+          status: "verified",
+          phase: "set_password",
+          setupExpiresAt: row.setupExpiresAt,
+          expiresAt: row.setupExpiresAt,
+        });
+      }
+      const parsed = z.object({ code: z.string().regex(/^\d{6}$/, "Enter the six-digit verification code") }).safeParse(req.body);
+      if (!parsed.success) return sendError(res, "Enter the six-digit verification code.", 400, "INVALID_CODE");
+      const existingUser = row.existingUserId
+        ? await storage.getUser(row.existingUserId)
+        : await storage.getUserByEmail(row.email);
+      if (existingUser) {
+        // The account may have been claimed after the challenge was prepared
+        // but before this check. Retire the SMS capability and provide the
+        // same recovery guidance as the normal existing-account branch.
+        await recoverRegistrationEmailConflict(req, capability, row.email);
+        return sendError(res, "This email already has an account. Check your email for password-reset instructions.", 409, "ACCOUNT_EXISTS");
+      }
+      let lease: Awaited<ReturnType<typeof acquireRegistrationProviderLease>> | undefined;
+      try {
+        lease = await acquireRegistrationProviderLease({
+          challengeId: capability.challengeId,
+          bindingSecret: capability.bindingSecret,
+          organizationId: capability.organizationId,
+          operation: "verify",
+        });
+        const providerVerificationSid = lease.row.providerVerificationSid;
+        if (!providerVerificationSid) throw new RegistrationChallengeError("NOT_VERIFIED");
+        const checked = await getTwilioVerifyAdapter().checkSmsVerification(
+          lease.row.phone,
+          parsed.data.code,
+          providerVerificationSid,
+        );
+        if (checked.kind === "provider_not_found" || checked.kind === "provider_unavailable") {
+          await releaseRegistrationProviderLease({
+            challengeId: capability.challengeId,
+            bindingSecret: capability.bindingSecret,
+            organizationId: capability.organizationId,
+            leaseToken: lease.leaseToken,
+          });
+          lease = undefined;
+          return sendError(res, "Text verification is temporarily unavailable. Please try again later.", 503, "SMS_UNAVAILABLE");
+        }
+        if (checked.kind !== "approved") {
+          const attempts = await recordRegistrationVerificationAttempt({
+            challengeId: capability.challengeId,
+            bindingSecret: capability.bindingSecret,
+            organizationId: capability.organizationId,
+            leaseToken: lease.leaseToken,
+          });
+          lease = undefined;
+          if (attempts >= 5) {
+            res.set("Retry-After", "900");
+            return sendError(res, "Too many verification attempts. Request a new registration code later.", 429, "VERIFICATION_ATTEMPTS_EXCEEDED");
+          }
+          return sendError(res, "That code was not accepted. Request a new code and try again.", 400, "INVALID_CODE");
+        }
+        const verified = await markRegistrationChallengeVerified({
+          challengeId: capability.challengeId,
+          bindingSecret: capability.bindingSecret,
+          organizationId: capability.organizationId,
+          leaseToken: lease.leaseToken,
+          expectedProviderVerificationSid: providerVerificationSid,
+        });
+        lease = undefined;
+        res.set("Cache-Control", "no-store");
+        return sendSuccess(res, {
+          status: "verified",
+          phase: "set_password",
+          setupExpiresAt: verified.setupExpiresAt,
+          expiresAt: verified.setupExpiresAt,
+        });
+      } catch (error) {
+        if (lease) {
+          await releaseRegistrationProviderLease({
+            challengeId: capability.challengeId,
+            bindingSecret: capability.bindingSecret,
+            organizationId: capability.organizationId,
+            leaseToken: lease.leaseToken,
+          }).catch(() => undefined);
+        }
+        if (error instanceof RegistrationVerificationAttemptsExceededError) {
+          res.set("Retry-After", "900");
+          return sendError(res, "Too many verification attempts. Request a new registration code later.", 429, "VERIFICATION_ATTEMPTS_EXCEEDED");
+        }
+        if (registrationChallengeErrorResponse(res, error)) return;
+        if (error instanceof TwilioVerifyError && error.code === "not_configured") {
+          return sendError(res, "Text verification is temporarily unavailable. Please try again later.", 503, "SMS_NOT_CONFIGURED");
+        }
+        if (error instanceof TwilioVerifyError) {
+          return sendError(res, "Text verification is temporarily unavailable. Please try again later.", 503, "SMS_UNAVAILABLE");
+        }
+        throw error;
+      }
+    } catch (error) {
+      log.error("Registration verification error", { errorCode: error instanceof Error ? error.name : "unknown" });
+      return sendError(res, "Unable to verify the code. Please try again.", 503, "RETRYABLE_ERROR");
+    }
+  });
+
+  authRouter.post("/registration/complete", registrationVerificationLimiter, csrfProtection, async (req, res) => {
+    if (env.REGISTRATION_MODE !== "sms_otp" && !smsRegistrationSession(req)) {
+      return sendError(res, "Registration completion is unavailable.", 404, "NOT_FOUND");
+    }
+    let capability: SmsRegistrationSession | undefined;
+    let challengeEmail: string | undefined;
+    try {
+      capability = smsRegistrationSession(req);
+      const row = await getSmsRegistrationChallenge(req);
+      if (!capability || !row) return sendError(res, "Registration status is unavailable.", 404, "NOT_FOUND");
+      challengeEmail = row.email;
+      const password = req.body && typeof req.body.password === "string" ? req.body.password : undefined;
+      if (!password || !isPasswordValidForRegistration(password)) {
+        return sendError(res, "Password validation failed.", 400, "VALIDATION_ERROR");
+      }
+      const result = await completeRegistration({
+        challengeId: capability.challengeId,
+        organizationId: capability.organizationId,
+        bindingSecret: capability.bindingSecret,
+        password,
+      });
+      req.session.registrationChallenge = undefined;
+      return new Promise<void>((resolve) => {
+        req.login(result.user, (error) => {
+          if (error) {
+            log.error("Registration Passport login failed", { errorCode: error instanceof Error ? error.name : "unknown" });
+            sendSuccess(res, { linked: result.linked, loginFailed: true });
+          } else {
+            sendSuccess(res, { linked: result.linked, user: sanitizeUser(result.user) });
+          }
+          resolve();
+        });
+      });
+    } catch (error) {
+      if (error instanceof RegistrationExistingAccountError) {
+        await recoverRegistrationEmailConflict(req, capability, error.email ?? challengeEmail);
+        return sendError(res, "This email already has an account. Check your email for password-reset instructions.", 409, "ACCOUNT_EXISTS");
+      }
+      // A concurrent completion can consume the challenge and commit the
+      // account before this request reaches the challenge lock. Treat that
+      // losing request like the normal email-ownership race so it cannot
+      // surface a misleading "already completed" state without recovery
+      // guidance.
+      if (error instanceof RegistrationChallengeError
+        && error.code === "CONSUMED"
+        && challengeEmail) {
+        const existingUser = await storage.getUserByEmail(challengeEmail);
+        if (existingUser) {
+          await recoverRegistrationEmailConflict(req, capability, challengeEmail);
+          return sendError(res, "This email already has an account. Check your email for password-reset instructions.", 409, "ACCOUNT_EXISTS");
+        }
+      }
+      if (error instanceof RegistrationPasswordError) {
+        return sendError(res, "Password validation failed.", 400, "VALIDATION_ERROR");
+      }
+      if (registrationChallengeErrorResponse(res, error)) return;
+      log.error("Registration completion error", { errorCode: error instanceof Error ? error.name : "unknown" });
+      return sendError(res, "Unable to complete registration. Please try again.", 503, "RETRYABLE_ERROR");
+    }
+  });
+
   authRouter.get("/registration/status", async (req, res) => {
     res.set("Cache-Control", "no-store");
     try {
+      // A flag change controls only newly started registrations. If this
+      // browser already carries an SMS capability, restore that flow even
+      // after rollback; otherwise continue resolving any legacy email-link
+      // capability that was issued before the flag changed.
+      if (smsRegistrationSession(req)) {
+        const row = await getSmsRegistrationChallenge(req);
+        if (!row) return sendError(res, "Registration status is unavailable.", 404, "NOT_FOUND");
+        const existingUser = row.existingUserId
+          ? await storage.getUser(row.existingUserId)
+          : await storage.getUserByEmail(row.email);
+        return sendSuccess(res, smsRegistrationStatus(row, Boolean(existingUser)));
+      }
       const context = await getRegistrationContext(req);
       if (!context) {
         res.set("Cache-Control", "no-store");
@@ -546,8 +1112,11 @@ export function registerAuthRoutes(app: Express): void {
     }
   });
 
-  authRouter.post("/registration/resend", registerLimiter, async (req, res) => {
+  authRouter.post("/registration/resend", registerLimiter, csrfProtection, async (req, res) => {
     try {
+      if (smsRegistrationSession(req)) {
+        return await sendSmsRegistrationCode(req, res);
+      }
       const context = await getRegistrationContext(req);
       if (!context) {
         res.set("Cache-Control", "no-store");
@@ -579,19 +1148,37 @@ export function registerAuthRoutes(app: Express): void {
   // actions. Clearing this narrowly scoped session capability is all that is
   // needed before the client returns to the sign-up form.
   authRouter.post("/registration/abandon", csrfProtection, async (req, res) => {
+    const capability = smsRegistrationSession(req);
+    if (capability) {
+      try {
+        await cancelRegistrationChallenge({
+          challengeId: capability.challengeId,
+          bindingSecret: capability.bindingSecret,
+          organizationId: capability.organizationId,
+        });
+      } catch (error) {
+        log.warn("Failed to cancel registration challenge during abandon", {
+          errorCode: error instanceof Error ? error.name : "unknown",
+        });
+      }
+    }
     req.session.pendingRegistration = undefined;
+    req.session.registrationChallenge = undefined;
     res.set("Cache-Control", "no-store");
     return sendSuccess(res, { status: "abandoned" });
   });
 
   authRouter.post("/login", loginLimiter, (req, res, next) => {
-    passport.authenticate("local", (err: unknown, user: Express.User | false, info: { message?: string } | undefined) => {
+    passport.authenticate("local", async (err: unknown, user: Express.User | false, info: { message?: string } | undefined) => {
       if (err) {
         log.error('Login error:', err);
         return sendError(res, "Internal server error", 500, "SERVER_ERROR");
       }
       if (!user) {
         return sendError(res, info?.message || "Invalid credentials", 401, "INVALID_CREDENTIALS");
+      }
+      if (await hasActiveIdentitySecurityHold(user.id)) {
+        return sendError(res, "This account is temporarily restricted while a profile-security report is reviewed.", 423, "IDENTITY_SECURITY_HOLD");
       }
 
       if (
@@ -689,6 +1276,19 @@ export function registerAuthRoutes(app: Express): void {
         && req.organizationContextId !== undefined
       ) {
         user = { ...user, organizationId: req.organizationContextId };
+      }
+
+      // `/api/user` is registered before the broader protected `/api/*`
+      // middleware. Re-check a security hold here so a disputed identity
+      // cannot continue to hydrate held profile data through the auth
+      // bootstrap endpoint while still retaining the ability to log out.
+      if (await hasActiveIdentitySecurityHold(user.id)) {
+        return sendError(
+          res,
+          "This account is temporarily restricted while a profile-security report is reviewed.",
+          423,
+          "IDENTITY_SECURITY_HOLD",
+        );
       }
       const subdomainOrg = req.subdomainOrg;
 
@@ -805,6 +1405,9 @@ export function registerAuthRoutes(app: Express): void {
       if (!eligibility.valid) {
         logAccountActionOutcome("consumption", eligibility.record, eligibility.code);
         return sendAccountActionError(res, eligibility);
+      }
+      if (await hasActiveIdentitySecurityHold(eligibility.record.user.id)) {
+        return sendError(res, "This account is temporarily restricted while a profile-security report is reviewed.", 423, "IDENTITY_SECURITY_HOLD");
       }
 
       const hashedPassword = await hashPassword(passwordResult.data);
@@ -976,7 +1579,8 @@ export function registerAuthRoutes(app: Express): void {
 
       const email = parsed.data.email.toLowerCase();
       const user = await storage.getUserByEmail(email);
-      if (user?.password) {
+      const userOnHold = user ? await hasActiveIdentitySecurityHold(user.id) : false;
+      if (user?.password && !userOnHold) {
         // Commit the non-secret intent before acknowledging the request. A
         // process crash after the response cannot silently lose this email.
         const result = await enqueuePasswordResetDelivery({
@@ -1023,6 +1627,10 @@ export function registerAuthRoutes(app: Express): void {
       }
 
       const user = req.user as SelectUser;
+
+      if (await hasActiveIdentitySecurityHold(user.id)) {
+        return sendError(res, "This account is temporarily restricted while a profile-security report is reviewed.", 423, "IDENTITY_SECURITY_HOLD");
+      }
 
       if (user.bowlerId) {
         return sendError(res, "You are already linked to a bowler", 400, "ALREADY_LINKED");
@@ -1080,31 +1688,13 @@ export function registerAuthRoutes(app: Express): void {
           if (linkError.code === "BOWLER_NOT_FOUND") {
             return sendError(res, "Bowler not found", 404, "NOT_FOUND");
           }
+          if (linkError.code === "SECURITY_HOLD") {
+            return sendError(res, "This account is temporarily restricted while a profile-security report is reviewed.", 423, "IDENTITY_SECURITY_HOLD");
+          }
         }
         throw linkError;
       }
       // Contact transfer is committed by the identity-link transaction above.
-
-      const bowlerLeagueEntries = await storage.getBowlerLeagues({ bowlerId });
-      if (bowlerLeagueEntries.length > 0) {
-        const league = await storage.getLeague(bowlerLeagueEntries[0].leagueId);
-        if (league?.organizationId) {
-          const [, org] = await Promise.all([
-            !user.organizationId
-              ? storage.setUserOrganization(user.id, league.organizationId)
-              : Promise.resolve(null),
-            storage.getOrganization(league.organizationId),
-          ]);
-          const baseUrl = getBaseUrl(org ?? req.orgSlug);
-          sendTemplatedEmail('bowler_claimed', user.email, {
-            bowler_name: bowler.name,
-            organization_name: org?.name || '',
-            organization_logo_url: org?.logo ? getOrgLogoUrl(org) : '',
-            league_name: league.name,
-            dashboard_link: `${baseUrl}/bowler-dashboard`,
-          }).catch(err => log.error('Failed to send bowler_claimed email:', err));
-        }
-      }
 
       const updatedUser = await storage.getUser(user.id);
       sendSuccess(res, sanitizeUser(updatedUser!));

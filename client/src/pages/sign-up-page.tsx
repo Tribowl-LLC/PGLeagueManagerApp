@@ -1,5 +1,5 @@
 import { FC, useState } from "react";
-import { makeApiError, parseRetryAfterSeconds } from "@/lib/queryClient";
+import { csrfFetch, makeApiError, parseRetryAfterSeconds } from "@/lib/queryClient";
 import { isExpectedApiError, isAbortError } from "@/lib/api-error";
 import { logger } from "@/lib/logger";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -49,7 +49,7 @@ const signUpSchema = z.object({
   phone: z
     .string()
     .min(10, "Phone number must be at least 10 digits")
-    .max(15, "Phone number must be less than 15 digits")
+    .max(25, "Phone number is too long")
     .regex(/^[+]?[\d\s\-()]+$/, "Please enter a valid phone number"),
 });
 
@@ -60,12 +60,16 @@ const signUpResponseSchema = z.object({
   data: z.object({
     status: z.literal("pending"),
     email: z.string().optional(),
+    registrationMode: z.enum(["email_link", "sms_otp"]).optional(),
   }).passthrough(),
 });
 
 const signUpAvailabilityResponseSchema = z.object({
   success: z.literal(true),
-  data: z.object({ available: z.boolean() }),
+  data: z.object({
+    available: z.boolean(),
+    registrationMode: z.enum(["email_link", "sms_otp"]).optional(),
+  }),
 });
 
 const SignUpPage: FC = () => {
@@ -117,7 +121,7 @@ const SignUpPage: FC = () => {
         phone: data.phone,
       };
 
-      const response = await fetch("/api/auth/register", {
+      const response = await csrfFetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(registerBody),
@@ -145,11 +149,16 @@ const SignUpPage: FC = () => {
       }
 
       clearThrottle();
+      const registrationMode = parsedResponse.data.data.registrationMode
+        ?? registrationAvailability.data?.registrationMode
+        ?? "sms_otp";
       toast({
         title: "Registration request received",
-        description: "If registration can continue, we'll send setup instructions to your email.",
+        description: registrationMode === "sms_otp"
+          ? "If this email is new, we'll text a six-digit verification code. Existing accounts will receive password-reset instructions by email."
+          : "Check your email for the registration link and next steps.",
       });
-      setLocation("/registration-email");
+      setLocation(registrationMode === "sms_otp" ? "/verify-phone" : "/registration-email");
     } catch (error) {
       if (isAbortError(error)) return;
       if (error instanceof Error && ((error as { status?: number }).status === 429
