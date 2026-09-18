@@ -300,7 +300,7 @@ export const SENDGRID_API_KEY = env.SENDGRID_API_KEY;
 // §2.4, but we still want a canonical lowercase From: address so SPF /
 // DKIM logs and bounce records read uniformly.
 export const FROM_EMAIL = `noreply@${env.APP_DOMAIN}`;
-export const FROM_NAME = 'LeagueVault';
+export const FROM_NAME = 'Perfect Game';
 
 if (SENDGRID_API_KEY) {
   sgMail.setApiKey(SENDGRID_API_KEY);
