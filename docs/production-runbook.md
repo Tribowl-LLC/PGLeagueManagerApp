@@ -97,6 +97,40 @@ mandatory. Keep the handoff current with the evidence fields in
    same-organization request and a denied cross-organization request using
    safe test records or approved evidence. Run the trust-proxy probe when its
    conditions apply.
+8. **Post-release fast-forward and worktree cleanup.** Start this step only
+   after step 7 succeeds. Run `git fetch origin --prune`, then advance local
+   `main` only in a known idle, clean checkout and verify that it equals the
+   fetched `origin/main`. The repository's original worktree may be on an
+   active feature branch, so never assume the default checkout is available.
+   If `main` is already checked out elsewhere, use only a known idle, clean
+   worktree. If it is not checked out, in a known idle, clean checkout run
+   `git switch main` followed by `git merge --ff-only origin/main`. If no
+   eligible checkout is available, skip the update and report the blocker. If
+   local `main` and `origin/main` have diverged, stop and report the blocker;
+   never reset, force-move, rebase, or force-push `main`.
+
+   Remove only an old worktree whose pull-request merge is confirmed from the
+   hosting provider, including squash merges whose branch is not an ancestor;
+   do not rely on `git branch --merged` alone. Before removal, confirm that it
+   has no uncommitted or untracked work, no unpublished commits, no active
+   agent, terminal, development server, session, or lock, and no other
+   uncertainty. Inspect ignored files with `git status --ignored` and preserve
+   needed `.local` handoff, evidence, and configuration artifacts in a safe
+   operator archive before removal. Handle any secrets separately with
+   appropriate restricted storage; never put secrets, tokens, or credential-
+   bearing command output in source control. Preserve the explicitly protected
+   `Install frontend skill` session even when its worktree mapping is unknown,
+   as well as dirty, active, or uncertain worktrees.
+
+   Use `git worktree remove <path>` only for an eligible worktree. Never use
+   `rm -rf` or a force-removal option, and never remove the current working
+   directory; move work to a safe idle checkout first when necessary.
+   Deleting a branch is optional and requires verification that its remote
+   merge is complete and its local ref is safe; never force-delete a branch.
+   Standing authorization covers routine safe cleanup after the
+   release gates pass. Skip and report any blocker without a blanket approval
+   request. This documentation describes an active-session procedure; it does
+   not schedule cleanup outside the active session.
 
 ## Render Configuration
 

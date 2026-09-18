@@ -31,6 +31,12 @@ or explicit approval rule overrides that default. PR-ready status alone never
 authorizes release actions; the root owns merge, migration, and deployment
 decisions.
 
+After successful deployment verification, follow step 8 of the
+[default release lifecycle](production-runbook.md#default-release-lifecycle)
+for the fast-forward-only local `main` update and safe old-worktree cleanup.
+That procedure runs only during the active session and skips or reports dirty,
+active, protected, uncertain, or otherwise ineligible worktrees.
+
 This Markdown documents intended behavior; it cannot select or change the
 running root model, enforce a watchdog, or run after the session ends. The
 launcher/runtime must provide model selection, collaboration tools, capacity,
@@ -233,7 +239,8 @@ GitHub review and final-head check gates in the
 [default release lifecycle](production-runbook.md#default-release-lifecycle).
 The standing user authorization described there covers routine merge,
 guarded-migration, and exact-certified-commit deployment actions once those
-gates pass. Later task-specific holds, drafts, no-deploy instructions, or
+gates pass, followed by the safe step 8 cleanup procedure after deployment
+verification. Later task-specific holds, drafts, no-deploy instructions, or
 explicit approval requirements take precedence.
 
 ## Compact handoff brief
