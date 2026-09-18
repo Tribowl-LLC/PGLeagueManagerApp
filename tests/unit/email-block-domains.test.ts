@@ -172,8 +172,14 @@ describe('dispatchMail (task #593) — recipient-domain guard', () => {
     const captured = getCapturedEmails();
     expect(captured).toHaveLength(1);
     expect(captured[0].blockedDomains).toEqual(['vitest.local']);
-    const msg = captured[0].msg as { to: string; subject: string; html: string };
+    const msg = captured[0].msg as {
+      to: string;
+      from: { email: string; name?: string };
+      subject: string;
+      html: string;
+    };
     expect(msg.to).toBe('pat@vitest.local');
+    expect(msg.from).toEqual({ email: 'noreply@leaguevault.test', name: 'Perfect Game' });
     // Subject and body went through the variable-substitution pass.
     expect(msg.subject).toContain('Pat');
     expect(msg.html).toContain('Pat');
