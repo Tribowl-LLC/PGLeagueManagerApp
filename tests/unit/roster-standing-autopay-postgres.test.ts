@@ -1238,6 +1238,7 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
       providerObjectVersion: 1,
       providerObjectUpdatedAt: "2039-04-09T19:00:02.000Z",
       ignored: false,
+      ignoredCode: null,
       providerStatus: "COMPLETED",
       amountMinor: operation!.amountMinor,
       currency: "USD",

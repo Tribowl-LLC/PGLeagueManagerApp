@@ -10,6 +10,7 @@ import {
   type WebhookEventErrorClassification,
 } from "@shared/schema";
 import { db } from "../db.js";
+import type { SquareWebhookIgnoreCode } from "../services/square-webhook-event.js";
 import { encrypt } from "../utils/crypto.js";
 
 export class WebhookLocationMappingError extends Error {
@@ -42,6 +43,7 @@ export interface IngestSquareWebhookEventInput {
   payloadHash: string;
   rawPayload: string;
   ignored: boolean;
+  ignoredCode?: SquareWebhookIgnoreCode | null;
   now?: Date;
 }
 
@@ -143,7 +145,7 @@ export async function ingestSquareWebhookEvent(
         encryptedPayload: encrypt(input.rawPayload),
         status: input.ignored ? "ignored" : "pending",
         errorClassification: input.ignored ? "processing" : null,
-        errorCode: input.ignored ? "EVENT_TYPE_NOT_SUPPORTED" : null,
+        errorCode: input.ignored ? (input.ignoredCode ?? "EVENT_TYPE_NOT_SUPPORTED") : null,
         processedAt: input.ignored ? now : null,
         completedAt: input.ignored ? now : null,
         updatedAt: now,
