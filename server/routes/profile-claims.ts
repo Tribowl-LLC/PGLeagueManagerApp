@@ -54,10 +54,10 @@ function validToken(token: string): boolean {
 // value for the explicit POST below.
 router.get("/report", async (req: Request, res: Response) => {
   const token = readToken(req);
-  if (!validToken(token)) return sendError(res, "Report link is invalid or expired", 404, "INVALID_TOKEN");
+  if (!validToken(token)) return sendError(res, "Report link is invalid or expired", 404, "NOT_FOUND");
   try {
     const found = await getProfileClaimReportByHash(tokenHash(token));
-    if (!found) return sendError(res, "Report link is invalid or expired", 404, "INVALID_TOKEN");
+    if (!found) return sendError(res, "Report link is invalid or expired", 404, "NOT_FOUND");
     if (found.token.usedAt) return sendError(res, "This report link has already been used", 409, "TOKEN_USED");
     if (Date.parse(found.token.expiresAt) <= Date.now()) return sendError(res, "Report link has expired", 410, "TOKEN_EXPIRED");
     return sendSuccess(res, {
@@ -89,7 +89,7 @@ router.post("/report", reportLimiter, async (req: Request, res: Response) => {
       tokenHash: tokenHash(parsed.data.token),
       reason: parsed.data.reason?.trim() || null,
     });
-    if (result.kind === "invalid") return sendError(res, "Report link is invalid or expired", 404, "INVALID_TOKEN");
+    if (result.kind === "invalid") return sendError(res, "Report link is invalid or expired", 404, "NOT_FOUND");
     if (result.kind === "expired") return sendError(res, "Report link has expired", 410, "TOKEN_EXPIRED");
     if (result.kind === "obsolete") return sendError(res, "This profile assignment is no longer active", 410, "ASSIGNMENT_OBSOLETE");
     if (result.kind === "used") return sendError(res, "This report link has already been used", 409, "TOKEN_USED");
