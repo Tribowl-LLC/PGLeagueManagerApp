@@ -42,13 +42,23 @@ from a previous URL are ignored after the user follows another link.
 
 ## Required verification
 
-`npm run test:local` builds the current frontend, installs the matching
-Playwright Chromium binary, and runs the browser regression with the rest of
-the suite. Linux hosts also need Playwright's OS dependencies installed
+The focused browser regression requires a prepared disposable local migrated
+template and test environment. Run only this project and file during local
+diagnosis:
+
+```bash
+npm test -- --project parallel-isolated tests/e2e/password-reset-journey.test.ts
+```
+
+Before this focused run, build the current frontend and install the matching
+Playwright Chromium binary. Linux hosts also need Playwright's OS dependencies
 (`npx playwright install --with-deps chromium` on a host where package
 installation is allowed). CI installs these dependencies explicitly. An
 optional `PLAYWRIGHT_CHROMIUM_EXECUTABLE` selects an existing compatible binary.
-Missing prerequisites fail the recovery regression instead of skipping it.
+Missing prerequisites fail the recovery regression instead of skipping it. Only
+run the complete `npm run test:local` wrapper when the user explicitly requests
+or authorizes a full local suite for this task. It ignores file arguments and
+is not a focused-test bootstrap.
 
 `tests/e2e/password-reset-journey.test.ts` starts a real isolated application,
 requests recovery through the browser, captures the rendered email with the

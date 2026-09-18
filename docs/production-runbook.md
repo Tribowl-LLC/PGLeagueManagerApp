@@ -28,13 +28,20 @@ mandatory. Keep the handoff current with the evidence fields in
 
 1. **Local review and checks.** Inspect the branch, base, status, and diff;
    preserve unrelated user work. Complete local architect review, including
-   the fresh internal Astra reviewer when assigned. Run the relevant focused tests and repository checks,
-   including `npm run check`, `npm run lint`, `npm run build`, and applicable
-   database, race, and security checks; applicable checks must pass before
-   step 2. Task-related failures must be fixed before step 2. For a
-   documentation-only change, record why code or database checks are
-   inapplicable. Record the exact tested `HEAD`, clean or dirty state, and
-   failures or skips.
+   the fresh internal Astra reviewer when assigned. Follow the focused local
+   validation policy in [`AGENTS.md`](../AGENTS.md#verification): run the
+   smallest relevant explicit Vitest project and file, plus `npm run check`,
+   `npm run lint`, `npm run build`, `npm run db:check`, or security audits only
+   when the changed surface makes each applicable. A database-focused test
+   requires a prepared disposable local migrated template and test environment;
+   if it is unavailable, record the blocker and rely on the required GitHub
+   gate. Only run a full local suite when the user explicitly requests or
+   authorizes it for this task; it is not a routine handoff or automatic
+   exception for risky changes or CI failures.
+   For a documentation-only change, perform diff, link, and consistency review
+   and record application checks as inapplicable. Task-related failures must be
+   fixed before step 2. Record the exact tested `HEAD`, clean or dirty state,
+   commands run, and failures, skips, or blockers.
 2. **Commit, push, and ready PR.** Commit only the scoped change, push the
    branch, open one pull request, and verify it is ready for review unless a
    later task explicitly requests a draft. After every push, recapture the

@@ -5,21 +5,28 @@ Vitest-based API/integration and unit tests live here.
 ## Running the tests
 
 ```bash
-npm run test:local    # complete local wrapper: active migrations + isolated DBs
-npm run test          # one-shot run
-npm run test:watch    # watch mode
-npm run test:race     # opt-in race suite (see "Opt-in suites" below)
+npm test -- --project unit-no-db tests/unit/zod-v4-migration-contracts.test.ts
+npm test -- --project client-components tests/components/provider-not-configured-toast.test.tsx
+npm run test:watch -- --project unit-no-db tests/unit/zod-v4-migration-contracts.test.ts
+npm run test:race     # explicit race diagnosis; see "Opt-in suites" below
 ```
 
-The recommended `test:local` wrapper provisions PostgreSQL and builds the
-canonical test template from an empty local database by applying the complete
-active history with `db:migrate`. It verifies the exact journal, requires a
-second migration run to be a no-op, installs the startup invariants and test
-seed, then uses isolated per-worker application instances. Every physical
-worker clone rechecks the journal and emits migration provenance. Remote Neon
-template construction and any schema-push fallback are disabled. A separate
-dev server is only needed for raw `npm test` workflows that use the shared HTTP
-base URL. Start it in another shell first when using that path:
+Focused database-backed tests require an already prepared disposable local
+migrated template and test environment. Never point one at production. If that
+environment is unavailable, record the blocker and rely on the required
+GitHub check rather than bootstrapping it with the full-suite wrapper.
+
+The complete `test:local` wrapper is an explicit full-suite opt-in. It
+provisions PostgreSQL and builds the canonical test template from an empty
+local database by applying the complete active history with `db:migrate`. It
+verifies the exact journal, requires a second migration run to be a no-op,
+installs the startup invariants and test seed, then uses isolated per-worker
+application instances. Every physical worker clone rechecks the journal and
+emits migration provenance. Remote Neon template construction and any
+schema-push fallback are disabled. The wrapper runs all configured projects and
+ignores appended file arguments; do not add a path expecting filtering. A
+separate dev server is only needed for raw `npm test` workflows that use the
+shared HTTP base URL. Start it in another shell first when using that path:
 
 ```bash
 npm run dev
@@ -30,6 +37,12 @@ The wrapper runs Vitest in a directly managed child process, prints a
 `.local/test-local.log` while keeping terminal output small. On Windows,
 interrupting the command also terminates the Vitest child process tree so
 worker and test-app processes do not remain behind.
+
+Do not run unfiltered `npm test`, `npx vitest run`, watch mode, project batches,
+or wrapper aliases by default, and do not approximate the complete suite by
+running every project separately. Only run a full local suite when the user
+explicitly requests or authorizes it for the task. GitHub runs the complete
+test and quality gates.
 
 ## Automatic seeding
 

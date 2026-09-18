@@ -30,8 +30,9 @@ control, transactional email, and a Square payment integration.
   Docker Desktop.
 - Git.
 
-Docker Desktop is required by the recommended full local test command,
-`npm run test:local`.
+Docker is required for the repository’s container-based database checks and
+full local wrapper. The complete local suite requires explicit user authorization; see
+[`AGENTS.md`](AGENTS.md#verification).
 
 ## Quick Start
 
@@ -309,50 +310,72 @@ The CI job named `Type check & lint` runs both `npm run check` and
 
 ## Testing
 
-For the complete local suite, use the repository wrapper:
+For local validation, start with the smallest relevant explicit Vitest project
+and file:
 
 ```bash
-npm run db:check
+npm test -- --project unit-no-db tests/unit/zod-v4-migration-contracts.test.ts
+npm test -- --project client-components tests/components/provider-not-configured-toast.test.tsx
+```
+
+Use an already prepared disposable local migrated template and test environment
+for database-backed focused tests; never point one at production. If that
+environment is unavailable, record the blocker and rely on the required GitHub
+check rather than bootstrapping a full suite locally. See
+[`AGENTS.md`](AGENTS.md#verification) and [`docs/TEST_INFRA.md`](docs/TEST_INFRA.md)
+for the policy and infrastructure details.
+
+The complete local wrapper is an explicit full-suite opt-in:
+
+```bash
 npm run test:local
 ```
 
-This command checks the Node.js version, starts or reuses the
-`leaguevault-test-postgres` PostgreSQL 17 Docker container, applies the schema,
-builds the canonical test template from an empty database with `db:migrate`,
-requires the second migration run to be a no-op and the journal to be exact,
-then runs the Vitest suite with isolated worker clones. Every physical worker
+It checks the Node.js version, starts or reuses the `leaguevault-test-postgres`
+PostgreSQL 17 Docker container, applies the schema, builds the canonical test
+template from an empty database with `db:migrate`, requires the second
+migration run to be a no-op and the journal to be exact, then runs every
+configured Vitest project with isolated worker clones. Every physical worker
 clone rechecks the journal and emits migration provenance consumed by CI.
 Remote Neon template construction is disabled because a branch inherits its
-parent schema and cannot prove a from-zero replay. Start Docker Desktop before
-running the wrapper. Most test runs do not require a development server. Set
+parent schema and cannot prove a from-zero replay. The wrapper ignores appended
+file arguments; do not add a path expecting a filtered run. Set
 `TEST_LOCAL_START_DEV_SERVER=1` only for suites explicitly documented as
 requiring live HTTP access on port 5000.
 
 Other test commands are:
 
 ```bash
-npm test                              # one-shot Vitest run
-npm run test:watch                    # watch mode
-npm run test:race                     # opt-in race suite
-npm test -- tests/unit/app-domain-config.test.ts # focused test file
+npm test -- --project parallel tests/unit/app-domain-config.test.ts # focused file
+npm run test:watch -- --project unit-no-db tests/unit/zod-v4-migration-contracts.test.ts
+npm run test:race                     # explicit race diagnosis
 ```
 
-The race suite is a separate, serial suite for tests that mutate shared state.
-It requires `SETUP_SECRET` and should not run against a production database.
+Unfiltered `npm test`, unfiltered watch mode, project batches, and the race
+wrapper are not the default local validation path. Use them only for an
+explicitly authorized full or race diagnosis; do not approximate the full
+suite by running every project separately. The race suite is a separate,
+serial suite for tests that mutate shared state. It requires `SETUP_SECRET` and
+should not run against a production database.
 See [`tests/README.md`](tests/README.md) and [`docs/TEST_INFRA.md`](docs/TEST_INFRA.md)
 for authoritative details about test isolation, seeding, and CI. This README
 provides the normal developer workflow.
 
-Before handing off a database-backed change, run:
+Before handing off a change, run the smallest applicable focused test and
+checks. For example, run these when the changed surface requires them:
 
 ```bash
-npm run test:local
 npm run check
 npm run lint
-npm run build
-npm run security:audit:prod
-npm run security:audit:all
 ```
+
+Run `npm run build` for build or runtime-bundling changes, `npm run db:check`
+for schema, migration, or database-tooling changes, and the security audit
+scripts for dependency changes. For documentation-only changes, review the
+diff, links, and consistency without installing dependencies or running
+application tests. Record every check as run, not applicable, blocked, or
+failed; a focused pass does not establish a full-suite pass. GitHub runs the
+complete required test and quality gates.
 
 ## Troubleshooting
 
