@@ -98,6 +98,7 @@ const UNIT_NO_DB = [
   'tests/unit/single-tenant-config.test.ts',
   'tests/unit/single-tenant-context.test.ts',
   'tests/unit/single-tenant-preflight.test.ts',
+  'tests/unit/apple-pay-verification-file.test.ts',
   'tests/unit/score-requests.test.ts',
   'tests/eslint-rules/design-system-config.test.ts',
   'tests/unit/account-action-delivery-worker.test.ts',

@@ -69,6 +69,10 @@ import { registerSendgridWebhookReceiver } from './routes/email/sendgrid-webhook
 import { sanitizedSentryIdentity } from '@shared/sentry-context';
 import { getPgErrorCode } from './utils/db-errors.js';
 import { resolveBackgroundOrganizationId } from './services/single-tenant-context';
+import {
+  applePayVerificationFileCandidates,
+  APPLE_PAY_DOMAIN_VERIFICATION_FILENAME,
+} from './utils/apple-pay-verification';
 
 const log = createLogger("Server");
 
@@ -287,20 +291,29 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   });
 
   app.get('/.well-known/apple-developer-merchantid-domain-association', async (_req, res) => {
-    const staticPath = path.join(import.meta.dirname, '..', '.well-known', 'apple-developer-merchantid-domain-association');
-    try {
-      const { access } = await import('fs/promises');
-      await access(staticPath);
-      res.set('Content-Type', 'application/octet-stream');
-      res.set('Content-Disposition', 'attachment; filename="apple-developer-merchantid-domain-association"');
-      return res.sendFile(path.resolve(staticPath));
-    } catch {
-      // Fall back to env var if static file not present
+    const { access } = await import('fs/promises');
+    for (const staticPath of applePayVerificationFileCandidates({
+      moduleDir: import.meta.dirname,
+    })) {
+      try {
+        await access(staticPath);
+        res.set('Content-Type', 'application/octet-stream');
+        res.set(
+          'Content-Disposition',
+          `attachment; filename="${APPLE_PAY_DOMAIN_VERIFICATION_FILENAME}"`,
+        );
+        return res.sendFile(staticPath);
+      } catch {
+        // Try the next deployment layout before falling back to configuration.
+      }
     }
     const verification = process.env.APPLE_PAY_DOMAIN_VERIFICATION;
     if (verification) {
       res.set('Content-Type', 'application/octet-stream');
-      res.set('Content-Disposition', 'attachment; filename="apple-developer-merchantid-domain-association"');
+      res.set(
+        'Content-Disposition',
+        `attachment; filename="${APPLE_PAY_DOMAIN_VERIFICATION_FILENAME}"`,
+      );
       res.send(verification);
       return;
     }
