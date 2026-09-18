@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { sendError } from '../utils/api.js';
+import { isSingletonOrganizationMode } from '../config';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -20,6 +21,11 @@ export function filterByOrganization(req: OrgScopedRequest, res: Response, next:
   // If the user is not authenticated, don't apply any filter
   if (!req.isAuthenticated || !req.isAuthenticated()) {
     req.organizationFilter = null;
+    return next();
+  }
+
+  if (isSingletonOrganizationMode && req.organizationContextId !== undefined) {
+    req.organizationFilter = req.organizationContextId;
     return next();
   }
 
@@ -69,6 +75,10 @@ export function getOrganizationFilter(req: OrgScopedRequest): number | null {
   // If organization filter was already determined, use it
   if (req.organizationFilter !== undefined) {
     return req.organizationFilter;
+  }
+
+  if (isSingletonOrganizationMode && req.organizationContextId !== undefined) {
+    return req.organizationContextId;
   }
 
   // System admins default to their org, or all if unassigned

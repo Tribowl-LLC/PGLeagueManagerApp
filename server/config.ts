@@ -81,6 +81,16 @@ export const envSchema = z.object({
     .default("leaguevault.app")
     .transform((v) => v.toLowerCase()),
 
+  // Singleton business context. Local/test runtimes may omit this while
+  // existing multi-organization fixtures are being migrated; production-like
+  // deployments are required to pin business operations to an explicit row.
+  APP_ORGANIZATION_ID: z.coerce.number().int().positive().optional(),
+  LEGACY_ORG_HOSTS: z.string().optional().transform((value) =>
+    value === undefined
+      ? []
+      : value.split(',').map((host) => host.trim().toLowerCase()).filter(Boolean),
+  ),
+
   LOG_LEVEL: z
     .enum(["debug", "info", "warn", "error"], {
       error: () =>
@@ -232,6 +242,10 @@ function validateEnv(): Env {
       log.error("Environment validation failed: ROSTER_STANDING_AUTOPAY_ENABLED requires SCHEDULED_PAYMENT_EXECUTION_MODE=ledger_execute");
       process.exit(1);
     }
+    if ((parsed.NODE_ENV === 'production' || parsed.APP_ENV === 'prod') && !parsed.APP_ORGANIZATION_ID) {
+      log.error("Environment validation failed: APP_ORGANIZATION_ID must be set in production-like deployments");
+      process.exit(1);
+    }
     return parsed;
   };
 
@@ -288,6 +302,9 @@ export const appEnv: AppEnv = resolveAppEnv({
 // Canonical "are we in a production-like runtime?" boolean. Validated boot
 // configuration keeps this equivalent to `appEnv === 'prod'`.
 export const isProdLike = env.NODE_ENV === "production" || appEnv === 'prod';
+
+/** True when the deployment is pinned to the one supported business. */
+export const isSingletonOrganizationMode = env.APP_ORGANIZATION_ID !== undefined;
 
 // Production-like deploys MUST NOT silently run at `debug` — that would
 // dump `userId × resourceId` correlations from the org-less drift signal

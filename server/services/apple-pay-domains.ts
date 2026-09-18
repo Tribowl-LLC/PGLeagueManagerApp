@@ -49,16 +49,16 @@ function resolveSuffix(suffix?: string): string {
 }
 
 /**
- * The single canonical form we MINT for new orgs (used by the bulk-register
- * worker when enumerating domains). Prefers `subdomain` over `slug` for
- * historical reasons — both are accepted on read.
+ * The single canonical form we mint for new registrations. Historical
+ * organization-derived domains remain accepted below so existing wallets do
+ * not break during the host migration.
  */
 export function canonicalApplePayDomain(
   org: OrgLikeForApplePay,
   suffix?: string,
 ): string {
-  const prefix = org.subdomain || org.slug;
-  return `${prefix}.${resolveSuffix(suffix)}`;
+  void org;
+  return resolveSuffix(suffix);
 }
 
 /**
@@ -86,6 +86,7 @@ export function acceptedApplePayDomainsForOrg(
     out.push(norm);
   };
 
+  add(resolvedSuffix);
   if (org.subdomain) add(`${org.subdomain}.${resolvedSuffix}`);
   add(`${org.slug}.${resolvedSuffix}`);
   for (const d of previouslyRegisteredDomains) add(d);

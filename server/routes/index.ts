@@ -16,6 +16,7 @@ import paymentRoutesRouter from './payments-provider/index.js';
 import adminRouter from './admin.js';
 import organizationsRouter from './organizations.js';
 import organizationsPublicRouter from './organizations-public.js';
+import businessSettingsRouter from './business-settings.js';
 import orgAdminRouter from './organization-admin.js';
 import userBowlersRouter from './user-bowlers.js';
 import setupAdminRouter from './setup-admin.js';
@@ -34,6 +35,7 @@ import rosterStandingAutopayRouter from './roster-standing-autopay.js';
 import financialsF5Router from './financials-f5.js';
 import { requireAuth, requireOrgAdmin, requireSystemAdmin, requirePasswordRotated } from '../middleware/auth.js';
 import { createLogger } from '../logger';
+import { isSingletonOrganizationMode } from '../config';
 
 const log = createLogger("Routes");
 
@@ -108,6 +110,7 @@ export function registerRoutes(app: Express): void {
   registerAuthRoutes(app);
 
   app.use('/api/organizations', organizationsPublicRouter);
+  app.use('/api/business-settings', requireAuth, businessSettingsRouter);
   // Task #704: one-click accept/decline for bowler-payment-link invites.
   // Mounted BEFORE requirePasswordRotated/requireAuth because the link
   // recipient may not be logged in (or may be logged in as a different
@@ -143,7 +146,12 @@ export function registerRoutes(app: Express): void {
   // `server/app.ts` so it never enters tenant resolution or global JSON parsing.
   app.use('/api/payments-provider', requireAuth, paymentRoutesRouter);
   app.use('/api/admin', requireOrgAdmin, adminRouter);
-  app.use('/api/organizations', requireAuth, organizationsRouter);
+  // In singleton mode the old organization lifecycle/switching API is not
+  // mounted. Public legacy logo/icon paths remain available above, while
+  // business edits go through the Owner-only settings route.
+  if (!isSingletonOrganizationMode) {
+    app.use('/api/organizations', requireAuth, organizationsRouter);
+  }
   app.use('/api/org-admin', requireOrgAdmin, orgAdminRouter);
   app.use('/api/user-bowlers', requireAuth, userBowlersRouter);
   app.use('/api/setup', setupAdminRouter); // setup routes have their own secret-based auth

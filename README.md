@@ -213,6 +213,8 @@ Common local settings:
 | `APP_ENV` | Environment selector: `dev` or `prod`. Use `dev` locally and `prod` on Render. |
 | `NODE_ENV` | Node runtime mode. Use `development` locally and `production` for a built deployment. |
 | `APP_DOMAIN` | Base application hostname; defaults to `leaguevault.app`. |
+| `APP_ORGANIZATION_ID` | Production singleton business ID. Validate it with `npm run db:preflight:single-tenant` before cutover. |
+| `LEGACY_ORG_HOSTS` | Comma-separated legacy browser hostnames redirected to the canonical domain. |
 | `PORT` | HTTP port; defaults to `5000`. |
 | `LOG_LEVEL` | Optional log level: `debug`, `info`, `warn`, or `error`. |
 

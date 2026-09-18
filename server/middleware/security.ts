@@ -64,7 +64,7 @@ export const securityHeaders: RequestHandler = helmet({
       // emitting the canonical lowercase form keeps the directive readable.
       frameAncestors: isDev
         ? ["*"]
-        : ["'self'", `https://${env.APP_DOMAIN}`, `https://*.${env.APP_DOMAIN}`],
+        : ["'self'", `https://${env.APP_DOMAIN}`],
     },
   },
   frameguard: isDev ? false : { action: 'sameorigin' },
@@ -101,16 +101,6 @@ export function isAllowedOrigin(origin: string): boolean {
   if (allowedOrigins.includes(origin)) return true;
   if (origin === 'capacitor://localhost' || origin === 'ionic://localhost') return true;
   if (origin === 'http://localhost') return true;
-  try {
-    const url = new URL(origin);
-    // safe: APP_DOMAIN is normalised to lowercase at parse-time (task #335).
-    // `url.hostname` is lowercased by the WHATWG URL parser, so the suffix
-    // compare is implicitly case-insensitive only because both sides are
-    // already lowercase.
-    if (url.hostname.endsWith(`.${env.APP_DOMAIN}`) && url.protocol === 'https:') {
-      return true;
-    }
-  } catch {}
   return false;
 }
 

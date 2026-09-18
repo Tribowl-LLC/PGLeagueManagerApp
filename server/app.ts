@@ -55,7 +55,8 @@ import { backfillMissingPaymentCustomers } from './migrations/backfill-missing-p
 import { seedDefaultEmailTemplates } from './migrations/seed-email-templates';
 import { createLogger } from './logger';
 import { csrfProtection, csrfTokenEndpoint } from './middleware/csrf';
-import { subdomainDetection, orgSessionGuard } from './middleware/subdomain';
+import { singletonOrganizationContext } from './middleware/single-tenant';
+import { rejectForeignOrganizationInput } from './middleware/organization-input';
 import { securityHeaders, apiHeaders } from './middleware/security';
 import { requestTracker, registerShutdownHandlers } from './lib/shutdown';
 import manifestRouter from './routes/manifest';
@@ -195,7 +196,7 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   // the explicit Phase 4A-1 ingest-only mode is configured.
   registerSquareWebhookReceiver(app);
   registerSendgridWebhookReceiver(app, { publicKey: env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY ?? '' });
-  app.use(subdomainDetection);
+  app.use(singletonOrganizationContext);
   app.use(compression());
   app.use(securityHeaders);
   app.use(['/set-password', '/api/auth/validate-invite'], (_req, res, next) => {
@@ -219,6 +220,20 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   app.use(express.urlencoded({ extended: false, limit: '256kb' }));
   await setupAuth(app);
 
+  // Preserve Owner accounts created before organization membership was
+  // required without persisting a synthetic ownership change. Route code can
+  // use the effective singleton organization while the database row remains
+  // organizationId=null, as required for historical ownership evidence.
+  app.use((req, _res, next) => {
+    if (env.APP_ORGANIZATION_ID !== undefined
+      && req.user?.role === 'system_admin'
+      && req.organizationContextId !== undefined) {
+      req.user.organizationId = req.organizationContextId;
+    }
+    next();
+  });
+  app.use(rejectForeignOrganizationInput);
+
   // Load the SDK only after the core middleware is ready. Production has
   // already initialized it through server/instrument.ts; test runtimes with
   // no DSN retain the same no-op behavior.
@@ -231,8 +246,6 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
       next();
     });
   });
-
-  app.use(orgSessionGuard);
 
   app.use(manifestRouter);
 

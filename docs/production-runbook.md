@@ -100,9 +100,9 @@ mandatory. Keep the handoff current with the evidence fields in
    blocker and do not claim completion. Verify the deployed commit through
    `/healthz`, `/api/health`, `/api/org-context` (`appEnv: "prod"` plus the
    matching short commit), authentication, the affected workflow, and Render
-   and application logs. Verify tenant isolation explicitly with an allowed
-   same-organization request and a denied cross-organization request using
-   safe test records or approved evidence. Run the trust-proxy probe when its
+   and application logs. Verify the configured organization context explicitly
+   with an allowed same-business request and denied foreign/unassigned-record
+   requests using safe test records or approved evidence. Run the trust-proxy probe when its
    conditions apply.
 8. **Post-release fast-forward and worktree cleanup.** Start this step only
    after step 7 succeeds. Run `git fetch origin --prune`, then advance local
@@ -319,7 +319,7 @@ instances remain before dropping the column:
 
 1. From the exact certified commit, manually deploy the new compatible
    application. Do not apply `0040` yet.
-2. Smoke `/api/health`, tenant branding, sign-up, email-proof/setup, and
+2. Smoke `/api/health`, business branding, sign-up, email-proof/setup, and
    representative league create/edit/new-season flows while the old column is
    still present. Confirm the deployed commit and capture the smoke evidence.
 3. Create the current backup/restorable target and run the protected migration
