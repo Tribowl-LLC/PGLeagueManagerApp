@@ -14,11 +14,12 @@
  * error at that point). The admin retry endpoint stays available as a
  * manual override regardless of attempt count.
  */
-import { and, eq, inArray, isNotNull, lt, lte } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, lt, lte, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { bowlers } from '@shared/schema';
 import { storage } from '../storage';
 import { createLogger } from '../logger';
+import { env, isProdLike, isSingletonOrganizationMode } from '../config';
 import { lockedSweep } from './_internal/locked-sweep';
 import {
   syncBowlerForUser,
@@ -90,11 +91,18 @@ export async function runPaymentSyncRetrySweep(now: Date = new Date()): Promise<
   // We also count the matching rows separately so we can log how
   // many were skipped because of contention with another instance
   // (matching the scheduler's lock-contention telemetry).
+  const configuredOrganizationId = env.APP_ORGANIZATION_ID;
+  const organizationCondition = isProdLike && configuredOrganizationId === undefined
+    ? sql`false`
+    : isSingletonOrganizationMode && configuredOrganizationId !== undefined
+      ? eq(bowlers.organizationId, configuredOrganizationId)
+      : undefined;
   const conditions = and(
     isNotNull(bowlers.paymentSyncPendingAt),
     isNotNull(bowlers.paymentSyncNextRetryAt),
     lt(bowlers.paymentSyncAttempts, PAYMENT_SYNC_MAX_ATTEMPTS),
     lte(bowlers.paymentSyncNextRetryAt, now.toISOString()),
+    organizationCondition,
   );
 
   const claimAttemptedAt = now.toISOString();

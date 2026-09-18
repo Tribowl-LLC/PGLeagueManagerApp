@@ -3,10 +3,9 @@
  *
  * These pin the exact contract the org-admin `POST /apple-pay/register-domain`
  * route relies on (task #277):
- *   - The current `<subdomain>.<APP_DOMAIN>` is accepted.
- *   - The current `<slug>.<APP_DOMAIN>` is accepted (covers orgs that
- *     never set a subdomain, AND orgs whose subdomain was renamed to a
- *     value other than slug).
+ *   - The canonical `<APP_DOMAIN>` is accepted for the single business.
+ *   - Historical organization-derived domains remain accepted for existing
+ *     wallets during the host migration.
  *   - A random off-org domain is rejected.
  *   - A previously-registered domain stays accepted even after slug AND
  *     subdomain were both renamed away from it (the rename-tolerance case
@@ -17,7 +16,12 @@
  * not depend on the production `APP_DOMAIN` literal — they verify the
  * shape of the rule, not the specific production hostname.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+vi.hoisted(() => {
+  process.env.DATABASE_URL = "postgres://unit.test/leaguevault";
+  process.env.SESSION_SECRET = "unit-test-session-secret";
+  process.env.FIELD_ENCRYPTION_KEY = "0".repeat(64);
+});
 import {
   acceptedApplePayDomainsForOrg,
   canonicalApplePayDomain,
@@ -95,13 +99,13 @@ describe("apple-pay accepted-domain rule (org_admin)", () => {
       [`ACME.${SUFFIX}`, `old.${SUFFIX}`, `old.${SUFFIX}`],
       SUFFIX,
     );
-    expect(list).toEqual([`acme.${SUFFIX}`, `old.${SUFFIX}`]);
+    expect(list).toEqual([SUFFIX, `acme.${SUFFIX}`, `old.${SUFFIX}`]);
   });
 
-  it("canonicalApplePayDomain prefers subdomain over slug", () => {
+  it("canonicalApplePayDomain returns the application root", () => {
     expect(canonicalApplePayDomain({ slug: "acme-bowling", subdomain: "acme" }, SUFFIX))
-      .toBe(`acme.${SUFFIX}`);
+      .toBe(SUFFIX);
     expect(canonicalApplePayDomain({ slug: "acme-bowling", subdomain: null }, SUFFIX))
-      .toBe(`acme-bowling.${SUFFIX}`);
+      .toBe(SUFFIX);
   });
 });

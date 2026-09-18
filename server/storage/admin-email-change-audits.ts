@@ -56,6 +56,7 @@ export function clampListLimit(raw: number | undefined): number {
 
 export interface ListAdminEmailChangeAuditsOptions {
   targetUserId?: number;
+  organizationId?: number;
   limit?: number;
   offset?: number;
 }
@@ -73,6 +74,9 @@ export async function listAdminEmailChangeAudits(
   const conditions = options.targetUserId !== undefined
     ? [eq(adminEmailChangeAudits.targetUserId, options.targetUserId)]
     : [];
+  if (options.organizationId !== undefined) {
+    conditions.push(eq(targetUsers.organizationId, options.organizationId));
+  }
 
   const rows = await db
     .select({
@@ -133,14 +137,19 @@ export async function markAdminEmailChangeAuditConfirmed(opts: {
 }
 
 export async function countAdminEmailChangeAudits(
-  options: { targetUserId?: number } = {},
+  options: { targetUserId?: number; organizationId?: number } = {},
 ): Promise<number> {
-  const where = options.targetUserId !== undefined
-    ? eq(adminEmailChangeAudits.targetUserId, options.targetUserId)
-    : undefined;
+  const targetUsers = alias(users, "target_users_count");
+  const conditions = options.targetUserId !== undefined
+    ? [eq(adminEmailChangeAudits.targetUserId, options.targetUserId)]
+    : [];
+  if (options.organizationId !== undefined) {
+    conditions.push(eq(targetUsers.organizationId, options.organizationId));
+  }
   const q = db
     .select({ value: sql<number>`count(*)::int` })
-    .from(adminEmailChangeAudits);
-  const [row] = await (where ? q.where(where) : q);
+    .from(adminEmailChangeAudits)
+    .leftJoin(targetUsers, eq(adminEmailChangeAudits.targetUserId, targetUsers.id));
+  const [row] = await (conditions.length > 0 ? q.where(and(...conditions)) : q);
   return row?.value ?? 0;
 }

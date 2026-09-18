@@ -54,7 +54,6 @@ export function NewSeasonDialog({
   setShowNewSeason,
   onCreate,
   isPending,
-  isSystemAdmin = false,
 }: {
   league: League;
   showNewSeason: boolean;
@@ -72,11 +71,10 @@ export function NewSeasonDialog({
   const [paymentMode, setPaymentMode] = useState<PaymentMode | "">("");
   const [showSchedule, setShowSchedule] = useState(false);
   const [carriedConfigurationConfirmed, setCarriedConfigurationConfirmed] = useState(false);
-  const sourceQuerySuffix = isSystemAdmin ? `?organizationId=${league.organizationId}` : "";
   const sourceConfirmationQuery = useQuery<ApiResponse<LeagueRolloverSourceContract>>({
-    queryKey: ["league-rollover-source", league.id, sourceQuerySuffix],
+    queryKey: ["league-rollover-source", league.id],
     queryFn: () => apiRequest<LeagueRolloverSourceContract>(
-      `/api/leagues/${league.id}/new-season/source-confirmation${sourceQuerySuffix}`,
+      `/api/leagues/${league.id}/new-season/source-confirmation`,
       "GET",
     ),
     enabled: showNewSeason,

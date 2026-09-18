@@ -70,7 +70,13 @@ import {
 } from "../services/roster-payment-finalizer.js";
 import { validateStandingConsentForDispatchInTransaction } from "../services/roster-standing-autopay.js";
 import { canonicalObligationBalance } from "../services/refund-allocation-adjustments.js";
-import { rosterStandingAutopayEnabled, scheduledPaymentExecutionMode } from "../config.js";
+import {
+  env,
+  isProdLike,
+  isSingletonOrganizationMode,
+  rosterStandingAutopayEnabled,
+  scheduledPaymentExecutionMode,
+} from "../config.js";
 import { lockLeagueSchedule } from "./league-schedule-lock.js";
 async function releaseRosterReservationsWithoutProviderEvidence(
   tx: PaymentOperationTransaction,
@@ -2452,6 +2458,16 @@ export async function recordStandingAutopayPreparationFailure(input: {
  */
 export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake | undefined> {
   if (!rosterStandingAutopayEnabled || scheduledPaymentExecutionMode !== "ledger_execute") return undefined;
+  const configuredOrganizationScope = isProdLike && env.APP_ORGANIZATION_ID === undefined
+    ? sql`FALSE`
+    : isSingletonOrganizationMode
+      ? sql`c.organization_id = ${env.APP_ORGANIZATION_ID}`
+      : sql`TRUE`;
+  const configuredOperationScope = isProdLike && env.APP_ORGANIZATION_ID === undefined
+    ? sql`FALSE`
+    : isSingletonOrganizationMode
+      ? sql`po.organization_id = ${env.APP_ORGANIZATION_ID}`
+      : sql`TRUE`;
   const result = await db.execute<{
     kind: "standing_cutoff" | "standing_operation";
     organization_id: number;
@@ -2645,6 +2661,7 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
             AND blocked_refund_obligation.payer_bowler_id = o.payer_bowler_id
             AND blocked_refund_obligation.occurrence_id = o.occurrence_id
        )
+        AND ${configuredOrganizationScope}
         AND c.state = 'active'
         AND c.payment_mode = 'weekly'
         AND c.revoked_at IS NULL
@@ -2692,6 +2709,7 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
       WHERE po.operation_type = 'standing_autopay_charge'
         AND po.status IN ('pending', 'provider_unknown', 'retry_scheduled', 'leased')
         AND (po.status <> 'provider_unknown' OR po.provider_object_id IS NULL)
+        AND ${configuredOperationScope}
         AND CASE WHEN po.status = 'leased' THEN po.lease_expires_at ELSE po.next_attempt_at END IS NOT NULL
       ORDER BY CASE WHEN po.status = 'leased' THEN po.lease_expires_at ELSE po.next_attempt_at END ASC, po.id ASC
       LIMIT 1
@@ -2730,6 +2748,11 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
 
 /** Exported so PostgreSQL plan tests exercise the exact production query. */
 export function buildNextPaymentOperationWakeQuery() {
+  const organizationScope = isProdLike && env.APP_ORGANIZATION_ID === undefined
+    ? sql`FALSE`
+    : isSingletonOrganizationMode
+      ? sql`${paymentOperations.organizationId} = ${env.APP_ORGANIZATION_ID}`
+      : sql`TRUE`;
   return sql`
     WITH next_operation AS (
       SELECT
@@ -2754,6 +2777,7 @@ export function buildNextPaymentOperationWakeQuery() {
             AND ${paymentOperations.leaseExpiresAt} IS NOT NULL)
         )
       )
+        AND ${organizationScope}
       ORDER BY due_at ASC, ${paymentOperations.id} ASC
       LIMIT 1
     )

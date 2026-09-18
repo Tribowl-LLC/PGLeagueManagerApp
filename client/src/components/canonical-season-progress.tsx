@@ -23,23 +23,20 @@ function sessionCompletionCutoff(row: LeagueOccurrenceScheduleOccurrence): numbe
   }
 }
 
-export function CanonicalSeasonProgress({ leagueId, organizationId, viewerRole, allowRetry = true }: {
+export function CanonicalSeasonProgress({ leagueId, allowRetry = true }: {
   leagueId: number;
   organizationId: number | null;
   viewerRole: string;
   allowRetry?: boolean;
 }) {
-  const scoped = viewerRole !== "system_admin" || organizationId !== null;
-  const suffix = viewerRole === "system_admin" ? `?organizationId=${organizationId}` : "";
-  const endpoint = `/api/leagues/${leagueId}/occurrence-schedule${suffix}`;
+  const endpoint = `/api/leagues/${leagueId}/occurrence-schedule`;
   const { data, dataUpdatedAt, isPending, isError, refetch } = useQuery({
     queryKey: ["league-occurrence-schedule", endpoint],
     queryFn: () => apiRequest<LeagueOccurrenceScheduleReadContract>(endpoint, "GET"),
-    enabled: scoped,
+    enabled: true,
     retry: false,
     refetchInterval: 60_000,
   });
-  if (!scoped) return <span>Schedule unavailable</span>;
   if (isError) return <span>Schedule unavailable{allowRetry && <> <button type="button" onClick={() => void refetch()}>Retry</button></>}</span>;
   if (isPending) return <span>Loading schedule…</span>;
   const schedule = data?.data;

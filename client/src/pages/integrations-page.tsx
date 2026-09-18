@@ -1,17 +1,10 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import type { ApiResponse, Location, Organization, User } from "@shared/schema";
+import type { ApiResponse, Location, User } from "@shared/schema";
 import { SquareSection } from "@/components/square-integration-section";
 
 interface IntegrationsContentProps {
@@ -34,8 +27,6 @@ export default function IntegrationsPage() {
   });
 
   const currentUser = currentUserResponse?.data;
-  const isSystemAdmin = currentUser?.role === "system_admin";
-
   // Read the optional `?location=<id>` deep-link query param emitted by
   // the checkout's "not configured" alert / toast (tasks #582, #583).
   // Only accept positive integers — anything else is ignored so the page
@@ -49,13 +40,9 @@ export default function IntegrationsPage() {
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
   }, [search]);
 
-  const [selectedOrgId, setSelectedOrgId] = useState<number | null>(null);
-
-  // When a deep link is present, look up the location so we can route a
-  // system admin to the correct organization automatically (regular admins
-  // only ever see their own org). The query is non-blocking: a 404 / 403 /
-  // network error just leaves the page on the user's default org so the
-  // page "still loads cleanly with no error" per the task spec.
+  // When a deep link is present, look up the location so the location-specific
+  // panel can open. The business context itself is never selected by the
+  // browser.
   const { data: highlightLocationResponse } = useQuery<ApiResponse<Location>>({
     queryKey: ["/api/locations", highlightLocationId],
     queryFn: async () => {
@@ -70,23 +57,7 @@ export default function IntegrationsPage() {
 
   const highlightLocationOrgId = highlightLocationResponse?.data?.organizationId ?? null;
 
-  // For system admins following a `?location=<id>` deep link, default the
-  // org selection to the location's owning org so they don't have to hunt
-  // for it in the dropdown. Derived during render rather than stored via an
-  // effect: `selectedOrgId` stays null until the admin makes a manual
-  // choice, and `effectiveOrgId` falls back to the deep-linked org until
-  // then — so a manual choice always wins and navigating back never snaps.
-  const effectiveOrgId = isSystemAdmin
-    ? (selectedOrgId ?? highlightLocationOrgId ?? currentUser?.organizationId ?? null)
-    : (currentUser?.organizationId ?? null);
-
-  const { data: orgsResponse } = useQuery<ApiResponse<Organization[]>>({
-    queryKey: ["/api/organizations"],
-    enabled: isSystemAdmin,
-    staleTime: 1000 * 60 * 5,
-  });
-
-  const orgList = orgsResponse?.data ?? [];
+  const effectiveOrgId = currentUser?.organizationId ?? highlightLocationOrgId ?? null;
 
   return (
     <Layout>
@@ -98,34 +69,9 @@ export default function IntegrationsPage() {
         </p>
       </div>
 
-      {isSystemAdmin && orgList.length > 0 && (
-        <div className="mb-6 max-w-2xl">
-          <Label htmlFor="org-select" size="sm" weight="medium" className="mb-2 block">
-            Organization
-          </Label>
-          <Select
-            value={effectiveOrgId ? String(effectiveOrgId) : ""}
-            onValueChange={(val) => {
-              setSelectedOrgId(Number(val));
-            }}
-          >
-            <SelectTrigger id="org-select" className="w-64">
-              <SelectValue placeholder="Select an organization..." />
-            </SelectTrigger>
-            <SelectContent>
-              {orgList.map((org) => (
-                <SelectItem key={org.id} value={String(org.id)}>
-                  {org.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      )}
-
       {!effectiveOrgId ? (
         <div className="text-muted-foreground text-sm">
-          {isSystemAdmin ? "Select an organization above to manage its integrations." : "No organization context found."}
+          No business context found.
         </div>
       ) : (
         <IntegrationsContent

@@ -15,9 +15,10 @@ import { getPaymentProvider, ProviderNotConfiguredError } from '../../services/p
 import { hasWalletSupport } from '../../services/payment-provider';
 import { applePayWorker } from '../../services/apple-pay-worker';
 import { acceptedApplePayDomainsForOrg, isAcceptedApplePayDomain } from '../../services/apple-pay-domains';
-import { APPLE_PAY_RECOVERY_ALERT_KIND } from '../../services/apple-pay-alerts';
+import { applePayRecoveryAlertKind } from '../../services/apple-pay-alerts';
 import type { ApplePayRecoveryAlerterSummary } from '@shared/schema';
 import { isTestKickSuppressed, APPLE_PAY_WORKER_KICK_HEADER } from '../../utils/test-suppression';
+import { requireOrganizationAccess } from '../../utils/access-control.js';
 
 // How far back the admin dashboard banner should consider an Apple Pay
 // recovery alert "recent". 24 hours is generous enough to survive an
@@ -74,12 +75,14 @@ router.get('/apple-pay/jobs', async (req, res) => {
     if (req.user?.role !== 'system_admin') {
       return sendError(res, 'System admin access required', 403, 'FORBIDDEN');
     }
-    const jobs = await storage.listApplePayJobs(25);
+    const jobs = req.organizationContextId === undefined
+      ? await storage.listApplePayJobs(25)
+      : await storage.listApplePayJobs(25, req.organizationContextId);
     // Decorate each row with its lease-recovered total so admins can spot
     // anomalous jobs at a glance from the list view (#270).
-    const totals = await storage.getApplePayJobsRecoveredItemTotals(
-      jobs.map((j) => j.id),
-    );
+    const totals = req.organizationContextId === undefined
+      ? await storage.getApplePayJobsRecoveredItemTotals(jobs.map((j) => j.id))
+      : await storage.getApplePayJobsRecoveredItemTotals(jobs.map((j) => j.id), req.organizationContextId);
     const jobsWithRecovery = jobs.map((j) => ({
       ...j,
       recoveredItemCount: totals.get(j.id) ?? 0,
@@ -101,7 +104,9 @@ router.get('/apple-pay/jobs/pending-count', async (req, res) => {
     if (req.user?.role !== 'system_admin') {
       return sendError(res, 'System admin access required', 403, 'FORBIDDEN');
     }
-    const count = await storage.countApplePayJobsNeedingAttention();
+    const count = req.organizationContextId === undefined
+      ? await storage.countApplePayJobsNeedingAttention()
+      : await storage.countApplePayJobsNeedingAttention(req.organizationContextId);
     sendSuccess(res, { count });
   } catch (error) {
     log.error('Apple Pay pending-count error:', error);
@@ -117,14 +122,20 @@ router.get('/apple-pay/jobs/:id', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return sendError(res, 'Invalid job id', 400, 'INVALID_ID');
 
-    const job = await storage.getApplePayJob(id);
+    const job = req.organizationContextId === undefined
+      ? await storage.getApplePayJob(id)
+      : await storage.getApplePayJob(id, req.organizationContextId);
     if (!job) return sendError(res, 'Job not found', 404, 'NOT_FOUND');
 
     // Live counts from the items table — these stay accurate while the job is
     // mid-flight (the job row's counts are only finalized at job completion).
     const [items, liveCounts] = await Promise.all([
-      storage.getApplePayJobItems(id),
-      storage.getApplePayJobItemCounts(id),
+      req.organizationContextId === undefined
+        ? storage.getApplePayJobItems(id)
+        : storage.getApplePayJobItems(id, req.organizationContextId),
+      req.organizationContextId === undefined
+        ? storage.getApplePayJobItemCounts(id)
+        : storage.getApplePayJobItemCounts(id, req.organizationContextId),
     ]);
 
     // Aggregate lease-recovered items so the admin UI can flag the job
@@ -160,10 +171,14 @@ router.post('/apple-pay/jobs/:id/cancel', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return sendError(res, 'Invalid job id', 400, 'INVALID_ID');
 
-    const existing = await storage.getApplePayJob(id);
+    const existing = req.organizationContextId === undefined
+      ? await storage.getApplePayJob(id)
+      : await storage.getApplePayJob(id, req.organizationContextId);
     if (!existing) return sendError(res, 'Job not found', 404, 'NOT_FOUND');
 
-    const updated = await storage.cancelApplePayJob(id);
+    const updated = req.organizationContextId === undefined
+      ? await storage.cancelApplePayJob(id)
+      : await storage.cancelApplePayJob(id, req.organizationContextId);
     if (!updated) {
       return sendError(
         res,
@@ -188,10 +203,14 @@ router.delete('/apple-pay/jobs/:id', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return sendError(res, 'Invalid job id', 400, 'INVALID_ID');
 
-    const existing = await storage.getApplePayJob(id);
+    const existing = req.organizationContextId === undefined
+      ? await storage.getApplePayJob(id)
+      : await storage.getApplePayJob(id, req.organizationContextId);
     if (!existing) return sendError(res, 'Job not found', 404, 'NOT_FOUND');
 
-    const deleted = await storage.deleteApplePayJob(id);
+    const deleted = req.organizationContextId === undefined
+      ? await storage.deleteApplePayJob(id)
+      : await storage.deleteApplePayJob(id, req.organizationContextId);
     if (!deleted) {
       // Active jobs (pending/running) must be canceled first so the worker
       // can't keep claiming items out from under a deleted parent row.
@@ -222,10 +241,14 @@ router.post('/apple-pay/jobs/:id/retry', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return sendError(res, 'Invalid job id', 400, 'INVALID_ID');
 
-    const existing = await storage.getApplePayJob(id);
+    const existing = req.organizationContextId === undefined
+      ? await storage.getApplePayJob(id)
+      : await storage.getApplePayJob(id, req.organizationContextId);
     if (!existing) return sendError(res, 'Job not found', 404, 'NOT_FOUND');
 
-    const result = await storage.retryApplePayJob(id);
+    const result = req.organizationContextId === undefined
+      ? await storage.retryApplePayJob(id)
+      : await storage.retryApplePayJob(id, req.organizationContextId);
     if (!result) {
       return sendError(
         res,
@@ -252,10 +275,14 @@ router.post('/apple-pay/jobs/:id/items/:itemId/retry', async (req, res) => {
     const itemId = parseInt(req.params.itemId, 10);
     if (isNaN(id) || isNaN(itemId)) return sendError(res, 'Invalid id', 400, 'INVALID_ID');
 
-    const existing = await storage.getApplePayJob(id);
+    const existing = req.organizationContextId === undefined
+      ? await storage.getApplePayJob(id)
+      : await storage.getApplePayJob(id, req.organizationContextId);
     if (!existing) return sendError(res, 'Job not found', 404, 'NOT_FOUND');
 
-    const result = await storage.retryApplePayJobItem(id, itemId);
+    const result = req.organizationContextId === undefined
+      ? await storage.retryApplePayJobItem(id, itemId)
+      : await storage.retryApplePayJobItem(id, itemId, req.organizationContextId);
     if (!result) {
       return sendError(
         res,
@@ -279,7 +306,7 @@ router.get('/apple-pay/recovery-alerts/recent', async (req, res) => {
       return sendError(res, 'System admin access required', 403, 'FORBIDDEN');
     }
     const event = await storage.getRecentAlerterEvent(
-      APPLE_PAY_RECOVERY_ALERT_KIND,
+      applePayRecoveryAlertKind(req.organizationContextId),
       RECENT_ALERT_WINDOW_MS,
     );
     if (!event) return sendSuccess(res, { alert: null });
@@ -367,6 +394,22 @@ router.post('/apple-pay/register-domain', async (req, res) => {
       const location = await storage.getLocation(parsedLocationId);
       if (!location || location.organizationId !== req.user.organizationId) {
         return sendError(res, 'Location does not belong to your organization', 403, 'FORBIDDEN');
+      }
+    }
+
+    if (req.organizationContextId !== undefined && req.user.role === 'system_admin') {
+      const rawLocationId = locationId;
+      const parsedLocationId = typeof rawLocationId === 'number'
+        ? rawLocationId
+        : typeof rawLocationId === 'string' && /^\d+$/.test(rawLocationId.trim())
+          ? Number(rawLocationId.trim())
+          : NaN;
+      if (!Number.isSafeInteger(parsedLocationId) || parsedLocationId <= 0) {
+        return sendError(res, 'locationId is required', 400, 'VALIDATION_ERROR');
+      }
+      const location = await storage.getLocation(parsedLocationId);
+      if (!location || !requireOrganizationAccess(req, location.organizationId)) {
+        return sendError(res, 'Location does not belong to the configured organization', 403, 'FORBIDDEN');
       }
     }
 

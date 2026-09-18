@@ -34,7 +34,7 @@ function useDebounced<T>(value: T, ms: number): T {
 
 /**
  * Task #702: shared bowler name-search input. Wraps a debounced
- * `GET /api/bowlers/search?q=&organizationId=&excludeIds=` and
+ * `GET /api/bowlers/search?q=&excludeIds=` and
  * renders an inline result list. Selecting a row calls `onSelect`
  * and clears the field.
  */
@@ -62,7 +62,6 @@ export const BowlerSearchPicker: FC<BowlerSearchPickerProps> = ({
     queryFn: () => {
       const params = new URLSearchParams();
       params.set("q", debounced);
-      if (organizationId) params.set("organizationId", String(organizationId));
       if (excludeKey) params.set("excludeIds", excludeKey);
       return apiRequest<BowlerSearchResult[]>(`/api/bowlers/search?${params.toString()}`, "GET");
     },

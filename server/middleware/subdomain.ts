@@ -14,8 +14,6 @@ const log = createLogger("Subdomain");
 // lowercase or the equality / `endsWith` checks would silently fail.
 const MAIN_DOMAIN = env.APP_DOMAIN;
 const IGNORED_SUBDOMAINS = new Set(['www', 'api', 'admin', 'mail', 'smtp', 'ftp']);
-const SLUG_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
-const isDev = process.env.NODE_ENV !== 'production';
 export const TENANT_LOOKUP_UNAVAILABLE_CODE = 'TENANT_LOOKUP_UNAVAILABLE';
 export const TENANT_LOOKUP_MAX_ATTEMPTS = 2;
 export const TENANT_LOOKUP_RETRY_DELAY_MS = 100;
@@ -119,24 +117,6 @@ function respondTenantLookupUnavailable(res: TenantDetectionResponse): void {
 export function subdomainDetection(req: TenantDetectionRequest, _res: TenantDetectionResponse, next: NextFunction): void;
 export function subdomainDetection(req: Request, _res: Response, next: NextFunction): void;
 export function subdomainDetection(req: TenantDetectionRequest, _res: TenantDetectionResponse, next: NextFunction) {
-  if (isDev) {
-    const devOverride = req.query.__org_slug as string | undefined;
-    if (devOverride && SLUG_REGEX.test(devOverride)) {
-      req.orgSlug = devOverride;
-      lookupOrganizationByHostname(devOverride).then((org) => {
-        req.subdomainOrg = org;
-        next();
-      }).catch((error) => {
-        if (error instanceof OrganizationHostnameLookupError) {
-          respondTenantLookupUnavailable(_res);
-          return;
-        }
-        next(error);
-      });
-      return;
-    }
-  }
-
   const hostname = req.hostname || req.headers.host || '';
   const slug = extractSubdomain(hostname);
 

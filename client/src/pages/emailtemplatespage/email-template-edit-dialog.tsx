@@ -7,9 +7,8 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Mail, Eye, EyeOff, Info, Send, Building2 } from "lucide-react";
-import type { EmailTemplate, Organization, ApiResponse } from "@shared/schema";
+import { Loader2, Mail, Eye, EyeOff, Info, Send } from "lucide-react";
+import type { EmailTemplate } from "@shared/schema";
 
 const TEMPLATE_VARIABLES = [
   { name: "{{inviter_name}}", description: "The person who sent a payment-partner invitation" },
@@ -155,7 +154,7 @@ type UpdateMutation = UseMutationResult<
 type SendTestMutation = UseMutationResult<
   unknown,
   Error,
-  { id: number; toEmail: string; organizationId?: string },
+  { id: number; toEmail: string },
   unknown
 >;
 
@@ -172,9 +171,6 @@ interface EmailTemplateEditDialogProps {
   setShowPreview: Dispatch<SetStateAction<boolean>>;
   testEmail: string;
   setTestEmail: Dispatch<SetStateAction<string>>;
-  testOrgId: string;
-  setTestOrgId: Dispatch<SetStateAction<string>>;
-  orgsResponse: ApiResponse<Organization[]> | undefined;
   sendTestMutation: SendTestMutation;
   updateMutation: UpdateMutation;
   handleSave: () => void;
@@ -193,9 +189,6 @@ export function EmailTemplateEditDialog({
   setShowPreview,
   testEmail,
   setTestEmail,
-  testOrgId,
-  setTestOrgId,
-  orgsResponse,
   sendTestMutation,
   updateMutation,
   handleSave,
@@ -285,29 +278,6 @@ export function EmailTemplateEditDialog({
           </Label>
           <div className="space-y-2">
             <div>
-              <Label htmlFor="test-org" size="xs" tone="muted" className="mb-1 block">Organization</Label>
-              <Select value={testOrgId} onValueChange={setTestOrgId}>
-                <SelectTrigger id="test-org">
-                  <SelectValue placeholder="Sample data (no real org)" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Sample data (no real org)</SelectItem>
-                  {(orgsResponse?.data || []).map((org) => (
-                    <SelectItem key={org.id} value={String(org.id)}>
-                      <span className="flex items-center gap-2">
-                        {org.logo ? (
-                          <img src={org.logo} alt="" className="size-4 rounded object-contain" />
-                        ) : (
-                          <Building2 className="size-4 text-muted-foreground" />
-                        )}
-                        {org.name}
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
             <Label htmlFor="test-email-input" size="xs" tone="muted" className="mb-1 block">Recipient</Label>
               <div className="flex gap-2">
                 <Input
@@ -325,7 +295,6 @@ export function EmailTemplateEditDialog({
                     sendTestMutation.mutate({
                       id: editingTemplate.id,
                       toEmail: testEmail,
-                      organizationId: testOrgId && testOrgId !== "none" ? testOrgId : undefined,
                     });
                   }}
                   disabled={sendTestMutation.isPending || !testEmail}
@@ -341,7 +310,7 @@ export function EmailTemplateEditDialog({
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Choose an organization to test with their real name and logo, or use sample data. Subject will be prefixed with [TEST].
+            Test emails use the configured business context. Subject will be prefixed with [TEST].
           </p>
         </div>
 

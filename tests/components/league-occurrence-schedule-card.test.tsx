@@ -198,13 +198,13 @@ describe("LeagueOccurrenceScheduleCard", () => {
     await waitFor(() => expect(api).toHaveBeenCalledTimes(3));
   });
 
-  it("uses explicit organization scope for system administrators and omits admin diagnostics for ordinary users", async () => {
+  it("uses the canonical business endpoint and omits admin diagnostics for ordinary users", async () => {
     const api = vi.spyOn(queryModule, "apiRequest").mockResolvedValue({
       success: true,
       data: { ...canonical, administrator: null },
     });
     renderCard("system_admin");
-    await waitFor(() => expect(api).toHaveBeenCalledWith("/api/leagues/7/occurrence-schedule?organizationId=3", "GET"));
+    await waitFor(() => expect(api).toHaveBeenCalledWith("/api/leagues/7/occurrence-schedule", "GET"));
 
     renderCard("user");
     await waitFor(() => expect(api).toHaveBeenCalledWith("/api/leagues/7/occurrence-schedule", "GET"));

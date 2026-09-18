@@ -274,7 +274,7 @@ describe("PaymentDetailsDialog", () => {
     const receiptButton = screen.getByRole("button", { name: "Receipt" });
     expect(receiptButton.parentElement?.querySelectorAll("button")).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Receipt" }));
-    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt?organizationId=11"));
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledWith("/api/payments-provider/payments/12/receipt"));
     expect(open).toHaveBeenCalledWith("https://receipt.example.test", "_blank", "noopener,noreferrer");
     open.mockRestore();
   });

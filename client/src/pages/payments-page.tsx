@@ -194,9 +194,7 @@ export default function PaymentsPage() {
     queries: reportLeagues.map((league) => ({
       queryKey: ["/api/financials/f5/payments", league.id, page, pageSize, userResponse?.data?.organizationId, userResponse?.data?.role],
       queryFn: async ({ signal }: { signal: AbortSignal }) => {
-        const organizationScope = userResponse?.data?.role === "system_admin" && userResponse.data.organizationId
-          ? `&organizationId=${encodeURIComponent(userResponse.data.organizationId)}` : "";
-        const response = await fetch(`/api/financials/f5/payments?leagueId=${league.id}&page=${page}&limit=${pageSize}${organizationScope}`, {
+        const response = await fetch(`/api/financials/f5/payments?leagueId=${league.id}&page=${page}&limit=${pageSize}`, {
           credentials: "include",
           headers: { Accept: "application/json" },
           signal,
@@ -301,7 +299,7 @@ export default function PaymentsPage() {
     );
   }
   if (userResponse?.data?.role === "system_admin" && !userResponse.data.organizationId) {
-    return <Layout><p className="p-6 text-destructive">Select an organization before viewing financial payments.</p></Layout>;
+    return <Layout><p className="p-6 text-destructive">Business context is unavailable. Please try again later.</p></Layout>;
   }
   if (financialReportError || missingFinancialReport) {
     return <Layout><p className="p-6 text-destructive">Financial evidence requires review; no payment page is shown.</p></Layout>;

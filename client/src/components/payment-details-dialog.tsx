@@ -159,10 +159,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     setReceiptLoading(true);
     setReceiptError(null);
     try {
-      const scope = organizationId !== null && organizationId !== undefined
-        ? `?organizationId=${encodeURIComponent(organizationId)}`
-        : "";
-      const response = await csrfFetch(`/api/payments-provider/payments/${evidence.paymentId}/receipt${scope}`);
+      const response = await csrfFetch(`/api/payments-provider/payments/${evidence.paymentId}/receipt`);
       const body = await response.json() as { data?: { receiptUrl?: string | null }; error?: { message?: string } };
       if (!response.ok || !body.data?.receiptUrl) throw new Error(body.error?.message || "Receipt is unavailable");
       window.open(body.data.receiptUrl, "_blank", "noopener,noreferrer");

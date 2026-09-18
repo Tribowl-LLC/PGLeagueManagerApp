@@ -14,7 +14,7 @@ import {
   interactivePaymentChargeRequestV3Schema,
   interactivePaymentQuoteRequestV3Schema,
 } from "@shared/interactive-payment-v3-contract";
-import { hasAccessToLeague, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague } from "../utils/access-control.js";
+import { hasAccessToLeague, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague, requireOrganizationAccess } from "../utils/access-control.js";
 import { canUserPayForBowler } from "../utils/bowler-payment-authz.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { storage } from "../storage/index.js";
@@ -53,7 +53,7 @@ function leagueIdParam(value: string): number | null {
 
 async function authorizedLeague(req: Request, leagueId: number, management = false, adminOnly = false) {
   const league = await storage.getLeague(leagueId);
-  if (!league || league.organizationId === null || req.user?.organizationId !== league.organizationId && req.user?.role !== "system_admin") return null;
+  if (!league || league.organizationId === null || !requireOrganizationAccess(req, league.organizationId, "league", leagueId)) return null;
   if (management) {
     if (adminOnly ? !(await hasAdminAccessToLeague(req, leagueId)) : !(await hasAdminAccessToLeague(req, leagueId)) && !(await hasPaymentManagerAccessToLeague(req, leagueId))) return null;
   } else if (!(await hasAccessToLeague(req, leagueId))) {
@@ -65,7 +65,7 @@ async function authorizedLeague(req: Request, leagueId: number, management = fal
 async function paymentScope(req: Request, leagueId: number, payerBowlerId: number | undefined) {
   const league = await authorizedLeague(req, leagueId);
   if (!league || league.organizationId === null) return null;
-  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user?.role === "system_admin";
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
   if (!privileged) {
     if (payerBowlerId === undefined || payerBowlerId !== req.user?.bowlerId) return null;
     const allowed = await canUserPayForBowler(req, payerBowlerId);
@@ -280,7 +280,7 @@ router.get("/leagues/:leagueId/roster-payment-responsibility/1", async (req, res
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
   try {
     const roster = await readRosterPaymentResponsibility({ organizationId: league.organizationId, leagueId });
-    const privileged = req.user.role === "system_admin" || await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
+    const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
     if (privileged) return sendSuccess(res, roster);
     const ownBowlerId = req.user.bowlerId;
     return sendSuccess(res, {
@@ -326,7 +326,7 @@ router.get("/leagues/:leagueId/canonical-due-past-due/2", async (req, res) => {
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
   const league = await authorizedLeague(req, leagueId);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
   const payerBowlerId = req.query.bowlerId === undefined ? (privileged ? undefined : req.user.bowlerId ?? undefined) : Number(req.query.bowlerId);
   if (!privileged && (payerBowlerId === undefined || payerBowlerId !== req.user.bowlerId)) return sendError(res, "Not found", 404, "NOT_FOUND");
   if (payerBowlerId !== undefined && (!Number.isSafeInteger(payerBowlerId) || payerBowlerId <= 0)) return sendError(res, "Invalid bowler", 400, "INVALID_REQUEST");
@@ -339,7 +339,7 @@ router.post("/leagues/:leagueId/interactive-obligation-quote/2", paymentWriteLim
   const parsed = interactiveObligationQuoteRequestV2Schema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid obligation quote request", 400, "INVALID_REQUEST");
   let league;
-  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
   const payerBowlerId = privileged ? parsed.data.payerBowlerId : req.user.bowlerId ?? undefined;
   if (payerBowlerId === undefined) return sendError(res, "A payer bowler is required", 400, "INVALID_REQUEST");
   try { league = await paymentScope(req, leagueId, payerBowlerId); } catch (error) { return handleError(res, error); }
@@ -364,7 +364,7 @@ router.post("/leagues/:leagueId/interactive-obligation-charge/2", paymentWriteLi
   // boundary because clients are not trusted authorization controls.
   if (req.user.role === "payment_manager") return sendError(res, "Not found", 404, "NOT_FOUND");
   let league;
-  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
   const payerBowlerId = privileged ? parsed.data.payerBowlerId : req.user.bowlerId ?? undefined;
   if (payerBowlerId === undefined) return sendError(res, "A payer bowler is required", 400, "INVALID_REQUEST");
   try { league = await paymentScope(req, leagueId, payerBowlerId); } catch (error) { return handleError(res, error); }
@@ -400,7 +400,7 @@ router.post("/leagues/:leagueId/interactive-obligation-charge/2/operations/:oper
   if (!leagueId || !operationId.success || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
   const league = await authorizedLeague(req, leagueId);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
   if (!privileged) {
     const operation = await storage.getPaymentOperationForOrganization(league.organizationId, operationId.data);
     // A bowler may recover only the operation they authorized. Do not expose
@@ -419,7 +419,7 @@ router.post("/leagues/:leagueId/standing-autopay/1/operations/:operationId/recov
   if (!leagueId || !operationId.success || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
   const league = await authorizedLeague(req, leagueId);
   if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId) || req.user.role === "system_admin";
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
   if (!privileged) {
     const operation = await storage.getPaymentOperationForOrganization(league.organizationId, operationId.data);
     if (!operation || operation.leagueId !== leagueId || operation.operationType !== "standing_autopay_charge" || operation.authorizingUserId !== req.user.id) return sendError(res, "Not found", 404, "NOT_FOUND");

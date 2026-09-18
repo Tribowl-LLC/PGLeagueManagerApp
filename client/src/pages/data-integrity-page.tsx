@@ -23,16 +23,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
-import type { ApiResponse, Organization } from '@shared/schema';
+import type { ApiResponse, User } from '@shared/schema';
 
 type OrphanType = 'leagues' | 'teams' | 'bowlerLeagues' | 'payments' | 'users';
 
@@ -332,7 +325,10 @@ export default function DataIntegrityPage() {
   const queryClient = useQueryClient();
   const [activeType, setActiveType] = useState<OrphanType>('leagues');
   const [repair, setRepair] = useState<RepairDialogState | null>(null);
-  const [reassignOrgId, setReassignOrgId] = useState<string>('');
+  const { data: currentUserResponse } = useQuery<ApiResponse<User>>({
+    queryKey: ['/api/user'],
+  });
+  const configuredOrganizationId = currentUserResponse?.data?.organizationId ?? null;
 
   const { data: rowsResponse, isLoading: rowsLoading } = useQuery<ApiResponse<unknown[]>>({
     queryKey: ['/api/system-admin/orphaned-data', activeType],
@@ -351,11 +347,6 @@ export default function DataIntegrityPage() {
   });
   const rows = (rowsResponse?.data ?? []) as unknown[];
 
-  const { data: orgsResponse } = useQuery<ApiResponse<Organization[]>>({
-    queryKey: ['/api/organizations'],
-  });
-  const organizations = orgsResponse?.data ?? [];
-
   const reassignMutation = useMutation({
     mutationFn: async (vars: { type: OrphanType; id: number; organizationId: number }) =>
       apiRequest(
@@ -368,8 +359,7 @@ export default function DataIntegrityPage() {
       queryClient.invalidateQueries({ queryKey: ['/api/system-admin/orphaned-data', activeType] });
       queryClient.invalidateQueries({ queryKey: ['/api/system-admin/orphaned-data-audits'] });
       setRepair(null);
-      setReassignOrgId('');
-      toast({ title: 'Row reassigned', description: 'The orphaned row now belongs to the selected organization.' });
+      toast({ title: 'Row reassigned', description: 'The orphaned row now belongs to the configured business.' });
     },
     onError: (error: Error) => {
       toast({ title: 'Reassign failed', description: error.message, variant: 'destructive' });
@@ -391,7 +381,7 @@ export default function DataIntegrityPage() {
     },
   });
 
-  const openReassign = (row: OrphanRow) => { setRepair({ row, mode: 'reassign' }); setReassignOrgId(''); };
+  const openReassign = (row: OrphanRow) => setRepair({ row, mode: 'reassign' });
   const openDelete = (row: OrphanRow) => setRepair({ row, mode: 'delete' });
 
   const renderRow = (raw: unknown, idx: number) => {
@@ -569,7 +559,7 @@ export default function DataIntegrityPage() {
 
           <RecentActivityCard />
 
-          <Dialog open={!!repair} onOpenChange={(open) => { if (!open) { setRepair(null); setReassignOrgId(''); } }}>
+          <Dialog open={!!repair} onOpenChange={(open) => { if (!open) setRepair(null); }}>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>
@@ -584,29 +574,22 @@ export default function DataIntegrityPage() {
 
               {repair?.mode === 'reassign' && (
                 <div className="space-y-2">
-                  <Label htmlFor="reassign-org">Organization</Label>
-                  <Select value={reassignOrgId} onValueChange={setReassignOrgId}>
-                    <SelectTrigger id="reassign-org" data-testid="select-reassign-org">
-                      <SelectValue placeholder="Select an organization" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {organizations.map((o) => (
-                        <SelectItem key={o.id} value={String(o.id)}>{o.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label htmlFor="reassign-org">Configured business</Label>
+                  <p id="reassign-org" className="text-sm text-muted-foreground">
+                    New ownership will be assigned to the configured LeagueVault business.
+                  </p>
                 </div>
               )}
 
               <DialogFooter>
-                <Button variant="outline" onClick={() => { setRepair(null); setReassignOrgId(''); }}>Cancel</Button>
+                <Button variant="outline" onClick={() => setRepair(null)}>Cancel</Button>
                 {repair?.mode === 'reassign' ? (
                   <Button
-                    disabled={reassignMutation.isPending || !reassignOrgId}
+                    disabled={reassignMutation.isPending || configuredOrganizationId === null}
                     onClick={() => repairId !== null && reassignMutation.mutate({
                       type: activeType,
                       id: repairId,
-                      organizationId: parseInt(reassignOrgId, 10),
+                      organizationId: configuredOrganizationId as number,
                     })}
                     data-testid="button-confirm-reassign"
                   >

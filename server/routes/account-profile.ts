@@ -11,7 +11,7 @@ import {
   getBaseUrl,
 } from '../services/email';
 import { requireSystemAdmin } from '../middleware/auth';
-import { isPaymentManager } from '../utils/access-control.js';
+import { isPaymentManager, requireOrganizationAccess } from '../utils/access-control.js';
 import { syncBowlerForUser } from '../services/payment-customer-sync';
 import { maskEmail } from '../utils/pii';
 import { randomBytes } from 'crypto';
@@ -83,6 +83,14 @@ router.patch('/profile/:id', requireAuth, async (req: Request, res: Response) =>
     const existingUser = await storage.getUser(userId);
     if (!existingUser) {
       return sendError(res, 'User not found', 404, 'USER_NOT_FOUND');
+    }
+
+    // Owner accounts are still bounded by the configured business in the
+    // singleton deployment. The system-admin role permits delegated profile
+    // edits, but it does not turn a retained foreign account into a resource
+    // that this application may mutate.
+    if (user.id !== userId && !requireOrganizationAccess(req, existingUser.organizationId, 'user', userId)) {
+      return sendError(res, 'You do not have access to edit this user', 403, 'FORBIDDEN');
     }
 
     const emailRequested =
@@ -384,6 +392,9 @@ router.post(
       if (!bowler) {
         return sendError(res, 'Bowler not found', 404, 'NOT_FOUND');
       }
+      if (!requireOrganizationAccess(req, bowler.organizationId, 'bowler', bowlerId)) {
+        return sendError(res, 'You do not have access to retry this bowler sync', 403, 'FORBIDDEN');
+      }
 
       // Find the user record linked to this bowler so we can resolve the
       // location/org context for provider lookup. If no user is linked we
@@ -396,6 +407,9 @@ router.post(
           422,
           'NO_LINKED_USER',
         );
+      }
+      if (!requireOrganizationAccess(req, linkedUser.organizationId, 'user', linkedUser.id)) {
+        return sendError(res, 'You do not have access to retry this user sync', 403, 'FORBIDDEN');
       }
       if (isPaymentManager(linkedUser)) {
         return sendError(res, 'Staff accounts cannot sync bowler profiles', 403, 'FORBIDDEN');

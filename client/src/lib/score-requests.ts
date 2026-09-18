@@ -3,16 +3,8 @@ export interface ScoreReadRequest {
   url: string;
 }
 
-function scopedUrl(path: string, organizationId: number): string {
-  const separator = path.includes("?") ? "&" : "?";
-  return `${path}${separator}organizationId=${organizationId}`;
-}
-
 export function leagueLatestScoresRequest(leagueId: number, organizationId: number): ScoreReadRequest {
-  const url = scopedUrl(
-    `/api/scores?leagueId=${leagueId}&selection=latest_scored_session`,
-    organizationId,
-  );
+  const url = `/api/scores?leagueId=${leagueId}&selection=latest_scored_session`;
   return {
     queryKey: ["/api/scores/latest-scored-session", leagueId, organizationId, url],
     url,
@@ -20,7 +12,7 @@ export function leagueLatestScoresRequest(leagueId: number, organizationId: numb
 }
 
 export function bowlerScoreHistoryRequest(bowlerId: number, organizationId: number): ScoreReadRequest {
-  const url = scopedUrl(`/api/scores/history?bowlerId=${bowlerId}`, organizationId);
+  const url = `/api/scores/history?bowlerId=${bowlerId}`;
   return {
     queryKey: ["/api/scores/history", bowlerId, organizationId, url],
     url,

@@ -3,10 +3,9 @@ import { useLocation, Link } from "wouter";
 import { LayoutDashboard, History, UserCircle, Loader2, ArrowLeft, CreditCard } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
-import { Organization, User, ApiResponse } from "@shared/schema";
+import { User, ApiResponse } from "@shared/schema";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { useSubdomainOrg } from "@/hooks/use-subdomain-org";
-import { throwIfResNotOk } from "@/lib/queryClient";
+import { useBusinessContext } from "@/hooks/use-business-context";
 
 interface BowlerLayoutProps {
   children: ReactNode;
@@ -66,30 +65,14 @@ const LoadingFallback = () => (
 export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leagueName, currentLeagueId }) => {
   const [location] = useLocation();
   const navItems = buildNavItems(currentLeagueId);
-  const { org: subdomainOrg } = useSubdomainOrg();
+  const { business } = useBusinessContext();
 
   const { data: currentUserResponse } = useQuery<ApiResponse<User>>({
     queryKey: ["/api/user"],
     staleTime: 1000 * 60 * 5,
   });
 
-  const userOrgId = currentUserResponse?.data?.organizationId;
-  const { data: userOrgResponse } = useQuery<ApiResponse<Organization>>({
-    queryKey: ["/api/organizations", userOrgId],
-    queryFn: async () => {
-      const res = await fetch(`/api/organizations/${userOrgId}`, {
-        credentials: "include",
-        headers: { "Accept": "application/json" }
-      });
-      await throwIfResNotOk(res);
-      return res.json();
-    },
-    staleTime: 1000 * 60 * 60,
-    enabled: !!userOrgId,
-    retry: false,
-  });
-
-  const organization = userOrgResponse?.data || (subdomainOrg ? { ...subdomainOrg, darkLogo: subdomainOrg.darkLogo } as Organization : undefined);
+  const organization = business;
   const orgName = organization?.name || "Organization";
   const orgInitials = orgName.split(/\s+/).map(w => w[0]).join("").substring(0, 2).toUpperCase();
 

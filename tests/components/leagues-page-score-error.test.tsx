@@ -115,7 +115,7 @@ describe("LeaguesPage recent-score failure state", () => {
     );
     expect(screen.getByText("League management remains available")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/scores?leagueId=42&selection=latest_scored_session&organizationId=7",
+      "/api/scores?leagueId=42&selection=latest_scored_session",
     );
 
     await user.click(screen.getByRole("button", { name: "Retry" }));

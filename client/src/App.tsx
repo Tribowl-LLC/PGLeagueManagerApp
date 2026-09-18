@@ -35,6 +35,7 @@ const PastDuePage = lazy(() => import("@/pages/past-due-page"));
 const SignUpPage = lazy(() => import("@/pages/sign-up-page"));
 const BowlerDashboardPage = lazy(() => import("@/pages/bowler-dashboard-page"));
 const OrganizationsPage = lazy(() => import("@/pages/organizations-page"));
+const BusinessSettingsPage = lazy(() => import("@/pages/business-settings-page"));
 const LocationsPage = lazy(() => import("@/pages/locations-page"));
 const UsersPage = lazy(() => import("@/pages/users-page"));
 const SetPasswordPage = lazy(() => import("@/pages/set-password-page"));
@@ -210,6 +211,8 @@ function Router() {
         <Route path="/integrations">{guard('orgAdmin', <IntegrationsPage />)}</Route>
         <Route path="/messaging">{guard('orgAdmin', <MessagingPage />)}</Route>
         <Route path="/admin/unclaimed-users">{guard('orgAdmin', <AdminUnclaimedUsersPage />)}</Route>
+        {/* Owner-only business identity and branding settings */}
+        <Route path="/business-settings">{guard('systemAdmin', <BusinessSettingsPage />)}</Route>
         {/* System Admin routes */}
         <Route path="/organizations">{guard('systemAdmin', <OrganizationsPage />)}</Route>
         <Route path="/users">{guard('orgAdmin', <UsersPage />)}</Route>

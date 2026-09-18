@@ -32,7 +32,7 @@ export interface SquareCatalogCapEvent {
 
 export interface SquareCatalogCapAlerterDeps {
   send: typeof sendSquareCatalogCapAlert;
-  getAdminEmails: () => Promise<string[]>;
+  getAdminEmails: (organizationId: number | null) => Promise<string[]>;
   isEnabled: () => boolean;
   minIntervalMs: () => number;
   tryClaimSlot: (
@@ -47,10 +47,12 @@ export interface SquareCatalogCapAlerterDeps {
 
 const defaultDeps: SquareCatalogCapAlerterDeps = {
   send: sendSquareCatalogCapAlert,
-  getAdminEmails: async () => {
+  getAdminEmails: async (organizationId) => {
     const allUsers = await storage.getUsers();
     return allUsers
-      .filter((u) => u.role === "system_admin" && u.email)
+      .filter((u) => u.role === "system_admin"
+        && u.email
+        && (u.organizationId === organizationId || u.organizationId === null))
       .map((u) => u.email);
   },
   isEnabled: () => {
@@ -127,7 +129,7 @@ export class SquareCatalogCapAlerter {
 
     let toEmails: string[];
     try {
-      toEmails = await this.deps.getAdminEmails();
+      toEmails = await this.deps.getAdminEmails(event.organizationId);
     } catch (err) {
       log.error("Failed to load system-admin emails for Square catalog cap alert", {
         err: err instanceof Error ? err.message : String(err),

@@ -158,6 +158,8 @@ vi.mock('../../server/utils/rate-limit-store', () => ({
 }));
 vi.mock('../../server/config', () => ({
   isDev: true,
+  isProdLike: false,
+  isSingletonOrganizationMode: false,
   env: {},
 }));
 

@@ -35,6 +35,9 @@ vi.mock("../../server/utils/access-control.js", () => ({
   hasAccessToLeague: (...args: unknown[]) => mocks.hasAccess(...args),
   hasAdminAccessToLeague: (...args: unknown[]) => mocks.hasAdmin(...args),
   hasPaymentManagerAccessToLeague: (...args: unknown[]) => mocks.hasPaymentManager(...args),
+  requireOrganizationAccess: (req: { user?: { role?: string; organizationId?: number | null } }, organizationId: number | null) =>
+    organizationId !== null
+    && (req.user?.role === "system_admin" || req.user?.organizationId === organizationId),
 }));
 vi.mock("../../server/utils/bowler-payment-authz.js", () => ({
   canUserPayForBowler: (...args: unknown[]) => mocks.canPay(...args),

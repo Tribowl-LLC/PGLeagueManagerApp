@@ -10,11 +10,14 @@ LeagueVault currently serves adult bowling leagues. Youth, minor, and guardian
 league workflows were retired and should not be reintroduced as incidental
 "generalization" work.
 
-The application is multi-tenant. An organization owns locations, leagues,
-teams, bowlers, payments, registrations, integrations, and related audit data.
-Requests must prove that the acting user and every referenced resource belong
-to the same organization unless a documented system-admin operation explicitly
-allows otherwise.
+The deployed application has one configured organization with multiple
+locations. The organization still owns locations, leagues, teams, bowlers,
+payments, registrations, integrations, and related audit data, and its IDs
+remain in stored records and contracts. Requests resolve that organization
+from `APP_ORGANIZATION_ID`; browser input and hostnames never select it.
+Resource-level authorization remains required: Owners and Administrators do
+not automatically gain bowler, league, or payment-manager access beyond their
+existing role and location rules.
 
 ## Frontend And Backend
 
@@ -35,7 +38,8 @@ correctness or simplify a real workflow, especially around payment behavior.
 
 - Authentication uses server-side sessions and secure production cookies.
 - CSRF coverage is enforced for state-changing API routes.
-- Organization isolation coverage protects id-bearing read endpoints.
+- Organization/resource authorization coverage protects id-bearing read and
+  write endpoints, including rejection of foreign records.
 - Wire sanitization prevents raw sensitive database objects from reaching the
   client.
 - Passwords and payment credentials must not appear in logs.
@@ -44,15 +48,15 @@ correctness or simplify a real workflow, especially around payment behavior.
 
 Existing security contracts and their tests are documented under
 `docs/security/`. Read the relevant contract before changing an auth, payment,
-webhook, or tenant-access path.
+webhook, or organization/resource-access path.
 
 ## Data Lifecycle
 
-Permanent organization teardown is system-admin-only and atomic. The database
-transaction removes app-owned tenant records and organization-specific audit
-records, while preserving platform system-admin accounts and detaching them
-from the deleted organization. Remote Square customer records are
-not removed by this operation.
+Organization lifecycle operations are removed from the singleton application.
+The organization row, foreign keys, location records, payment configuration,
+and historical audit evidence remain intact; dropping organization columns is
+a separate future decision. Business Settings may edit public business
+details without changing the durable organization identity.
 
 New season creation carries forward the selected league structure while
 allowing the new season schedule to be explicitly configured. Season dates,

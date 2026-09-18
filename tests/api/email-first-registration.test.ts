@@ -34,8 +34,8 @@ import {
 
 const REGISTRATION_ACTION = "account_registration";
 const PASSWORD_FOR_SETUP = "RegistrationSetup9!";
-const API_ORG_SLUG = process.env.TEST_ORG_A_SLUG ?? "vitest-org-a";
 const OTHER_ORG_SLUG = process.env.TEST_ORG_B_SLUG ?? "vitest-org-b";
+const TEST_APP_DOMAIN = process.env.APP_DOMAIN ?? "leaguevault.app";
 
 let organizationId: number;
 let otherOrganizationId: number;
@@ -58,9 +58,12 @@ function uniqueEmail(label: string): string {
   return `registration-${label}-${Date.now()}-${emailSequence}@vitest.local`;
 }
 
-function registrationPath(path: string, slug = API_ORG_SLUG): string {
-  const joiner = path.includes("?") ? "&" : "?";
-  return `${path}${joiner}__org_slug=${encodeURIComponent(slug)}`;
+function registrationPath(path: string, _legacySlug?: string): string {
+  // Organization selection is no longer accepted from query parameters. The
+  // canonical host and the server-side singleton context determine business
+  // ownership; the optional argument remains only while older call sites are
+  // migrated in this fixture.
+  return path;
 }
 
 function cookiesFrom(response: Response): string {
@@ -88,15 +91,17 @@ async function register(input: {
   name?: string;
   phone?: string;
 }): Promise<{ response: Response; body: JsonObject; cookies: string }> {
-  const result = await requestJson(registrationPath("/api/auth/register"), {
-    method: "POST",
-    body: JSON.stringify({
-      email: input.email,
-      name: input.name ?? "Email First Test User",
-      phone: input.phone ?? "555-101-0101",
-    }),
+  return withSoleActiveOrganization(organizationId, async () => {
+    const result = await requestJson("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({
+        email: input.email,
+        name: input.name ?? "Email First Test User",
+        phone: input.phone ?? "555-101-0101",
+      }),
+    });
+    return { ...result, cookies: cookiesFrom(result.response) };
   });
-  return { ...result, cookies: cookiesFrom(result.response) };
 }
 
 async function registerAtCanonicalRoot(input: {
@@ -131,6 +136,7 @@ async function registerAtTenantHost(
 ): Promise<{ response: Response; body: JsonObject; cookies: string }> {
   const result = await requestJson(registrationPath("/api/auth/register", slug), {
     method: "POST",
+    headers: { "X-Forwarded-Host": `${slug}.${TEST_APP_DOMAIN}` },
     body: JSON.stringify({
       email: input.email,
       name: input.name ?? "Tenant Registration Test User",
@@ -142,13 +148,22 @@ async function registerAtTenantHost(
 }
 
 async function withSoleActiveRootOrganization<T>(callback: () => Promise<T>): Promise<T> {
+  return withSoleActiveOrganization(rootOrganizationId, callback);
+}
+
+async function withSoleActiveOrganization<T>(targetOrganizationId: number, callback: () => Promise<T>): Promise<T> {
   const activeRows = await db
     .select({ id: organizations.id })
     .from(organizations)
     .where(eq(organizations.active, true));
   const otherActiveIds = activeRows
     .map(({ id }) => id)
-    .filter((id) => id !== rootOrganizationId);
+    .filter((id) => id !== targetOrganizationId);
+
+  const targetWasActive = activeRows.some(({ id }) => id === targetOrganizationId);
+  if (!targetWasActive) {
+    await db.update(organizations).set({ active: true }).where(eq(organizations.id, targetOrganizationId));
+  }
 
   for (const id of otherActiveIds) {
     await db.update(organizations).set({ active: false }).where(eq(organizations.id, id));
@@ -156,9 +171,8 @@ async function withSoleActiveRootOrganization<T>(callback: () => Promise<T>): Pr
   try {
     return await callback();
   } finally {
-    for (const id of otherActiveIds) {
-      await db.update(organizations).set({ active: true }).where(eq(organizations.id, id));
-    }
+    await db.update(organizations).set({ active: targetWasActive }).where(eq(organizations.id, targetOrganizationId));
+    for (const id of otherActiveIds) await db.update(organizations).set({ active: true }).where(eq(organizations.id, id));
   }
 }
 
@@ -487,7 +501,9 @@ describe("email-first registration API", () => {
     // capability. Tenant context is part of the capability boundary too.
     const otherBrowser = await requestJson(registrationPath("/api/auth/registration/status"));
     expect(otherBrowser.response.status).toBe(404);
-    const wrongTenant = await requestJson(registrationPath("/api/auth/registration/status", OTHER_ORG_SLUG), {}, started.cookies);
+    const wrongTenant = await requestJson("/api/auth/registration/status", {
+      headers: { "X-Forwarded-Host": `${OTHER_ORG_SLUG}.${TEST_APP_DOMAIN}` },
+    }, started.cookies);
     expect(wrongTenant.response.status).toBe(404);
 
     const noCookieResend = await requestJson(registrationPath("/api/auth/registration/resend"), { method: "POST", body: "{}" });

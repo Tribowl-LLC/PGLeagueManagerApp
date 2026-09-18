@@ -9,6 +9,7 @@ import { storage } from '../../storage';
 import { createLogger } from '../../logger';
 import { isDev } from '../../config';
 import { getMissingSquareFields } from '@shared/schema';
+import { requireOrganizationAccess } from '../../utils/access-control.js';
 
 const log = createLogger('Payments');
 
@@ -22,9 +23,7 @@ router.get('/config', async (req, res) => {
       try {
         const loc = await storage.getLocation(lvLocationId);
         if (loc) {
-          const isAuthorized =
-            req.user?.role === 'system_admin' ||
-            (req.user?.organizationId != null && req.user.organizationId === loc.organizationId);
+          const isAuthorized = requireOrganizationAccess(req, loc.organizationId, 'location', lvLocationId);
           if (isAuthorized) {
             const creds = await storage.getLocationSquareConfig(lvLocationId);
             // Always advertise per-location Square config (even when

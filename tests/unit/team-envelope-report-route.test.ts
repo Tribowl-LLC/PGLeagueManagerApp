@@ -37,6 +37,10 @@ vi.mock("../../server/utils/access-control.js", () => ({
   hasPaymentManagerAccessToLeague: (...args: unknown[]) => mocks.hasPaymentManager(...args),
   hasAccessToLeague: vi.fn(),
   isPaymentManager: (user: { role?: string } | undefined) => user?.role === "payment_manager",
+  requireOrganizationAccess: (req: { user?: { role?: string; organizationId?: number | null }; organizationContextId?: number }, organizationId: number | null) =>
+    organizationId !== null && (req.user?.role === "system_admin" && req.organizationContextId === undefined
+      ? true
+      : (req.organizationContextId ?? req.user?.organizationId) === organizationId),
 }));
 
 const router = (await import("../../server/routes/financials.js")).default;

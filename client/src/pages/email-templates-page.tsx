@@ -6,7 +6,7 @@ import { Mail } from "lucide-react";
 import { PageLoadingState } from "@/components/page-states";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { EmailTemplate, Organization, ApiResponse } from "@shared/schema";
+import type { EmailTemplate, ApiResponse } from "@shared/schema";
 import { EmailTemplatesList } from "./emailtemplatespage/email-templates-list";
 import { EmailTemplateEditDialog } from "./emailtemplatespage/email-template-edit-dialog";
 
@@ -19,14 +19,9 @@ export default function EmailTemplatesPage() {
   const [editActive, setEditActive] = useState(true);
   const [showPreview, setShowPreview] = useState(false);
   const [testEmail, setTestEmail] = useState("");
-  const [testOrgId, setTestOrgId] = useState<string>("");
 
   const { data: templatesResponse, isLoading } = useQuery<ApiResponse<EmailTemplate[]>>({
     queryKey: ["/api/admin/email-templates"],
-  });
-
-  const { data: orgsResponse } = useQuery<ApiResponse<Organization[]>>({
-    queryKey: ["/api/organizations"],
   });
 
   const updateMutation = useMutation({
@@ -56,8 +51,8 @@ export default function EmailTemplatesPage() {
   });
 
   const sendTestMutation = useMutation({
-    mutationFn: async ({ id, toEmail, organizationId }: { id: number; toEmail: string; organizationId?: string }) => {
-      return apiRequest(`/api/admin/email-templates/${id}/send-test`, "POST", { toEmail, organizationId: organizationId || undefined });
+    mutationFn: async ({ id, toEmail }: { id: number; toEmail: string }) => {
+      return apiRequest(`/api/admin/email-templates/${id}/send-test`, "POST", { toEmail });
     },
     onSuccess: () => {
       toast({ title: "Test Email Sent", description: `A sample email was sent to ${testEmail}.` });
@@ -125,9 +120,6 @@ export default function EmailTemplatesPage() {
           setShowPreview={setShowPreview}
           testEmail={testEmail}
           setTestEmail={setTestEmail}
-          testOrgId={testOrgId}
-          setTestOrgId={setTestOrgId}
-          orgsResponse={orgsResponse}
           sendTestMutation={sendTestMutation}
           updateMutation={updateMutation}
           handleSave={handleSave}

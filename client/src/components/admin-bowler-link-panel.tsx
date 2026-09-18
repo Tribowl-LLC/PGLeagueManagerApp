@@ -27,12 +27,7 @@ export const AdminBowlerLinkPanel: FC<{ bowlerId: number; organizationId: number
 
   const { data } = useQuery<ApiResponse<{ links: LinkRow[] }>>({
     queryKey: ["/api/bowler-links/admin", organizationId],
-    queryFn: () => {
-      const adminListUrl = organizationId
-        ? `/api/bowler-links/admin?organizationId=${organizationId}`
-        : "/api/bowler-links/admin";
-      return apiRequest<{ links: LinkRow[] }>(adminListUrl, "GET");
-    },
+    queryFn: () => apiRequest<{ links: LinkRow[] }>("/api/bowler-links/admin", "GET"),
     staleTime: 30_000,
   });
   const all = data?.data?.links ?? [];

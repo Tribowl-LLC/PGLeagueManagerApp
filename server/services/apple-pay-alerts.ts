@@ -7,6 +7,11 @@ const log = createLogger("ApplePayAlerts");
 
 const ALERT_KIND = "apple_pay_recovery";
 
+/** Persist alert throttles/summaries per business once request context is pinned. */
+export function applePayRecoveryAlertKind(organizationId?: number): string {
+  return organizationId === undefined ? ALERT_KIND : `${ALERT_KIND}:org:${organizationId}`;
+}
+
 interface RecoveredItem {
   jobId: number;
   itemId: number;
@@ -21,7 +26,7 @@ interface AlertSummary {
 
 export interface AlerterDeps {
   send: typeof sendApplePayRecoveryAlert;
-  getAdminEmails: () => Promise<string[]>;
+  getAdminEmails: (organizationId?: number) => Promise<string[]>;
   isEnabled: () => boolean;
   minIntervalMs: () => number;
   /**
@@ -44,10 +49,16 @@ export interface AlerterDeps {
 
 const defaultDeps: AlerterDeps = {
   send: sendApplePayRecoveryAlert,
-  getAdminEmails: async () => {
+  getAdminEmails: async (organizationId) => {
     const allUsers = await storage.getUsers();
     return allUsers
-      .filter((u) => u.role === "system_admin" && u.email)
+      .filter((u) => u.role === "system_admin"
+        && u.email
+        && (organizationId === undefined
+          || u.organizationId === organizationId
+          // Preserve the explicit legacy Owner exception while excluding
+          // retained system admins from the alert recipient set.
+          || u.organizationId === null))
       .map((u) => u.email);
   },
   isEnabled: () => {
@@ -72,7 +83,7 @@ export type NotifyResult =
 export class ApplePayRecoveryAlerter {
   constructor(private readonly deps: AlerterDeps = defaultDeps) {}
 
-  async notifyRecovered(items: RecoveredItem[]): Promise<NotifyResult> {
+  async notifyRecovered(items: RecoveredItem[], organizationId?: number): Promise<NotifyResult> {
     if (items.length === 0) return "no-items";
     if (!this.deps.isEnabled()) {
       log.info("Apple Pay recovery alerts disabled — skipping email", {
@@ -81,9 +92,10 @@ export class ApplePayRecoveryAlerter {
       return "disabled";
     }
 
+    const kind = applePayRecoveryAlertKind(organizationId);
     let claim: { claimed: boolean; suppressedCount: number };
     try {
-      claim = await this.deps.tryClaimSlot(ALERT_KIND, this.deps.minIntervalMs());
+      claim = await this.deps.tryClaimSlot(kind, this.deps.minIntervalMs());
     } catch (err) {
       log.error("Failed to claim Apple Pay alerter slot", {
         err: err instanceof Error ? err.message : String(err),
@@ -102,7 +114,7 @@ export class ApplePayRecoveryAlerter {
 
     let toEmails: string[];
     try {
-      toEmails = await this.deps.getAdminEmails();
+      toEmails = await this.deps.getAdminEmails(organizationId);
     } catch (err) {
       log.error("Failed to load system-admin emails for Apple Pay alert", {
         err: err instanceof Error ? err.message : String(err),
@@ -131,7 +143,7 @@ export class ApplePayRecoveryAlerter {
       // what just fired without re-reading server logs (#272). A failure
       // to record is non-fatal — the email already went out.
       try {
-        await this.deps.recordSummary(ALERT_KIND, summary);
+        await this.deps.recordSummary(kind, summary);
       } catch (err) {
         log.warn("Failed to persist Apple Pay alert summary for in-app banner", {
           err: err instanceof Error ? err.message : String(err),

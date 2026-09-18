@@ -188,7 +188,7 @@ function renderSection(report?: unknown, enabled = true) {
     { success: true, data: bowlerLeagues },
   );
   queryClient.setQueryData<{ data: Payment[] }>(['/api/payments'], { data: [] });
-  queryClient.setQueryData(['/api/financials/due-past-due'], report ?? { data: { leagues: [] } });
+  queryClient.setQueryData(['/api/financials/due-past-due', null], report ?? { data: { leagues: [] } });
 
   const rendered = render(
     <QueryClientProvider client={queryClient}>
@@ -228,7 +228,7 @@ describe('PastDueBowlersSection', () => {
 
   it('does not issue the org-wide financial request when disabled for an ordinary member', () => {
     const { queryClient } = renderSection(undefined, false);
-    expect(queryClient.getQueryState(['/api/financials/due-past-due'])?.fetchStatus).toBe("idle");
+    expect(queryClient.getQueryState(['/api/financials/due-past-due', null])?.fetchStatus).toBe("idle");
     expect(screen.queryByText('Past Due Balances')).not.toBeInTheDocument();
   });
 

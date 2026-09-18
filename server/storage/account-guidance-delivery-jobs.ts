@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "../db.js";
+import { env, isProdLike, isSingletonOrganizationMode } from "../config.js";
 import type { AccountActionExecutor } from "./account-action-requests.js";
 import {
   ACCOUNT_GUIDANCE_DELIVERY_CLEANUP_BATCH_SIZE,
@@ -29,6 +30,12 @@ export type AccountGuidanceDeliveryFinalization =
   | { status: "suppressed"; reason: string };
 
 const ACTIVE_STATUSES = ["pending", "processing", "retry_scheduled"] as const;
+const configuredOrganizationId = env.APP_ORGANIZATION_ID;
+const SINGLETON_ORGANIZATION_SCOPE = isProdLike && configuredOrganizationId === undefined
+  ? sql`false`
+  : configuredOrganizationId === undefined
+  ? undefined
+  : eq(accountGuidanceDeliveryJobs.organizationId, configuredOrganizationId);
 
 function normalizeRecipientEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -62,6 +69,15 @@ export async function enqueueAccountGuidanceNotice(input: {
   const expiresAt = input.expiresAt ?? new Date(Date.now() + 24 * 60 * 60 * 1000);
   if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) {
     throw new Error("Account guidance notice expiry must be in the future");
+  }
+  if (
+    (isProdLike && configuredOrganizationId === undefined)
+    || (isSingletonOrganizationMode
+    && input.organizationId !== undefined
+    && input.organizationId !== null
+    && input.organizationId !== configuredOrganizationId)
+  ) {
+    throw new Error("Account guidance job organization does not match the configured business");
   }
 
   const run = async (tx: AccountGuidanceDeliveryExecutor): Promise<AccountGuidanceEnqueueResult> => {
@@ -133,6 +149,7 @@ export async function getNextAccountGuidanceDeliveryAt(): Promise<Date | null> {
       inArray(accountGuidanceDeliveryJobs.status, [...ACTIVE_STATUSES]),
       lte(accountGuidanceDeliveryJobs.attemptCount, ACCOUNT_GUIDANCE_DELIVERY_MAX_ATTEMPTS - 1),
       gt(accountGuidanceDeliveryJobs.expiresAt, sql`now()`),
+      SINGLETON_ORGANIZATION_SCOPE,
     ))
     .orderBy(sql`CASE
       WHEN ${accountGuidanceDeliveryJobs.status} = 'processing'
@@ -166,6 +183,11 @@ export async function claimNextAccountGuidanceDeliveryJob(
         OR (status = 'processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= now())
       )
         AND attempt_count < ${ACCOUNT_GUIDANCE_DELIVERY_MAX_ATTEMPTS}
+        ${isProdLike && configuredOrganizationId === undefined
+          ? sql`AND false`
+          : isSingletonOrganizationMode
+          ? sql`AND organization_id = ${configuredOrganizationId}`
+          : sql``}
       ORDER BY next_attempt_at ASC, created_at ASC, id ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
@@ -208,6 +230,7 @@ export async function recoverAccountGuidanceDeliveryJobs(): Promise<number> {
         inArray(accountGuidanceDeliveryJobs.status, [...ACTIVE_STATUSES]),
         lte(accountGuidanceDeliveryJobs.expiresAt, sql`now()`),
         sql`(${accountGuidanceDeliveryJobs.status} <> 'processing' OR ${accountGuidanceDeliveryJobs.leaseExpiresAt} <= now())`,
+        SINGLETON_ORGANIZATION_SCOPE,
       ))
       .returning({ id: accountGuidanceDeliveryJobs.id });
 
@@ -226,6 +249,7 @@ export async function recoverAccountGuidanceDeliveryJobs(): Promise<number> {
         inArray(accountGuidanceDeliveryJobs.status, [...ACTIVE_STATUSES]),
         gteAttemptCount(),
         sql`(${accountGuidanceDeliveryJobs.status} <> 'processing' OR ${accountGuidanceDeliveryJobs.leaseExpiresAt} <= now())`,
+        SINGLETON_ORGANIZATION_SCOPE,
       ))
       .returning({ id: accountGuidanceDeliveryJobs.id });
 

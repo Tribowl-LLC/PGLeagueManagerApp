@@ -57,6 +57,32 @@ export function isPaymentManager(user: Express.User | undefined): boolean {
   return (user?.role as string | undefined) === 'payment_manager';
 }
 
+function systemAdminCanAccessOrganization(req: Request, organizationId: number | null): boolean {
+  if (!isSystemAdmin(req.user) || organizationId === null) return false;
+  // During the compatibility window requests without singleton context retain
+  // the existing system-admin behavior. Once pinned, the resource stamp must
+  // match the configured organization even for Owners.
+  return req.organizationContextId === undefined || req.organizationContextId === organizationId;
+}
+
+/**
+ * A bowler's league membership is not an organization grant. During the
+ * legacy compatibility window an unpinned request keeps the historical
+ * shared-league behavior, but once the singleton middleware has stamped the
+ * request, the membership and the league must belong to that business. This
+ * prevents corrupt/legacy cross-organization bowler_leagues rows from
+ * bypassing the configured-business boundary.
+ */
+function canUseSharedLeagueMembership(req: Request, organizationId: number | null): boolean {
+  if (organizationId === null) return false;
+  if (isSystemAdmin(req.user)) return systemAdminCanAccessOrganization(req, organizationId);
+  if (req.organizationContextId !== undefined) {
+    return req.user?.organizationId === organizationId
+      && req.organizationContextId === organizationId;
+  }
+  return true;
+}
+
 function hasPaymentManagerScope(user: Express.User | undefined): user is Express.User {
   if (!isPaymentManager(user) || !user) return false;
   return Number.isSafeInteger(user.organizationId)
@@ -166,7 +192,7 @@ export function requireOrganizationAccess(req: Request, resourceOrgId: number | 
     log.debug(`${resourceType ?? 'resource'} ${resourceId ?? '?'} has no organization — denying access to user ${req.user.id} (role=${req.user.role})`);
     return false;
   }
-  if (isSystemAdmin(req.user)) return true;
+  if (isSystemAdmin(req.user)) return systemAdminCanAccessOrganization(req, resourceOrgId);
   return req.user.organizationId === resourceOrgId;
 }
 
@@ -182,7 +208,7 @@ export async function hasAdminAccessToLeague(req: Request, leagueId: number): Pr
     log.debug(`league ${leagueId} has no organization — denying admin access to user ${req.user.id} (role=${req.user.role})`);
     return false;
   }
-  if (isSystemAdmin(req.user)) return true;
+  if (isSystemAdmin(req.user)) return systemAdminCanAccessOrganization(req, league.organizationId);
   return req.user.role === 'org_admin' && req.user.organizationId === league.organizationId;
 }
 
@@ -216,12 +242,13 @@ export async function hasAccessToLeague(req: Request, leagueId: number): Promise
   }
 
   if (isSystemAdmin(req.user)) {
-    return true;
+    return systemAdminCanAccessOrganization(req, league.organizationId);
   }
 
   if (req.user.bowlerId) {
     const bowlerLeagues = await storage.getBowlerLeagues({ bowlerId: req.user.bowlerId });
-    if (bowlerLeagues.some((bl) => bl.leagueId === leagueId)) {
+    if (bowlerLeagues.some((bl) => bl.leagueId === leagueId)
+      && canUseSharedLeagueMembership(req, league.organizationId)) {
       return true;
     }
   }
@@ -277,11 +304,11 @@ export async function hasAccessToBowler(req: Request, bowlerId: number): Promise
     return hasPaymentManagerAccessToBowler(req, bowlerId);
   }
 
-  // Self-access shortcut: a user may always read their own linked bowler
-  // record, even if every league assignment is currently org-less. This is
-  // an intentional, narrowly scoped exception to the org-less deny rule so
-  // bowlers are never locked out of their own profile.
-  if (req.user.bowlerId === bowlerId) {
+  // Preserve the historical self-access shortcut only for unpinned legacy
+  // requests. In singleton mode the bowler row is still a resource boundary:
+  // a stale/corrupt user->bowler link must not let an otherwise valid account
+  // read a foreign-business record.
+  if (req.user.bowlerId === bowlerId && req.organizationContextId === undefined) {
     return true;
   }
 
@@ -312,9 +339,21 @@ export async function hasAccessToBowler(req: Request, bowlerId: number): Promise
   // gate is hardened defensively so a future schema drift or stale
   // mock can't silently widen access.
   const bowlerRow = await storage.getBowler(bowlerId);
+  if (req.organizationContextId !== undefined) {
+    if (!bowlerRow
+      || bowlerRow.organizationId === null
+      || bowlerRow.organizationId !== req.organizationContextId) {
+      return false;
+    }
+    if (req.user.bowlerId === bowlerId) {
+      return isSystemAdmin(req.user)
+        ? systemAdminCanAccessOrganization(req, bowlerRow.organizationId)
+        : req.user.organizationId === bowlerRow.organizationId;
+    }
+  }
   if (bowlerRow && bowlerRow.organizationId !== null) {
     if (isSystemAdmin(req.user)) {
-      return true;
+      return systemAdminCanAccessOrganization(req, bowlerRow.organizationId);
     }
 
     // Organization stamp match alone is NOT sufficient
@@ -355,17 +394,13 @@ export async function hasAccessToBowler(req: Request, bowlerId: number): Promise
     userLeagueIds = userBowlerLeagues.map(bl => bl.leagueId);
   }
 
-  const userIsSystemAdmin = isSystemAdmin(req.user);
-
   for (const league of fetchedLeagues) {
-    if (req.user.bowlerId && userLeagueIds.includes(league.id)) {
-      return true;
-    }
     if (league.organizationId === null) {
       log.debug(`bowler ${bowlerId} via league ${league.id} has no organization — denying access to user ${req.user.id} (role=${req.user.role})`);
       continue;
     }
-    if (userIsSystemAdmin) {
+    if (req.user.bowlerId && userLeagueIds.includes(league.id)
+      && canUseSharedLeagueMembership(req, league.organizationId)) {
       return true;
     }
     // Same rule as the bowler-row stamp gate
@@ -431,12 +466,13 @@ export async function hasAccessToBowlers(
   }
 
   const userBowlerId = req.user.bowlerId ?? null;
+  const singletonScoped = req.organizationContextId !== undefined;
 
   // Self-access shortcut: a user may always access their own linked bowler
   // record, even if every league assignment is currently org-less.
   const idsToCheck = new Set<number>();
   for (const id of uniqueIds) {
-    if (userBowlerId !== null && id === userBowlerId) {
+    if (!singletonScoped && userBowlerId !== null && id === userBowlerId) {
       result.set(id, true);
     } else {
       idsToCheck.add(id);
@@ -478,11 +514,22 @@ export async function hasAccessToBowlers(
   const stillToCheck = new Set<number>();
   for (const id of idsToCheck) {
     const stamp = stampedOrgByBowler.get(id);
-    if (stamp !== undefined && stamp !== null) {
-      if (callerIsSystemAdmin) {
+    if (singletonScoped) {
+      // In pinned mode every target bowler must have a durable stamp for the
+      // configured business. Do not fall back to a shared-league membership
+      // when the bowler row is missing, orphaned, or foreign.
+      if (stamp !== req.organizationContextId) continue;
+      if (userBowlerId !== null && id === userBowlerId) {
         result.set(id, true);
         continue;
       }
+    }
+    if (stamp !== undefined && stamp !== null) {
+      if (callerIsSystemAdmin && systemAdminCanAccessOrganization(req, stamp)) {
+        result.set(id, true);
+        continue;
+      }
+      if (callerIsSystemAdmin) continue;
       // Organization-stamp match shortcut restricted to
       // admins. Non-admin "user" callers must qualify via the league
       // self-membership rule below.
@@ -551,7 +598,6 @@ export async function hasAccessToBowlers(
   const fetchedLeagues = await storage.getLeaguesByIds([...allLeagueIds]);
   const leagueMap = new Map(fetchedLeagues.map(l => [l.id, l]));
 
-  const userIsSystemAdmin = isSystemAdmin(req.user);
   const userOrgId = req.user.organizationId ?? null;
 
   // Iterate ONLY the IDs that still need a fallback decision. IDs
@@ -568,15 +614,16 @@ export async function hasAccessToBowlers(
       const league = leagueMap.get(leagueId);
       if (!league) continue;
 
-      if (userBowlerId !== null && userLeagueIds.has(league.id)) {
-        allowed = true;
-        break;
-      }
       if (league.organizationId === null) {
         log.debug(`bowler ${bowlerId} via league ${league.id} has no organization — denying access to user ${req.user.id} (role=${req.user.role})`);
         continue;
       }
-      if (userIsSystemAdmin) {
+      if (userBowlerId !== null && userLeagueIds.has(league.id)
+        && canUseSharedLeagueMembership(req, league.organizationId)) {
+        allowed = true;
+        break;
+      }
+      if (isSystemAdmin(req.user) && systemAdminCanAccessOrganization(req, league.organizationId)) {
         allowed = true;
         break;
       }
@@ -631,9 +678,19 @@ export async function hasSelfOrAdminAccessToBowler(req: Request, bowlerId: numbe
   // vault/autopay data through this broad helper.
   if (isPaymentManager(req.user)) return false;
 
-  // Self-access: the caller IS the target bowler — always allowed regardless
-  // of role so a linked user can always manage their own record.
-  if (req.user.bowlerId === bowlerId) return true;
+  // Self-access remains unconditional only for unpinned legacy requests. A
+  // singleton request validates the target bowler's organization below.
+  if (req.user.bowlerId === bowlerId && req.organizationContextId === undefined) return true;
+
+  if (req.user.bowlerId === bowlerId && req.organizationContextId !== undefined) {
+    const bowlerRow = await storage.getBowler(bowlerId);
+    return !!bowlerRow
+      && bowlerRow.organizationId !== null
+      && bowlerRow.organizationId === req.organizationContextId
+      && (isSystemAdmin(req.user)
+        ? systemAdminCanAccessOrganization(req, bowlerRow.organizationId)
+        : req.user.organizationId === bowlerRow.organizationId);
+  }
 
   // Only org_admin and system_admin may access OTHER bowlers' sensitive data.
   if (!isOrgOrHigher(req.user)) return false;
@@ -647,7 +704,18 @@ export async function hasSelfOrAdminAccessToBowler(req: Request, bowlerId: numbe
     return false;
   }
 
-  if (isSystemAdmin(req.user)) return true;
+  if (req.organizationContextId !== undefined
+    && bowlerRow.organizationId !== req.organizationContextId) {
+    return false;
+  }
+
+  if (req.user.bowlerId === bowlerId) {
+    return isSystemAdmin(req.user)
+      ? systemAdminCanAccessOrganization(req, bowlerRow.organizationId)
+      : req.user.organizationId === bowlerRow.organizationId;
+  }
+
+  if (isSystemAdmin(req.user)) return systemAdminCanAccessOrganization(req, bowlerRow.organizationId);
 
   // org_admin: must share the same organization as the target bowler.
   return req.user.organizationId === bowlerRow.organizationId;
@@ -680,7 +748,7 @@ export async function hasAccessToPayment(req: Request, paymentId: number): Promi
       return false;
     }
 
-    if (isSystemAdmin(req.user)) {
+    if (isSystemAdmin(req.user) && systemAdminCanAccessOrganization(req, league.organizationId)) {
       return true;
     }
 
@@ -777,7 +845,11 @@ export async function filterPaymentsByOrganization(req: Request, payments: { lea
   );
 
   if (isSystemAdmin(req.user)) {
-    return payments.filter(p => orgScopedLeagueIds.has(p.leagueId));
+    return payments.filter(p => {
+      const league = fetchedLeagues.find((candidate) => candidate.id === p.leagueId);
+      return orgScopedLeagueIds.has(p.leagueId)
+        && systemAdminCanAccessOrganization(req, league?.organizationId ?? null);
+    });
   }
 
   if (!req.user.organizationId) {

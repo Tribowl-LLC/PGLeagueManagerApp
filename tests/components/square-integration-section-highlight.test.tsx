@@ -54,7 +54,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 function installFetchMock() {
   global.fetch = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === 'string' ? input : input.toString();
-    if (url.includes(`/api/locations?organizationId=${ORG_ID}`)) {
+    if (url === '/api/locations') {
       return jsonResponse({ success: true, data: LOCATIONS });
     }
     if (url.includes('/square-config')) {

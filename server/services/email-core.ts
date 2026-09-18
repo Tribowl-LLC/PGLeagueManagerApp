@@ -322,22 +322,11 @@ if (SENDGRID_API_KEY) {
 export function getBaseUrl(
   orgOrSlug?: string | { subdomain?: string | null; slug?: string | null } | null,
 ): string {
-  // Prefer the org's `subdomain` field (the actual DNS host) over `slug`
-  // (an internal identifier that may contain hyphens not present in DNS).
-  // Falls back to slug for legacy orgs that haven't been assigned a
-  // subdomain yet.
-  let host: string | null | undefined;
-  if (typeof orgOrSlug === 'string') {
-    host = orgOrSlug;
-  } else if (orgOrSlug) {
-    host = orgOrSlug.subdomain || orgOrSlug.slug || null;
-  }
-  // safe: APP_DOMAIN is normalised to lowercase at parse-time (task #335).
-  // Hostnames in URLs are case-insensitive but we want a canonical
-  // lowercase URL in outgoing emails so links don't look mangled.
-  if (host) {
-    return `https://${host}.${env.APP_DOMAIN}`;
-  }
+  // Retain the optional argument for compatibility with existing callers,
+  // but never derive a link hostname from organization data. All new account,
+  // invitation, registration, reset, and notification links use the one
+  // canonical application domain.
+  void orgOrSlug;
   return `https://${env.APP_DOMAIN}`;
 }
 

@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { standingAutopayConsentRequestSchema, standingAutopayQuoteRequestSchema, standingAutopayRevokeRequestSchema } from "@shared/standing-autopay-contract";
-import { hasAccessToLeague, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague } from "../utils/access-control.js";
+import { hasAccessToLeague, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague, requireOrganizationAccess } from "../utils/access-control.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { storage } from "../storage/index.js";
 import { paymentWriteLimiter } from "../middleware/rate-limit.js";
@@ -16,7 +16,7 @@ function leagueIdParam(value: unknown): number | null {
 
 async function scope(req: Request, leagueId: number, management = false) {
   const league = await storage.getLeague(leagueId);
-  if (!league || league.organizationId === null || (req.user?.role !== "system_admin" && req.user?.organizationId !== league.organizationId)) return null;
+  if (!league || league.organizationId === null || !requireOrganizationAccess(req, league.organizationId, "league", leagueId)) return null;
   if (management) {
     if (req.user?.role !== "system_admin" && !(await hasAdminAccessToLeague(req, leagueId)) && !(await hasPaymentManagerAccessToLeague(req, leagueId))) return null;
   } else if (!(await hasAccessToLeague(req, leagueId))) return null;

@@ -242,9 +242,9 @@ interface SquareSectionProps {
 
 export function SquareSection({ orgId, highlightLocationId = null }: SquareSectionProps) {
   const { data: locationsResponse, isLoading } = useQuery<ApiResponse<Location[]>>({
-    queryKey: ["/api/locations", { organizationId: orgId }],
+      queryKey: ["/api/locations"],
     queryFn: async () => {
-      const res = await fetch(`/api/locations?organizationId=${orgId}`, { credentials: "include" });
+      const res = await fetch('/api/locations', { credentials: "include" });
       if (!res.ok) throw new Error(`Failed to fetch locations: ${res.status}`);
       return res.json();
     },

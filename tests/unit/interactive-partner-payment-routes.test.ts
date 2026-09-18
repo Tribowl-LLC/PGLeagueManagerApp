@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
     hasAccess: vi.fn(),
     hasAdmin: vi.fn(),
     hasPaymentManager: vi.fn(),
+    requireOrganizationAccess: vi.fn(),
     canPay: vi.fn(),
     readDue: vi.fn(),
     quote: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("../../server/utils/access-control.js", () => ({
   hasAccessToLeague: (...args: unknown[]) => mocks.hasAccess(...args),
   hasAdminAccessToLeague: (...args: unknown[]) => mocks.hasAdmin(...args),
   hasPaymentManagerAccessToLeague: (...args: unknown[]) => mocks.hasPaymentManager(...args),
+  requireOrganizationAccess: (...args: unknown[]) => mocks.requireOrganizationAccess(...args),
 }));
 vi.mock("../../server/utils/bowler-payment-authz.js", () => ({
   canUserPayForBowler: (...args: unknown[]) => mocks.canPay(...args),
@@ -108,6 +110,7 @@ beforeEach(() => {
   mocks.hasAccess.mockResolvedValue(true);
   mocks.hasAdmin.mockResolvedValue(false);
   mocks.hasPaymentManager.mockResolvedValue(false);
+  mocks.requireOrganizationAccess.mockReturnValue(true);
   mocks.canPay.mockResolvedValue({ allowed: true });
 });
 

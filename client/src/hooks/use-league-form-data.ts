@@ -16,7 +16,6 @@ import { buildCanonicalLeagueCreatePayload } from "@/lib/league-create-payload";
 interface UseLeagueFormDataOptions {
   open: boolean;
   league?: League;
-  systemAdminOrganizationId?: number | null;
   form: UseFormReturn<InsertLeagueInput, unknown, InsertLeague>;
   bowlingWeeks: number;
   setBowlingWeeks: (w: number) => void;
@@ -36,7 +35,6 @@ interface UseLeagueFormDataOptions {
 export function useLeagueFormData({
   open,
   league,
-  systemAdminOrganizationId,
   form,
   bowlingWeeks,
   setBowlingWeeks,
@@ -178,10 +176,7 @@ export function useLeagueFormData({
         cancelledDates,
         doublePayDates,
       };
-      const canonicalCreatePayload = buildCanonicalLeagueCreatePayload(
-        semanticPayload,
-        systemAdminOrganizationId,
-      );
+      const canonicalCreatePayload = buildCanonicalLeagueCreatePayload(semanticPayload);
       return apiRequest<LeagueSetupIntegrationResult>(
         league ? `/api/leagues/${league.id}` : "/api/leagues",
         league ? "PATCH" : "POST",
@@ -204,14 +199,8 @@ export function useLeagueFormData({
       if (league) {
         queryClient.invalidateQueries({ queryKey: [`/api/leagues/${league.id}`] });
         queryClient.invalidateQueries({ queryKey: ["league-occurrence-schedule", `/api/leagues/${league.id}/occurrence-schedule`] });
-        if (systemAdminOrganizationId != null) {
-          queryClient.invalidateQueries({ queryKey: ["league-occurrence-schedule", `/api/leagues/${league.id}/occurrence-schedule?organizationId=${systemAdminOrganizationId}`] });
-        }
         queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/canonical-due-past-due/2`] });
         queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", league.id, "canonical-due-past-due/2"] });
-        if (systemAdminOrganizationId != null) {
-          queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/canonical-due-past-due/2?organizationId=${systemAdminOrganizationId}`] });
-        }
         queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/roster-payment-responsibility/1`] });
         queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/standing-autopay/1`] });
         queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${league.id}/standing-autopay/1/quote`] });

@@ -20,8 +20,8 @@ import { clearCapturedEmails, getCapturedEmails } from '../../server/services/_i
 
 const ORGANIZATION_SLUG = 'email-first-browser-fixture';
 const ORGANIZATION_SUBDOMAIN = 'emailfirstbrowser';
-const EXPECTED_HOST = `${ORGANIZATION_SUBDOMAIN}.leaguevault.test`;
 const ROOT_HOST = 'leaguevault.test';
+const EXPECTED_HOST = ROOT_HOST;
 const MATCH_EMAIL = 'matched-registration@vitest.local';
 const NO_MATCH_EMAIL = 'waiting-registration@vitest.local';
 const ROOT_EMAIL = 'root-waiting-registration@vitest.local';
@@ -635,30 +635,32 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
     await installRegistrationTemplate();
     const context = await createBrowserContext();
     try {
-      const { page, forbiddenRequests, user } = await startRegistration(context, {
-        email: MATCH_EMAIL,
-        name: 'Matched Browser User',
-      });
-      const setupUrl = await waitForSetupUrl(MATCH_EMAIL);
-      phase = 'open and reload setup';
-      await openAndReloadSetup(page, setupUrl, user.id);
-      phase = 'submit password';
-      expect(await setPassword(page)).toBe(200);
-      phase = 'authenticated landing';
-      await waitForAuthenticatedLanding(page, '/bowler-dashboard');
+      await withOnlyBrowserOrganization(async () => {
+        const { page, forbiddenRequests, user } = await startRegistration(context, {
+          email: MATCH_EMAIL,
+          name: 'Matched Browser User',
+        });
+        const setupUrl = await waitForSetupUrl(MATCH_EMAIL);
+        phase = 'open and reload setup';
+        await openAndReloadSetup(page, setupUrl, user.id);
+        phase = 'submit password';
+        expect(await setPassword(page)).toBe(200);
+        phase = 'authenticated landing';
+        await waitForAuthenticatedLanding(page, '/bowler-dashboard');
 
-      phase = 'verify roster ownership';
-      await expect.poll(async () => {
-        const [updated] = await db.select({ bowlerId: users.bowlerId })
-          .from(users).where(eq(users.id, user.id));
-        return updated?.bowlerId ?? null;
-      }, { timeout: 15_000 }).toBe(matchedBowlerId);
-      const [bowler] = await db.select({ phone: bowlers.phone })
-        .from(bowlers).where(eq(bowlers.id, matchedBowlerId));
-      // Registration deliberately does not overwrite the roster phone.
-      expect(bowler?.phone).toBe(MATCH_BOWLER_PHONE);
-      expect(forbiddenRequests).toEqual([]);
-      expect(page.url()).not.toContain('/claim-bowler');
+        phase = 'verify roster ownership';
+        await expect.poll(async () => {
+          const [updated] = await db.select({ bowlerId: users.bowlerId })
+            .from(users).where(eq(users.id, user.id));
+          return updated?.bowlerId ?? null;
+        }, { timeout: 15_000 }).toBe(matchedBowlerId);
+        const [bowler] = await db.select({ phone: bowlers.phone })
+          .from(bowlers).where(eq(bowlers.id, matchedBowlerId));
+        // Registration deliberately does not overwrite the roster phone.
+        expect(bowler?.phone).toBe(MATCH_BOWLER_PHONE);
+        expect(forbiddenRequests).toEqual([]);
+        expect(page.url()).not.toContain('/claim-bowler');
+      });
     } finally {
       phase = `drain browser routes after ${phase}`;
       await closeContextAfterRoutesDrain(context);
@@ -670,21 +672,23 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
     await installRegistrationTemplate();
     const context = await createBrowserContext();
     try {
-      const { page, forbiddenRequests, user } = await startRegistration(context, {
-        email: NO_MATCH_EMAIL,
-        name: 'Waiting Browser User',
-      });
-      const setupUrl = await waitForSetupUrl(NO_MATCH_EMAIL);
-      await openAndReloadSetup(page, setupUrl, user.id);
-      expect(await setPassword(page)).toBe(200);
-      await waitForAuthenticatedLanding(page, '/registration-complete');
-      await page.getByText(/administrator setup|registration in progress/i).first().waitFor();
+      await withOnlyBrowserOrganization(async () => {
+        const { page, forbiddenRequests, user } = await startRegistration(context, {
+          email: NO_MATCH_EMAIL,
+          name: 'Waiting Browser User',
+        });
+        const setupUrl = await waitForSetupUrl(NO_MATCH_EMAIL);
+        await openAndReloadSetup(page, setupUrl, user.id);
+        expect(await setPassword(page)).toBe(200);
+        await waitForAuthenticatedLanding(page, '/registration-complete');
+        await page.getByText(/administrator setup|registration in progress/i).first().waitFor();
 
-      const [updated] = await db.select({ bowlerId: users.bowlerId })
-        .from(users).where(eq(users.id, user.id));
-      expect(updated?.bowlerId).toBeNull();
-      expect(forbiddenRequests).toEqual([]);
-      expect(page.url()).not.toContain('/claim-bowler');
+        const [updated] = await db.select({ bowlerId: users.bowlerId })
+          .from(users).where(eq(users.id, user.id));
+        expect(updated?.bowlerId).toBeNull();
+        expect(forbiddenRequests).toEqual([]);
+        expect(page.url()).not.toContain('/claim-bowler');
+      });
     } finally {
       await closeContextAfterRoutesDrain(context);
     }

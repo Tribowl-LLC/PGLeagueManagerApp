@@ -15,6 +15,63 @@ export const SCHEDULED_PAYMENT_EXECUTION_MODES = [
 ] as const;
 export type ScheduledPaymentExecutionMode = (typeof SCHEDULED_PAYMENT_EXECUTION_MODES)[number];
 
+const APP_ORGANIZATION_ID_ERROR =
+  "APP_ORGANIZATION_ID must be a positive safe integer when set (for example, '42').";
+
+/**
+ * Parse a positive organization identifier without allowing precision loss.
+ * Environment variables arrive as strings, so accepting only decimal digits
+ * also rejects values such as `1.5`, `1e3`, and whitespace-padded input.
+ */
+export function parsePositiveSafeInteger(value: unknown): number | undefined {
+  if (typeof value === "string") {
+    if (!/^\d+$/.test(value)) return undefined;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+export interface ProductionLikeRequiredConfigurationInput {
+  appOrganizationId: unknown;
+  nodeEnv: string | undefined;
+  appEnv: string | undefined;
+}
+
+export type ProductionLikeRequiredConfiguration =
+  | {
+      ok: true;
+      productionLike: boolean;
+      organizationId: number | undefined;
+    }
+  | { ok: false; reason: string };
+
+/**
+ * Validate business-operation configuration separately from database-free
+ * boot validation. Local and test processes may omit APP_ORGANIZATION_ID;
+ * production-like business operations may not.
+ */
+export function validateProductionLikeRequiredConfiguration(
+  input: ProductionLikeRequiredConfigurationInput,
+): ProductionLikeRequiredConfiguration {
+  const productionLike = input.nodeEnv === "production" || input.appEnv === "prod";
+  const hasConfiguredOrganization = input.appOrganizationId !== undefined;
+  const organizationId = parsePositiveSafeInteger(input.appOrganizationId);
+
+  if (hasConfiguredOrganization && organizationId === undefined) {
+    return { ok: false, reason: APP_ORGANIZATION_ID_ERROR };
+  }
+  if (productionLike && organizationId === undefined) {
+    return {
+      ok: false,
+      reason: "APP_ORGANIZATION_ID must be set to a positive safe integer in production-like environments.",
+    };
+  }
+  return { ok: true, productionLike, organizationId };
+}
+
 export const envSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL must be set. Did you forget to provision a database?"),
   SESSION_SECRET: z.string().min(1, "SESSION_SECRET must be set. Sessions cannot be secured without a signing key."),
@@ -80,6 +137,22 @@ export const envSchema = z.object({
     )
     .default("leaguevault.app")
     .transform((v) => v.toLowerCase()),
+
+  // Optional at process boot so health/liveness checks remain database-free.
+  // Business-operation readiness requires this in production-like runtimes;
+  // see validateProductionLikeRequiredConfiguration above.
+  APP_ORGANIZATION_ID: z.preprocess(
+    (value) => parsePositiveSafeInteger(value) ?? value,
+    z.number({ error: APP_ORGANIZATION_ID_ERROR }).refine(
+      (value) => Number.isSafeInteger(value) && value > 0,
+      APP_ORGANIZATION_ID_ERROR,
+    ).optional(),
+  ),
+  LEGACY_ORG_HOSTS: z.string().optional().transform((value) =>
+    value === undefined
+      ? []
+      : value.split(',').map((host) => host.trim().toLowerCase()).filter(Boolean),
+  ),
 
   LOG_LEVEL: z
     .enum(["debug", "info", "warn", "error"], {
@@ -236,10 +309,14 @@ function validateEnv(): Env {
   };
 
   if (!result.success) {
+    const organizationConfigurationIssues = result.error.issues.filter(
+      (issue) => issue.path[0] === "APP_ORGANIZATION_ID",
+    );
     const errors = result.error.issues
       .filter((issue) => {
         const path = issue.path[0] as string;
-        return !optionalWarnings.some((w) => w.key === path);
+        return path !== "APP_ORGANIZATION_ID"
+          && !optionalWarnings.some((w) => w.key === path);
       });
 
     if (errors.length > 0) {
@@ -250,14 +327,24 @@ function validateEnv(): Env {
       process.exit(1);
     }
 
-    return requireExecutionMode(envSchema.parse({
+    const parsed = envSchema.parse({
       ...process.env,
+      // Keep liveness available when the singleton deployment setting is
+      // missing or malformed. Business middleware and workers fail closed
+      // until the operator supplies a valid value.
+      APP_ORGANIZATION_ID: organizationConfigurationIssues.length > 0
+        ? undefined
+        : process.env.APP_ORGANIZATION_ID,
       ...Object.fromEntries(
         result.error.issues
           .filter((issue) => optionalWarnings.some((w) => w.key === issue.path[0]))
           .map((issue) => [issue.path[0], undefined])
       ),
-    }));
+    });
+    if (organizationConfigurationIssues.length > 0) {
+      log.error("APP_ORGANIZATION_ID is missing or invalid; business operations will remain unavailable until it is configured");
+    }
+    return requireExecutionMode(parsed);
   }
 
   return requireExecutionMode(result.data);
@@ -288,6 +375,9 @@ export const appEnv: AppEnv = resolveAppEnv({
 // Canonical "are we in a production-like runtime?" boolean. Validated boot
 // configuration keeps this equivalent to `appEnv === 'prod'`.
 export const isProdLike = env.NODE_ENV === "production" || appEnv === 'prod';
+
+/** True when the deployment is pinned to the one supported business. */
+export const isSingletonOrganizationMode = env.APP_ORGANIZATION_ID !== undefined;
 
 // Production-like deploys MUST NOT silently run at `debug` — that would
 // dump `userId × resourceId` correlations from the org-less drift signal

@@ -33,6 +33,7 @@ import { requireAdmin } from '../middleware/admin.js';
 import { verifyTrustProxy } from '../lib/trust-proxy-check.js';
 import { createLogger } from '../logger';
 import { getPgErrorCode } from '../utils/db-errors.js';
+import { hasConfiguredOrganizationMembership } from '../middleware/organization.js';
 import {
   updateDeletionRequestStatusSchema,
   executeDeletionRequestSchema,
@@ -56,6 +57,17 @@ const log = createLogger("SystemAdmin");
 
 const router = Router();
 
+async function getScopedSystemAdmins(req: Request): Promise<Awaited<ReturnType<typeof storage.getUsers>>> {
+  const users = await storage.getUsers();
+  if (req.organizationContextId === undefined) {
+    return users.filter((user) => user.role === 'system_admin');
+  }
+  return users.filter((user) =>
+    user.role === 'system_admin'
+    && (user.organizationId === req.organizationContextId || user.organizationId === null),
+  );
+}
+
 router.post('/create/:id', requireAdmin, async (req: Request, res: Response) => {
   try {
     const userId = parseInt(singleRouteParam(req.params.id), 10);
@@ -66,6 +78,15 @@ router.post('/create/:id', requireAdmin, async (req: Request, res: Response) => 
     const user = await storage.getUser(userId);
     if (!user) {
       return sendError(res, 'User not found', 404, 'USER_NOT_FOUND');
+    }
+
+    // In singleton mode an Owner may only change the role of an account in
+    // the configured business. Preserve the explicit unassigned-Owner
+    // exception for existing system-admin rows, but never use the role
+    // itself as a cross-business resource bypass.
+    if (req.organizationContextId !== undefined
+      && !hasConfiguredOrganizationMembership(user, req.organizationContextId)) {
+      return sendError(res, 'User is outside the configured organization', 403, 'FORBIDDEN');
     }
 
     if (user.role === 'system_admin') {
@@ -83,8 +104,7 @@ router.post('/create/:id', requireAdmin, async (req: Request, res: Response) => 
 
 router.get('/', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const users = await storage.getUsers();
-    const systemAdmins = users.filter(user => user.role === 'system_admin');
+    const systemAdmins = await getScopedSystemAdmins(req);
     sendSuccess(res, systemAdmins.map(sanitizeUser));
   } catch (error) {
     log.error('Error fetching system admins:', error);
@@ -104,8 +124,12 @@ router.post('/revoke/:id', requireAdmin, async (req: Request, res: Response) => 
       return sendError(res, 'User not found', 404, 'USER_NOT_FOUND');
     }
 
-    const users = await storage.getUsers();
-    const systemAdmins = users.filter(u => u.role === 'system_admin');
+    if (req.organizationContextId !== undefined
+      && !hasConfiguredOrganizationMembership(user, req.organizationContextId)) {
+      return sendError(res, 'User is outside the configured organization', 403, 'FORBIDDEN');
+    }
+
+    const systemAdmins = await getScopedSystemAdmins(req);
     
     if (systemAdmins.length <= 1 && systemAdmins.some(admin => admin.id === userId)) {
       return sendError(res, 'Cannot revoke the last system admin', 400, 'LAST_SYSTEM_ADMIN');
@@ -533,8 +557,8 @@ router.get('/admin-email-change-audits', requireAdmin, async (req: Request, res:
     const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
 
     const [rows, total] = await Promise.all([
-      listAdminEmailChangeAudits({ targetUserId, limit, offset }),
-      countAdminEmailChangeAudits({ targetUserId }),
+      listAdminEmailChangeAudits({ targetUserId, organizationId: req.organizationContextId, limit, offset }),
+      countAdminEmailChangeAudits({ targetUserId, organizationId: req.organizationContextId }),
     ]);
     sendSuccess(res, { rows, total, limit, offset });
   } catch (error) {

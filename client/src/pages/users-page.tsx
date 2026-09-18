@@ -96,9 +96,9 @@ export default function UsersPage() {
   const organizationId = currentUser?.organizationId;
 
   const { data: orgUsersResponse, isLoading: orgUsersLoading } = useQuery<{ success: boolean; data: UsersTableUser[] }>({
-    queryKey: ['/api/org-admin/users', organizationId],
+    queryKey: ['/api/org-admin/users'],
     queryFn: async () => {
-      const response = await fetch(`/api/org-admin/users?organizationId=${organizationId}`, {
+      const response = await fetch('/api/org-admin/users', {
         credentials: 'include',
       });
       if (!response.ok) throw new Error('Failed to fetch users');
@@ -121,10 +121,10 @@ export default function UsersPage() {
     success: boolean;
     data: BowlerAccountNotificationUser[];
   }>({
-    queryKey: ['/api/org-admin/users', 'bowler', organizationId],
+    queryKey: ['/api/org-admin/users', 'bowler'],
     queryFn: async () => {
       const response = await fetch(
-        `/api/org-admin/users?organizationId=${organizationId}&accountType=bowler`,
+        '/api/org-admin/users?accountType=bowler',
         { credentials: 'include' },
       );
       if (!response.ok) throw new Error('Failed to fetch bowler accounts');

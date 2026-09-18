@@ -1,8 +1,8 @@
 # LeagueVault
 
-LeagueVault is a multi-tenant bowling league management application for adult
-leagues. It manages leagues, teams, bowlers, schedules, payments, refunds,
-registration, and organization administration.
+LeagueVault is a single-business, multi-location bowling league management
+application for adult leagues. It manages leagues, teams, bowlers, schedules,
+payments, refunds, registration, and business administration.
 
 This file contains durable instructions for Codex and contributors. Detailed
 architecture explanations and operational runbooks belong in `docs/`.
@@ -32,8 +32,10 @@ uses npm. Do not introduce Yarn, pnpm, or an additional lockfile.
 
 - Render hosts the production web application.
 - Neon PostgreSQL is the production database.
-- `leaguevault.app` is the production domain. Organization subdomains use the
-  same base domain.
+- `leaguevault.app` is the production canonical domain. One configured
+  organization may contain multiple physical bowling locations. Legacy
+  organization hosts are explicit compatibility redirects, never tenant
+  selectors.
 - GitHub `main` is the source of truth and is protected.
 - Normal work starts from the latest `origin/main` on one short-lived branch
   and reaches `main` through one pull request.
@@ -206,6 +208,8 @@ Render production should explicitly use:
 APP_ENV=prod
 NODE_ENV=production
 APP_DOMAIN=leaguevault.app
+APP_ORGANIZATION_ID=<verified organizations.id>
+LEGACY_ORG_HOSTS=<explicit legacy hostnames, comma-separated>
 ```
 
 Required application variables:
@@ -278,20 +282,25 @@ browser-delivered code.
 
 See `docs/production-runbook.md` and `docs/TEST_INFRA.md`.
 
-## Multi-Tenancy And Authorization
+## Organization And Resource Authorization
 
-Tenant isolation is a security boundary, not merely a filtering convention.
+Organization ownership and resource authorization are security boundaries, not
+merely filtering conventions. The deployed application has one configured
+organization, while organization IDs remain in stored rows and contracts for
+integrity, historical reports, and future ownership boundaries.
 
-- Organization and resource access must remain tenant-scoped.
-- Every tenant-owned query must be scoped using server-authorized organization
-  context.
+- Every business-owned query must be scoped using the server-resolved
+  `APP_ORGANIZATION_ID`.
+- Never infer the organization from browser input, hostnames, the first row, or
+  a tenant switcher. Matching legacy organization IDs may be accepted only for
+  compatibility and never select data.
 - Never trust a client-provided organization, league, location, team, bowler,
   payment, or resource identifier without server-side authorization.
 - Org-less rows are data-integrity failures and must not be treated as globally
   accessible.
 - Do not weaken authorization checks to simplify UI behavior or make a test
   pass.
-- Add or update tenant-isolation tests for changes that read, create, update,
+- Add or update organization/resource-authorization tests for changes that read, create, update,
   refund, transfer, or delete tenant-owned resources.
 - System-administrator privileges must remain explicit and narrowly scoped.
 - Authorization failures should fail closed.
@@ -300,13 +309,11 @@ Tenant isolation is a security boundary, not merely a filtering convention.
 
 - The product supports adult leagues only.
 - Youth, minor, and guardian league functionality is retired.
-- Permanent organization deletion is system-admin-only and runs as one atomic
-  database transaction.
-- Platform system-administrator accounts are preserved and detached from the
-  deleted organization.
-- Organization teardown deletes app-owned tenant data and organization audit
-  data.
-- Organization teardown does not delete remote Square customer objects.
+- Organization creation, switching, archive/restore, deletion, and hostname
+  administration are not application operations in singleton mode. Business
+  Settings may edit the configured organization’s public details only.
+- Keep the organization row, IDs, foreign keys, and historical evidence; do
+  not drop organization columns as part of this refactor.
 - Square payment behavior is business-critical.
 - Do not change provider SDK usage, credentials, payment amounts, refund
   behavior, idempotency behavior, or webhook behavior without focused tests
@@ -337,7 +344,7 @@ Tenant isolation is a security boundary, not merely a filtering convention.
   boundaries.
 - Use shared schemas and types where established.
 - Return deliberate HTTP status codes.
-- Preserve authentication, authorization, tenant scoping, CSRF protection,
+- Preserve authentication, authorization, organization/resource scoping, CSRF protection,
   rate limiting, and idempotency safeguards.
 - Do not expose stack traces, SQL details, internal provider responses,
   credentials, or sensitive operational details to clients.
@@ -372,7 +379,7 @@ Tenant isolation is a security boundary, not merely a filtering convention.
 ## Security And Privacy
 
 - Keep security and payment error handling fail-closed.
-- Do not weaken CSRF protection, tenant isolation, rate limits,
+- Do not weaken CSRF protection, organization/resource authorization, rate limits,
   authentication, authorization, field encryption, webhook verification, or
   trust-proxy validation to make a test pass.
 - Never log passwords, tokens, API keys, payment credentials, session
@@ -429,7 +436,7 @@ Before handing off a task, report:
 6. Any checks that failed, were skipped, or were unavailable
 7. Database and migration implications
 8. Deployment and environment-variable implications
-9. Security, tenant-isolation, payment, or provider implications
+9. Security, organization-authorization, payment, or provider implications
 10. Manual verification steps
 11. Remaining risks, assumptions, or follow-up work
 12. The branch and pull-request status

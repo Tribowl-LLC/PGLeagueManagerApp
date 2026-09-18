@@ -9,8 +9,9 @@ import { db } from "../db.js";
 import { ACCOUNT_ACTION_TYPES, User as SelectUser, emailSchema, nameSchema, accountActionRequests, accountActionDeliveryJobs, accountEmailDeliveryEvents } from "@shared/schema";
 import { passwordSchema } from "@shared/password-validation";
 import { sanitizeUser, sendSuccess, sendError, handleUserOrgError } from "../utils/api.js";
-import { env, isDev } from "../config";
+import { env, isDev, isSingletonOrganizationMode } from "../config";
 import { checkUserBelongsToOrg } from "../middleware/subdomain";
+import { hasConfiguredOrganizationMembership } from "../middleware/organization";
 import { csrfProtection } from "../middleware/csrf";
 import { createLogger } from "../logger";
 import { hashPassword } from "../lib/password";
@@ -592,6 +593,15 @@ export function registerAuthRoutes(app: Express): void {
       if (!user) {
         return sendError(res, info?.message || "Invalid credentials", 401, "INVALID_CREDENTIALS");
       }
+
+      if (
+        isSingletonOrganizationMode
+        && req.organizationContextId !== undefined
+        && !hasConfiguredOrganizationMembership(user, req.organizationContextId)
+      ) {
+        return sendError(res, "You do not have access to this business", 403, "ORG_ACCESS_DENIED");
+      }
+
       req.login(user, async (err) => {
         if (err) {
           log.error('Session creation error:', err);
@@ -604,6 +614,17 @@ export function registerAuthRoutes(app: Express): void {
           } catch (orgErr) {
             log.error('Failed to check org on login:', orgErr);
           }
+        }
+
+        // Owner rows created before organization membership was required may
+        // remain unassigned in storage. Surface the deployment-resolved
+        // business for this session without rewriting that historical row.
+        if (
+          user.role === 'system_admin'
+          && user.organizationId == null
+          && req.organizationContextId !== undefined
+        ) {
+          user.organizationId = req.organizationContextId;
         }
 
         if (isDev) {
@@ -639,7 +660,7 @@ export function registerAuthRoutes(app: Express): void {
       // data, and pending/link state is visible immediately after an admin
       // assignment.
       const sessionUser = req.user as SelectUser;
-      const user = await storage.getUser(sessionUser.id);
+      let user = await storage.getUser(sessionUser.id);
       if (!user) {
         return new Promise<void>((resolve) => {
           req.logout((err) => {
@@ -648,6 +669,26 @@ export function registerAuthRoutes(app: Express): void {
             resolve();
           });
         });
+      }
+      if (
+        isSingletonOrganizationMode
+        && req.organizationContextId !== undefined
+        && !hasConfiguredOrganizationMembership(user, req.organizationContextId)
+      ) {
+        return new Promise<void>((resolve) => {
+          req.logout((err) => {
+            if (err) log.error('Logout error in /api/auth/user organization guard:', err);
+            sendError(res, "You do not have access to this business", 403, "ORG_ACCESS_DENIED");
+            resolve();
+          });
+        });
+      }
+      if (
+        user.role === 'system_admin'
+        && user.organizationId == null
+        && req.organizationContextId !== undefined
+      ) {
+        user = { ...user, organizationId: req.organizationContextId };
       }
       const subdomainOrg = req.subdomainOrg;
 

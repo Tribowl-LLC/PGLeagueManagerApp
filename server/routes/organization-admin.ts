@@ -32,6 +32,7 @@ import {
   withAccountActionDeliveryLock,
 } from '../storage/account-action-requests.js';
 import { isNormalizedUserEmailConflict } from '../utils/db-errors.js';
+import { requireOrganizationAccess } from '../utils/access-control.js';
 
 const log = createLogger("OrgAdmin");
 
@@ -190,9 +191,8 @@ router.get('/users', requireOrgAdminOrSystemAdmin, async (req: Request, res: Res
     }
 
     // A system admin can specify any organization
-    let organizationId: number | null = req.query.organizationId 
-      ? parseInt(String(req.query.organizationId), 10) 
-      : null;
+    let organizationId: number | null = req.organizationContextId
+      ?? (req.query.organizationId ? parseInt(String(req.query.organizationId), 10) : null);
     
     // For organization admins, force their own organization
     if (actingUser.role === 'org_admin') {
@@ -360,6 +360,10 @@ router.patch('/users/:id/admin-status', requireOrgAdminOrSystemAdmin, adminWrite
       return sendError(res, 'User not found', 404, 'NOT_FOUND');
     }
 
+    if (!requireOrganizationAccess(req, user.organizationId)) {
+      return sendError(res, 'You can only manage users in the configured organization', 403, 'forbidden');
+    }
+
     // Task #462: an admin cannot change their OWN admin status through
     // this endpoint. Without this guard a self-demotion silently flips
     // the role, writes an audit row, and locks the caller out of the
@@ -469,7 +473,9 @@ router.post('/users/:id/add', requireOrgAdminOrSystemAdmin, adminWriteLimiter, a
     
     let organizationId: number;
     
-    if (actingUser.role === 'system_admin' && req.body.organizationId !== undefined) {
+    if (req.organizationContextId !== undefined) {
+      organizationId = req.organizationContextId;
+    } else if (actingUser.role === 'system_admin' && req.body.organizationId !== undefined) {
       organizationId = parseInt(String(req.body.organizationId), 10);
       if (isNaN(organizationId)) {
         return sendError(res, 'Invalid organization ID', 400, 'bad_request');
@@ -504,6 +510,10 @@ router.post('/users/:id/add', requireOrgAdminOrSystemAdmin, adminWriteLimiter, a
 
     if (actingUser.role === 'org_admin' && user.role === 'system_admin') {
       return sendError(res, 'Organization admins cannot modify system admin accounts', 403, 'forbidden');
+    }
+
+    if (user.organizationId !== null && !requireOrganizationAccess(req, user.organizationId)) {
+      return sendError(res, 'You can only manage users in the configured organization', 403, 'forbidden');
     }
 
     // Check if user is already in an organization
@@ -584,6 +594,10 @@ router.delete('/users/:id', requireOrgAdminOrSystemAdmin, adminWriteLimiter, asy
         403,
         'forbidden',
       );
+    }
+
+    if (!requireOrganizationAccess(req, user.organizationId)) {
+      return sendError(res, 'You can only delete users from the configured organization', 403, 'forbidden');
     }
 
     if (actingUser.role === 'org_admin' && user.organizationId !== actingUser.organizationId) {
@@ -668,6 +682,10 @@ router.patch('/users/:id/location', requireOrgAdminOrSystemAdmin, adminWriteLimi
       }
     }
 
+    if (!requireOrganizationAccess(req, user.organizationId)) {
+      return sendError(res, 'You can only manage users in the configured organization', 403, 'forbidden');
+    }
+
     // Task #454: existence + same-tenant guard for the admin-supplied
     // locationId. A null clears the assignment (no FK to validate). A
     // numeric id must match an existing location row whose org matches
@@ -732,7 +750,9 @@ router.post('/users/create', requireOrgAdminOrSystemAdmin, inviteLimiter, async 
           : 'user';
 
     let organizationId: number;
-    if (actingUser.role === 'system_admin' && req.body.organizationId) {
+    if (req.organizationContextId !== undefined) {
+      organizationId = req.organizationContextId;
+    } else if (actingUser.role === 'system_admin' && req.body.organizationId) {
       organizationId = parseInt(String(req.body.organizationId), 10);
     } else {
       if (!actingUser.organizationId) {
@@ -890,6 +910,17 @@ router.post('/users/:id/reset-password', requireOrgAdminOrSystemAdmin, adminWrit
       return sendError(res, 'User not found', 404, 'NOT_FOUND');
     }
 
+    if (!requireOrganizationAccess(req, targetUser.organizationId)) {
+      return sendError(
+        res,
+        req.organizationContextId === undefined
+          ? 'You can only reset passwords for users in your own organization'
+          : 'You can only reset passwords for users in the configured organization',
+        403,
+        'forbidden',
+      );
+    }
+
     if (targetUser.id === actingUser.id) {
       return sendError(
         res,
@@ -1034,6 +1065,10 @@ router.post('/users/:id/resend-invite', requireOrgAdminOrSystemAdmin, inviteLimi
       return sendError(res, 'User not found', 404, 'NOT_FOUND');
     }
 
+    if (!requireOrganizationAccess(req, user.organizationId)) {
+      return sendError(res, 'You can only manage users in the configured organization', 403, 'forbidden');
+    }
+
     if (actingUser.role === 'org_admin') {
       if (user.organizationId !== actingUser.organizationId) {
         return sendError(res, 'You can only manage users in your own organization', 403, 'forbidden');
@@ -1106,6 +1141,9 @@ router.post('/users/:id/resend-account-ready', requireOrgAdminOrSystemAdmin, inv
     const user = await storage.getUser(userId);
     if (!user) {
       return sendError(res, 'User not found', 404, 'NOT_FOUND');
+    }
+    if (!requireOrganizationAccess(req, user.organizationId)) {
+      return sendError(res, 'You can only manage users in the configured organization', 403, 'forbidden');
     }
     if (actingUser.role === 'org_admin' && user.organizationId !== actingUser.organizationId) {
       return sendError(res, 'You can only manage users in your own organization', 403, 'forbidden');

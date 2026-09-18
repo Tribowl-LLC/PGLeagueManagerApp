@@ -152,7 +152,7 @@ describe('LeagueViewPage system-admin new-season scope', () => {
 
     await waitFor(() => expect(apiRequestMock).toHaveBeenCalledTimes(1));
     expect(apiRequestMock).toHaveBeenCalledWith(
-      `/api/leagues/42/new-season?organizationId=${organizationId}`,
+      "/api/leagues/42/new-season",
       'POST',
       expect.objectContaining({
         setupIntegration: expect.objectContaining({ contractVersion: 'league-setup-integration-request/3' }),

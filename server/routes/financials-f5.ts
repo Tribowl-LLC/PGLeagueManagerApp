@@ -104,7 +104,8 @@ router.get("/payments", async (req, res) => {
   if (!req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
 
   const isSystemAdmin = req.user.role === "system_admin";
-  const effectiveOrganizationId = isSystemAdmin ? organizationId : req.user.organizationId;
+  const effectiveOrganizationId = req.organizationContextId
+    ?? (isSystemAdmin ? organizationId : req.user.organizationId);
   if (!effectiveOrganizationId || (organizationId !== undefined && organizationId !== effectiveOrganizationId)) {
     return sendError(res, "Not found", 404, "NOT_FOUND");
   }

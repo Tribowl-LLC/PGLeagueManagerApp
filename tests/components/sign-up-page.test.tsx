@@ -5,8 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const { toast } = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast }) }));
-vi.mock("@/hooks/use-subdomain-org", () => ({
-  useSubdomainOrg: () => ({ org: null, slug: null, isSubdomain: false, isLoading: false }),
+vi.mock("@/hooks/use-business-context", () => ({
+  useBusinessContext: () => ({ business: null, isLoading: false }),
 }));
 
 import SignUpPage from "@/pages/sign-up-page";

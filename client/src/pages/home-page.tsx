@@ -103,10 +103,9 @@ export default function HomePage() {
   const { data: financialReportResponse, isLoading: loadingFinancialReport, error: financialReportError, refetch: refetchFinancialReport } = useQuery<ApiResponse<{
     leagues: Array<{ leagueId: number; report: CanonicalDuePastDueResponseV2 }>;
   }>>({
-    queryKey: [userResponse?.data?.role === "system_admin" && userResponse.data.organizationId ? `/api/financials/due-past-due?organizationId=${userResponse.data.organizationId}` : "/api/financials/due-past-due"],
+    queryKey: ["/api/financials/due-past-due"],
     queryFn: async () => {
-      const scope = userResponse?.data?.role === "system_admin" && userResponse.data.organizationId ? `?organizationId=${encodeURIComponent(userResponse.data.organizationId)}` : "";
-      const response = await fetch(`/api/financials/due-past-due${scope}`);
+      const response = await fetch('/api/financials/due-past-due');
       if (!response.ok) throw new Error("Financial evidence requires review");
       return response.json();
     },

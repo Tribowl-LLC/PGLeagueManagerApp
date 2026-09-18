@@ -1,7 +1,8 @@
 # LeagueVault Architecture
 
-LeagueVault is a multi-tenant adult bowling league management application. A
-single TypeScript project builds a React/Vite client and an Express server. The
+LeagueVault is a single-business, multi-location adult bowling league
+management application. A single TypeScript project builds a React/Vite client
+and an Express server. The
 server serves the browser application and owns the API, authentication,
 authorization, persistence, payment-provider calls, webhooks, and background
 work.
@@ -37,9 +38,9 @@ The React client under [`client/src/`](../client/src/) is responsible for:
   provider; and
 - presenting server responses and actionable error messages.
 
-The client sends same-origin requests with credentials. It may use the
-organization subdomain to select the current visual context, but it is never
-the authority for authentication, tenant isolation, permissions, payment
+The client sends same-origin requests with credentials. It uses the public
+business-context endpoint for branding, but it is never the authority for
+authentication, organization/resource authorization, permissions, payment
 amounts, refunds, or other business rules.
 
 The main client entrypoints are [`main.tsx`](../client/src/main.tsx), which
@@ -82,7 +83,7 @@ other sensitive rows.
 | [`client/src/App.tsx`](../client/src/App.tsx) | Client route map, role-aware redirects, lazy loading, and protected-route presentation. |
 | [`server/app.ts`](../server/app.ts) | Express app factory, middleware order, health endpoint, static/Vite serving, boot checks, and worker startup. |
 | [`server/routes/`](../server/routes/) | HTTP route modules. [`routes/index.ts`](../server/routes/index.ts) mounts the API routers and their broad auth boundaries. |
-| [`server/middleware/`](../server/middleware/) | Cross-cutting request behavior: authentication gates, CSRF, subdomain context, security headers, and organization context. |
+| [`server/middleware/`](../server/middleware/) | Cross-cutting request behavior: authentication gates, CSRF, singleton business context, security headers, and organization/resource authorization. |
 | [`server/storage/`](../server/storage/) | Database access facade and domain-specific storage modules for leagues, teams, bowlers, payments, users, organizations, and operational records. |
 | [`server/services/`](../server/services/) | Business workflows and external-system adapters, including payments, email, account lifecycle, schedulers, and recovery workers. |
 | [`server/lib/`](../server/lib/) | Server infrastructure helpers such as password handling, shutdown, and trust-proxy verification. |
@@ -154,10 +155,10 @@ production server differ only in how the frontend assets are delivered.
 ```mermaid
 flowchart TD
     A["Browser or Capacitor client"] --> B[Express app]
-    B --> C[Request tracking and subdomain detection]
+    B --> C[Request tracking and singleton business context]
     C --> D[Security headers, body parsing, raw webhook body capture]
     D --> E[Postgres-backed session and Passport user]
-    E --> F[Organization-session guard]
+    E --> F[Organization/resource authorization]
     F --> G[CSRF and route auth middleware]
     G --> H[Route module]
     H --> I[Resource access checks and domain services]
@@ -175,15 +176,18 @@ summary alone.
 
 In [`server/app.ts`](../server/app.ts), the important request stages are:
 
-1. `requestTracker` and `subdomainDetection` run first. The latter resolves
-   `req.orgSlug` and `req.subdomainOrg` from the hostname, with a validated
-   `__org_slug` override for local development.
+1. `requestTracker` and singleton business-context resolution run first.
+   Production-like deployments resolve the active organization from the
+   required `APP_ORGANIZATION_ID`; the hostname and browser input never select
+   it. Explicit legacy hosts redirect browser GET/HEAD requests to the
+   canonical domain and reject mutations. Liveness and signed provider
+   callbacks remain outside this resolution boundary.
 2. Security headers, compression, and body parsers are installed. Body-size
    limits are intentionally restrictive, and webhook requests retain the exact
    raw bytes required for signature verification.
-3. `setupAuth` installs the session store and Passport middleware. The
-   `orgSessionGuard` then prevents a logged-in user from using a different
-   organization subdomain without membership.
+3. `setupAuth` installs the session store and Passport middleware. Existing
+   role, location, league-membership, bowler-ownership, and payment checks
+   continue to authorize individual resources inside the configured business.
 4. API headers, the CSRF-token endpoint, and CSRF protection
    are installed. Webhook and other explicitly public routes are mounted with
    deliberate exceptions.
@@ -215,7 +219,7 @@ management.
   webhooks use provider signatures instead of browser CSRF tokens.
 - Client protected-route behavior is UX only and must not replace server-side
   authentication or authorization.
-- Organization-subdomain sessions must pass the server-side tenant guard.
+- Sessions must pass server-side organization and resource authorization.
 
 ### Current Implementation
 
@@ -258,16 +262,18 @@ The flow is implemented as follows:
 - Login and account-management endpoints use rate limits. A user whose
   password was reset by an administrator is server-side restricted to the
   password-rotation/auth allowlist until `mustChangePassword` is cleared.
-- A session on an organization subdomain is checked against the resolved
-  organization. System administrators are exempt; other users must belong to
-  the organization, with the documented bowler-link bootstrap path for an
+- A session is checked against the configured organization context. Existing
+  Owner accounts may remain unassigned in storage; ordinary accounts require
+  valid membership, with the documented bowler-link bootstrap path for an
   otherwise unassigned bowler account.
 
-## Tenant Model
+## Single-Business, Multi-Location Model
 
-An `organization` is the tenant root. It owns locations, leagues/seasons,
-teams, bowlers, registrations, payments, integrations, and tenant audit or
-operational records. The core relationships are defined in
+The existing `organization` row remains the durable business root. The
+configured row owns locations, leagues/seasons, teams, bowlers, registrations,
+payments, integrations, and audit or operational records. Locations remain
+independent facilities with their own managers, league relationships, Square
+credentials, caches, and payment settings. The core relationships are defined in
 [`shared/schema/`](../shared/schema/):
 
 ```text
@@ -285,24 +291,33 @@ organization
 
 ### Organization Context
 
-- Production organization URLs use `<subdomain>.leaguevault.app`.
-- The server resolves a subdomain against `organizations.subdomain`, then
-  falls back to the organization slug. Development can use
-  `?__org_slug=<slug>` on localhost or supported preview hosts.
-- The client helper [`client/src/lib/subdomain.ts`](../client/src/lib/subdomain.ts)
-  identifies the visual subdomain context, while `/api/org-context` remains
-  the server-provided organization description.
+- Production uses `https://${APP_DOMAIN}` as the canonical application URL.
+  `APP_ORGANIZATION_ID` must identify an existing, active row, and exactly one
+  active organization may exist at cutover. `npm run db:preflight:single-tenant`
+  inventories organizations, dependent records, pending jobs, and hostnames
+  without changing data.
+- `/api/org-context` remains the public branding/environment endpoint and
+  always describes the configured business. `/api/business-settings` is the
+  Owner-only edit surface; organization creation, switching, lifecycle, and
+  hostname administration are not mounted in singleton mode.
+- Legacy asset paths and stored organization IDs remain supported for existing
+  emails, installed apps, reports, and payment evidence. They are compatibility
+  identifiers, not organization selectors.
 - A client-provided `organizationId`, league id, team id, bowler id, payment
-  id, or location id is only a candidate identifier. The server must prove
-  ownership or an explicit delegated permission before using it.
+  id, or location id is only a candidate identifier. The server must reject
+  foreign or unassigned resources and prove ownership or an explicit delegated
+  permission before using it. A matching legacy organization ID never selects
+  data.
 
 ### Roles and Authorization
 
 The supported roles are `system_admin`, `org_admin`, and `user`.
 
-- `system_admin` is a platform role. It may be unassigned from an organization
-  and may perform explicitly documented cross-tenant administration.
-- `org_admin` administers the user’s organization.
+- `system_admin` is displayed as Owner. Existing rows with a null
+  `organizationId` retain Owner privileges through the configured context
+  without being rewritten.
+- `org_admin` is displayed as Administrator and administers the configured
+  business while retaining current role and location restrictions.
 - `user` is an organization member. Access is limited to the user’s own bowler
   account and explicitly permitted league workflows.
 
@@ -312,17 +327,17 @@ Authorization is enforced in layers:
 2. Resource helpers in [`server/utils/access-control.ts`](../server/utils/access-control.ts)
    check the target row and its parent relationships.
 3. Storage methods apply organization filters and use system-admin variants
-   only where the operation explicitly permits them.
+   only where the operation explicitly permits them; in singleton mode those
+   variants are still constrained to the configured organization.
 4. Database invariants installed by [`server/db-invariants.ts`](../server/db-invariants.ts)
    protect the non-admin user role/organization requirement even if an
-   application caller is incorrect. Other tenant-stamp checks remain in route, access-
+   application caller is incorrect. Other organization-stamp checks remain in route, access-
    control, and storage paths.
 
-Org-less tenant resources are treated as orphaned data and denied rather than
-being treated as global data. Non-system-admin users must have an organization,
-and organization teardown is a system-admin-only atomic operation. It deletes
-app-owned tenant data while preserving platform system-admin accounts and
-remote Square customer objects.
+Org-less resources are treated as orphaned data and denied rather than being
+treated as global data. Non-owner accounts must have valid organization
+membership. The organization row and columns are intentionally retained; no
+schema drop or data reassignment is part of this refactor.
 
 ## External Integrations
 
@@ -332,7 +347,7 @@ Provider credentials are kept in deployment/provider secret stores or
 encrypted location fields. They are never returned in normal API projections.
 Provider-specific behavior is hidden behind the payment-provider abstraction
 where the capability is shared. External calls, webhooks, and retry workers
-must preserve provider contracts, tenant ownership, idempotency, and safe error
+must preserve provider contracts, organization/location ownership, idempotency, and safe error
 mapping.
 
 ### Current Integration Surface
@@ -410,8 +425,10 @@ curated map, not a complete module inventory.
   retry-after parsing, and error logging.
 - [`client/src/lib/query-keys.ts`](../client/src/lib/query-keys.ts) — shared
   query-key conventions for cache invalidation and prefetching.
-- [`client/src/lib/subdomain.ts`](../client/src/lib/subdomain.ts) — browser-side
-  subdomain detection for organization branding and context.
+- [`client/src/hooks/use-business-context.ts`](../client/src/hooks/use-business-context.ts)
+  — public business branding/environment context.
+- [`client/src/hooks/use-business-settings.ts`](../client/src/hooks/use-business-settings.ts)
+  — private Owner-only business settings query.
 - [`client/src/lib/financial-utils.ts`](../client/src/lib/financial-utils.ts)
   and [`client/src/lib/league-filter-utils.ts`](../client/src/lib/league-filter-utils.ts)
   — presentation-only helpers; canonical financial amounts and due status come
@@ -421,7 +438,7 @@ curated map, not a complete module inventory.
 
 When changing a feature, start at the route and schema boundaries, then follow
 the existing storage and service seams. Changes involving authentication,
-tenant access, payments, refunds, provider webhooks, encryption, or time zones
+organization/resource authorization, payments, refunds, provider webhooks, encryption, or time zones
 should include focused tests and review the related contracts under
 [`docs/security/`](./security/). Structural database changes begin in
 [`shared/schema/`](../shared/schema/) and must follow the schema-deployment
@@ -430,6 +447,6 @@ Associated data backfills or invariant installation must use the repository's
 established, reviewed mechanisms and must not substitute for schema definitions.
 
 Changes that alter a boundary described here—such as introducing a new
-cross-layer dependency, bypassing the storage facade, changing tenant
+cross-layer dependency, bypassing the storage facade, changing business-context
 resolution, or moving business authority into the client—must update this
 document and explain the tradeoff in the pull request.

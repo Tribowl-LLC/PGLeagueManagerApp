@@ -1,5 +1,7 @@
 import { storage } from "../storage";
 import { createLogger } from "../logger";
+import { env, isProdLike, isSingletonOrganizationMode } from "../config";
+import { SingleTenantContextError } from "./single-tenant-context";
 import { getPaymentProvider, ProviderNotConfiguredError } from "./payment-provider-factory";
 import { sendLeagueSquareCatalogMissingAlert } from "./email";
 import type { League, LeagueSquareMissingAlerterSummary } from "@shared/schema";
@@ -71,7 +73,16 @@ export interface AuditRunSummary {
 
 const defaultDeps: AuditDeps = {
   listLeaguesToAudit: async () => {
-    const all = await storage.getAllLeaguesSystemAdmin();
+    if (isProdLike && !isSingletonOrganizationMode) {
+      throw new SingleTenantContextError(
+        "configuration_missing",
+        "APP_ORGANIZATION_ID is required before background operations can run.",
+      );
+    }
+    const configuredOrganizationId = env.APP_ORGANIZATION_ID;
+    const all = configuredOrganizationId === undefined
+      ? await storage.getAllLeaguesSystemAdmin()
+      : await storage.getLeagues(configuredOrganizationId);
     return all.filter(
       (l) =>
         l.active &&

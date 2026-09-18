@@ -52,6 +52,8 @@ export interface PrepareRefundPaymentOperationInput {
   requestedByUserId: number;
   requestedByRole: "org_admin" | "system_admin";
   requestedByOrganizationId: number | null;
+  /** Fixed business scope supplied by singleton request context. */
+  authorizedOrganizationId?: number;
   now?: Date;
 }
 
@@ -70,6 +72,9 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
     const organizationId = owned.league.organizationId;
     const locationId = owned.league.locationId;
     if (organizationId === null) throw new RefundPreparationError("You don't have access to refund this payment", 403, "FORBIDDEN");
+    if (input.authorizedOrganizationId !== undefined && organizationId !== input.authorizedOrganizationId) {
+      throw new RefundPreparationError("You don't have access to refund this payment", 403, "FORBIDDEN");
+    }
     await lockLeagueSchedule(tx, organizationId, owned.payment.leagueId);
     [owned] = await tx.select({ payment: payments, league: leagues })
       .from(payments)

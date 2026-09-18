@@ -17,7 +17,7 @@ import {
 } from '../utils/api.js';
 import { getPaymentProvider, ProviderNotConfiguredError } from '../services/payment-provider-factory';
 import type { PaymentProvider } from '../services/payment-provider';
-import { getPaymentManagerAccessibleBowlerIds, getPaymentManagerAccessibleLeagueIds, hasAccessToTeam, hasAccessToBowler, hasAccessToBowlers, hasPaymentManagerAccessToBowler, hasSelfOrAdminAccessToBowler, isOrgOrHigher, isPaymentManager } from '../utils/access-control.js';
+import { getPaymentManagerAccessibleBowlerIds, getPaymentManagerAccessibleLeagueIds, hasAccessToTeam, hasAccessToBowler, hasAccessToBowlers, hasPaymentManagerAccessToBowler, hasSelfOrAdminAccessToBowler, isOrgOrHigher, isPaymentManager, requireOrganizationAccess } from '../utils/access-control.js';
 import { canUserPayForBowler } from '../utils/bowler-payment-authz.js';
 import { bowlerSearchLimiter } from '../middleware/rate-limit.js';
 import { runBowlerPostCreateSync } from '../services/bowler-sync.js';
@@ -69,7 +69,9 @@ router.get("/unlinked", async (req, res) => {
     }
 
     let organizationId: number | undefined;
-    if (req.user?.role === 'system_admin') {
+    if (req.organizationContextId !== undefined) {
+      organizationId = req.organizationContextId;
+    } else if (req.user?.role === 'system_admin') {
       // System admins may scope by query param, or see all if omitted
       organizationId = rawUnlinkedOrgId;
     } else if (req.user?.role === 'org_admin') {
@@ -408,6 +410,10 @@ router.get("/:id/details", async (req, res) => {
       return sendError(res, "Bowler not found", 404, 'NOT_FOUND');
     }
 
+    if (!requireOrganizationAccess(req, bowler.organizationId, 'bowler', id)) {
+      return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
+    }
+
     const includePayments = req.query.includePayments === 'true';
     if (includePayments) {
       // Payment data is sensitive: require self-access, admin role, OR
@@ -532,6 +538,10 @@ router.get("/:id", async (req, res) => {
     if (!bowler) {
       return sendError(res, "Bowler not found", 404, 'NOT_FOUND');
     }
+
+    if (!requireOrganizationAccess(req, bowler.organizationId, 'bowler', id)) {
+      return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
+    }
     
     // Check organization access
     if (req.user?.role !== 'system_admin') {
@@ -575,8 +585,8 @@ router.post("/", async (req, res) => {
 
     // Check for existing bowler with same email if provided
     if (bowler.email) {
-      const userOrgId: number | undefined = req.user?.organizationId ?? undefined;
-      const isOrgUser = req.user?.role !== 'system_admin' && userOrgId !== undefined;
+      const userOrgId: number | undefined = req.organizationContextId ?? req.user?.organizationId ?? undefined;
+      const isOrgUser = userOrgId !== undefined;
       const [existingBowlers, orgLeagues, bowlerLeaguesList] = await Promise.all([
         isOrgUser ? storage.getBowlers({ organizationId: userOrgId }) : storage.getAllBowlersSystemAdmin(),
         isOrgUser ? storage.getLeagues(userOrgId) : Promise.resolve(null),

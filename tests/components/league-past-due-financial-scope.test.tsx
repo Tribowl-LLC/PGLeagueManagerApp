@@ -14,7 +14,7 @@ vi.mock("@/components/page-states", () => ({ PageLoadingState: () => <div>loadin
 import LeaguePastDuePage from "@/pages/league-past-due-page";
 
 describe("LeaguePastDuePage financial scope", () => {
-  it("uses the selected organization in the system-admin league financial URL and query key", async () => {
+  it("uses the canonical business endpoint and query key for system administrators", async () => {
     const requestedUrls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -34,8 +34,8 @@ describe("LeaguePastDuePage financial scope", () => {
     render(<QueryClientProvider client={queryClient}><LeaguePastDuePage /></QueryClientProvider>);
 
     await waitFor(() => expect(screen.getByText("Scoped League - Past Due Balances")).toBeInTheDocument());
-    expect(requestedUrls).toContain("/api/financials/leagues/7/canonical-due-past-due/2?organizationId=77");
-    expect(queryClient.getQueryCache().find({ queryKey: ["/api/financials/leagues/7/canonical-due-past-due/2?organizationId=77"] })).toBeDefined();
+    expect(requestedUrls).toContain("/api/financials/leagues/7/canonical-due-past-due/2");
+    expect(queryClient.getQueryCache().find({ queryKey: ["/api/financials/leagues/7/canonical-due-past-due/2"] })).toBeDefined();
     vi.unstubAllGlobals();
   });
 });

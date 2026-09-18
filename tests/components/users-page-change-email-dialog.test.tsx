@@ -74,7 +74,7 @@ function installFetchMock() {
       }
       return resendHandler(input, init);
     }
-    if (url.startsWith('/api/org-admin/users?organizationId=')) {
+    if (url === '/api/org-admin/users' || url === '/api/org-admin/users?accountType=bowler') {
       return jsonRes({ success: true, data: [TARGET] });
     }
     if (url.endsWith('/api/locations')) {

@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Router } from "wouter";
 import { BowlerLayout } from "@/components/bowler-layout";
 
-vi.mock("@/hooks/use-subdomain-org", () => ({ useSubdomainOrg: () => ({ org: null }) }));
+vi.mock("@/hooks/use-business-context", () => ({ useBusinessContext: () => ({ business: null }) }));
 
 function renderLayout(path = "/make-payment?leagueId=17") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ success: true, data: { role: "user", organizationId: 1 } }) } } });

@@ -83,11 +83,11 @@ describe("Canonical season progress", () => {
     mount();
     expect(await screen.findByText("Schedule unavailable")).toBeInTheDocument();
   });
-  it("passes explicit organization scope for system administrators", async () => {
+  it("uses the canonical business endpoint for system administrators", async () => {
     request.mockResolvedValue({ data: { contractVersion: LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION, authoritativeSource: "canonical", occurrences: [] } });
     mount("system_admin");
     expect(await screen.findByText("0 of 0 weeks completed")).toBeInTheDocument();
-    expect(request).toHaveBeenCalledWith("/api/leagues/7/occurrence-schedule?organizationId=3", "GET");
+    expect(request).toHaveBeenCalledWith("/api/leagues/7/occurrence-schedule", "GET");
   });
   it("shows unavailable on incompatible evidence without inventing a 30-week season", async () => {
     request.mockRejectedValue(new Error("409 incompatible schedule"));
@@ -95,11 +95,11 @@ describe("Canonical season progress", () => {
     expect(await screen.findByText("Schedule unavailable")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
-  it("does not request an unscoped system-administrator schedule", () => {
-    request.mockClear();
+  it("does not require a legacy organization selector for system administrators", async () => {
+    request.mockResolvedValue({ data: { contractVersion: LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION, authoritativeSource: "canonical", occurrences: [] } });
     mount("system_admin", null);
-    expect(screen.getByText("Schedule unavailable")).toBeInTheDocument();
-    expect(request).not.toHaveBeenCalled();
+    expect(await screen.findByText("0 of 0 weeks completed")).toBeInTheDocument();
+    expect(request).toHaveBeenCalledWith("/api/leagues/7/occurrence-schedule", "GET");
   });
   it("rejects a retired response version", async () => {
     request.mockResolvedValue({ data: { contractVersion: "league-occurrence-schedule/1", authoritativeSource: "canonical", occurrences: rows } });

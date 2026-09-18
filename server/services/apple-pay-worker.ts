@@ -4,6 +4,8 @@ import { getPaymentProvider, ProviderNotConfiguredError } from "./payment-provid
 import { hasWalletSupport } from "./payment-provider";
 import { applePayRecoveryAlerter } from "./apple-pay-alerts";
 import { canonicalApplePayDomain } from "./apple-pay-domains";
+import { SingleTenantContextError } from "./single-tenant-context";
+import { resolveBackgroundOrganizationId } from "./single-tenant-context";
 import type { ApplePayJob, ApplePayJobItem } from "@shared/schema";
 import { isTransientDatabaseError, getPgErrorCode } from "../utils/db-errors.js";
 
@@ -42,11 +44,11 @@ class ApplePayWorker {
    * tests by claiming `pending` rows out from under them whenever a
    * route handler kicks (#569).
    */
-  kick(): void {
+  kick(organizationId?: number): void {
     if (this.running) return;
     this.running = true;
     setImmediate(() => {
-      this.loop()
+      this.loop(organizationId)
         .catch((err) => error("Worker loop crashed", { err: err instanceof Error ? err.message : err }))
         .finally(() => {
           this.running = false;
@@ -60,8 +62,12 @@ class ApplePayWorker {
    * resume from the next pending item. Single-instance assumption (matches
    * PaymentScheduler).
    */
-  async resumeOnStartup(): Promise<void> {
-    const { revivedJobIds, revivedItems } = await recoverInterruptedApplePayJobsWithRetry();
+  async resumeOnStartup(organizationId?: number): Promise<void> {
+    const scope = organizationId ?? await resolveBackgroundOrganizationId();
+    const recovery = scope === undefined
+      ? await recoverInterruptedApplePayJobsWithRetry()
+      : await recoverInterruptedApplePayJobsWithRetry(scope);
+    const { revivedJobIds, revivedItems } = recovery;
     if (revivedJobIds.length > 0) {
       warn("Revived interrupted jobs (status running -> pending)", {
         count: revivedJobIds.length,
@@ -83,7 +89,7 @@ class ApplePayWorker {
       // Apple Pay Jobs page open. Rate-limited inside the alerter so a
       // sustained outage doesn't spam.
       applePayRecoveryAlerter
-        .notifyRecovered(revivedItems)
+        .notifyRecovered(revivedItems, scope)
         .catch((err) => error("Failed to dispatch Apple Pay recovery alert", {
           err: err instanceof Error ? err.message : String(err),
         }));
@@ -91,17 +97,20 @@ class ApplePayWorker {
     if (revivedJobIds.length === 0 && revivedItems.length === 0) {
       log("No interrupted jobs to recover on startup");
     }
-    this.kick();
+    this.kick(scope);
   }
 
-  private async loop(): Promise<void> {
+  private async loop(organizationId?: number): Promise<void> {
+    const scope = organizationId ?? await resolveBackgroundOrganizationId();
     while (true) {
-      const job = await storage.claimNextApplePayJob();
+      const job = scope === undefined
+        ? await storage.claimNextApplePayJob()
+        : await storage.claimNextApplePayJob({ organizationId: scope });
       if (!job) {
         log("No claimable jobs, worker idle");
         return;
       }
-      await this.processJob(job);
+      await this.processJob(job, scope);
     }
   }
 
@@ -113,7 +122,8 @@ class ApplePayWorker {
    * without `as unknown as` laundering past the type checker.
    * @internal Do not call from production code.
    */
-  async processJob(job: ApplePayJob): Promise<void> {
+  async processJob(job: ApplePayJob, organizationId?: number): Promise<void> {
+    const scope = organizationId ?? await resolveBackgroundOrganizationId();
     log("Processing job", { jobId: job.id, totalDomains: job.totalDomains });
     try {
       // First-run path: enumerate orgs/locations into items table.
@@ -121,30 +131,39 @@ class ApplePayWorker {
       // we re-check by counting rows (totalDomains may not have been set yet
       // if the previous worker crashed mid-enumeration). `insertApplePayJobItems`
       // is idempotent via a unique index + ON CONFLICT DO NOTHING.
-      const existingCount = await storage.countApplePayJobItems(job.id);
+      const existingCount = scope === undefined
+        ? await storage.countApplePayJobItems(job.id)
+        : await storage.countApplePayJobItems(job.id, scope);
       if (existingCount === 0) {
-        await this.enumerateItems(job.id);
+        await this.enumerateItems(job.id, scope);
       } else if (job.totalDomains === 0) {
-        await storage.setApplePayJobTotal(job.id, existingCount);
+        if (scope === undefined) {
+          await storage.setApplePayJobTotal(job.id, existingCount);
+        } else {
+          await storage.setApplePayJobTotal(job.id, existingCount, scope);
+        }
       }
 
       // Cancellation may have flipped status to `canceled` during enumeration.
-      if (await this.isCanceled(job.id)) {
-        await this.recordCanceled(job.id);
+      if (await this.isCanceled(job.id, scope)) {
+        await this.recordCanceled(job.id, scope);
         return;
       }
 
-      const pending = await storage.getPendingApplePayJobItems(job.id);
+      const pending = scope === undefined
+        ? await storage.getPendingApplePayJobItems(job.id)
+        : await storage.getPendingApplePayJobItems(job.id, scope);
       log("Items to process", { jobId: job.id, pending: pending.length });
 
       const canceledMidFlight = await this.processItemsWithConcurrency(
         pending,
         CONCURRENCY_LIMIT,
-        () => this.isCanceled(job.id),
+        () => this.isCanceled(job.id, scope),
+        scope,
       );
 
       if (canceledMidFlight) {
-        await this.recordCanceled(job.id);
+        await this.recordCanceled(job.id, scope);
         return;
       }
 
@@ -156,14 +175,16 @@ class ApplePayWorker {
       // and run them through the same per-item path. Bounded to a single
       // extra pass so a genuinely stuck `processing` row cannot spin the
       // worker forever.
-      const drained = await this.drainRemainingItems(job.id);
+      const drained = await this.drainRemainingItems(job.id, scope);
       if (drained.canceled) {
-        await this.recordCanceled(job.id);
+        await this.recordCanceled(job.id, scope);
         return;
       }
 
       // Tally final counts from the source of truth (items table).
-      const counts = await storage.getApplePayJobItemCounts(job.id);
+      const counts = scope === undefined
+        ? await storage.getApplePayJobItemCounts(job.id)
+        : await storage.getApplePayJobItemCounts(job.id, scope);
       // If items are STILL non-terminal after the bounded re-drain,
       // refuse to finalize. The most likely cause is a sibling instance
       // mid-call on an item whose pre-call lease is fresh — writing a
@@ -171,7 +192,9 @@ class ApplePayWorker {
       // canonical bug from job #523). Instead, hand the job back to the
       // pending queue so the next worker tick re-claims and resumes.
       if (counts.pending > 0) {
-        const reopened = await storage.reopenApplePayJobForRetry(job.id);
+        const reopened = scope === undefined
+          ? await storage.reopenApplePayJobForRetry(job.id)
+          : await storage.reopenApplePayJobForRetry(job.id, scope);
         warn("Leaving job pending — items still non-terminal after bounded drain", {
           jobId: job.id,
           remainingNonTerminal: counts.pending,
@@ -190,13 +213,23 @@ class ApplePayWorker {
       else if (succeeded === 0) finalStatus = "failed";
       else finalStatus = "partial";
 
-      await storage.finalizeApplePayJob(job.id, {
-        status: finalStatus,
-        succeededCount: succeeded,
-        failedCount: failed,
-        skippedCount: skipped,
-        errorMessage: null,
-      });
+      if (scope === undefined) {
+        await storage.finalizeApplePayJob(job.id, {
+          status: finalStatus,
+          succeededCount: succeeded,
+          failedCount: failed,
+          skippedCount: skipped,
+          errorMessage: null,
+        });
+      } else {
+        await storage.finalizeApplePayJob(job.id, {
+          status: finalStatus,
+          succeededCount: succeeded,
+          failedCount: failed,
+          skippedCount: skipped,
+          errorMessage: null,
+        }, scope);
+      }
       log("Job finished", { jobId: job.id, status: finalStatus, succeeded, failed, skipped });
     } catch (err) {
       error("Job aborted with error", {
@@ -204,8 +237,8 @@ class ApplePayWorker {
         err: err instanceof Error ? err.message : String(err),
       });
       // Don't trample an admin's cancellation with a `failed` finalize.
-      if (await this.isCanceled(job.id)) {
-        await this.recordCanceled(job.id);
+      if (await this.isCanceled(job.id, scope)) {
+        await this.recordCanceled(job.id, scope);
         return;
       }
       // Same guard as the happy path (#568): a thrown error mid-loop
@@ -213,7 +246,7 @@ class ApplePayWorker {
       // those items become orphans the worker will never revisit.
       // Best-effort drain (errors here are logged and we fall through
       // to the reopen branch rather than the terminal write).
-      const drained = await this.drainRemainingItems(job.id).catch((e) => {
+      const drained = await this.drainRemainingItems(job.id, scope).catch((e) => {
         warn("Re-drain in catch-block failed", {
           jobId: job.id,
           err: e instanceof Error ? e.message : String(e),
@@ -221,7 +254,7 @@ class ApplePayWorker {
         return { canceled: false };
       });
       if (drained.canceled) {
-        await this.recordCanceled(job.id);
+        await this.recordCanceled(job.id, scope);
         return;
       }
       // If even the counts query fails, we cannot safely write a
@@ -230,12 +263,14 @@ class ApplePayWorker {
       // (the same stranding hazard #568 exists to prevent). Prefer
       // reopening (defer to next worker tick) over writing a junk
       // terminal row under transient DB failure.
-      const counts = await storage
-        .getApplePayJobItemCounts(job.id)
+      const counts = await (scope === undefined
+        ? storage.getApplePayJobItemCounts(job.id)
+        : storage.getApplePayJobItemCounts(job.id, scope))
         .catch(() => null);
       if (counts === null || counts.pending > 0) {
-        const reopened = await storage
-          .reopenApplePayJobForRetry(job.id)
+        const reopened = await (scope === undefined
+          ? storage.reopenApplePayJobForRetry(job.id)
+          : storage.reopenApplePayJobForRetry(job.id, scope))
           .catch(() => false);
         warn("Catch-block leaving job pending — items still non-terminal", {
           jobId: job.id,
@@ -245,13 +280,18 @@ class ApplePayWorker {
         });
         return;
       }
-      await storage.finalizeApplePayJob(job.id, {
-        status: "failed",
+      const failurePatch = {
+        status: "failed" as const,
         succeededCount: counts.succeeded,
         failedCount: counts.failed,
         skippedCount: counts.skipped,
         errorMessage: err instanceof Error ? err.message : String(err),
-      });
+      };
+      if (scope === undefined) {
+        await storage.finalizeApplePayJob(job.id, failurePatch);
+      } else {
+        await storage.finalizeApplePayJob(job.id, failurePatch, scope);
+      }
     }
   }
 
@@ -265,8 +305,10 @@ class ApplePayWorker {
    * scenario the caller's `counts.pending > 0` check handles by
    * reopening the job instead of finalizing.
    */
-  private async drainRemainingItems(jobId: number): Promise<{ canceled: boolean }> {
-    const leftover = await storage.getPendingApplePayJobItems(jobId);
+  private async drainRemainingItems(jobId: number, organizationId?: number): Promise<{ canceled: boolean }> {
+    const leftover = organizationId === undefined
+      ? await storage.getPendingApplePayJobItems(jobId)
+      : await storage.getPendingApplePayJobItems(jobId, organizationId);
     if (leftover.length === 0) return { canceled: false };
     log("Re-draining pending items before finalize", {
       jobId,
@@ -275,13 +317,16 @@ class ApplePayWorker {
     const canceled = await this.processItemsWithConcurrency(
       leftover,
       CONCURRENCY_LIMIT,
-      () => this.isCanceled(jobId),
+      () => this.isCanceled(jobId, organizationId),
+      organizationId,
     );
     return { canceled };
   }
 
-  private async isCanceled(jobId: number): Promise<boolean> {
-    const status = await storage.getApplePayJobStatus(jobId).catch(() => undefined);
+  private async isCanceled(jobId: number, organizationId?: number): Promise<boolean> {
+    const status = await (organizationId === undefined
+      ? storage.getApplePayJobStatus(jobId)
+      : storage.getApplePayJobStatus(jobId, organizationId)).catch(() => undefined);
     return status === "canceled";
   }
 
@@ -290,22 +335,41 @@ class ApplePayWorker {
    * Cancellation already stamped status='canceled' + completedAt; we just
    * reconcile the per-status counters from the items table.
    */
-  private async recordCanceled(jobId: number): Promise<void> {
-    const counts = await storage
-      .getApplePayJobItemCounts(jobId)
+  private async recordCanceled(jobId: number, organizationId?: number): Promise<void> {
+    const counts = await (organizationId === undefined
+      ? storage.getApplePayJobItemCounts(jobId)
+      : storage.getApplePayJobItemCounts(jobId, organizationId))
       .catch(() => ({ succeeded: 0, failed: 0, skipped: 0, pending: 0 }));
-    await storage.finalizeApplePayJob(jobId, {
-      status: "canceled",
+    const patch = {
+      status: "canceled" as const,
       succeededCount: counts.succeeded,
       failedCount: counts.failed,
       skippedCount: counts.skipped,
       errorMessage: null,
-    });
+    };
+    if (organizationId === undefined) {
+      await storage.finalizeApplePayJob(jobId, patch);
+    } else {
+      await storage.finalizeApplePayJob(jobId, patch, organizationId);
+    }
     warn("Job canceled by admin", { jobId, ...counts });
   }
 
-  private async enumerateItems(jobId: number): Promise<void> {
-    const organizations = await storage.getOrganizations();
+  private async enumerateItems(jobId: number, organizationId?: number): Promise<void> {
+    const scope = organizationId ?? await resolveBackgroundOrganizationId();
+    let organizations;
+    if (scope === undefined) {
+      organizations = await storage.getOrganizations();
+    } else {
+      const organization = await storage.getOrganization(scope);
+      if (!organization) {
+        throw new SingleTenantContextError(
+          "organization_not_found",
+          `Configured organization ${scope} does not exist.`,
+        );
+      }
+      organizations = [organization];
+    }
     const items: Array<{
       organizationId: number | null;
       locationId: number | null;
@@ -348,7 +412,11 @@ class ApplePayWorker {
     }
 
     await storage.insertApplePayJobItems(jobId, items);
-    await storage.setApplePayJobTotal(jobId, items.length);
+    if (scope === undefined) {
+      await storage.setApplePayJobTotal(jobId, items.length);
+    } else {
+      await storage.setApplePayJobTotal(jobId, items.length, scope);
+    }
     log("Enumerated items", { jobId, total: items.length });
   }
 
@@ -362,6 +430,7 @@ class ApplePayWorker {
     items: ApplePayJobItem[],
     limit: number,
     shouldCancel: () => Promise<boolean>,
+    organizationId?: number,
   ): Promise<boolean> {
     if (items.length === 0) return false;
     const queue = items.slice();
@@ -383,7 +452,7 @@ class ApplePayWorker {
         if (canceled) return;
         const item = queue.shift();
         if (!item) return;
-        await this.processItem(item);
+        await this.processItem(item, organizationId);
       }
     };
 
@@ -394,7 +463,7 @@ class ApplePayWorker {
     return canceled;
   }
 
-  private async processItem(item: ApplePayJobItem): Promise<void> {
+  private async processItem(item: ApplePayJobItem, organizationId?: number): Promise<void> {
     // Two-phase write to make the worker safe under multi-instance
     // deployments:
     //   1. `claimApplePayJobItemForProcessing` flips pending->processing
@@ -412,16 +481,24 @@ class ApplePayWorker {
     // the row alone — so the at-most-once provider-call guarantee holds
     // across both single-instance crashes and overlapping rolling
     // restarts of multiple backend instances.
+    const complete = (patch: {
+      status: "succeeded" | "failed" | "skipped";
+      message?: string | null;
+    }) => organizationId === undefined
+      ? storage.claimAndCompleteApplePayJobItem(item.id, patch)
+      : storage.claimAndCompleteApplePayJobItem(item.id, patch, organizationId);
     try {
       if (item.locationId == null) {
-        await storage.claimAndCompleteApplePayJobItem(item.id, {
+        await complete({
           status: "skipped",
           message: item.message ?? "No location",
         });
         return;
       }
 
-      const claimed = await storage.claimApplePayJobItemForProcessing(item.id);
+      const claimed = organizationId === undefined
+        ? await storage.claimApplePayJobItemForProcessing(item.id)
+        : await storage.claimApplePayJobItemForProcessing(item.id, organizationId);
       if (!claimed) {
         log("Item already in-flight or completed by another worker, skipping", {
           itemId: item.id,
@@ -429,12 +506,27 @@ class ApplePayWorker {
         return;
       }
 
+      // The job-item organization stamp is durable evidence, but the
+      // location row is the provider-account boundary. A corrupt or legacy
+      // item whose location was reassigned must never turn into a provider
+      // call merely because its item stamp still matches this business.
+      if (organizationId !== undefined) {
+        const location = await storage.getLocation(item.locationId);
+        if (!location || location.organizationId !== organizationId) {
+          await complete({
+            status: "failed",
+            message: "Location does not belong to the configured organization",
+          });
+          return;
+        }
+      }
+
       let provider;
       try {
         provider = await getPaymentProvider(item.locationId);
       } catch (e) {
         if (e instanceof ProviderNotConfiguredError) {
-          await storage.claimAndCompleteApplePayJobItem(item.id, {
+          await complete({
             status: "failed",
             message: "Payment provider not configured",
           });
@@ -444,7 +536,7 @@ class ApplePayWorker {
       }
 
       if (!hasWalletSupport(provider)) {
-        await storage.claimAndCompleteApplePayJobItem(item.id, {
+        await complete({
           status: "failed",
           message: "Provider does not support Apple Pay",
         });
@@ -452,7 +544,7 @@ class ApplePayWorker {
       }
 
       const result = await provider.registerApplePayDomain(item.domain);
-      await storage.claimAndCompleteApplePayJobItem(item.id, {
+      await complete({
         status: result.success ? "succeeded" : "failed",
         message: result.message,
       });
@@ -461,11 +553,15 @@ class ApplePayWorker {
         itemId: item.id,
         err: err instanceof Error ? err.message : String(err),
       });
-      await storage
-        .claimAndCompleteApplePayJobItem(item.id, {
+      await (organizationId === undefined
+        ? storage.claimAndCompleteApplePayJobItem(item.id, {
           status: "failed",
           message: err instanceof Error ? err.message : String(err),
         })
+        : storage.claimAndCompleteApplePayJobItem(item.id, {
+          status: "failed",
+          message: err instanceof Error ? err.message : String(err),
+        }, organizationId))
         .catch(() => {
           /* swallow secondary failure */
         });
@@ -481,11 +577,15 @@ class ApplePayWorker {
  * connection loss after commit is safe to retry without duplicating provider
  * calls or item rows.
  */
-async function recoverInterruptedApplePayJobsWithRetry(): Promise<Awaited<ReturnType<typeof storage.recoverInterruptedApplePayJobs>>> {
+async function recoverInterruptedApplePayJobsWithRetry(
+  organizationId?: number,
+): Promise<Awaited<ReturnType<typeof storage.recoverInterruptedApplePayJobs>>> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= APPLE_PAY_STARTUP_RECOVERY_MAX_ATTEMPTS; attempt++) {
     try {
-      return await storage.recoverInterruptedApplePayJobs();
+      return organizationId === undefined
+        ? await storage.recoverInterruptedApplePayJobs()
+        : await storage.recoverInterruptedApplePayJobs({ organizationId });
     } catch (error) {
       lastError = error;
       const retryable = isTransientDatabaseError(error);

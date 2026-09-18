@@ -2,12 +2,13 @@
 
 ## Overview
 
-LeagueVault is a multi-tenant bowling league management application for adult
-leagues. It helps organizations manage locations, leagues and seasons, teams,
-bowlers, schedules, registrations, payments, refunds, and administration.
+LeagueVault is a single-business, multi-location bowling league management
+application for adult leagues. It helps the business manage locations, leagues
+and seasons, teams, bowlers, schedules, registrations, payments, refunds, and
+administration.
 
-The application supports organization subdomains, organization-scoped access
-control, transactional email, and a Square payment integration.
+The application uses one configured organization row, organization-scoped
+resource authorization, transactional email, and a Square payment integration.
 
 ## Architecture
 
@@ -213,6 +214,8 @@ Common local settings:
 | `APP_ENV` | Environment selector: `dev` or `prod`. Use `dev` locally and `prod` on Render. |
 | `NODE_ENV` | Node runtime mode. Use `development` locally and `production` for a built deployment. |
 | `APP_DOMAIN` | Base application hostname; defaults to `leaguevault.app`. |
+| `APP_ORGANIZATION_ID` | Production singleton business ID. Validate it with `npm run db:preflight:single-tenant` before cutover. |
+| `LEGACY_ORG_HOSTS` | Comma-separated legacy browser hostnames redirected to the canonical domain. |
 | `PORT` | HTTP port; defaults to `5000`. |
 | `LOG_LEVEL` | Optional log level: `debug`, `info`, `warn`, or `error`. |
 
@@ -418,9 +421,9 @@ Confirm that `DATABASE_URL` uses port `5433` for the development database.
 ## Deployment
 
 Production is hosted on [Render](https://render.com) and uses
-[Neon PostgreSQL](https://neon.tech). The production domain is
-[`leaguevault.app`](https://leaguevault.app), with organization subdomains on
-the same base domain.
+[Neon PostgreSQL](https://neon.tech). The production domain is the canonical
+[`leaguevault.app`](https://leaguevault.app). Legacy organization hostnames are
+explicitly allowlisted for browser redirects; they do not select a business.
 
 GitHub `main` is the release source of truth. Normal changes are merged through
 a pull request after the required checks pass, and Render deploys the exact
@@ -428,6 +431,17 @@ verified `main` commit. Production should explicitly set `APP_ENV=prod`,
 `NODE_ENV=production`, and `APP_DOMAIN=leaguevault.app`. Configure production
 secrets in Render, Neon, the payment providers, SendGrid, Sentry, or GitHub
 Actions as appropriate; do not commit them.
+
+Set `APP_ORGANIZATION_ID` to the verified singleton business row and
+`LEGACY_ORG_HOSTS` to the explicit redirect allowlist before cutover.
+
+Before cutover, run the read-only singleton inventory and record its verified
+organization ID, legacy-host allowlist, callback URLs, and Apple Pay domain
+readiness:
+
+```bash
+npm run db:preflight:single-tenant
+```
 
 After deployment, verify `/api/health`, authentication, the affected workflow,
 and the relevant provider or webhook behavior. Also request

@@ -30,11 +30,14 @@ import { notifyPaymentSyncRetryChanged } from '../services/payment-sync-retry-sc
 
 const log = createLogger('MissingPaymentCustomerBackfill');
 
-export async function backfillMissingPaymentCustomers(): Promise<void> {
+export async function backfillMissingPaymentCustomers(organizationId?: number): Promise<void> {
   if (process.env.BACKFILL_MISSING_PAYMENT_CUSTOMERS !== 'true') {
     return;
   }
 
+  const organizationFilter = organizationId === undefined
+    ? sql``
+    : sql`AND ${bowlers.organizationId} = ${organizationId}`;
   const result = await db
     .update(bowlers)
     .set({
@@ -49,7 +52,8 @@ export async function backfillMissingPaymentCustomers(): Promise<void> {
     })
     .where(sql`${bowlers.paymentCustomerId} IS NULL
       AND ${bowlers.email} IS NOT NULL
-      AND ${bowlers.paymentSyncPendingAt} IS NULL`)
+      AND ${bowlers.paymentSyncPendingAt} IS NULL
+      ${organizationFilter}`)
     .returning({ id: bowlers.id });
 
   log.info(

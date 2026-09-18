@@ -184,10 +184,11 @@ router.get('/payments/:id/receipt', async (req, res) => {
   try {
     if (!req.user) return sendError(res, 'Not found', 404, 'NOT_FOUND');
     const requestedOrganizationId = req.query.organizationId === undefined ? undefined : Number(req.query.organizationId);
-    if (req.user.role === 'system_admin' && (typeof requestedOrganizationId !== 'number' || !Number.isSafeInteger(requestedOrganizationId) || requestedOrganizationId <= 0)) {
+    if (req.organizationContextId === undefined && req.user.role === 'system_admin' && (typeof requestedOrganizationId !== 'number' || !Number.isSafeInteger(requestedOrganizationId) || requestedOrganizationId <= 0)) {
       return sendError(res, 'Organization scope is required', 400, 'INVALID_SCOPE');
     }
-    const effectiveOrganizationId = req.user.role === 'system_admin' ? requestedOrganizationId : req.user.organizationId;
+    const effectiveOrganizationId = req.organizationContextId
+      ?? (req.user.role === 'system_admin' ? requestedOrganizationId : req.user.organizationId);
     const id = parseInt(singleRouteParam(req.params.id));
     if (isNaN(id)) {
       return sendError(res, 'Invalid payment ID', 400, 'INVALID_ID');
@@ -247,10 +248,11 @@ router.post('/payments/:id/resend-receipt', paymentWriteLimiter, async (req, res
   try {
     if (!req.user) return sendError(res, 'Not found', 404, 'NOT_FOUND');
     const requestedOrganizationId = req.query.organizationId === undefined ? undefined : Number(req.query.organizationId);
-    if (req.user.role === 'system_admin' && (typeof requestedOrganizationId !== 'number' || !Number.isSafeInteger(requestedOrganizationId) || requestedOrganizationId <= 0)) {
+    if (req.organizationContextId === undefined && req.user.role === 'system_admin' && (typeof requestedOrganizationId !== 'number' || !Number.isSafeInteger(requestedOrganizationId) || requestedOrganizationId <= 0)) {
       return sendError(res, 'Organization scope is required', 400, 'INVALID_SCOPE');
     }
-    const effectiveOrganizationId = req.user.role === 'system_admin' ? requestedOrganizationId : req.user.organizationId;
+    const effectiveOrganizationId = req.organizationContextId
+      ?? (req.user.role === 'system_admin' ? requestedOrganizationId : req.user.organizationId);
     const id = parseInt(singleRouteParam(req.params.id));
     if (isNaN(id)) {
       return sendError(res, 'Invalid payment ID', 400, 'INVALID_ID');

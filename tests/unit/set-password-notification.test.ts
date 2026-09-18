@@ -120,6 +120,8 @@ vi.mock('../../server/middleware/csrf', () => ({
 // config symbols.
 vi.mock('../../server/config', () => ({
   isDev: false,
+  isProdLike: false,
+  isSingletonOrganizationMode: false,
   env: {},
 }));
 

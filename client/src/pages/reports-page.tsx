@@ -32,7 +32,6 @@ import { financialReadErrorMessage } from "@/lib/financial-utils";
 export default function ReportsPage() {
   const [showArchived, setShowArchived] = useState(false);
   const { data: userResponse } = useQuery<{ data: User }>({ queryKey: ["/api/user"], staleTime: 1000 * 60 * 5 });
-  const systemScope = userResponse?.data?.role === "system_admin" && userResponse.data.organizationId ? `?organizationId=${encodeURIComponent(userResponse.data.organizationId)}` : "";
 
   const { data: leaguesResponse, isLoading: loadingLeagues } = useQuery<{ data: League[] }>({
     queryKey: ["/api/leagues"],
@@ -66,9 +65,9 @@ export default function ReportsPage() {
 
   const paymentReportQueries = useQueries({
     queries: leagues.map((league) => ({
-      queryKey: ["/api/financials/f5/payments", league.id, systemScope],
+      queryKey: ["/api/financials/f5/payments", league.id],
       queryFn: async (): Promise<{ data: CanonicalPaymentReport }> => {
-        const params = new URLSearchParams(systemScope.replace(/^\?/, ""));
+        const params = new URLSearchParams();
         params.set("leagueId", String(league.id));
         params.set("page", "1");
         params.set("limit", "200");
@@ -89,9 +88,9 @@ export default function ReportsPage() {
   });
 
   const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: CanonicalDuePastDueResponseV2 }> } }>({
-    queryKey: ["/api/financials/due-past-due", systemScope],
+    queryKey: ["/api/financials/due-past-due"],
     queryFn: async () => {
-      const response = await fetch(`/api/financials/due-past-due${systemScope}`);
+      const response = await fetch('/api/financials/due-past-due');
       await throwIfResNotOk(response);
       return response.json();
     },
@@ -109,7 +108,7 @@ export default function ReportsPage() {
   const bowlerLeagues = bowlerLeaguesResponse?.data || [];
 
   if (userResponse?.data?.role === "system_admin" && !userResponse.data.organizationId) {
-    return <Layout><p className="p-6 text-destructive">Select an organization before viewing financial reports.</p></Layout>;
+    return <Layout><p className="p-6 text-destructive">Business context is unavailable. Please try again later.</p></Layout>;
   }
 
 
@@ -255,7 +254,7 @@ export default function ReportsPage() {
                     </TableCell>
                     <TableCell>
                       <Button asChild variant="outline" size="sm">
-                        <a href={`/api/financials/leagues/${league.id}/team-envelope-slips.pdf${systemScope}`}>
+                        <a href={`/api/financials/leagues/${league.id}/team-envelope-slips.pdf`}>
                           Envelope PDF
                         </a>
                       </Button>

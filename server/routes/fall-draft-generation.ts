@@ -46,6 +46,9 @@ function authorizedScope(req: Request): { organizationId: number; leagueId: numb
       : null;
   }
   if (req.user.role !== "system_admin") return null;
+  if (req.organizationContextId !== undefined) {
+    return { organizationId: req.organizationContextId, leagueId, actorUserId: req.user.id };
+  }
   const rawOrganizationId = req.query.organizationId;
   if (typeof rawOrganizationId !== "string") return null;
   const organizationId = positiveRouteId(rawOrganizationId);

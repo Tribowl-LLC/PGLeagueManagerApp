@@ -9,7 +9,7 @@
 import { Router } from 'express';
 import { storage } from '../../storage';
 import { sendSuccess, sendError, parseOptionalIntParam } from '../../utils/api.js';
-import { getPaymentManagerAccessibleLeagueIds, hasPaymentManagerAccessToBowler, hasPaymentManagerAccessToLeague, hasSelfOrAdminAccessToBowler } from '../../utils/access-control.js';
+import { getPaymentManagerAccessibleLeagueIds, hasPaymentManagerAccessToBowler, hasPaymentManagerAccessToLeague, hasSelfOrAdminAccessToBowler, requireOrganizationAccess } from '../../utils/access-control.js';
 import { createLogger } from '../../logger';
 import {
   getPaymentProvider,
@@ -81,7 +81,7 @@ router.post('/cards/:bowlerId', paymentWriteLimiter, async (req, res) => {
     // same tenant and the target bowler must be actively rostered there
     // before any provider/customer lookup or vault mutation occurs.
     const league = await storage.getLeague(resolvedLeagueId);
-    if (!league || league.organizationId === null || (req.user.role !== 'system_admin' && req.user.organizationId !== league.organizationId)) {
+    if (!league || league.organizationId === null || !requireOrganizationAccess(req, league.organizationId, 'league', resolvedLeagueId)) {
       return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
     }
     if (!(await storage.isBowlerActiveInLeague(bowlerId, resolvedLeagueId))) {
@@ -147,6 +147,11 @@ router.get('/cards/:bowlerId', async (req, res) => {
     if (!bowler) {
       return sendSuccess(res, []);
     }
+    if (req.organizationContextId !== undefined
+      && (bowler.organizationId === null
+        || !requireOrganizationAccess(req, bowler.organizationId, 'bowler', bowlerId))) {
+      return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
+    }
 
     // task #421: reject malformed `?leagueId` instead of forwarding
     // NaN into `getProviderForLeague` (which would surface as a
@@ -175,6 +180,17 @@ router.get('/cards/:bowlerId', async (req, res) => {
         )?.leagueId ?? null;
       } else if (bowlerLeagues.length > 0) {
         resolvedLeagueId = bowlerLeagues[0].leagueId;
+      }
+    }
+
+    // The league selects the provider account. In singleton mode, validate
+    // that both an explicit and an inferred league belong to the configured
+    // business before any provider/customer lookup.
+    if (req.organizationContextId !== undefined && resolvedLeagueId !== null) {
+      const league = await storage.getLeague(resolvedLeagueId);
+      if (!league || league.organizationId === null
+        || !requireOrganizationAccess(req, league.organizationId, 'league', resolvedLeagueId)) {
+        return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
       }
     }
 
@@ -225,6 +241,11 @@ router.delete('/cards/:bowlerId/:cardId', async (req, res) => {
     if (!bowler) {
       return sendError(res, 'Bowler not found', 404, 'NOT_FOUND');
     }
+    if (req.organizationContextId !== undefined
+      && (bowler.organizationId === null
+        || !requireOrganizationAccess(req, bowler.organizationId, 'bowler', bowlerId))) {
+      return sendError(res, "You don't have access to this bowler", 403, 'FORBIDDEN');
+    }
 
     const delLeagueIdParsed = parseOptionalIntParam(req.query.leagueId);
     if (delLeagueIdParsed === null) {
@@ -235,6 +256,17 @@ router.delete('/cards/:bowlerId/:cardId', async (req, res) => {
       const bowlerLeagues = await storage.getBowlerLeagues({ bowlerId: bowlerId });
       if (bowlerLeagues.length > 0) {
         resolvedLeagueId = bowlerLeagues[0].leagueId;
+      }
+    }
+
+    // Never let a caller choose a foreign league's provider account for a
+    // card disable. This mirrors the POST boundary and covers inferred
+    // leagues from legacy/corrupt roster memberships.
+    if (req.organizationContextId !== undefined && resolvedLeagueId !== null) {
+      const league = await storage.getLeague(resolvedLeagueId);
+      if (!league || league.organizationId === null
+        || !requireOrganizationAccess(req, league.organizationId, 'league', resolvedLeagueId)) {
+        return sendError(res, "You don't have access to this league", 403, 'FORBIDDEN');
       }
     }
 
