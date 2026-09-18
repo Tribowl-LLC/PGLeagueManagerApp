@@ -308,6 +308,24 @@ interface UnlinkedUserRow {
 }
 
 /**
+ * Return the number of self-registered users that have not yet been linked
+ * to a bowler. Uses the same organization resolution and authorization
+ * boundary as the list endpoint, but only selects the aggregate count.
+ */
+router.get('/unclaimed-users/count', async (req, res) => {
+  try {
+    const ctx = resolveAdminOrgId(req, res);
+    if (!ctx) return;
+
+    const count = await storage.countUnclaimedUsers(ctx.orgId);
+    sendSuccess(res, { count });
+  } catch (error) {
+    log.error('Error counting unclaimed users:', error);
+    sendError(res, 'Failed to count unclaimed users', 500);
+  }
+});
+
+/**
  * List self-registered users that have not yet been linked to a bowler.
  * Scoped to the actor's organization (or `?organizationId=` for
  * system_admin). Filters to role='user' so admins (who never have a

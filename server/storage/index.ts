@@ -130,6 +130,7 @@ export class DatabaseStorage implements IStorage {
   getUserByBowlerId!: IStorage["getUserByBowlerId"];
   hasAdminUsers!: IStorage["hasAdminUsers"];
   countOrgAdmins!: IStorage["countOrgAdmins"];
+  countUnclaimedUsers!: IStorage["countUnclaimedUsers"];
   getOrgAdmins!: IStorage["getOrgAdmins"];
   setUserLocation!: IStorage["setUserLocation"];
   recordFailedPasswordChangeAttempt!: IStorage["recordFailedPasswordChangeAttempt"];
