@@ -605,6 +605,20 @@ export async function processSquareWebhookEvent(input: {
         code: "EVENT_NOT_DUE",
       }, now);
     }
+    if (input.event.eventType === "payment.updated" && input.event.amountMinor === 0) {
+      await finish(tx, row, {
+        status: "ignored",
+        code: "ZERO_VALUE_PAYMENT",
+        now: now.toISOString(),
+      });
+      return recordReplayAudit(tx, row, input.replayActor, {
+        acknowledged: true,
+        terminal: true,
+        businessStateChanged: false,
+        status: "ignored",
+        code: "ZERO_VALUE_PAYMENT",
+      }, now);
+    }
     if (input.event.eventType === "dispute.created" || input.event.eventType === "dispute.state.updated") {
       if (input.processDisputes) {
         const result = await reconcileDispute(tx, row, input.event, now);

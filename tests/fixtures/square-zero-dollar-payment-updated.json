@@ -1,0 +1,41 @@
+{
+  "merchant_id": "ML46HVFMJEEX8",
+  "type": "payment.updated",
+  "event_id": "ce7ce96e-a2bd-3acb-a1b1-b5e31f19a082",
+  "created_at": "2026-09-18T02:14:59.481Z",
+  "data": {
+    "type": "payment",
+    "id": "VCOLfhtd4tg0PI39CxekAuYAuaB",
+    "object": {
+      "payment": {
+        "amount_money": {
+          "amount": 0,
+          "currency": "USD"
+        },
+        "application_details": {
+          "square_product": "ECOMMERCE_API"
+        },
+        "cash_details": {
+          "buyer_supplied_money": {
+            "amount": 0,
+            "currency": "USD"
+          }
+        },
+        "created_at": "2026-09-18T02:14:57.628Z",
+        "id": "VCOLfhtd4tg0PI39CxekAuYAuaB",
+        "location_id": "LPM9NWNXW82M5",
+        "order_id": "tk2eFqDNNt7dulEJ1EBHkqZrfDDZY",
+        "receipt_number": "VCOL",
+        "receipt_url": "https://squareup.com/receipt/preview/VCOLfhtd4tg0PI39CxekAuYAuaB",
+        "source_type": "CASH",
+        "status": "COMPLETED",
+        "total_money": {
+          "amount": 0,
+          "currency": "USD"
+        },
+        "updated_at": "2026-09-18T02:14:59.476Z",
+        "version": 1
+      }
+    }
+  }
+}

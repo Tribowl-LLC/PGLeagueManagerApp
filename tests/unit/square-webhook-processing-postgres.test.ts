@@ -641,6 +641,47 @@ describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
     expect(afterDuplicate.attemptCount).toBe(1);
   });
 
+  it("ignores a zero-value payment before operation mapping or finalization", async () => {
+    const providerPaymentId = `zero-payment-${randomUUID()}`;
+    const delivery = await ingest(paymentBody({
+      eventId: `event-${randomUUID()}`,
+      paymentId: providerPaymentId,
+      amount: 0,
+    }));
+    await db.update(webhookEvents).set({
+      status: "pending",
+      errorClassification: null,
+      errorCode: null,
+      processedAt: null,
+      completedAt: null,
+      updatedAt: "2034-03-04T00:03:00.000Z",
+    }).where(eq(webhookEvents.id, delivery.recorded.event.id));
+
+    const result = await processSquareWebhookEvent({
+      organizationId,
+      eventId: delivery.recorded.event.id,
+      event: delivery.event,
+      now: new Date("2034-03-04T00:03:01.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      acknowledged: true,
+      terminal: true,
+      businessStateChanged: false,
+      status: "ignored",
+      code: "ZERO_VALUE_PAYMENT",
+    });
+    expect(await db.select().from(payments).where(eq(payments.providerPaymentId, providerPaymentId)))
+      .toHaveLength(0);
+    const [stored] = await db.select().from(webhookEvents)
+      .where(eq(webhookEvents.id, delivery.recorded.event.id));
+    expect(stored).toMatchObject({
+      status: "ignored",
+      errorClassification: "processing",
+      errorCode: "ZERO_VALUE_PAYMENT",
+    });
+  });
+
   it("acknowledges a dispute while keeping it nonterminal and claimable for Phase 4B", async () => {
     const { event, recorded } = await ingest(disputeBody({
       eventId: `event-${randomUUID()}`,

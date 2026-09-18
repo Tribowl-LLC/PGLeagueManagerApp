@@ -430,6 +430,27 @@ describe("durable webhook inbox PostgreSQL boundaries", () => {
     expect(stale.event.status).toBe("pending");
   });
 
+  it("durably records the zero-value payment ignore code", async () => {
+    const ignored = await ingestSquareWebhookEvent(input({
+      providerEventId: "event-zero-value-payment-fixture",
+      eventType: "payment.updated",
+      providerObjectType: "payment",
+      providerObjectId: "zero-value-payment-fixture",
+      providerPaymentId: "zero-value-payment-fixture",
+      providerObjectVersion: null,
+      providerObjectUpdatedAt: "2026-08-03T12:00:00.000Z",
+      ignored: true,
+      ignoredCode: "ZERO_VALUE_PAYMENT",
+    }));
+
+    expect(ignored.event).toMatchObject({
+      status: "ignored",
+      errorClassification: "processing",
+      errorCode: "ZERO_VALUE_PAYMENT",
+      completedAt: expect.any(String),
+    });
+  });
+
   it("keeps tenant-scoped visibility fail closed", async () => {
     const ingested = await ingestSquareWebhookEvent(input({
       providerEventId: "event-visibility-fixture",
