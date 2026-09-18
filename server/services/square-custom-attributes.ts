@@ -143,18 +143,30 @@ export function isAlreadyExistsError(err: unknown): boolean {
 }
 
 /**
- * Structural minimum of `SquareClient` that ensureDefinitions /
- * createDefinition actually exercises — just the
- * `customers.customAttributeDefinitions.create` surface. Declared as
- * its own interface so tests can pass a hand-rolled fake without
- * needing to launder a partial through `as unknown as SquareClient`
- * (which the repo lint config bans). The real `SquareClient` is
- * structurally compatible with this type, so production callers pass
- * it unchanged.
+ * Structural minimum of `SquareClient` that the definition bootstrap
+ * exercises. Declared as its own interface so tests can pass a
+ * hand-rolled fake without needing to launder a partial through
+ * `as unknown as SquareClient` (which the repo lint config bans). The
+ * real `SquareClient` is structurally compatible with this type, so
+ * production callers pass it unchanged.
  */
+interface ListedDefinition {
+  key?: string | null;
+}
+
+interface ListedDefinitionsPage {
+  data?: ListedDefinition[];
+  [Symbol.asyncIterator]?: () => AsyncIterator<ListedDefinition>;
+}
+
 export interface SquareCustomAttrDefinitionsClient {
   customers: {
     customAttributeDefinitions: {
+      // Square's SDK returns a paginated async iterable. The optional
+      // shape keeps small test doubles and older callers compatible;
+      // production's Square client always provides this method.
+      list?: (input?: { limit?: number | null; cursor?: string | null }) =>
+        Promise<ListedDefinitionsPage>;
       create(input: {
         customAttributeDefinition: {
           key: string;
@@ -176,6 +188,42 @@ export interface SquareCustomAttrDefinitionsClient {
       delete(input: { key: string }): Promise<unknown>;
     };
   };
+}
+
+async function listExistingDefinitionKeys(
+  client: SquareCustomAttrDefinitionsClient,
+): Promise<Set<string> | null> {
+  const list = client.customers.customAttributeDefinitions.list;
+  if (!list) return null;
+
+  try {
+    const page = await list({});
+    const keys = new Set<string>();
+    const asyncIterator = page[Symbol.asyncIterator];
+
+    if (asyncIterator) {
+      const iterator = asyncIterator.call(page);
+      for (;;) {
+        const result = await iterator.next();
+        if (result.done) break;
+        if (result.value.key) keys.add(result.value.key);
+      }
+    } else {
+      for (const definition of page.data ?? []) {
+        if (definition.key) keys.add(definition.key);
+      }
+    }
+
+    return keys;
+  } catch (err) {
+    // Listing is an optimization and a way to keep normal startup logs
+    // clean. Preserve the create + 409 fallback if the read is not
+    // available during a transient Square/API-permission problem.
+    log.warn('Could not preflight Square customer custom-attribute definitions; falling back to create', {
+      error: err instanceof Error ? { name: err.name, message: err.message } : err,
+    });
+    return null;
+  }
 }
 
 async function createDefinition(
@@ -304,8 +352,15 @@ async function createDefinition(
 export async function ensureDefinitions(
   client: SquareCustomAttrDefinitionsClient,
 ): Promise<boolean> {
+  const existingKeys = await listExistingDefinitionKeys(client);
   let allOk = true;
   for (const spec of DEFINITIONS) {
+    if (existingKeys?.has(spec.key)) {
+      log.info('Square customer custom attribute definition already exists', {
+        key: spec.key,
+      });
+      continue;
+    }
     const status = await createDefinition(client, spec);
     if (status === 'failed') allOk = false;
   }
