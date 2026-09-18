@@ -91,7 +91,7 @@ export default function EmailTemplatesPage() {
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Email Templates</h1>
-          <p className="text-muted-foreground">Manage the email templates sent to bowlers during registration and account events.</p>
+          <p className="text-muted-foreground">Manage every email authored and sent by LeagueVault, including account, payment, security, and administrator notifications. Provider-generated Square or SendGrid platform notices are not managed here.</p>
         </div>
 
         {isLoading ? (

@@ -63,6 +63,22 @@ export async function sendAccountGuidanceEmail(options: {
       secondaryUrl: "",
       closing: "Use the registration page to create your LeagueVault account.",
     };
+  const customArgs = safeAccountGuidanceDeliveryCustomArgs(options.guidanceJobId);
+  const templated = await sendTemplatedEmail(
+    options.noticeType === "account_exists" ? "account_guidance_exists" : "account_guidance_missing",
+    options.toEmail,
+    {
+      user_name: options.userName || "there",
+      reset_link: action.primaryUrl,
+      login_link: action.secondaryUrl,
+      register_link: action.primaryUrl,
+    },
+    { returnDetails: true, ...(customArgs ? { customArgs } : {}) },
+  );
+  if (typeof templated !== "boolean" && templated.accepted) return templated;
+  if (typeof templated !== "boolean" && templated.failureReason !== "template_missing") {
+    return templated;
+  }
   const safeName = escapeHtml(options.userName || "there");
   const safeHeading = escapeHtml(action.heading);
   const safeIntro = escapeHtml(action.intro);
@@ -73,7 +89,6 @@ export async function sendAccountGuidanceEmail(options: {
   const secondary = action.secondaryLabel
     ? `<p style="font-size: 14px; color: #666;">Or <a href="${safeSecondaryUrl}">${escapeHtml(action.secondaryLabel.toLowerCase())}</a>.</p>`
     : "";
-  const customArgs = safeAccountGuidanceDeliveryCustomArgs(options.guidanceJobId);
   const msg = {
     to: options.toEmail,
     from: { email: FROM_EMAIL, name: FROM_NAME },
@@ -131,10 +146,8 @@ export async function sendInviteEmail(
   const variables: Record<string, string> = {
     bowler_name: userName,
     invite_link: setupUrl,
+    organization_name: organizationName || 'LeagueVault',
   };
-  if (organizationName) {
-    variables.organization_name = organizationName;
-  }
   if (organizationId) {
     const orgForLogo = await storage.getOrganization(
       typeof organizationId === 'number' ? organizationId : parseInt(String(organizationId), 10),
@@ -144,8 +157,9 @@ export async function sendInviteEmail(
     }
   }
 
-  const sent = await sendTemplatedEmail('bulk_invite', toEmail, variables);
-  if (sent) return true;
+  const sent = await sendTemplatedEmail('bulk_invite', toEmail, variables, { returnDetails: true });
+  if (typeof sent !== 'boolean' && sent.accepted) return true;
+  if (typeof sent !== 'boolean' && sent.failureReason !== 'template_missing') return false;
 
   if (!SENDGRID_API_KEY) {
     log.error('Cannot send invite — SENDGRID_API_KEY not configured');
@@ -378,6 +392,15 @@ export async function sendEmailChangeConfirmation(
     return false;
   }
 
+  const templated = await sendTemplatedEmail(
+    'email_change_confirmation',
+    toEmail,
+    { user_name: userName || 'there', confirm_link: confirmUrl },
+    { returnDetails: true },
+  );
+  if (typeof templated !== 'boolean' && templated.accepted) return true;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return false;
+
   const safeName = escapeHtml(userName || 'there');
   const safeUrl = escapeHtml(confirmUrl);
 
@@ -437,6 +460,19 @@ export async function sendEmailChangeNotification(
     log.error('Cannot send email-change notification — SENDGRID_API_KEY not configured');
     return false;
   }
+
+  const templated = await sendTemplatedEmail(
+    'email_change_notification',
+    toEmail,
+    {
+      user_name: userName || 'there',
+      new_email_masked: newEmailMasked,
+      support_link: `${getBaseUrl()}/support`,
+    },
+    { returnDetails: true },
+  );
+  if (typeof templated !== 'boolean' && templated.accepted) return true;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return false;
 
   const safeName = escapeHtml(userName || 'there');
   const safeMasked = escapeHtml(newEmailMasked);
@@ -529,6 +565,32 @@ export async function sendPasswordChangedNotification(
   }
 
   const { code: localeCode, strings } = pickPasswordChangedLocale(context.locale);
+
+  const changedAt = context.changedAt.toUTCString();
+  const rawUaForTemplate = (context.userAgent ?? '').trim();
+  const templated = await sendTemplatedEmail(
+    'password_changed',
+    toEmail,
+    {
+      subject: strings.subject,
+      greeting: strings.greeting(userName || 'there'),
+      intro: strings.intro,
+      performed_by_admin: context.actor === 'admin' ? strings.performedByAdmin : '',
+      when_label: strings.whenLabel,
+      changed_at: changedAt,
+      from_ip_label: strings.fromIpLabel,
+      ip_address: context.ipAddress?.trim() || strings.unknown,
+      browser_label: strings.browserLabel,
+      user_agent: rawUaForTemplate ? (rawUaForTemplate.length > 120 ? `${rawUaForTemplate.slice(0, 120)}…` : rawUaForTemplate) : strings.unknown,
+      if_this_was_you: strings.ifThisWasYou.replace(/<\/?strong>/gi, ''),
+      if_this_wasnt_you: strings.ifThisWasntYou.replace(/<\/?strong>/gi, ''),
+      support_link: `${getBaseUrl()}/support`,
+      footer: strings.footer,
+    },
+    { returnDetails: true },
+  );
+  if (typeof templated !== 'boolean' && templated.accepted) return true;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return false;
 
   const safeName = escapeHtml(userName || 'there');
   // Format the timestamp in UTC with the offset spelled out so the
@@ -627,6 +689,26 @@ export async function sendAccountDeletionConfirmation(
     log.error('Cannot send account-deletion confirmation — SENDGRID_API_KEY not configured');
     return false;
   }
+
+  const accountStatus = details.userAccountDeleted
+    ? 'Your LeagueVault login account was deleted.'
+    : 'No LeagueVault login account was found for this email, so nothing was deleted at the account level.';
+  const templated = await sendTemplatedEmail(
+    'account_deletion_confirmation',
+    toEmail,
+    {
+      email: toEmail,
+      executed_at: details.executedAt,
+      bowlers_anonymized: String(details.bowlersAnonymized),
+      account_status: accountStatus,
+      payment_records_deleted: String(details.paymentProviderRecordsDeleted),
+      email_change_requests_deleted: String(details.emailChangeRequestsDeleted),
+      support_link: `${getBaseUrl()}/support`,
+    },
+    { returnDetails: true },
+  );
+  if (typeof templated !== 'boolean' && templated.accepted) return true;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return false;
 
   const safeEmail = escapeHtml(toEmail);
   const safeExecutedAt = escapeHtml(details.executedAt);
@@ -735,6 +817,34 @@ export async function sendAccountLockoutAlert(
   }
 
   const { code: localeCode, strings } = pickAccountLockoutLocale(context.locale);
+
+  const rawUaForTemplate = (context.userAgent ?? '').trim();
+  const templated = await sendTemplatedEmail(
+    'account_lockout',
+    toEmail,
+    {
+      subject: strings.subject,
+      greeting: strings.greeting(userName || 'there'),
+      intro: strings.intro,
+      when_label: strings.whenLabel,
+      locked_at: context.lockedAt.toUTCString(),
+      from_ip_label: strings.fromIpLabel,
+      ip_address: context.ipAddress?.trim() || strings.unknown,
+      browser_label: strings.browserLabel,
+      user_agent: rawUaForTemplate ? (rawUaForTemplate.length > 120 ? `${rawUaForTemplate.slice(0, 120)}…` : rawUaForTemplate) : strings.unknown,
+      unlocks_at_label: strings.unlocksAtLabel,
+      unlocks_at: context.unlocksAt.toUTCString(),
+      if_this_was_you: strings.ifThisWasYou.replace(/<\/?strong>/gi, ''),
+      if_this_wasnt_you: strings.ifThisWasntYou.replace(/<\/?strong>/gi, ''),
+      forgot_link: `${getBaseUrl()}/forgot-password`,
+      reset_cta: strings.resetCta,
+      support_link: `${getBaseUrl()}/support`,
+      footer: strings.footer,
+    },
+    { returnDetails: true },
+  );
+  if (typeof templated !== 'boolean' && templated.accepted) return true;
+  if (typeof templated !== 'boolean' && templated.failureReason !== 'template_missing') return false;
 
   const safeLockedAt = escapeHtml(context.lockedAt.toUTCString());
   const safeUnlocksAt = escapeHtml(context.unlocksAt.toUTCString());

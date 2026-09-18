@@ -57,6 +57,37 @@ afterEach(() => {
 });
 
 describe('migrated test-template source contract', () => {
+  it('seeds every LeagueVault-authored email template slug', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'server/migrations/seed-email-templates.ts'),
+      'utf8',
+    );
+    for (const slug of [
+      'bowler_payment_link_invite',
+      'bulk_invite',
+      'org_admin_invite',
+      'org_end_user_invite',
+      'bowler_claimed',
+      'admin_claim_complete',
+      'account_guidance_exists',
+      'account_guidance_missing',
+      'password_reset',
+      'account_registration',
+      'email_change_confirmation',
+      'email_change_notification',
+      'password_changed',
+      'account_deletion_confirmation',
+      'account_lockout',
+      'payment_receipt_resend',
+      'deletion_request_notification',
+      'apple_pay_recovery_alert',
+      'square_catalog_cap_alert',
+      'square_catalog_missing_alert',
+    ]) {
+      expect(source).toContain(`slug: "${slug}"`);
+    }
+  });
+
   it('hashes every migration, journal, schema, invariant, seed, and tool input', () => {
     const root = createHashFixture();
     const inputs = [
