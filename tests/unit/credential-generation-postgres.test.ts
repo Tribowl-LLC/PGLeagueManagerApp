@@ -59,11 +59,22 @@ async function createPendingAction(userId: number, action: "account_invite" | "p
 }
 
 async function createPendingEmailChange(userId: number) {
+  const [user] = await db.select({
+    email: users.email,
+    credentialGeneration: users.credentialGeneration,
+  }).from(users).where(eq(users.id, userId));
+  if (!user) throw new Error("credential-generation fixture user was not found");
+  const now = new Date().toISOString();
   const [request] = await db.insert(emailChangeRequests).values({
     userId,
     newEmail: `next-${userId}-${suffix}@example.com`,
     tokenHash: hashAccountActionToken(`email-${userId}-${suffix}-${Math.random()}`),
     expiresAt: futureIso(),
+    oldEmail: user.email,
+    oldEmailApprovedAt: now,
+    reauthenticatedAt: now,
+    credentialGeneration: user.credentialGeneration,
+    flowVersion: 2,
   }).returning();
   if (!request) throw new Error("credential-generation email change was not created");
   return request;

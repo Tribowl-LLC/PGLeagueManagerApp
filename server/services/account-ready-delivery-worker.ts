@@ -119,8 +119,7 @@ const productionDependencies: AccountReadyDeliveryWorkerDependencies = {
     );
     const combineProfileClaim = await shouldCombineProfileClaimWithAccountReady({
       identityLinkEventId: job.identityLinkEventId,
-      recipientEmail: user.email,
-      userId: user.id,
+      accountReadyRecipientEmail: user.email,
     });
     if (combineProfileClaim) return undefined;
 

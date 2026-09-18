@@ -80,6 +80,30 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
+async function insertProtectedEmailChangeRequest(input: {
+  userId: number;
+  newEmail: string;
+  tokenHash: string;
+  expiresAt?: string;
+}): Promise<void> {
+  const [user] = await db.select({ email: users.email, credentialGeneration: users.credentialGeneration })
+    .from(users)
+    .where(eq(users.id, input.userId));
+  if (!user) throw new Error(`User ${input.userId} was not found`);
+  const now = new Date().toISOString();
+  await db.insert(emailChangeRequests).values({
+    userId: input.userId,
+    newEmail: input.newEmail,
+    tokenHash: input.tokenHash,
+    expiresAt: input.expiresAt ?? new Date(Date.now() + 60_000).toISOString(),
+    oldEmail: user.email,
+    oldEmailApprovedAt: now,
+    reauthenticatedAt: now,
+    credentialGeneration: user.credentialGeneration,
+    flowVersion: 2,
+  });
+}
+
 beforeAll(async () => {
   testOrgId = await getBaselineOrgAId();
 });
@@ -146,7 +170,7 @@ describe('PATCH /api/account/profile/:id with email change', () => {
         notification: 'accepted' | 'not_sent' | 'unknown';
       };
       paymentSyncStatus: string;
-    }>(`/api/account/profile/${userId}`, { email: newEmail }, session);
+    }>(`/api/account/profile/${userId}`, { email: newEmail, currentPassword: TEST_PASSWORD }, session);
 
     expect(res.status).toBe(200);
     expect(res.data.success).toBe(true);
@@ -179,7 +203,7 @@ describe('PATCH /api/account/profile/:id with email change', () => {
 
     const res = await apiPatch<{ name: string; emailChangeRequested: boolean }>(
       `/api/account/profile/${userId}`,
-      { email: newEmail, name: newName },
+      { email: newEmail, name: newName, currentPassword: TEST_PASSWORD },
       session,
     );
 
@@ -220,7 +244,7 @@ describe('PATCH /api/account/profile/:id with email change', () => {
       .returning();
     createdUserIds.push(other.id);
 
-    const res = await apiPatch(`/api/account/profile/${userId}`, { email: taken }, session);
+    const res = await apiPatch(`/api/account/profile/${userId}`, { email: taken, currentPassword: TEST_PASSWORD }, session);
     expect(res.status).toBe(400);
     expect(res.data.error?.code).toBe('EMAIL_IN_USE');
   });
@@ -230,8 +254,8 @@ describe('PATCH /api/account/profile/:id with email change', () => {
     const firstEmail = uniqEmail('first');
     const secondEmail = uniqEmail('second');
 
-    await apiPatch(`/api/account/profile/${userId}`, { email: firstEmail }, session);
-    await apiPatch(`/api/account/profile/${userId}`, { email: secondEmail }, session);
+    await apiPatch(`/api/account/profile/${userId}`, { email: firstEmail, currentPassword: TEST_PASSWORD }, session);
+    await apiPatch(`/api/account/profile/${userId}`, { email: secondEmail, currentPassword: TEST_PASSWORD }, session);
 
     const rows = await db
       .select()
@@ -251,11 +275,10 @@ describe('POST /api/account/confirm-email-change', () => {
     // Patch raw token directly into the DB so the test can read it back —
     // production tokens go out only by email, but here we synthesize one.
     const rawToken = `vitest-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    await db.insert(emailChangeRequests).values({
+    await insertProtectedEmailChangeRequest({
       userId,
       newEmail,
       tokenHash: hashToken(rawToken),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
     const res = await apiPost<{ email: string; paymentSyncStatus: string }>(
@@ -313,11 +336,10 @@ describe('POST /api/account/confirm-email-change', () => {
 
     const newEmail = uniqEmail('linked-new');
     const rawToken = `vitest-linked-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    await db.insert(emailChangeRequests).values({
+    await insertProtectedEmailChangeRequest({
       userId: user.id,
       newEmail,
       tokenHash: hashToken(rawToken),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
     const res = await apiPost<{ email: string; paymentSyncStatus: string }>(
@@ -343,11 +365,10 @@ describe('POST /api/account/confirm-email-change', () => {
     const newEmail = uniqEmail('new');
     const rawToken = `reuse-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    await db.insert(emailChangeRequests).values({
+    await insertProtectedEmailChangeRequest({
       userId,
       newEmail,
       tokenHash: hashToken(rawToken),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
     const first = await apiPost(`/api/account/confirm-email-change`, { token: rawToken }, session);
@@ -363,7 +384,7 @@ describe('POST /api/account/confirm-email-change', () => {
     const newEmail = uniqEmail('new');
     const rawToken = `expired-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    await db.insert(emailChangeRequests).values({
+    await insertProtectedEmailChangeRequest({
       userId,
       newEmail,
       tokenHash: hashToken(rawToken),
@@ -397,11 +418,10 @@ describe('POST /api/account/confirm-email-change', () => {
     const requestedEmail = uniqEmail('requested');
     const rawToken = `race-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    await db.insert(emailChangeRequests).values({
+    await insertProtectedEmailChangeRequest({
       userId,
       newEmail: requestedEmail,
       tokenHash: hashToken(rawToken),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
     // Race: another user grabs the address before the original confirms.
@@ -442,11 +462,10 @@ describe('POST /api/account/change-password invalidates pending email-change req
     const newEmail = uniqEmail('pending');
     const rawToken = `pwchange-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    await db.insert(emailChangeRequests).values({
+    await insertProtectedEmailChangeRequest({
       userId,
       newEmail,
       tokenHash: hashToken(rawToken),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
     const res = await apiPost(
@@ -481,11 +500,10 @@ describe('POST /api/auth/set-password invalidates pending email-change requests'
       organizationId: testOrgId,
       recipientEmail: oldEmail,
     });
-    await db.insert(emailChangeRequests).values({
+    await insertProtectedEmailChangeRequest({
       userId,
       newEmail,
       tokenHash: hashToken(rawToken),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
     const setRes = await apiPost(`/api/auth/set-password`, {
@@ -512,11 +530,10 @@ describe('POST /api/account/confirm-email-change concurrency', () => {
     const newEmail = uniqEmail('parallel');
     const rawToken = `parallel-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    await db.insert(emailChangeRequests).values({
+    await insertProtectedEmailChangeRequest({
       userId,
       newEmail,
       tokenHash: hashToken(rawToken),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
     // Endpoint is intentionally unauthenticated (token IS the auth factor).
@@ -571,20 +588,16 @@ describe('POST /api/account/confirm-email-change concurrency', () => {
     const tokenA = `contendA-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const tokenB = `contendB-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    await db.insert(emailChangeRequests).values([
-      {
-        userId: a.userId,
-        newEmail: targetEmail,
-        tokenHash: hashToken(tokenA),
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      },
-      {
-        userId: b.userId,
-        newEmail: targetEmail,
-        tokenHash: hashToken(tokenB),
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      },
-    ]);
+    await insertProtectedEmailChangeRequest({
+      userId: a.userId,
+      newEmail: targetEmail,
+      tokenHash: hashToken(tokenA),
+    });
+    await insertProtectedEmailChangeRequest({
+      userId: b.userId,
+      newEmail: targetEmail,
+      tokenHash: hashToken(tokenB),
+    });
 
     const [resA, resB] = await Promise.all([
       apiPost(`/api/account/confirm-email-change`, { token: tokenA }, a.session),
@@ -883,7 +896,7 @@ describe('PATCH /api/account/profile/:id when invoked by a system_admin', () => 
 
     const res = await apiPatch<{ emailChangeRequested: boolean }>(
       `/api/account/profile/${userId}`,
-      { email: newEmail },
+      { email: newEmail, currentPassword: TEST_PASSWORD },
       session,
     );
     expect(res.status).toBe(200);
@@ -1007,11 +1020,10 @@ describe('POST /api/account/confirm-email-change rate limiting', () => {
 
     const newEmail = uniqEmail('rl-success-new');
     const rawToken = `rl-ok-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    await db.insert(emailChangeRequests).values({
+    await insertProtectedEmailChangeRequest({
       userId: user.id,
       newEmail,
       tokenHash: hashToken(rawToken),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
     const ok = await postWithBucket(

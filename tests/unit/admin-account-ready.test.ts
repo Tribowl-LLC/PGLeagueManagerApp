@@ -93,6 +93,12 @@ vi.mock('../../server/storage', () => ({
 }));
 
 vi.mock('../../server/storage/account-ready-delivery-jobs', () => ({
+  AccountReadyDeliveryInProgressError: class AccountReadyDeliveryInProgressError extends Error {
+    constructor() {
+      super('Account-ready delivery is already in progress');
+      this.name = 'AccountReadyDeliveryInProgressError';
+    }
+  },
   queueAccountReadyDeliveryJob: (...args: unknown[]) =>
     mockQueueAccountReadyDeliveryJob.apply(null, args as never),
   requeueAccountReadyDeliveryJob: (...args: unknown[]) =>
@@ -260,6 +266,24 @@ describe('POST /api/organization-admin/users/:id/resend-account-ready', () => {
     expect(body.data.emailNotification).toBe('accepted');
     expect(body.data.deliveryQueued).toBe(true);
     expect(mockRequeueAccountReadyDeliveryJob).toHaveBeenCalledWith({ identityLinkEventId: 801 });
+    expect(mockSendAccountReadyEmail).not.toHaveBeenCalled();
+  });
+
+  it('returns a conflict when the durable delivery lease is active', async () => {
+    const { AccountReadyDeliveryInProgressError } = await import(
+      '../../server/storage/account-ready-delivery-jobs'
+    );
+    mockQueueAccountReadyDeliveryJob.mockResolvedValue({
+      kind: 'existing',
+      job: { id: 901, status: 'processing' },
+    });
+    mockRequeueAccountReadyDeliveryJob.mockRejectedValue(new AccountReadyDeliveryInProgressError());
+
+    const response = await resend(TARGET_USER.id);
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.error.code).toBe('DELIVERY_IN_PROGRESS');
     expect(mockSendAccountReadyEmail).not.toHaveBeenCalled();
   });
 

@@ -202,8 +202,10 @@ router.patch('/profile/:id', requireAuth, emailChangeReauthLimiter, async (req: 
           : null,
       });
 
-      // Build confirmation URL using the org's subdomain when known so the
-      // resulting click lands in the right tenant.
+      // Build confirmation URLs from the canonical deployment host.  The
+      // production singleton rejects organization-subdomain hosts with HTTP
+      // 421, so organization context is retained in the request/session rather
+      // than encoded as an email-link hostname.
       const org = existingUser.organizationId
         ? await storage.getOrganization(existingUser.organizationId)
         : null;

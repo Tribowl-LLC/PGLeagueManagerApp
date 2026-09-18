@@ -80,6 +80,10 @@ vi.mock('../../server/services/identity-link.js', () => ({
   isIdentityLinkError: () => false,
 }));
 
+vi.mock('../../server/storage/profile-claim-notifications.js', () => ({
+  hasActiveIdentitySecurityHold: vi.fn(async () => false),
+}));
+
 const mockHashPassword = vi.fn(async (pw: string) => `hashed:${pw}`);
 const mockSafeTokenCompare = vi.fn(
   (a: string, b: string) => a === b,

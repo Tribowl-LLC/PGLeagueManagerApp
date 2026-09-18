@@ -32,6 +32,7 @@ import {
 import { isNormalizedUserEmailConflict } from '../utils/db-errors.js';
 import { requireOrganizationAccess } from '../utils/access-control.js';
 import {
+  AccountReadyDeliveryInProgressError,
   queueAccountReadyDeliveryJob,
   requeueAccountReadyDeliveryJob,
 } from '../storage/account-ready-delivery-jobs.js';
@@ -1218,6 +1219,9 @@ router.post('/users/:id/resend-account-ready', requireOrgAdminOrSystemAdmin, inv
       emailNotification: 'accepted',
     });
   } catch (error) {
+    if (error instanceof AccountReadyDeliveryInProgressError) {
+      return sendError(res, 'Account-ready delivery is already in progress', 409, 'DELIVERY_IN_PROGRESS');
+    }
     log.error('Error resending account-ready email:', error);
     return sendError(res, 'Failed to resend account-ready email', 500, 'internal_error');
   }

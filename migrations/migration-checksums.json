@@ -294,6 +294,12 @@
       "tag": "0048_sms_otp_registration_and_email_safeguards",
       "createdAt": 1789758170059,
       "hash": "c6204daa4e226814703e99829a1da6f9ec45688f75b6ba7b92978483521b1326"
+    },
+    {
+      "idx": 49,
+      "tag": "0049_account_ready_standalone_resend",
+      "createdAt": 1789769091560,
+      "hash": "3542cd98ff47e3c276c2ec9b0d1e11a2118a269d274d983a81c1eea97cb11a69"
     }
   ]
 }

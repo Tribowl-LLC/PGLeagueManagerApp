@@ -294,7 +294,7 @@ describe('Admin claim of self-registered users (Task #667)', () => {
     expect(out.userId).toBe(user.id);
     expect(out.leagueId).toBe(leagueId);
     expect(out.teamId).toBe(teamId);
-    expect(['accepted', 'not_sent']).toContain(out.emailNotification);
+    expect(['accepted', 'not_sent', 'queued']).toContain(out.emailNotification);
     createdBowlerIds.push(out.bowlerId);
 
     // user.bowlerId now points at the new bowler.
@@ -382,7 +382,7 @@ describe('Admin claim of self-registered users (Task #667)', () => {
     const linkData = res.data.data;
     if (!linkData) throw new Error('expected link-existing to return data');
     expect(linkData.bowlerId).toBe(bowler.id);
-    expect(['accepted', 'not_sent']).toContain(linkData.emailNotification);
+    expect(['accepted', 'not_sent', 'queued']).toContain(linkData.emailNotification);
 
     const [reread] = await db.select({ bowlerId: users.bowlerId }).from(users).where(eq(users.id, user.id));
     expect(reread.bowlerId).toBe(bowler.id);

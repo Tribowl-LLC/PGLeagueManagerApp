@@ -141,6 +141,10 @@ vi.mock('../../server/middleware/subdomain', () => ({
 vi.mock('../../server/middleware/csrf', () => ({
   csrfProtection: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
+
+vi.mock('../../server/storage/profile-claim-notifications.js', () => ({
+  hasActiveIdentitySecurityHold: vi.fn(async () => false),
+}));
 vi.mock('express-rate-limit', () => ({
   default: () => (_req: Request, _res: Response, next: NextFunction) => next(),
   ipKeyGenerator: (ip: string) => ip,

@@ -49,7 +49,11 @@ const productionDependencies: ProfileClaimNotificationWorkerDependencies = {
     const reportToken = profileClaimReportTokenForEvent(notification.identityLinkEventId);
     const organization = await storage.getOrganization(notification.organizationId);
     const reportUrl = `${getBaseUrl(organization ?? null)}/report-profile-claim?token=${encodeURIComponent(reportToken)}`;
-    const combinedWithAccountReady = await shouldCombineProfileClaimWithAccountReady(notification);
+    const account = notification.userId ? await storage.getUser(notification.userId) : undefined;
+    const combinedWithAccountReady = await shouldCombineProfileClaimWithAccountReady({
+      identityLinkEventId: notification.identityLinkEventId,
+      accountReadyRecipientEmail: account?.email,
+    });
     const result = await sendProfileClaimNotificationEmail({
       toEmail: notification.recipientEmail,
       toName: notification.recipientName,

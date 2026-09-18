@@ -351,22 +351,50 @@ export async function getProfileClaimNotification(id: number): Promise<ProfileCl
  * its duplicate after observing this predicate.
  */
 export async function shouldCombineProfileClaimWithAccountReady(
-  notification: Pick<ProfileClaimNotification, "identityLinkEventId" | "recipientEmail" | "userId">,
+  input: { identityLinkEventId: number; accountReadyRecipientEmail: string | null | undefined },
 ): Promise<boolean> {
-  if (!notification.userId) return false;
-  const [user] = await db.select({ email: users.email })
-    .from(users)
-    .where(eq(users.id, notification.userId))
+  // Compare the immutable roster snapshot with the account-ready recipient.
+  // The old implementation compared the current account email with itself
+  // when called by the account-ready worker, suppressing delivery even when
+  // the two notices belonged in different mailboxes.
+  const [claimNotification] = await db.select({
+    recipientEmail: profileClaimNotifications.recipientEmail,
+    userId: profileClaimNotifications.userId,
+    status: profileClaimNotifications.status,
+    reportTokenExpiresAt: profileClaimNotifications.reportTokenExpiresAt,
+  })
+    .from(profileClaimNotifications)
+    .where(eq(profileClaimNotifications.identityLinkEventId, input.identityLinkEventId))
     .limit(1);
-  if (!user || normalizeAccountEmail(user.email) !== normalizeAccountEmail(notification.recipientEmail)) {
+  if (!claimNotification || !claimNotification.userId || !input.accountReadyRecipientEmail) {
     return false;
   }
-  const { accountReadyDeliveryJobs } = await import("@shared/schema/account-ready-delivery-jobs");
-  const [job] = await db.select({ id: accountReadyDeliveryJobs.id })
-    .from(accountReadyDeliveryJobs)
-    .where(eq(accountReadyDeliveryJobs.identityLinkEventId, notification.identityLinkEventId))
+  const claimExpiresAt = Date.parse(claimNotification.reportTokenExpiresAt);
+  if (!Number.isFinite(claimExpiresAt) || claimExpiresAt <= Date.now()) return false;
+  if (!(ACTIVE_STATUSES.includes(claimNotification.status as (typeof ACTIVE_STATUSES)[number])
+    || claimNotification.status === "succeeded")) {
+    return false;
+  }
+
+  const [user] = await db.select({ email: users.email })
+    .from(users)
+    .where(eq(users.id, claimNotification.userId))
     .limit(1);
-  return Boolean(job);
+  if (!user
+    || normalizeAccountEmail(claimNotification.recipientEmail)
+      !== normalizeAccountEmail(input.accountReadyRecipientEmail)) {
+    return false;
+  }
+
+  const { accountReadyDeliveryJobs } = await import("@shared/schema/account-ready-delivery-jobs");
+  const [job] = await db.select({
+    id: accountReadyDeliveryJobs.id,
+    standaloneDeliveryRequested: accountReadyDeliveryJobs.standaloneDeliveryRequested,
+  })
+    .from(accountReadyDeliveryJobs)
+    .where(eq(accountReadyDeliveryJobs.identityLinkEventId, input.identityLinkEventId))
+    .limit(1);
+  return Boolean(job && !job.standaloneDeliveryRequested);
 }
 
 export async function getNextProfileClaimNotificationAt(): Promise<Date | null> {

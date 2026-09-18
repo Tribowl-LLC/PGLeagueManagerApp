@@ -126,7 +126,7 @@ vi.mock('../../server/storage/admin-email-change-audits', () => ({
   recordAdminEmailChangeAudit: vi.fn(async () => undefined),
 }));
 
-vi.mock('../../server/config', () => ({ isDev: true, env: {} }));
+vi.mock('../../server/config', () => ({ isDev: true, isProdLike: false, env: {} }));
 
 // Now import the real router with all of its deps mocked.
 const accountRouter = (await import('../../server/routes/account')).default;

@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(49);
+    expect(migrations).toHaveLength(50);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -527,6 +527,11 @@ describe('normalized migration baseline tools', () => {
       hash: 'c6204daa4e226814703e99829a1da6f9ec45688f75b6ba7b92978483521b1326',
     });
     expect(migrations[48]?.sql).toContain('CREATE TABLE "registration_verification_challenges"');
+    expect(migrations[49]).toMatchObject({
+      idx: 49,
+      tag: '0049_account_ready_standalone_resend',
+    });
+    expect(migrations[49]?.sql).toContain('standalone_delivery_requested');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 

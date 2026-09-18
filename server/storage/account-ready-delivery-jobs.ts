@@ -15,6 +15,13 @@ import {
 
 export type AccountReadyDeliveryExecutor = AccountActionExecutor;
 
+export class AccountReadyDeliveryInProgressError extends Error {
+  constructor() {
+    super("Account-ready delivery is already in progress");
+    this.name = "AccountReadyDeliveryInProgressError";
+  }
+}
+
 export type AccountReadyEnqueueResult =
   | { kind: "enqueued"; job: AccountReadyDeliveryJob }
   | { kind: "existing"; job: AccountReadyDeliveryJob };
@@ -112,12 +119,13 @@ export async function requeueAccountReadyDeliveryJob(input: {
       && existing.leaseExpiresAt
       && Date.parse(existing.leaseExpiresAt) > Date.now()
     ) {
-      throw new Error("Account-ready delivery is already in progress");
+      throw new AccountReadyDeliveryInProgressError();
     }
     const [requeued] = await tx
       .update(accountReadyDeliveryJobs)
       .set({
         status: "pending",
+        standaloneDeliveryRequested: true,
         attemptCount: 0,
         nextAttemptAt: new Date().toISOString(),
         lastAttemptAt: null,
@@ -126,6 +134,7 @@ export async function requeueAccountReadyDeliveryJob(input: {
         leaseExpiresAt: null,
         providerMessageId: null,
         lastErrorCode: null,
+        expiresAt: new Date(Date.now() + ACCOUNT_READY_DELIVERY_RETENTION_MS).toISOString(),
         completedAt: null,
         updatedAt: new Date().toISOString(),
       })

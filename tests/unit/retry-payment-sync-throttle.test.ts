@@ -150,6 +150,7 @@ vi.mock('../../server/utils/rate-limit-store', () => ({
 
 vi.mock('../../server/config', () => ({
   isDev: false,
+  isProdLike: false,
   env: {
     NODE_ENV: 'test',
     SESSION_SECRET: 'x'.repeat(64),

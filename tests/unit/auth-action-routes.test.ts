@@ -65,7 +65,7 @@ vi.mock("../../server/db.js", () => ({
   db: { transaction: vi.fn() },
 }));
 
-vi.mock("../../server/config", () => ({ isDev: true, env: {} }));
+vi.mock("../../server/config", () => ({ isDev: true, isProdLike: false, env: {} }));
 vi.mock("../../server/utils/rate-limit-store", () => ({ createSharedRateLimitStore: () => undefined }));
 vi.mock("express-rate-limit", () => ({
   default: () => (_req: Request, _res: Response, next: NextFunction) => next(),

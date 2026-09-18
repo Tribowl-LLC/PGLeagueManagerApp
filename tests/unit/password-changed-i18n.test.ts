@@ -85,6 +85,7 @@ vi.mock('@sendgrid/mail', () => ({
 vi.mock('../../server/config', () => ({
   env: { SENDGRID_API_KEY: 'sg-test', APP_DOMAIN: 'leaguevault.test' },
   isDev: false,
+  isProdLike: false,
 }));
 
 vi.mock('../../server/storage', () => ({

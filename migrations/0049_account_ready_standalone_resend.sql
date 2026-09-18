@@ -1,0 +1,1 @@
+ALTER TABLE "account_ready_delivery_jobs" ADD COLUMN "standalone_delivery_requested" boolean DEFAULT false NOT NULL;

@@ -322,19 +322,15 @@ if (SENDGRID_API_KEY) {
 export function getBaseUrl(
   orgOrSlug?: string | { subdomain?: string | null; slug?: string | null } | null,
 ): string {
-  // String callers retain the historical canonical URL. When a trusted
-  // organization record is available, use its validated subdomain so a
-  // public registration link still resolves the correct tenant when more
-  // than one organization is active. Never derive a host from an arbitrary
-  // request/query string.
-  if (orgOrSlug && typeof orgOrSlug === "object") {
-    const subdomain = typeof orgOrSlug.subdomain === "string"
-      ? orgOrSlug.subdomain.trim().toLowerCase()
-      : "";
-    if (/^[a-z0-9]+$/.test(subdomain)) {
-      return `https://${subdomain}.${env.APP_DOMAIN}`;
-    }
-  }
+  // All emailed links use the deployment's canonical host.  Organization
+  // subdomains are tenant selectors only when the request middleware has
+  // explicitly enabled them; production singleton deployments reject those
+  // hosts with HTTP 421.  Using a canonical link keeps registration,
+  // password recovery, and profile-claim reporting reachable in every
+  // supported deployment.  The trusted organization argument remains part
+  // of the API for callers that need organization metadata for templates,
+  // but it is never interpolated into a host here.
+  void orgOrSlug;
   return `https://${env.APP_DOMAIN}`;
 }
 

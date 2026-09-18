@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0049_account_ready_standalone_resend",
+    "hash": "3542cd98ff47e3c276c2ec9b0d1e11a2118a269d274d983a81c1eea97cb11a69",
+    "createdAt": 1789769091560
+  },
+  "digest": "d58d7bdcac73fb6ab35c41403809583fbcea42faa862c5d215c82a6b26fe6fd2",
+  "counts": {
+    "tables": 75,
+    "columns": 1050,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 32,
+    "constraints": 566,
+    "indexes": 321,
+    "types": 1,
+    "functions": 19,
+    "triggers": 33,
+    "policies": 0
+  }
+}

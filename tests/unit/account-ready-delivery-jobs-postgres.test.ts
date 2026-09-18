@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import { accountReadyDeliveryJobs } from "@shared/schema/account-ready-delivery-jobs";
-import { bowlers, identityLinkEvents, users } from "@shared/schema";
+import { bowlers, identityLinkEvents, profileClaimNotifications, users } from "@shared/schema";
 import { getTestDb } from "../setup/test-db";
 import { getBaselineOrgAId } from "../helpers";
 import {
@@ -13,8 +13,10 @@ import {
   finalizeAccountReadyDeliveryJob,
   getNextAccountReadyDeliveryAt,
   queueAccountReadyDeliveryJob,
+  requeueAccountReadyDeliveryJob,
   recoverAccountReadyDeliveryJobs,
 } from "../../server/storage/account-ready-delivery-jobs";
+import { profileClaimReportTokenHashForEvent } from "../../server/storage/profile-claim-notifications";
 import { linkUserToBowler } from "../../server/services/identity-link";
 import { accountReadyDeliveryProductionDependencies } from "../../server/services/account-ready-delivery-worker";
 
@@ -75,6 +77,95 @@ async function eventFor(userId: number, bowlerId: number) {
 }
 
 describe("account-ready delivery queue PostgreSQL boundaries", () => {
+  it("does not suppress account-ready delivery when no profile-claim recipient exists", async () => {
+    const { user, bowler } = await fixture("No Claim Notice");
+    await db.update(users).set({ bowlerId: bowler.id }).where(eq(users.id, user.id));
+    const event = await eventFor(user.id, bowler.id);
+    const queued = await queueAccountReadyDeliveryJob({
+      identityLinkEventId: event.id,
+      userId: user.id,
+      bowlerId: bowler.id,
+      organizationId,
+    });
+    if (queued.kind !== "enqueued") throw new Error("no-claim fixture was coalesced");
+
+    const target = await accountReadyDeliveryProductionDependencies.loadTarget(queued.job);
+    expect(target?.toEmail).toBe(user.email);
+    await db.update(accountReadyDeliveryJobs)
+      .set({ nextAttemptAt: new Date(Date.now() + 60 * 60_000).toISOString() })
+      .where(eq(accountReadyDeliveryJobs.id, queued.job.id));
+  });
+
+  it("uses the immutable profile-claim recipient when deciding whether to combine notices", async () => {
+    const { user, bowler } = await fixture("Distinct Recipients");
+    await db.update(users).set({ bowlerId: bowler.id }).where(eq(users.id, user.id));
+    const event = await eventFor(user.id, bowler.id);
+    const reportTokenHash = profileClaimReportTokenHashForEvent(event.id);
+    if (!bowler.email) throw new Error("distinct-recipient bowler email was not created");
+    await db.insert(profileClaimNotifications).values({
+      identityLinkEventId: event.id,
+      userId: user.id,
+      bowlerId: bowler.id,
+      organizationId,
+      recipientEmail: bowler.email,
+      recipientSource: "roster",
+      recipientName: bowler.name,
+      bowlerName: bowler.name,
+      reportTokenHash,
+      reportTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const queued = await queueAccountReadyDeliveryJob({
+      identityLinkEventId: event.id,
+      userId: user.id,
+      bowlerId: bowler.id,
+      organizationId,
+    });
+    if (queued.kind !== "enqueued") throw new Error("distinct-recipient fixture was coalesced");
+
+    const target = await accountReadyDeliveryProductionDependencies.loadTarget(queued.job);
+    expect(target?.toEmail).toBe(user.email);
+    await db.update(accountReadyDeliveryJobs)
+      .set({ nextAttemptAt: new Date(Date.now() + 60 * 60_000).toISOString() })
+      .where(eq(accountReadyDeliveryJobs.id, queued.job.id));
+  });
+
+  it("suppresses only a viable combined notice and honors standalone resend", async () => {
+    const { user, bowler } = await fixture("Combined Notice");
+    await db.update(users).set({ bowlerId: bowler.id }).where(eq(users.id, user.id));
+    await db.update(bowlers).set({ email: user.email }).where(eq(bowlers.id, bowler.id));
+    const event = await eventFor(user.id, bowler.id);
+    if (!bowler.email) throw new Error("combined-recipient bowler email was not created");
+    await db.insert(profileClaimNotifications).values({
+      identityLinkEventId: event.id,
+      userId: user.id,
+      bowlerId: bowler.id,
+      organizationId,
+      recipientEmail: user.email,
+      recipientSource: "roster",
+      recipientName: bowler.name,
+      bowlerName: bowler.name,
+      reportTokenHash: profileClaimReportTokenHashForEvent(event.id),
+      reportTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const queued = await queueAccountReadyDeliveryJob({
+      identityLinkEventId: event.id,
+      userId: user.id,
+      bowlerId: bowler.id,
+      organizationId,
+    });
+    if (queued.kind !== "enqueued") throw new Error("combined-recipient fixture was coalesced");
+    expect(await accountReadyDeliveryProductionDependencies.loadTarget(queued.job)).toBeUndefined();
+
+    const requeued = await requeueAccountReadyDeliveryJob({ identityLinkEventId: event.id });
+    if (!requeued) throw new Error("combined-recipient resend was not reopened");
+    expect(requeued.standaloneDeliveryRequested).toBe(true);
+    expect((await accountReadyDeliveryProductionDependencies.loadTarget(requeued))?.toEmail)
+      .toBe(user.email);
+    await db.update(accountReadyDeliveryJobs)
+      .set({ nextAttemptAt: new Date(Date.now() + 60 * 60_000).toISOString() })
+      .where(eq(accountReadyDeliveryJobs.id, queued.job.id));
+  });
+
   it("claims two due intents concurrently without handing out the same row", async () => {
     const firstFixture = await fixture("Concurrent One");
     const secondFixture = await fixture("Concurrent Two");
@@ -143,6 +234,41 @@ describe("account-ready delivery queue PostgreSQL boundaries", () => {
       leaseToken: recoveredClaim?.leaseToken ?? "current",
       outcome: { status: "succeeded", providerMessageId: "current" },
     })).toBe(true);
+  });
+
+  it("marks an explicit resend standalone and renews an expired intent", async () => {
+    const { user, bowler } = await fixture("Manual resend");
+    const event = await eventFor(user.id, bowler.id);
+    const queued = await queueAccountReadyDeliveryJob({
+      identityLinkEventId: event.id,
+      userId: user.id,
+      bowlerId: bowler.id,
+      organizationId,
+      expiresAt: new Date(Date.now() - 1_000),
+    }).catch(() => undefined);
+    // The public enqueue contract rejects already-expired intents.  Create a
+    // normal intent, then move it into the expired terminal state to model a
+    // delivery that an administrator is reopening.
+    const valid = queued ?? await queueAccountReadyDeliveryJob({
+      identityLinkEventId: event.id,
+      userId: user.id,
+      bowlerId: bowler.id,
+      organizationId,
+    });
+    if (valid.kind !== "enqueued") throw new Error("manual-resend fixture was coalesced");
+    const oldExpiry = new Date(Date.now() - 1_000).toISOString();
+    await db.update(accountReadyDeliveryJobs).set({
+      status: "failed",
+      completedAt: oldExpiry,
+      expiresAt: oldExpiry,
+      standaloneDeliveryRequested: false,
+      lastErrorCode: "intent_expired",
+    }).where(eq(accountReadyDeliveryJobs.id, valid.job.id));
+
+    const requeued = await requeueAccountReadyDeliveryJob({ identityLinkEventId: event.id });
+    expect(requeued?.status).toBe("pending");
+    expect(requeued?.standaloneDeliveryRequested).toBe(true);
+    expect(requeued && Date.parse(requeued.expiresAt)).toBeGreaterThan(Date.now());
   });
 
   it("recovers an exhausted intent and exposes an expired lease to the scheduler", async () => {

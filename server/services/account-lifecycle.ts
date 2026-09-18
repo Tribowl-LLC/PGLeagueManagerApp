@@ -229,12 +229,12 @@ export async function applyConfirmEmailChangeTxn(
 ): Promise<ConfirmEmailChangeOutcome> {
   return await db.transaction(async (tx) => {
     // Read the immutable owner first without taking a row lock, then acquire
-    // the per-account advisory lock and the user row lock before touching the
+    // the per-account advisory lock and user row lock before touching the
     // email-change row. Credential triggers take locks in user -> account
-    // action -> email-change order; taking the user lock first here prevents
-    // a direct credential UPDATE from holding the user row while waiting on
-    // an email row that this transaction already claimed.
-    const [candidate] = await tx
+    // action -> email-change order; matching that order prevents a direct
+    // credential UPDATE from holding the user row while this transaction
+    // holds an email row and waits for the user.
+    let [candidate] = await tx
       .select()
       .from(emailChangeRequests)
       .where(and(
@@ -264,6 +264,33 @@ export async function applyConfirmEmailChangeTxn(
       .limit(1)
       .for('update');
     if (!targetUser) return { kind: 'user_gone' as const };
+
+    // A concurrent old-mailbox approval can commit while this transaction is
+    // waiting on the account credential lock.  Re-read the request after the
+    // lock so both proof fields participate in one serialized state machine;
+    // otherwise each transaction can observe the other's pre-proof snapshot,
+    // record its own proof, and leave the request permanently pending.
+    const [lockedCandidate] = await tx
+      .select()
+      .from(emailChangeRequests)
+      .where(and(
+        eq(emailChangeRequests.id, candidate.id),
+        isNull(emailChangeRequests.consumedAt),
+        gt(emailChangeRequests.expiresAt, sql`now()`),
+      ))
+      .limit(1)
+      .for('update');
+    if (!lockedCandidate) {
+      const [existing] = await tx
+        .select()
+        .from(emailChangeRequests)
+        .where(eq(emailChangeRequests.id, candidate.id))
+        .limit(1);
+      if (!existing) return { kind: 'invalid' as const };
+      if (existing.consumedAt) return { kind: 'consumed' as const };
+      return { kind: 'expired' as const };
+    }
+    candidate = lockedCandidate;
     const [activeHold] = await tx.select({ id: identitySecurityHolds.id })
       .from(identitySecurityHolds)
       .where(and(
@@ -298,23 +325,26 @@ export async function applyConfirmEmailChangeTxn(
       ) {
         return { kind: 'invalid' as const };
       }
-      const [confirmed] = await tx.update(emailChangeRequests).set({
-        newEmailConfirmedAt: sql`now()`,
-      }).where(and(
-        eq(emailChangeRequests.id, candidate.id),
-        isNull(emailChangeRequests.consumedAt),
-        isNull(emailChangeRequests.newEmailConfirmedAt),
-        gt(emailChangeRequests.expiresAt, sql`now()`),
-      )).returning();
-      if (!confirmed) {
-        const [current] = await tx.select().from(emailChangeRequests)
-          .where(eq(emailChangeRequests.id, candidate.id)).limit(1);
-        if (current?.consumedAt) return { kind: 'consumed' as const };
-        if (current?.newEmailConfirmedAt && !current.oldEmailApprovedAt) {
-          return { kind: 'pending_old' as const, user: targetUser, requestId: current.id };
+      if (!candidate.newEmailConfirmedAt) {
+        const [confirmed] = await tx.update(emailChangeRequests).set({
+          newEmailConfirmedAt: sql`now()`,
+        }).where(and(
+          eq(emailChangeRequests.id, candidate.id),
+          isNull(emailChangeRequests.consumedAt),
+          isNull(emailChangeRequests.newEmailConfirmedAt),
+          gt(emailChangeRequests.expiresAt, sql`now()`),
+        )).returning();
+        if (confirmed) {
+          candidate = confirmed;
+        } else {
+          const [current] = await tx.select().from(emailChangeRequests)
+            .where(eq(emailChangeRequests.id, candidate.id)).limit(1);
+          if (current?.consumedAt) return { kind: 'consumed' as const };
+          if (!current) return { kind: 'invalid' as const };
+          candidate = current;
         }
-        return { kind: 'invalid' as const };
       }
+      if (!candidate.newEmailConfirmedAt) return { kind: 'invalid' as const };
       if (!candidate.oldEmailApprovedAt) {
         return { kind: 'pending_old' as const, user: targetUser, requestId: candidate.id };
       }
@@ -397,7 +427,7 @@ export async function applyApproveOldEmailChangeTxn(
   tokenHash: string,
 ): Promise<ApproveOldEmailChangeOutcome> {
   return db.transaction(async (tx) => {
-    const [candidate] = await tx.select().from(emailChangeRequests)
+    let [candidate] = await tx.select().from(emailChangeRequests)
       .where(and(
         eq(emailChangeRequests.oldEmailTokenHash, tokenHash),
         isNull(emailChangeRequests.consumedAt),
@@ -414,6 +444,25 @@ export async function applyApproveOldEmailChangeTxn(
     const [targetUser] = await tx.select().from(users)
       .where(eq(users.id, candidate.userId)).limit(1).for('update');
     if (!targetUser) return { kind: 'user_gone' as const };
+
+    // Re-read after the credential lock.  The new-mailbox confirmation may
+    // have committed while this request was waiting; using the initial
+    // snapshot would record the old proof and incorrectly return pending_new
+    // even though both proofs are now present.
+    const [lockedCandidate] = await tx.select().from(emailChangeRequests)
+      .where(and(
+        eq(emailChangeRequests.id, candidate.id),
+        isNull(emailChangeRequests.consumedAt),
+        gt(emailChangeRequests.oldEmailTokenExpiresAt, sql`now()`),
+      )).limit(1).for('update');
+    if (!lockedCandidate) {
+      const [existing] = await tx.select().from(emailChangeRequests)
+        .where(eq(emailChangeRequests.id, candidate.id)).limit(1);
+      if (!existing) return { kind: 'invalid' as const };
+      if (existing.consumedAt) return { kind: 'consumed' as const };
+      return { kind: 'expired' as const };
+    }
+    candidate = lockedCandidate;
     const [activeHold] = await tx.select({ id: identitySecurityHolds.id })
       .from(identitySecurityHolds)
       .where(and(
@@ -430,17 +479,29 @@ export async function applyApproveOldEmailChangeTxn(
     ) {
       return { kind: 'invalid' as const };
     }
-    const [approved] = await tx.update(emailChangeRequests).set({
-      oldEmailApprovedAt: sql`now()`,
-    }).where(and(
-      eq(emailChangeRequests.id, candidate.id),
-      isNull(emailChangeRequests.consumedAt),
-      isNull(emailChangeRequests.oldEmailApprovedAt),
-    )).returning();
-    if (!approved) return { kind: 'consumed' as const };
+    if (!candidate.oldEmailApprovedAt) {
+      const [approved] = await tx.update(emailChangeRequests).set({
+        oldEmailApprovedAt: sql`now()`,
+      }).where(and(
+        eq(emailChangeRequests.id, candidate.id),
+        isNull(emailChangeRequests.consumedAt),
+        isNull(emailChangeRequests.oldEmailApprovedAt),
+      )).returning();
+      if (approved) {
+        candidate = approved;
+      } else {
+        const [current] = await tx.select().from(emailChangeRequests)
+          .where(eq(emailChangeRequests.id, candidate.id)).limit(1);
+        if (current?.consumedAt) return { kind: 'consumed' as const };
+        if (!current) return { kind: 'invalid' as const };
+        candidate = current;
+      }
+    }
+    if (!candidate.oldEmailApprovedAt) return { kind: 'invalid' as const };
     if (!candidate.newEmailConfirmedAt) {
       return { kind: 'pending_new' as const, user: targetUser, requestId: candidate.id };
     }
+    if (!candidate.oldEmail) return { kind: 'invalid' as const };
     const [updated] = await tx.update(users).set({ email: normalizeAccountEmail(candidate.newEmail) })
       .where(eq(users.id, targetUser.id)).returning();
     if (!updated) return { kind: 'user_gone' as const };
