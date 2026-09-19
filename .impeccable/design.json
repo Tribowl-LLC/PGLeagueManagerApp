@@ -1,0 +1,262 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-19T05:00:02Z",
+  "title": "Design System: LeagueVault",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Deep Navy Primary",
+        "canonical": "hsl(222 47% 11%)",
+        "tonalRamp": [
+          "oklch(15% 0.04 260)",
+          "oklch(23% 0.05 260)",
+          "oklch(32% 0.06 260)",
+          "oklch(41% 0.07 260)",
+          "oklch(50% 0.08 260)",
+          "oklch(63% 0.08 260)",
+          "oklch(78% 0.05 260)",
+          "oklch(95% 0.01 260)"
+        ]
+      },
+      "app-shell": {
+        "role": "neutral",
+        "displayName": "Cool App Shell",
+        "canonical": "#f8fafc",
+        "tonalRamp": [
+          "#0f172a",
+          "#1e293b",
+          "#334155",
+          "#64748b",
+          "#94a3b8",
+          "#cbd5e1",
+          "#e2e8f0",
+          "#f8fafc"
+        ]
+      },
+      "navigation-deep": {
+        "role": "neutral",
+        "displayName": "Navigation Deep Navy",
+        "canonical": "#0f172a",
+        "tonalRamp": [
+          "#0b1120",
+          "#0f172a",
+          "#172033",
+          "#26344d",
+          "#3b4d6b",
+          "#64748b",
+          "#cbd5e1",
+          "#f8fafc"
+        ]
+      },
+      "brand-accent-500": {
+        "role": "primary",
+        "displayName": "Blue-Violet Active Accent",
+        "canonical": "oklch(58.5% 0.233 277.117)",
+        "tonalRamp": [
+          "oklch(18% 0.09 277)",
+          "oklch(27% 0.13 277)",
+          "oklch(36% 0.17 277)",
+          "oklch(45.7% 0.24 277)",
+          "oklch(58.5% 0.233 277)",
+          "oklch(67.3% 0.182 277)",
+          "oklch(78.5% 0.115 275)",
+          "oklch(96.2% 0.018 272)"
+        ]
+      },
+      "danger-500": {
+        "role": "tertiary",
+        "displayName": "Danger Red",
+        "canonical": "oklch(63.7% 0.237 25.331)",
+        "tonalRamp": [
+          "oklch(18% 0.07 25)",
+          "oklch(28% 0.11 25)",
+          "oklch(39.6% 0.141 26)",
+          "oklch(50.5% 0.213 28)",
+          "oklch(63.7% 0.237 25)",
+          "oklch(70.4% 0.191 22)",
+          "oklch(80.8% 0.114 20)",
+          "oklch(97.1% 0.013 17)"
+        ]
+      },
+      "positive-500": {
+        "role": "secondary",
+        "displayName": "Positive Green",
+        "canonical": "oklch(69.6% 0.17 162.48)",
+        "tonalRamp": [
+          "oklch(18% 0.05 163)",
+          "oklch(26.2% 0.051 173)",
+          "oklch(37.8% 0.077 169)",
+          "oklch(50.8% 0.118 166)",
+          "oklch(69.6% 0.17 162)",
+          "oklch(76.5% 0.177 163)",
+          "oklch(84.5% 0.143 165)",
+          "oklch(97.9% 0.021 166)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "body": {
+        "displayName": "System Sans Body",
+        "purpose": "Default readable copy across public, admin, and bowler surfaces."
+      },
+      "title": {
+        "displayName": "Compact Operational Title",
+        "purpose": "Page, card, and primary flow headings."
+      },
+      "label": {
+        "displayName": "Control Label",
+        "purpose": "Form labels, buttons, navigation rows, and table headings."
+      }
+    },
+    "shadows": [
+      {
+        "name": "app-header",
+        "value": "0 1px 2px rgba(0, 0, 0, 0.02)",
+        "purpose": "Quiet separation below the sticky content header."
+      },
+      {
+        "name": "mobile-navigation",
+        "value": "0 -4px 12px rgba(0, 0, 0, 0.06)",
+        "purpose": "Separation above the fixed bowler navigation."
+      }
+    ],
+    "motion": [
+      {
+        "name": "control-color",
+        "value": "200ms",
+        "purpose": "Default color and state transitions for buttons, links, and navigation."
+      },
+      {
+        "name": "sidebar-layout",
+        "value": "300ms ease-in-out",
+        "purpose": "Expanded and collapsed desktop sidebar transition."
+      },
+      {
+        "name": "sheet-slide-up",
+        "value": "300ms ease-out",
+        "purpose": "Custom bottom-sheet entrance for mobile content."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "0.01ms",
+        "purpose": "Near-instant animation and transition duration under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "640px"
+      },
+      {
+        "name": "md",
+        "value": "768px"
+      },
+      {
+        "name": "lg",
+        "value": "1024px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Default high-confidence action.",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">Save changes</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; height: 2.5rem; padding: 0.5rem 1rem; border: 0; border-radius: calc(var(--radius) - 2px); background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); font: 500 0.875rem/1 ui-sans-serif, system-ui, sans-serif; transition: background-color 200ms, color 200ms; } .ds-btn-primary:hover { background: hsl(var(--primary) / 0.9); } .ds-btn-primary:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Lower-emphasis action that retains a clear boundary.",
+      "html": "<button class=\"ds-btn-outline\" type=\"button\">Cancel</button>",
+      "css": ".ds-btn-outline { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; height: 2.5rem; padding: 0.5rem 1rem; border: 1px solid hsl(var(--input)); border-radius: calc(var(--radius) - 2px); background: hsl(var(--background)); color: hsl(var(--foreground)); font: 500 0.875rem/1 ui-sans-serif, system-ui, sans-serif; transition: background-color 200ms, color 200ms; } .ds-btn-outline:hover { background: hsl(var(--accent)); color: hsl(var(--accent-foreground)); } .ds-btn-outline:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Standard form field for public and operational forms.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Enter a value\" aria-label=\"Example field\" />",
+      "css": ".ds-input { display: flex; width: 100%; height: 2.5rem; padding: 0.5rem 0.75rem; border: 1px solid hsl(var(--input)); border-radius: calc(var(--radius) - 2px); background: hsl(var(--background)); color: hsl(var(--foreground)); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; } .ds-input::placeholder { color: hsl(var(--muted-foreground)); } .ds-input:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; } .ds-input:disabled { cursor: not-allowed; opacity: 0.5; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "White operational surface over the app shell.",
+      "html": "<article class=\"ds-card\"><h3>League health</h3><p>Current operational status.</p></article>",
+      "css": ".ds-card { padding: 1.5rem; border: 1px solid hsl(var(--border)); border-radius: var(--radius); background: hsl(var(--card)); color: hsl(var(--card-foreground)); box-shadow: 0 1px 2px rgb(0 0 0 / 0.05); } .ds-card h3 { margin: 0; font: 600 1.125rem/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: -0.025em; } .ds-card p { margin: 0.375rem 0 0; color: hsl(var(--muted-foreground)); font: 400 0.875rem/1.5 ui-sans-serif, system-ui, sans-serif; }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Compact semantic status or context marker.",
+      "html": "<span class=\"ds-badge\">Active</span>",
+      "css": ".ds-badge { display: inline-flex; align-items: center; border: 1px solid transparent; border-radius: 9999px; padding: 0.125rem 0.625rem; background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); font: 600 0.75rem/1.5 ui-sans-serif, system-ui, sans-serif; transition: background-color 200ms, color 200ms; } .ds-badge:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }"
+    },
+    {
+      "name": "Desktop Navigation Item",
+      "kind": "nav",
+      "refersTo": "navigation-item",
+      "description": "Sidebar route row in the admin shell.",
+      "html": "<a class=\"ds-nav-item\" href=\"#\"><span aria-hidden=\"true\">◆</span><span>Dashboard</span></a>",
+      "css": ".ds-nav-item { display: flex; width: 100%; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; border-radius: calc(var(--radius) - 2px); color: oklch(86.9% 0.022 252.894); text-decoration: none; font: 500 0.875rem/1 ui-sans-serif, system-ui, sans-serif; transition: background-color 200ms, color 200ms; } .ds-nav-item:hover { background: oklch(27.9% 0.041 260.031); color: #fff; } .ds-nav-item:focus-visible { outline: 2px solid oklch(67.3% 0.182 276.935); outline-offset: 2px; } .ds-nav-item[aria-current=\"page\"] { background: oklch(58.5% 0.233 277.117 / 0.1); color: oklch(67.3% 0.182 276.935); }"
+    },
+    {
+      "name": "Bowler Mobile Navigation Item",
+      "kind": "nav",
+      "refersTo": "navigation-item",
+      "description": "One of four touch-oriented bottom-navigation items.",
+      "html": "<a class=\"ds-bowler-nav-item\" href=\"#\" aria-current=\"page\"><span class=\"ds-bowler-nav-icon\" aria-hidden=\"true\">◆</span><span>Overview</span></a>",
+      "css": ".ds-bowler-nav-item { display: flex; min-width: 0; width: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 0.125rem; border-radius: calc(var(--radius) - 2px); color: oklch(70.4% 0.04 256.788); text-decoration: none; font: 500 0.625rem/1.5 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.025em; } .ds-bowler-nav-icon { display: flex; width: 2.5rem; height: 1.75rem; align-items: center; justify-content: center; border-radius: 9999px; } .ds-bowler-nav-item:hover { color: oklch(44.6% 0.043 257.281); } .ds-bowler-nav-item[aria-current=\"page\"] { color: oklch(51.1% 0.262 276.966); font-weight: 700; } .ds-bowler-nav-item[aria-current=\"page\"] .ds-bowler-nav-icon { background: oklch(96.2% 0.018 272.314); } .ds-bowler-nav-item:focus-visible { outline: 2px solid oklch(58.5% 0.233 277.117); outline-offset: 2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Operations Console",
+    "overview": "The current interface is restrained, utility-first, and built for repeated operational work. It uses white and cool-slate surfaces, dark navy structural chrome, and a blue-violet accent for active and focus states. The visual hierarchy comes from spacing, modest type-weight changes, borders, and tonal separation rather than decorative imagery or expressive typography.\n\nThe desktop experience is an admin console with a persistent dark sidebar, sticky light header, responsive content area, tables, cards, forms, and dialogs. The bowler experience is more phone-oriented: a compact white header, centered content, and a four-item bottom navigation. Public account flows use a centered white card on a plain background and can adopt organization-provided logos.",
+    "keyCharacteristics": [
+      "Cool neutral surfaces and dark navy structural chrome.",
+      "Blue-violet accent for active, focus, and primary action states.",
+      "Compact-to-medium operational density with small-to-medium rounded corners.",
+      "Restrained borders and shadows; depth is mostly tonal.",
+      "Responsive desktop admin shell and mobile bowler navigation."
+    ],
+    "rules": [
+      {
+        "name": "The Status-by-Meaning Rule",
+        "body": "State colors communicate operational meaning; they are not decorative accents. Preserve distinct danger, success, warning, caution, and information roles when adding or redesigning components.",
+        "section": "colors"
+      },
+      {
+        "name": "The Utility-First Type Rule",
+        "body": "Use the system sans stack and a restrained weight/size hierarchy. Do not introduce display typography into operational surfaces without an approved redesign direction.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tonal-First Rule",
+        "body": "Establish hierarchy with surfaces and borders before adding stronger shadows. Elevation should clarify a plane, dialog, or active interaction rather than decorate a routine data surface.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use semantic CSS tokens from client/src/index.css instead of inventing one-off colors.",
+      "Do preserve the distinction between dark navigation chrome, light content surfaces, and semantic state colors.",
+      "Do make keyboard focus visible with the established ring-and-offset treatment.",
+      "Do keep admin and bowler responsive behavior distinct where their usage scenes differ.",
+      "Do use borders and tonal layering before stronger shadows on operational content.",
+      "Do honor reduced-motion behavior and provider-required payment control styling."
+    ],
+    "donts": [
+      "Don't treat this incumbent palette or layout as the approved future visual world; replace it only after an explicit redesign direction is chosen.",
+      "Don't introduce a new font family, decorative display treatment, or marketing-style visual language into routine operations without updating the design direction first.",
+      "Don't use danger, warning, success, or information colors decoratively or interchangeably.",
+      "Don't remove semantic labels, focus states, responsive behavior, or loading/empty/error/recovery states while changing visual styling.",
+      "Don't normalize Square wallet and payment-provider controls without checking their provider requirements."
+    ]
+  }
+}
