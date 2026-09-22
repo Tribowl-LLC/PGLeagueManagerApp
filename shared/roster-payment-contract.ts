@@ -154,6 +154,32 @@ export type InteractiveObligationChargeRequestV2 = z.infer<typeof interactiveObl
 export type AutomaticFifoPaymentQuoteRequest = z.infer<typeof automaticFifoPaymentQuoteRequestSchema>;
 export type AutomaticFifoPaymentChargeRequest = z.infer<typeof automaticFifoPaymentChargeRequestSchema>;
 
+export type CanonicalResponsibilityFingerprintInput = Pick<OccurrenceResponsibilityInput,
+  "occurrenceId" | "teamId" | "slotIndex" | "positionIndex" | "kind"
+  | "mainBowlerId" | "substituteBowlerId" | "payerBowlerId" | "policy"
+>;
+
+/**
+ * Serialize the exact responsibility identity used by the versioned request
+ * fingerprint. Keep this projection free of amount and timing fields because
+ * those values are server-authoritative when the responsibility is recorded.
+ */
+export function serializeCanonicalResponsibilityFingerprint(rows: CanonicalResponsibilityFingerprintInput[]): string {
+  return JSON.stringify([...rows]
+    .sort((a, b) => a.occurrenceId.localeCompare(b.occurrenceId) || a.teamId - b.teamId || a.positionIndex - b.positionIndex)
+    .map((row) => ({
+      occurrenceId: row.occurrenceId,
+      teamId: row.teamId,
+      slotIndex: row.slotIndex,
+      positionIndex: row.positionIndex,
+      kind: row.kind,
+      mainBowlerId: row.mainBowlerId ?? null,
+      substituteBowlerId: row.substituteBowlerId ?? null,
+      payerBowlerId: row.payerBowlerId ?? null,
+      policy: row.policy,
+    })));
+}
+
 export type CanonicalDuePastDueRowV2 = {
   id: string;
   organizationId: number;

@@ -28,6 +28,7 @@ import {
   emailSchema,
   type TeamPaymentPolicy,
 } from "@shared/schema";
+import { serializeCanonicalResponsibilityFingerprint } from "@shared/roster-payment-contract";
 import type {
   CanonicalCorrectionRequest,
   CanonicalManualRecordRequest,
@@ -126,6 +127,10 @@ function commandFingerprint(prefix: string, value: unknown): string {
   return `${prefix}:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 }
 
+function serializedCommandFingerprint(prefix: string, value: string): string {
+  return `${prefix}:${createHash("sha256").update(value).digest("hex")}`;
+}
+
 function paymentLocalDate(instant: string, timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
@@ -148,17 +153,7 @@ export function canonicalRosterFingerprint(request: RosterPaymentResponsibilityR
 }
 
 export function canonicalResponsibilityFingerprint(rows: OccurrenceResponsibilityInput[]): string {
-  return commandFingerprint("lvresponsibility:v1", [...rows].sort((a, b) => a.occurrenceId.localeCompare(b.occurrenceId) || a.teamId - b.teamId || a.positionIndex - b.positionIndex).map((row) => ({
-    occurrenceId: row.occurrenceId,
-    teamId: row.teamId,
-    slotIndex: row.slotIndex,
-    positionIndex: row.positionIndex,
-    kind: row.kind,
-    mainBowlerId: row.mainBowlerId ?? null,
-    substituteBowlerId: row.substituteBowlerId ?? null,
-    payerBowlerId: row.payerBowlerId ?? null,
-    policy: row.policy,
-  })));
+  return serializedCommandFingerprint("lvresponsibility:v1", serializeCanonicalResponsibilityFingerprint(rows));
 }
 
 type CanonicalCorrectionInput = CanonicalCorrectionRequest;

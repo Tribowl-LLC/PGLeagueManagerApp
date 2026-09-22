@@ -6,6 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Link } from "wouter";
 import { CheckCircle2, Pencil, Trash2 } from "lucide-react";
 import type { Bowler, League, BowlerWithAccount } from "@shared/schema";
+import { calculateRosterPaymentTiming, serializeCanonicalResponsibilityFingerprint } from "@shared/roster-payment-contract";
 import type { TeamBowlerEntry } from "@/lib/bowler-league-utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -125,10 +126,11 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
       const vacant = kind === "vacant";
       const effectivePolicy = overridePolicy ?? policy;
       const responsibility = { occurrenceId, teamId, slotIndex, positionIndex: slotIndex, kind, mainBowlerId: vacant ? null : slot.mainBowlerId ?? null, substituteBowlerId: vacant || main ? null : bowlerId, payerBowlerId: vacant ? null : main ? slot.mainBowlerId ?? null : split || effectivePolicy !== "main_pays_full" || slot.occupant === "vacant" ? bowlerId : slot.mainBowlerId ?? null, policy: vacant ? "main_pays_full" as const : split ? "special_split" as const : slot.occupant === "vacant" ? "sub_pays_full" as const : effectivePolicy, amountMinor: vacant ? 0 : league?.weeklyFee ?? 0, lineageAmountMinor: split ? rosterQuery.data?.data?.lineageFee ?? null : null, prizeFundAmountMinor: split ? rosterQuery.data?.data?.prizeFundFee ?? null : null };
-      const canonical = JSON.stringify([responsibility].sort((left, right) => left.occurrenceId.localeCompare(right.occurrenceId) || left.teamId - right.teamId || left.positionIndex - right.positionIndex));
+      const canonical = serializeCanonicalResponsibilityFingerprint([responsibility]);
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
       const requestFingerprint = `lvresponsibility:v1:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
-      return apiRequest(`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1/occurrences`, "POST", { commandKey: crypto.randomUUID(), requestFingerprint, responsibilities: [{ ...responsibility, dueAt: occurrence.startAt, pastDueAt: new Date(new Date(occurrence.startAt).getTime() + 3 * 60 * 60 * 1000).toISOString() }] });
+      const { dueAt, pastDueAt } = calculateRosterPaymentTiming(occurrence.startAt);
+      return apiRequest(`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1/occurrences`, "POST", { commandKey: crypto.randomUUID(), requestFingerprint, responsibilities: [{ ...responsibility, dueAt, pastDueAt }] });
     },
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }); void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }); toast({ title: "Substitute assignment saved" }); },
     onError: (error: Error) => toast({ title: "Substitute assignment could not be saved", description: error.message, variant: "destructive" }),

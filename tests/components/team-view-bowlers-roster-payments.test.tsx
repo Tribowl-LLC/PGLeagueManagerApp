@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Bowler, BowlerLeague, League, BowlerWithAccount } from "@shared/schema";
+import { occurrenceResponsibilityInputSchema } from "@shared/roster-payment-contract";
 
 const apiRequestMock = vi.hoisted(() => vi.fn());
 const queryClientMock = vi.hoisted(() => ({
@@ -33,12 +35,12 @@ const rosterResponse = {
       { id: 12, name: "Sub Two", teamId: 9 },
     ],
     occurrences: [
-      { id: "00000000-0000-0000-0000-000000000001", startAt: "2038-01-03T03:00:00.000Z", status: "scheduled" },
-      { id: "00000000-0000-0000-0000-000000000002", startAt: "2038-01-10T03:00:00.000Z", status: "scheduled" },
+      { id: "00000000-0000-4000-8000-000000000001", startAt: "2038-01-03 03:00:00+00", status: "scheduled" },
+      { id: "00000000-0000-4000-8000-000000000002", startAt: "2038-01-10T03:00:00.000Z", status: "scheduled" },
     ],
     occurrenceResponsibilities: [
-      { occurrenceId: "00000000-0000-0000-0000-000000000001", teamId: 9, slotIndex: 0, positionIndex: 0, responsibilityKind: "substitute", mainBowlerId: 10, substituteBowlerId: 11, payerBowlerId: 10, policy: "main_pays_full", amountMinor: 2000, lineageAmountMinor: null, prizeFundAmountMinor: null },
-      { occurrenceId: "00000000-0000-0000-0000-000000000002", teamId: 9, slotIndex: 1, positionIndex: 1, responsibilityKind: "substitute", mainBowlerId: 13, substituteBowlerId: 12, payerBowlerId: 12, policy: "sub_pays_full", amountMinor: 2000, lineageAmountMinor: null, prizeFundAmountMinor: null },
+      { occurrenceId: "00000000-0000-4000-8000-000000000001", teamId: 9, slotIndex: 0, positionIndex: 0, responsibilityKind: "substitute", mainBowlerId: 10, substituteBowlerId: 11, payerBowlerId: 10, policy: "main_pays_full", amountMinor: 2000, lineageAmountMinor: null, prizeFundAmountMinor: null },
+      { occurrenceId: "00000000-0000-4000-8000-000000000002", teamId: 9, slotIndex: 1, positionIndex: 1, responsibilityKind: "substitute", mainBowlerId: 13, substituteBowlerId: 12, payerBowlerId: 12, policy: "sub_pays_full", amountMinor: 2000, lineageAmountMinor: null, prizeFundAmountMinor: null },
     ],
     teams: [{ id: 9, policy: "main_pays_full", slots: [
       { id: "slot-1", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 3, slotIndex: 0, occupant: "main", mainBowlerId: 10, currentRevision: 1 },
@@ -115,7 +117,7 @@ describe("Team Rosters payment responsibility surface", () => {
     expect(screen.getAllByLabelText(/Override kind/)).toHaveLength(3);
     expect(screen.getByText("Sub One · $20.00")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Override occurrence"), { target: { value: "00000000-0000-0000-0000-000000000002" } });
+    fireEvent.change(screen.getByLabelText("Override occurrence"), { target: { value: "00000000-0000-4000-8000-000000000002" } });
     await waitFor(() => expect(screen.getByText("Sub Two · $20.00")).toBeInTheDocument());
     expect(screen.getAllByLabelText(/Override kind/)).toHaveLength(3);
     expect(screen.queryByText("Sub One · $20.00")).not.toBeInTheDocument();
@@ -147,6 +149,64 @@ describe("Team Rosters payment responsibility surface", () => {
     expect(organizationDuePredicate?.({ queryKey: ["/api/financials/due-past-due"] })).toBe(true);
     expect(organizationDuePredicate?.({ queryKey: ["/api/financials/due-past-due?organizationId=77"] })).toBe(true);
     expect(organizationDuePredicate?.({ queryKey: ["/api/other"] })).toBe(false);
+  });
+
+  it("saves a substitute with the server canonical fingerprint and normalized DB timestamp", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(rosterResponse), { status: 200, headers: { "content-type": "application/json" } })));
+    apiRequestMock.mockResolvedValue(new Response(null, { status: 201 }));
+    renderRoster();
+
+    const occurrenceId = "00000000-0000-4000-8000-000000000001";
+    await screen.findByText("Payment override for one occurrence");
+    fireEvent.change(screen.getByLabelText(`Override bowler ${occurrenceId}:0`), { target: { value: "12" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /^Save$/ })[0]);
+
+    await waitFor(() => expect(apiRequestMock).toHaveBeenCalledOnce());
+    const [url, method, body] = apiRequestMock.mock.calls[0] as [string, string, {
+      commandKey: string;
+      requestFingerprint: string;
+      responsibilities: Array<Record<string, unknown>>;
+    }];
+    expect(url).toBe("/api/financials/leagues/1/roster-payment-responsibility/1/occurrences");
+    expect(method).toBe("POST");
+    expect(body.commandKey).toEqual(expect.any(String));
+    expect(body.responsibilities).toHaveLength(1);
+
+    const responsibility = body.responsibilities[0];
+    expect(occurrenceResponsibilityInputSchema.safeParse(responsibility).success).toBe(true);
+    expect(responsibility).toMatchObject({
+      occurrenceId,
+      teamId: 9,
+      slotIndex: 0,
+      positionIndex: 0,
+      kind: "substitute",
+      mainBowlerId: 10,
+      substituteBowlerId: 12,
+      payerBowlerId: 10,
+      policy: "main_pays_full",
+      amountMinor: 2000,
+      lineageAmountMinor: null,
+      prizeFundAmountMinor: null,
+      dueAt: "2038-01-03T03:00:00.000Z",
+      pastDueAt: "2038-01-03T06:00:00.000Z",
+    });
+
+    // This projection is intentionally written in the test instead of
+    // calling the shared helper: it is the wire contract that the server
+    // hashes, including field order and explicit null identities.
+    const canonicalProjection = JSON.stringify([{
+      occurrenceId,
+      teamId: 9,
+      slotIndex: 0,
+      positionIndex: 0,
+      kind: "substitute",
+      mainBowlerId: 10,
+      substituteBowlerId: 12,
+      payerBowlerId: 10,
+      policy: "main_pays_full",
+    }]);
+    const expectedFingerprint = `lvresponsibility:v1:${createHash("sha256").update(canonicalProjection).digest("hex")}`;
+    expect(body.requestFingerprint).toBe(expectedFingerprint);
   });
 
   it("renders an existing VACANT slot beside three Main and three Substitute members", async () => {
