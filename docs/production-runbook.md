@@ -132,18 +132,25 @@ mandatory. Keep the handoff current with the evidence fields in
    `Install frontend skill` session even when its worktree mapping is unknown,
    as well as dirty, active, or uncertain worktrees.
 
-   Use `git worktree remove <path>` only for an eligible worktree. Never use
-   `rm -rf` or a force-removal option, and never remove the current working
-   directory; move work to a safe idle checkout first when necessary.
-   After an eligible PR worktree is removed, delete its local branch with
-   `git branch -d`. If a confirmed squash merge causes Git's ancestry check to
-   reject that command, verify that the local ref still equals the PR's
-   recorded head SHA, then delete it with
+   Use `git worktree remove <path>` only for an eligible linked worktree. Never
+   use `rm -rf` or a force-removal option, and never remove the original
+   worktree. If the PR branch is checked out in the original worktree, switch
+   that checkout to the updated `main` (or another safe idle branch) instead.
+   Once the PR branch is no longer checked out in any worktree, delete its
+   local ref with `git branch -d`. If a confirmed squash merge causes Git's
+   ancestry check to reject that command, verify that the local ref still
+   equals the PR's recorded head SHA, then delete it with
    `git update-ref -d refs/heads/<branch> <expected-head-sha>` so the ref is
-   removed only if it has not changed. Never use `git branch -D` or a force
-   option. Delete the remote branch too when the hosting provider has not
-   already removed it. If any merge, ref, or cleanliness check is uncertain,
-   preserve the branch and report the blocker instead of forcing cleanup.
+   removed only if it has not changed. Never use `git branch -D`.
+
+   If the hosting provider has not already removed the remote branch, query
+   its current SHA and compare it with the recorded PR head SHA. Delete it only
+   when the values match, using the expected-old-SHA lease:
+   `git push --force-with-lease=refs/heads/<branch>:<expected-head-sha> origin --delete <branch>`.
+   This makes the delete fail if the remote ref changes after it was checked.
+   If the local or remote ref differs from the recorded PR head, or any merge,
+   ref, or cleanliness check is uncertain, preserve the branch and report the
+   blocker instead of forcing cleanup.
    Standing authorization covers routine safe cleanup after the
    release gates pass. Skip and report any blocker without a blanket approval
    request. This documentation describes an active-session procedure; it does
