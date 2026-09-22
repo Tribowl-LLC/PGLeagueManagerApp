@@ -1,5 +1,5 @@
 import { createHmac, randomBytes } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { env } from "../config";
 import {
@@ -362,6 +362,7 @@ export async function markRegistrationVerificationSent(input: {
     if (statusOf(row) === "replaced") throw new RegistrationChallengeError("REPLACED");
     if (statusOf(row) === "cancelled") throw new RegistrationChallengeError("CANCELLED");
     if (statusOf(row) === "consumed") throw new RegistrationChallengeError("CONSUMED");
+    if (statusOf(row) !== "pending") throw new RegistrationChallengeError("NOT_VERIFIED");
     if (isExpired(row.expiresAt)) {
       await tx.update(registrationVerificationChallenges)
         .set({ status: "expired" })
@@ -372,6 +373,24 @@ export async function markRegistrationVerificationSent(input: {
       || !row.operationLeaseExpiresAt || Date.parse(row.operationLeaseExpiresAt) <= Date.now()) {
       throw new RegistrationChallengeError("PROVIDER_LEASE_LOST");
     }
+    // Twilio may return the same verification SID after a restart even though
+    // a prior challenge already recorded it. Release only terminal rows for
+    // this tenant and normalized destination, then claim the SID below in the
+    // same transaction. The partial unique index remains the fail-closed
+    // fence for any active, verified, or consumed owner.
+    await lockPhone(tx, row.phone);
+    await tx.update(registrationVerificationChallenges)
+      .set({
+        providerVerificationSid: null,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(and(
+        sql`${registrationVerificationChallenges.id} <> ${row.id}`,
+        eq(registrationVerificationChallenges.organizationId, row.organizationId),
+        eq(registrationVerificationChallenges.phone, row.phone),
+        eq(registrationVerificationChallenges.providerVerificationSid, input.providerVerificationSid),
+        inArray(registrationVerificationChallenges.status, ["cancelled", "replaced"]),
+      ));
     const [updated] = await tx
       .update(registrationVerificationChallenges)
       .set({
