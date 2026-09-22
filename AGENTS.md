@@ -60,8 +60,10 @@ uses npm. Do not introduce Yarn, pnpm, or an additional lockfile.
   task-specific hold, draft, no-deploy instruction, or explicit approval rule
   overrides this default; existing destructive database approval controls
   remain mandatory.
-- After a pull request is merged, its remote branch should be deleted when
-  safe; the full post-release cleanup and local `main` update procedure is
+- After step 7 of the release lifecycle succeeds, delete the local PR branch
+  and any remaining remote PR branch as part of step 8. If the runbook's merge,
+  cleanliness, or publication checks fail, preserve the branch and report the
+  blocker. The full post-release cleanup and local `main` update procedure is
   defined in [step 8 of the production runbook](docs/production-runbook.md#default-release-lifecycle).
 - Never force-push `main` or rewrite published history unless explicitly
   instructed.
