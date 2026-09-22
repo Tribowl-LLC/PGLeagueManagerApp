@@ -136,6 +136,7 @@ const UNIT_NO_DB = [
   'tests/unit/square-webhook.test.ts',
   'tests/unit/rate-limit-environment.test.ts',
   'tests/unit/registration-verification.test.ts',
+  'tests/unit/registration-sms-route.test.ts',
   'tests/unit/rate-limit-shared-store-coverage.test.ts',
   'tests/unit/subdomain-resolution-consistency.test.ts',
   'tests/unit/team-delete-route.test.ts',

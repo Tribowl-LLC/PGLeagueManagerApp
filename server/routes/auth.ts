@@ -361,6 +361,20 @@ async function recoverRegistrationEmailConflict(
   req.session.pendingRegistration = undefined;
 }
 
+type RegistrationSmsSendStage = "lease" | "recovery" | "provider" | "persistence" | "route";
+type RegistrationSmsSendErrorCode =
+  | RegistrationChallengeError["code"]
+  | TwilioVerifyError["code"]
+  | "delivery_limit"
+  | "unknown";
+
+function registrationSmsSendErrorCode(error: unknown): RegistrationSmsSendErrorCode {
+  if (error instanceof RegistrationChallengeError) return error.code;
+  if (error instanceof TwilioVerifyError) return error.code;
+  if (error instanceof RegistrationDeliveryLimitExceededError) return "delivery_limit";
+  return "unknown";
+}
+
 async function sendSmsRegistrationCode(req: Request, res: Parameters<typeof sendSuccess>[0]) {
   const capability = smsRegistrationSession(req);
   const row = await getSmsRegistrationChallenge(req);
@@ -372,6 +386,7 @@ async function sendSmsRegistrationCode(req: Request, res: Parameters<typeof send
     ? await storage.getUser(row.existingUserId)
     : await storage.getUserByEmail(row.email);
   let lease: Awaited<ReturnType<typeof acquireRegistrationProviderLease>> | undefined;
+  let stage: RegistrationSmsSendStage = "lease";
   try {
     lease = await acquireRegistrationProviderLease({
       challengeId: capability.challengeId,
@@ -380,6 +395,7 @@ async function sendSmsRegistrationCode(req: Request, res: Parameters<typeof send
       operation: "send",
     });
     if (existingUser) {
+      stage = "recovery";
       // Existing accounts do not receive an SMS to an untrusted number. Queue
       // the ordinary reset flow and expose only the deliberate email branch.
       if (existingUser.password) {
@@ -408,7 +424,9 @@ async function sendSmsRegistrationCode(req: Request, res: Parameters<typeof send
       }, 202);
     }
 
+    stage = "provider";
     const sent = await getTwilioVerifyAdapter().sendSmsVerification(lease.row.phone);
+    stage = "persistence";
     const updated = await markRegistrationVerificationSent({
       challengeId: capability.challengeId,
       bindingSecret: capability.bindingSecret,
@@ -444,11 +462,33 @@ async function sendSmsRegistrationCode(req: Request, res: Parameters<typeof send
         ? "Too many recovery messages were requested. Please try again later."
         : "Too many verification messages were requested. Please try again later.", 429, "DELIVERY_LIMIT");
     }
+    if (stage === "persistence") {
+      log.error("Registration SMS persistence failed", {
+        stage,
+        errorCode: registrationSmsSendErrorCode(error),
+      });
+      return sendError(res, "We could not finish starting phone verification. Please try again.", 503, "RETRYABLE_ERROR");
+    }
+    if (stage === "recovery") {
+      log.error("Registration recovery persistence failed", {
+        stage,
+        errorCode: registrationSmsSendErrorCode(error),
+      });
+      return sendError(res, "Unable to send the recovery message. Please try again.", 503, "RETRYABLE_ERROR");
+    }
+    if (stage !== "provider") {
+      log.error("Registration SMS lease failed", {
+        stage,
+        errorCode: registrationSmsSendErrorCode(error),
+      });
+      return sendError(res, "Unable to send the verification message. Please try again.", 503, "RETRYABLE_ERROR");
+    }
     if (error instanceof TwilioVerifyError && error.code === "not_configured") {
       return sendError(res, "Text verification is temporarily unavailable. Please try again later.", 503, "SMS_NOT_CONFIGURED");
     }
     log.warn("Registration SMS delivery failed", {
-      errorCode: error instanceof TwilioVerifyError ? error.code : "provider_unavailable",
+      stage,
+      errorCode: registrationSmsSendErrorCode(error),
     });
     return sendError(res, "We could not send a verification code. Please try again later.", 503, "SMS_UNAVAILABLE");
   }
@@ -848,7 +888,10 @@ export function registerAuthRoutes(app: Express): void {
     try {
       return await sendSmsRegistrationCode(req, res);
     } catch (error) {
-      log.error("Registration verification send error", { errorCode: error instanceof Error ? error.name : "unknown" });
+      log.error("Registration verification send error", {
+        stage: "route",
+        errorCode: registrationSmsSendErrorCode(error),
+      });
       return sendError(res, "Unable to send the verification message. Please try again.", 503, "RETRYABLE_ERROR");
     }
   });
