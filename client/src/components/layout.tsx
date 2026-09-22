@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { logger } from "@/lib/logger";
-import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPlus, LayoutDashboard, Loader2, MapPin, Mail, Plug, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MessageSquare, MailWarning, MailX, UserPlus } from "lucide-react";
+import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPlus, LayoutDashboard, Loader2, MapPin, Mail, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MailWarning, MailX, UserPlus } from "lucide-react";
 import { useState, useEffect, Suspense, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
@@ -113,18 +113,6 @@ const navItems: NavItem[] = [
     href: "/reports",
     orgAdminOnly: true,
     paymentManagerAllowed: true,
-  },
-  {
-    icon: Plug,
-    label: "Integrations",
-    href: "/integrations",
-    orgAdminOnly: true
-  },
-  {
-    icon: MessageSquare,
-    label: "Messaging",
-    href: "/messaging",
-    orgAdminOnly: true
   },
   {
     icon: UserPlus,
