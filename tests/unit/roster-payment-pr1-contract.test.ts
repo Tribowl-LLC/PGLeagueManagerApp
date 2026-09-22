@@ -52,6 +52,17 @@ describe("PR1 roster-driven payment contract", () => {
     });
   });
 
+  it("normalizes a database timestamp while preserving the existing ISO timestamp path", () => {
+    expect(calculateRosterPaymentTiming("2038-01-03 03:00:00+00")).toEqual({
+      dueAt: "2038-01-03T03:00:00.000Z",
+      pastDueAt: "2038-01-03T06:00:00.000Z",
+    });
+    expect(calculateRosterPaymentTiming("2038-01-10T03:00:00.000Z")).toEqual({
+      dueAt: "2038-01-10T03:00:00.000Z",
+      pastDueAt: "2038-01-10T06:00:00.000Z",
+    });
+  });
+
   it("accepts only server-derived FIFO tender inputs", () => {
     expect(interactiveObligationQuoteRequestV2Schema.safeParse({ amountMinor: 400, payerBowlerId: 10 }).success).toBe(true);
     expect(interactiveObligationQuoteRequestV2Schema.safeParse({ amountMinor: 0, payerBowlerId: 10 }).success).toBe(false);
