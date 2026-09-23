@@ -127,6 +127,59 @@ For each schema change:
 This sequence keeps the declared schema, migration history, deployed schema,
 and application version traceable to the same reviewed commit.
 
+### One-time production repair for the 0049 `show_db_tree()` drift
+
+The production incident recorded as workflow run `35824851019` has a narrowly
+scoped, one-time exception to the normal forward-only migration executor. The
+production application remains compatible with the approved
+`0049_account_ready_standalone_resend` schema. A separately protected repair
+workflow may remove only the reviewed, untracked `public.show_db_tree()` helper
+when the exact observed 0049 drift fingerprint and catalog authorization
+evidence match. It must restore the existing approved 0049 fingerprint in one
+serializable transaction, leave the journal and all checked-in migration and
+fingerprint files unchanged, and refuse any other state. This is an incident
+recovery action, not a new schema migration or a general repair facility.
+
+The manual, protected **Production schema repair rehearsal** is a required
+gate before any production repair. Run it with the same exact certified `main`
+SHA, approve its `production` environment, and provide its exact confirmation
+`REHEARSE_LEAGUEVAULT_0049_SHOW_DB_TREE_35824851019`. It creates a disposable
+child of the preserved recovery snapshot, verifies its lineage and direct TLS
+endpoint, runs the same guarded repair script on that child, applies only
+`0050_rotating_team_payments`, verifies `pending=none`, and deletes only the
+run-specific child and endpoint. It has no production database connection or
+mutation. Review and record the successful rehearsal run ID, including all
+three schema-step outcomes and verified child/endpoint cleanup, against the
+same certified SHA. Supply its numeric value to the repair workflow's required
+`rehearsal_run_id` input. Before backup or database connection, that workflow
+uses the read-only GitHub Actions API to confirm the exact rehearsal workflow,
+successful conclusion, certified SHA, `main` branch, and manual-dispatch
+event. If a step fails, cleanup is uncertain, or evidence differs, resolve that
+uncertainty before production repair while preserving the recovery snapshot.
+Resolve the documented `PUBLIC EXECUTE` usage question too.
+
+The disposable-clone diagnostic was recorded in protected workflow run
+`35833733189`: the observed drift fingerprint is
+`sha256:d3251c2f3478da2ae09206506f3076643b46fab2510c1452609d3fba98a1a868`
+(75 tables, 1,050 columns, 20 functions versus 19 in approved 0049). The extra
+function's raw `pg_get_functiondef()` SHA-256 is
+`3cfbbce2aee1851aec351d1e99b7c071fa8bbf4b7c5f165f1fbb7f7e6506389a`. Its
+owner is `neondb_owner`; `proacl` is NULL; expanded defaults grant non-grantable
+`EXECUTE` to `PUBLIC` and `neondb_owner`; and `pg_depend` reports no dependents.
+The diagnostic reported 23 roles with effective `EXECUTE` through the default
+PUBLIC grant; that permission count does not establish actual use.
+The repair pins both the raw definition hash and the normalized inventory hash
+`5be7a62f70799a7e52d515b40b9a9cfa4104a5aeed4a9e507206298c22ed2dd4`, along with
+all these values including the NULL explicit-ACL state.
+`PUBLIC` has default `EXECUTE`, and catalog inspection cannot prove whether
+external clients use the function. Resolve that usage question before dispatch.
+
+After it succeeds, the ordinary protected production migration workflow
+remains the only executor for pending `0050_rotating_team_payments`. Preserve
+the repair workflow's recovery branch through that migration and release
+verification. Do not run production SQL from a local shell or treat the repair
+run itself as the 0050 release.
+
 ### Migration commands
 
 ```bash

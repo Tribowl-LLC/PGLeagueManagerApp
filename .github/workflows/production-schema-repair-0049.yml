@@ -1,0 +1,275 @@
+name: Production schema repair 0049 show_db_tree
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Full certified main commit SHA for the reviewed repair workflow
+        required: true
+        type: string
+      incident_confirmation:
+        description: Type REPAIR_LEAGUEVAULT_0049_SHOW_DB_TREE_35824851019
+        required: true
+        type: string
+      rehearsal_run_id:
+        description: Successful protected production schema repair rehearsal workflow run ID for this exact SHA
+        required: true
+        type: string
+
+concurrency:
+  group: production-database-migration
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  validate:
+    name: Validate production schema repair request
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      INCIDENT_CONFIRMATION: ${{ inputs.incident_confirmation }}
+      REHEARSAL_RUN_ID: ${{ inputs.rehearsal_run_id }}
+    steps:
+      - name: Validate main ref and incident confirmation
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          test "$INCIDENT_CONFIRMATION" = REPAIR_LEAGUEVAULT_0049_SHOW_DB_TREE_35824851019
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$REHEARSAL_RUN_ID" | grep -Eq '^[0-9]+$'
+
+  repair:
+    name: Repair only the reviewed 0049 schema drift
+    needs: validate
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NEON_PROJECT_ID: dark-firefly-25282046
+      NEON_PRODUCTION_BRANCH_ID: br-late-glitter-aqm4u4fc
+      NEON_PRODUCTION_BRANCH_NAME: production
+      NEON_DATABASE_NAME: neondb
+      NEON_ROLE_NAME: neondb_owner
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      INCIDENT_CONFIRMATION: ${{ inputs.incident_confirmation }}
+      NEON_CLI_VERSION: 4.14.0
+    steps:
+      - name: Check out the dispatched main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Prove exact certified main target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          test "$INCIDENT_CONFIRMATION" = REPAIR_LEAGUEVAULT_0049_SHOW_DB_TREE_35824851019
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git rev-parse origin/main)" = "$EXPECTED_SHA"
+          test -z "$(git status --short)"
+
+          certification="$(gh run list \
+            --workflow exact-main-certification.yml \
+            --branch main \
+            --commit "$EXPECTED_SHA" \
+            --status success \
+            --limit 1 \
+            --json headSha,conclusion \
+            --jq '.[0] | select(.conclusion == "success") | .headSha')"
+          test "$certification" = "$EXPECTED_SHA"
+
+      - name: Verify the successful rehearsal run for this exact SHA
+        id: rehearsal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REHEARSAL_RUN_ID: ${{ inputs.rehearsal_run_id }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REHEARSAL_RUN_ID" | grep -Eq '^[0-9]+$'
+
+          workflow_ids="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/workflows?per_page=100" \
+            --jq '.workflows[] | select(.path == ".github/workflows/production-schema-repair-rehearsal.yml") | .id')"
+          mapfile -t matching_workflow_ids <<< "$workflow_ids"
+          test "${#matching_workflow_ids[@]}" -eq 1
+          workflow_id="${matching_workflow_ids[0]}"
+          printf '%s' "$workflow_id" | grep -Eq '^[0-9]+$'
+
+          run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REHEARSAL_RUN_ID")"
+          printf '%s' "$run_json" | jq -e \
+            --argjson workflow_id "$workflow_id" \
+            --arg expected_sha "$EXPECTED_SHA" \
+            '.workflow_id == $workflow_id and
+             .conclusion == "success" and
+             .head_sha == $expected_sha and
+             .head_branch == "main" and
+             .event == "workflow_dispatch"' >/dev/null
+          printf 'Verified successful rehearsal run %s for certified main SHA %s.\n' \
+            "$REHEARSAL_RUN_ID" "$EXPECTED_SHA"
+
+      - name: Set up cached dependencies
+        uses: ./.github/actions/setup-node-dependencies
+        with:
+          node-version: "22.22.0"
+
+      - name: Verify checked-in migration metadata
+        run: npm run db:migration-bytes:check
+
+      - name: Install pinned Neon CLI without database credentials
+        run: |
+          npm install --global --ignore-scripts --no-audit --no-fund "neon@$NEON_CLI_VERSION"
+          test "$(neon --version)" = "$NEON_CLI_VERSION"
+
+      - name: Verify pinned Neon production target
+        id: target
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          test -n "$NEON_API_KEY"
+          project_json="$(neon projects get "$NEON_PROJECT_ID" --output json --no-color)"
+          printf '%s' "$project_json" | jq -e \
+            --arg id "$NEON_PROJECT_ID" \
+            '(.project // .) | .id == $id' >/dev/null
+
+          branch_json="$(neon branches get "$NEON_PRODUCTION_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+          printf '%s' "$branch_json" | jq -e \
+            --arg id "$NEON_PRODUCTION_BRANCH_ID" \
+            --arg name "$NEON_PRODUCTION_BRANCH_NAME" \
+            '(.branch // .) | .id == $id and .name == $name and .default == true and .protected == true' >/dev/null
+
+          endpoints_json="$(neon api "/projects/$NEON_PROJECT_ID/endpoints" --output json --no-color)"
+          endpoint_host="$(printf '%s' "$endpoints_json" | jq -er \
+            --arg branch "$NEON_PRODUCTION_BRANCH_ID" \
+            '[.endpoints[] | select(.branch_id == $branch and .type == "read_write") | .host] | unique |
+             if length == 1 and .[0] != "" then .[0] else error("expected exactly one production read-write endpoint") end')"
+          host_fingerprint="$(EXPECTED_ENDPOINT_HOST="$endpoint_host" node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            const endpoint = `${process.env.EXPECTED_ENDPOINT_HOST.toLowerCase()}:5432`;
+            process.stdout.write(`sha256:${createHash("sha256").update(endpoint).digest("hex")}`);
+          ')"
+          printf '%s' "$host_fingerprint" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          printf 'host_fingerprint=%s\n' "$host_fingerprint" >> "$GITHUB_OUTPUT"
+
+      - name: Create and verify no-compute recovery backup
+        id: backup
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          test -n "$NEON_API_KEY"
+          backup_name="backup-pre-show-db-tree-repair-${EXPECTED_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'backup_name=%s\n' "$backup_name" >> "$GITHUB_OUTPUT"
+          backup_json="$(neon branches create \
+            --project-id "$NEON_PROJECT_ID" \
+            --parent "$NEON_PRODUCTION_BRANCH_ID" \
+            --name "$backup_name" \
+            --no-compute \
+            --no-secrets \
+            --no-protected \
+            --output json \
+            --no-color)"
+          backup_id="$(printf '%s' "$backup_json" | jq -er \
+            --arg name "$backup_name" \
+            --arg parent "$NEON_PRODUCTION_BRANCH_ID" \
+            '(.branch // .) | select(.name == $name and .parent_id == $parent and .protected == false) | .id')"
+          test -n "$backup_id"
+          printf 'backup_id=%s\n' "$backup_id" >> "$GITHUB_OUTPUT"
+
+          verify_json="$(neon branches get "$backup_id" \
+            --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+          printf '%s' "$verify_json" | jq -e \
+            --arg id "$backup_id" \
+            --arg name "$backup_name" \
+            --arg parent "$NEON_PRODUCTION_BRANCH_ID" \
+            '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false' >/dev/null
+
+          endpoint_json="$(neon api "/projects/$NEON_PROJECT_ID/endpoints" --output json --no-color)"
+          printf '%s' "$endpoint_json" | jq -e \
+            --arg branch "$backup_id" \
+            '[.endpoints[] | select(.branch_id == $branch)] | length == 0' >/dev/null
+
+          printf 'Created no-compute recovery backup %s (%s) from production.\n' "$backup_name" "$backup_id"
+
+      - name: Acquire and mask the direct TLS database URL
+        id: connection
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          test -n "$NEON_API_KEY"
+          database_url="$(neon connection-string "$NEON_PRODUCTION_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" \
+            --database-name "$NEON_DATABASE_NAME" \
+            --role-name "$NEON_ROLE_NAME" \
+            --ssl verify-full \
+            --no-color)"
+          test -n "$database_url"
+          echo "::add-mask::$database_url"
+          printf 'database_url=%s\n' "$database_url" >> "$GITHUB_OUTPUT"
+
+      - name: Run the single-purpose 0049 repair transaction
+        id: repair
+        env:
+          DATABASE_URL: ${{ steps.connection.outputs.database_url }}
+          DB_PRODUCTION_SCHEMA_REPAIR_EXPECTED_HOST_FINGERPRINT: ${{ steps.target.outputs.host_fingerprint }}
+          DB_PRODUCTION_SCHEMA_REPAIR_CONFIRMATION: ${{ inputs.incident_confirmation }}
+        run: |
+          git fetch --no-tags origin main
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          git diff --exit-code
+          git diff --cached --exit-code
+          ./node_modules/.bin/tsx scripts/repair-production-show-db-tree.ts
+
+      - name: Record repair evidence
+        if: ${{ always() }}
+        env:
+          REHEARSAL_RUN_ID: ${{ inputs.rehearsal_run_id }}
+          REHEARSAL_OUTCOME: ${{ steps.rehearsal.outcome }}
+          BACKUP_ID: ${{ steps.backup.outputs.backup_id }}
+          BACKUP_NAME: ${{ steps.backup.outputs.backup_name }}
+          BACKUP_OUTCOME: ${{ steps.backup.outcome }}
+          REPAIR_OUTCOME: ${{ steps.repair.outcome }}
+        run: |
+          {
+            echo '### Production schema repair: 0049 `show_db_tree()` drift'
+            echo
+            echo "- Certified commit: \`$EXPECTED_SHA\`"
+            printf -- '- Required rehearsal run ID: `%s` (`%s`)\n' \
+              "$REHEARSAL_RUN_ID" "$REHEARSAL_OUTCOME"
+            echo '- Repair scope: remove only the reviewed `public.show_db_tree()` function and restore the canonical 0049 fingerprint'
+            if [ "$REPAIR_OUTCOME" = success ]; then
+              echo '- Production migration journal: repair script confirmed unchanged at 0049; 0050 remains pending'
+            else
+              echo '- Production migration journal and 0050 pending status: unconfirmed because the repair step failed'
+            fi
+            echo "- Backup step: \`$BACKUP_OUTCOME\`"
+            if [ -n "$BACKUP_NAME" ]; then
+              echo "- Recovery branch name: \`$BACKUP_NAME\`"
+            else
+              echo '- Recovery branch name: unavailable'
+            fi
+            if [ -n "$BACKUP_ID" ]; then
+              echo "- Recovery branch ID: \`$BACKUP_ID\`"
+            else
+              echo '- Recovery branch ID: unknown; backup creation may have succeeded before verification failed'
+            fi
+            if [ "$BACKUP_OUTCOME" = success ]; then
+              echo '- Recovery branch verification: passed; no compute; retain through normal migration and release verification'
+            else
+              echo '- Recovery branch verification: incomplete; preserve and inspect any branch matching the recorded exact name before cleanup'
+            fi
+            echo "- Repair step: \`$REPAIR_OUTCOME\`"
+            if [ "$REPAIR_OUTCOME" = success ]; then
+              echo '- Next gate: verify this repair run, then run the normal protected migration workflow for exactly 0050 before any deployment that requires it'
+            else
+              echo '- Recovery action: do not deploy; retain any created recovery branch and inspect the failed step'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

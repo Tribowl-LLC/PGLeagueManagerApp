@@ -1,0 +1,623 @@
+name: Production schema repair rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Full certified main commit SHA containing the reviewed repair
+        required: true
+        type: string
+      confirmation:
+        description: Type REHEARSE_LEAGUEVAULT_0049_SHOW_DB_TREE_35824851019
+        required: true
+        type: string
+
+concurrency:
+  group: production-database-migration
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  validate:
+    name: Validate repair rehearsal request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      EXPECTED_CONFIRMATION: REHEARSE_LEAGUEVAULT_0049_SHOW_DB_TREE_35824851019
+    steps:
+      - name: Validate main ref, SHA, and explicit confirmation
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test "$CONFIRMATION" = "$EXPECTED_CONFIRMATION"
+
+  rehearse:
+    name: Rehearse repair on a disposable recovery child
+    needs: validate
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      EXPECTED_CONFIRMATION: REHEARSE_LEAGUEVAULT_0049_SHOW_DB_TREE_35824851019
+      NEON_PROJECT_ID: dark-firefly-25282046
+      NEON_PRODUCTION_BRANCH_ID: br-late-glitter-aqm4u4fc
+      NEON_PRODUCTION_BRANCH_NAME: production
+      NEON_RECOVERY_BRANCH_ID: br-sweet-base-aqm07odq
+      NEON_RECOVERY_BRANCH_NAME: backup-pre-migration-cbd11e5e3666-35824851019-1
+      NEON_DATABASE_NAME: neondb
+      NEON_ROLE_NAME: neondb_owner
+      EXPECTED_REPAIR_CONFIRMATION: REPAIR_LEAGUEVAULT_0049_SHOW_DB_TREE_35824851019
+      EXPECTED_MIGRATION: 0050_rotating_team_payments
+      NEON_CLI_VERSION: 4.14.0
+    steps:
+      - name: Check out the dispatched main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Prove exact certified main target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$CONFIRMATION" = "$EXPECTED_CONFIRMATION"
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_SHA"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+          certification="$(gh run list \
+            --workflow exact-main-certification.yml \
+            --branch main \
+            --commit "$EXPECTED_SHA" \
+            --status success \
+            --limit 1 \
+            --json headSha,conclusion \
+            --jq '.[0] | select(.conclusion == "success") | .headSha')"
+          test "$certification" = "$EXPECTED_SHA"
+
+      - name: Set up cached dependencies
+        uses: ./.github/actions/setup-node-dependencies
+        with:
+          node-version: '22.22.0'
+
+      - name: Verify checked-in migration metadata
+        run: npm run db:migration-bytes:check
+
+      - name: Install pinned Neon CLI without database credentials
+        run: |
+          set -euo pipefail
+          npm install --global --ignore-scripts --no-audit --no-fund "neon@$NEON_CLI_VERSION"
+          test "$(neon --version)" = "$NEON_CLI_VERSION"
+
+      - name: Verify recovery provenance and create disposable child
+        id: child
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$CONFIRMATION" = "$EXPECTED_CONFIRMATION"
+          test -n "$NEON_API_KEY"
+          child_name="schema-repair-rehearsal-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'branch_name=%s\n' "$child_name" >> "$GITHUB_OUTPUT"
+
+          neon_api_key="$NEON_API_KEY"
+          unset NEON_API_KEY
+          project_json="$(NEON_API_KEY="$neon_api_key" neon projects get "$NEON_PROJECT_ID" --output json --no-color)"
+          production_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$NEON_PRODUCTION_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+          recovery_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$NEON_RECOVERY_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+          endpoints_json="$(NEON_API_KEY="$neon_api_key" neon api "/projects/$NEON_PROJECT_ID/endpoints" --output json --no-color)"
+
+          printf '%s' "$project_json" | jq -e \
+            --arg id "$NEON_PROJECT_ID" \
+            '(.project // .) | .id == $id' >/dev/null
+          printf '%s' "$production_json" | jq -e \
+            --arg id "$NEON_PRODUCTION_BRANCH_ID" \
+            --arg name "$NEON_PRODUCTION_BRANCH_NAME" \
+            '(.branch // .) | .id == $id and .name == $name and .default == true and .protected == true' >/dev/null
+          printf '%s' "$recovery_json" | jq -e \
+            --arg id "$NEON_RECOVERY_BRANCH_ID" \
+            --arg name "$NEON_RECOVERY_BRANCH_NAME" \
+            --arg parent "$NEON_PRODUCTION_BRANCH_ID" \
+            '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false and .default != true' >/dev/null
+          recovery_endpoint_count="$(printf '%s' "$endpoints_json" | jq -er \
+            --arg branch "$NEON_RECOVERY_BRANCH_ID" \
+            '[.endpoints[] | select(.branch_id == $branch)] | length')"
+          test "$recovery_endpoint_count" = 0
+
+          printf 'create_requested=true\n' >> "$GITHUB_OUTPUT"
+          child_json="$(NEON_API_KEY="$neon_api_key" neon branches create \
+            --project-id "$NEON_PROJECT_ID" \
+            --parent "$NEON_RECOVERY_BRANCH_ID" \
+            --name "$child_name" \
+            --compute \
+            --no-secrets \
+            --no-protected \
+            --output json \
+            --no-color)"
+          unset neon_api_key
+          child_id="$(printf '%s' "$child_json" | jq -er '(.branch // .).id')"
+          printf '%s' "$child_id" | grep -Eq '^br-[a-z0-9-]{1,60}$'
+          test "$child_id" != "$NEON_RECOVERY_BRANCH_ID"
+          test "$child_id" != "$NEON_PRODUCTION_BRANCH_ID"
+          printf 'branch_id=%s\n' "$child_id" >> "$GITHUB_OUTPUT"
+          printf '%s' "$child_json" | jq -e \
+            --arg id "$child_id" \
+            --arg name "$child_name" \
+            --arg parent "$NEON_RECOVERY_BRANCH_ID" \
+            '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false and .default != true' >/dev/null
+          printf 'Created disposable child %s (%s) from verified recovery snapshot %s.\n' \
+            "$child_name" "$child_id" "$NEON_RECOVERY_BRANCH_ID"
+
+      - name: Verify child endpoint and acquire its direct TLS connection
+        id: connection
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          REHEARSAL_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          REHEARSAL_BRANCH_NAME: ${{ steps.child.outputs.branch_name }}
+        run: |
+          set -euo pipefail
+          test -n "$NEON_API_KEY"
+          test -n "$REHEARSAL_BRANCH_ID"
+          test "$REHEARSAL_BRANCH_ID" != "$NEON_RECOVERY_BRANCH_ID"
+          test "$REHEARSAL_BRANCH_ID" != "$NEON_PRODUCTION_BRANCH_ID"
+
+          neon_api_key="$NEON_API_KEY"
+          unset NEON_API_KEY
+          child_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$REHEARSAL_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+          printf '%s' "$child_json" | jq -e \
+            --arg id "$REHEARSAL_BRANCH_ID" \
+            --arg name "$REHEARSAL_BRANCH_NAME" \
+            --arg parent "$NEON_RECOVERY_BRANCH_ID" \
+            '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false and .default != true' >/dev/null
+
+          endpoint_host=''
+          endpoint_id=''
+          for attempt in $(seq 1 24); do
+            endpoints_json="$(NEON_API_KEY="$neon_api_key" neon api "/projects/$NEON_PROJECT_ID/endpoints" --output json --no-color)"
+            branch_endpoint_count="$(printf '%s' "$endpoints_json" | jq -er \
+              --arg branch "$REHEARSAL_BRANCH_ID" \
+              '[.endpoints[] | select(.branch_id == $branch)] | length')"
+            if [ "$branch_endpoint_count" -gt 1 ]; then
+              echo 'The disposable child unexpectedly has more than one endpoint.' >&2
+              exit 1
+            fi
+            endpoint_count="$(printf '%s' "$endpoints_json" | jq -er \
+              --arg branch "$REHEARSAL_BRANCH_ID" \
+              '[.endpoints[] | select(.branch_id == $branch and .type == "read_write" and .disabled != true)] | length')"
+            if [ "$branch_endpoint_count" = 1 ] && [ "$endpoint_count" = 1 ]; then
+              endpoint_json="$(printf '%s' "$endpoints_json" | jq -ce \
+                --arg branch "$REHEARSAL_BRANCH_ID" \
+                '[.endpoints[] | select(.branch_id == $branch and .type == "read_write" and .disabled != true)] | .[0]')"
+              endpoint_state="$(printf '%s' "$endpoint_json" | jq -r '.current_state // ""')"
+              endpoint_host="$(printf '%s' "$endpoint_json" | jq -r '.host // ""')"
+              endpoint_id="$(printf '%s' "$endpoint_json" | jq -r '.id // ""')"
+              if [ -n "$endpoint_host" ] && [ -n "$endpoint_id" ] && \
+                { [ "$endpoint_state" = active ] || [ "$endpoint_state" = idle ]; }; then
+                break
+              fi
+            fi
+            endpoint_host=''
+            endpoint_id=''
+            if [ "$attempt" -lt 24 ]; then sleep 5; fi
+          done
+          test -n "$endpoint_host"
+          test -n "$endpoint_id"
+          printf '%s' "$endpoint_id" | grep -Eq '^ep-[a-z0-9-]{1,60}$'
+
+          endpoint_fingerprint="$(EXPECTED_ENDPOINT_HOST="$endpoint_host" node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            const host = process.env.EXPECTED_ENDPOINT_HOST.toLowerCase();
+            if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host)) {
+              throw new Error("Neon endpoint host metadata is invalid.");
+            }
+            process.stdout.write(`sha256:${createHash("sha256").update(`${host}:5432`).digest("hex")}`);
+          ')"
+          printf '%s' "$endpoint_fingerprint" | grep -Eq '^sha256:[0-9a-f]{64}$'
+
+          database_url="$(NEON_API_KEY="$neon_api_key" neon connection-string "$REHEARSAL_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" \
+            --database-name "$NEON_DATABASE_NAME" \
+            --role-name "$NEON_ROLE_NAME" \
+            --ssl verify-full \
+            --no-color)"
+          unset neon_api_key
+          test -n "$database_url"
+          echo "::add-mask::$database_url"
+
+          actual_target_fingerprint="$(DATABASE_URL="$database_url" \
+            EXPECTED_ENDPOINT_HOST="$endpoint_host" \
+            EXPECTED_DATABASE="$NEON_DATABASE_NAME" \
+            EXPECTED_ROLE="$NEON_ROLE_NAME" \
+            node --input-type=module -e '
+              import { createHash } from "node:crypto";
+              const target = new URL(process.env.DATABASE_URL);
+              if (!/^postgres(ql)?:$/.test(target.protocol)) throw new Error("Unexpected database URL scheme.");
+              if (target.hostname.toLowerCase().includes("-pooler")) throw new Error("Rehearsal requires a direct Neon endpoint.");
+              if (target.hostname.toLowerCase() !== process.env.EXPECTED_ENDPOINT_HOST.toLowerCase()) throw new Error("Database URL host differs from the verified child endpoint.");
+              if (target.port && target.port !== "5432") throw new Error("Unexpected database port.");
+              if (decodeURIComponent(target.pathname.slice(1)) !== process.env.EXPECTED_DATABASE) throw new Error("Unexpected database name.");
+              if (decodeURIComponent(target.username) !== process.env.EXPECTED_ROLE) throw new Error("Unexpected database role.");
+              if (target.searchParams.get("sslmode") !== "verify-full") throw new Error("Database URL does not require full TLS certificate verification.");
+              const endpoint = `${target.hostname.toLowerCase()}:${target.port || "5432"}`;
+              process.stdout.write(`sha256:${createHash("sha256").update(endpoint).digest("hex")}`);
+            ')"
+          test "$actual_target_fingerprint" = "$endpoint_fingerprint"
+
+          {
+            printf 'branch_id=%s\n' "$REHEARSAL_BRANCH_ID"
+            printf 'endpoint_id=%s\n' "$endpoint_id"
+            printf 'endpoint_host=%s\n' "$endpoint_host"
+            printf 'host_fingerprint=%s\n' "$endpoint_fingerprint"
+            printf 'database_url=%s\n' "$database_url"
+          } >> "$GITHUB_OUTPUT"
+          printf 'Verified child branch, endpoint, direct TLS host, database, and role.\n'
+
+      - name: Run the same guarded 0049 repair against the disposable child
+        id: repair
+        env:
+          DATABASE_URL: ${{ steps.connection.outputs.database_url }}
+          DB_PRODUCTION_SCHEMA_REPAIR_EXPECTED_HOST_FINGERPRINT: ${{ steps.connection.outputs.host_fingerprint }}
+          DB_PRODUCTION_SCHEMA_REPAIR_CONFIRMATION: ${{ env.EXPECTED_REPAIR_CONFIRMATION }}
+        run: |
+          set -euo pipefail
+          test -n "$DATABASE_URL"
+          test "$CONFIRMATION" = "$EXPECTED_CONFIRMATION"
+          test "$DB_PRODUCTION_SCHEMA_REPAIR_CONFIRMATION" = "$EXPECTED_REPAIR_CONFIRMATION"
+          test -z "${NEON_API_KEY:-}"
+          ./node_modules/.bin/tsx scripts/repair-production-show-db-tree.ts
+
+      - name: Apply exactly migration 0050 to the disposable child
+        id: migrate_0050
+        env:
+          DATABASE_URL: ${{ steps.connection.outputs.database_url }}
+          DB_MIGRATION_EXPECTED_HOST_FINGERPRINT: ${{ steps.connection.outputs.host_fingerprint }}
+          DB_MIGRATION_EXPECTED_DATABASE: ${{ env.NEON_DATABASE_NAME }}
+          DB_MIGRATION_EXPECTED_ROLE: ${{ env.NEON_ROLE_NAME }}
+          DB_MIGRATION_EXPECTED_PENDING: ${{ env.EXPECTED_MIGRATION }}
+        run: |
+          set -euo pipefail
+          test "$DB_MIGRATION_EXPECTED_PENDING" = 0050_rotating_team_payments
+          test -z "${NEON_API_KEY:-}"
+          npm run db:migrate
+
+      - name: Verify no migrations remain pending on the disposable child
+        id: verify_current
+        env:
+          DATABASE_URL: ${{ steps.connection.outputs.database_url }}
+          DB_MIGRATION_EXPECTED_HOST_FINGERPRINT: ${{ steps.connection.outputs.host_fingerprint }}
+          DB_MIGRATION_EXPECTED_DATABASE: ${{ env.NEON_DATABASE_NAME }}
+          DB_MIGRATION_EXPECTED_ROLE: ${{ env.NEON_ROLE_NAME }}
+          DB_MIGRATION_EXPECTED_PENDING: none
+        run: |
+          set -euo pipefail
+          test "$DB_MIGRATION_EXPECTED_PENDING" = none
+          test -z "${NEON_API_KEY:-}"
+          npm run db:migrate
+
+      - name: Remove only the disposable child endpoint and branch
+        id: cleanup
+        if: ${{ always() }}
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          REHEARSAL_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          REHEARSAL_BRANCH_NAME: ${{ steps.child.outputs.branch_name }}
+          CREATE_REQUESTED: ${{ steps.child.outputs.create_requested }}
+          REHEARSAL_ENDPOINT_ID: ${{ steps.connection.outputs.endpoint_id }}
+        run: |
+          set -uo pipefail
+          cleanup_status=success
+          child_absent=false
+          endpoints_absent=false
+          delete_requested=false
+          branch_id="$REHEARSAL_BRANCH_ID"
+          endpoint_ids="$REHEARSAL_ENDPOINT_ID"
+          child_name="schema-repair-rehearsal-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup_note=''
+
+          if [ -z "${NEON_API_KEY:-}" ]; then
+            cleanup_status=uncertain
+            cleanup_note='Neon API credentials were unavailable to cleanup.'
+          else
+            neon_api_key="$NEON_API_KEY"
+            unset NEON_API_KEY
+
+            branch_record=''
+            match_count=0
+            branch_listing_valid=false
+            for attempt in $(seq 1 10); do
+              if ! branches_json="$(NEON_API_KEY="$neon_api_key" neon branches list \
+                --project-id "$NEON_PROJECT_ID" --output json --no-color)"; then
+                if [ "$attempt" -lt 10 ]; then sleep 3; fi
+                continue
+              fi
+
+              branch_inventory="$(printf '%s' "$branches_json" | jq -ce '
+                if type == "array" then .
+                elif type == "object" and (.branches | type) == "array" then .branches
+                else error("Unexpected Neon branches-list response.") end
+                | if all(.[];
+                    type == "object" and
+                    (.id | type) == "string" and (.id | test("^br-[a-z0-9-]{1,60}$")) and
+                    (.name | type) == "string" and (.name | length) > 0 and
+                    has("parent_id") and ((.parent_id == null) or (.parent_id | type) == "string")
+                  ) then . else error("Incomplete Neon branch inventory entry.") end')" || branch_inventory='invalid'
+              if [ "$branch_inventory" = invalid ]; then
+                cleanup_status=uncertain
+                cleanup_note='The Neon branches-list response shape or branch entries were incomplete; cleanup stopped without deleting a branch.'
+                break
+              fi
+              branch_listing_valid=true
+
+              branch_matches="$(printf '%s' "$branch_inventory" | jq -ce \
+                --arg name "$child_name" --arg id "$branch_id" \
+                '[.[] | select((.name == $name) or ($id != "" and .id == $id))]')" || branch_matches='invalid'
+              if [ "$branch_matches" = invalid ]; then
+                cleanup_status=uncertain
+                cleanup_note='Could not evaluate the validated branch inventory for the run-specific child.'
+                break
+              fi
+
+              match_count="$(printf '%s' "$branch_matches" | jq -r 'length')"
+              if [ "$match_count" -gt 1 ]; then
+                cleanup_status=uncertain
+                cleanup_note='More than one branch matched this run-specific rehearsal identity.'
+                break
+              fi
+              if [ "$match_count" -eq 1 ]; then
+                branch_record="$(printf '%s' "$branch_matches" | jq -c '.[0]')"
+                break
+              fi
+
+              if [ "$CREATE_REQUESTED" != true ] && [ -z "$branch_id" ]; then
+                child_absent=true
+                break
+              fi
+              if [ "$attempt" -lt 10 ]; then sleep 3; fi
+            done
+
+            if [ "$cleanup_status" = success ] && [ "$match_count" -eq 0 ] && [ -z "$branch_record" ]; then
+              if [ -n "$branch_id" ]; then
+                direct_branch_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$branch_id" \
+                  --project-id "$NEON_PROJECT_ID" --output json --no-color 2>/dev/null)" || direct_branch_json=''
+                if [ -n "$direct_branch_json" ] && printf '%s' "$direct_branch_json" | jq -e \
+                  --arg id "$branch_id" --arg name "$child_name" --arg parent "$NEON_RECOVERY_BRANCH_ID" \
+                  '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false and .default != true' >/dev/null 2>&1; then
+                  branch_record="$(printf '%s' "$direct_branch_json" | jq -c '.branch // .')"
+                  match_count=1
+                else
+                  cleanup_status=uncertain
+                  cleanup_note='The exact branch ID was not visible in the validated listing and could not be verified by ID; endpoint and branch deletion were skipped.'
+                fi
+              elif [ "$CREATE_REQUESTED" = true ]; then
+                cleanup_status=uncertain
+                cleanup_note='The child creation request was sent, but its ID is unresolved after bounded exact-name lookup; inspect the run-specific branch name.'
+              elif [ "$branch_listing_valid" = true ]; then
+                child_absent=true
+              else
+                cleanup_status=uncertain
+                cleanup_note='No valid branch inventory was available to establish child absence.'
+              fi
+            fi
+
+            if [ "$cleanup_status" = success ] && [ -n "$branch_record" ]; then
+              discovered_id="$(printf '%s' "$branch_record" | jq -r '.id // ""')"
+              discovered_name="$(printf '%s' "$branch_record" | jq -r '.name // ""')"
+              discovered_parent="$(printf '%s' "$branch_record" | jq -r '.parent_id // ""')"
+              discovered_protected="$(printf '%s' "$branch_record" | jq -r '.protected // ""')"
+              discovered_default="$(printf '%s' "$branch_record" | jq -r '.default // false')"
+              if [ -z "$branch_id" ]; then branch_id="$discovered_id"; fi
+              if [ "$discovered_id" != "$branch_id" ] || \
+                [ "$discovered_name" != "$child_name" ] || \
+                [ "$discovered_parent" != "$NEON_RECOVERY_BRANCH_ID" ] || \
+                [ "$discovered_protected" != false ] || \
+                [ "$discovered_default" = true ] || \
+                [ "$branch_id" = "$NEON_RECOVERY_BRANCH_ID" ] || \
+                [ "$branch_id" = "$NEON_PRODUCTION_BRANCH_ID" ]; then
+                cleanup_status=uncertain
+                cleanup_note='The matching branch failed exact child identity and lineage checks; it was preserved.'
+              fi
+            fi
+
+            if [ "$cleanup_status" = success ] && [ -n "$branch_id" ]; then
+              if ! endpoints_json="$(NEON_API_KEY="$neon_api_key" neon api "/projects/$NEON_PROJECT_ID/endpoints" --output json --no-color)"; then
+                cleanup_status=uncertain
+                cleanup_note='Could not inspect endpoint ownership for the exact child branch.'
+              elif ! printf '%s' "$endpoints_json" | jq -e '
+                type == "object" and (.endpoints | type) == "array" and
+                all(.endpoints[];
+                  type == "object" and
+                  (.id | type) == "string" and (.id | test("^ep-[a-z0-9-]{1,60}$")) and
+                  (.branch_id | type) == "string" and (.branch_id | test("^br-[a-z0-9-]{1,60}$"))
+                )' >/dev/null 2>&1; then
+                cleanup_status=uncertain
+                cleanup_note='The Neon endpoint-list response or endpoint identity fields were incomplete; the child was preserved.'
+              else
+                child_endpoint_ids="$(printf '%s' "$endpoints_json" | jq -r \
+                  --arg branch "$branch_id" \
+                  '[.endpoints[] | select(.branch_id == $branch) | .id] | unique | .[]')"
+                if [ -n "$child_endpoint_ids" ]; then
+                  endpoint_ids="$(printf '%s\n%s\n' "$endpoint_ids" "$child_endpoint_ids" | sed '/^$/d' | sort -u | paste -sd, -)"
+                  while IFS= read -r endpoint_id; do
+                    [ -n "$endpoint_id" ] || continue
+                    if ! printf '%s' "$endpoint_id" | grep -Eq '^ep-[a-z0-9-]{1,60}$'; then
+                      cleanup_status=uncertain
+                      cleanup_note='A child endpoint had an invalid identifier and was preserved.'
+                      continue
+                    fi
+                    NEON_API_KEY="$neon_api_key" neon api \
+                      "/projects/$NEON_PROJECT_ID/endpoints/$endpoint_id" \
+                      -X DELETE --output json --no-color >/dev/null 2>&1 || true
+                  done <<< "$child_endpoint_ids"
+                fi
+              fi
+            fi
+
+            if [ "$cleanup_status" = success ] && [ -n "$branch_id" ] && [ "$child_absent" != true ]; then
+              branch_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$branch_id" \
+                --project-id "$NEON_PROJECT_ID" --output json --no-color 2>/dev/null)"
+              if printf '%s' "$branch_json" | jq -e \
+                --arg id "$branch_id" --arg name "$child_name" --arg parent "$NEON_RECOVERY_BRANCH_ID" \
+                '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false and .default != true' >/dev/null 2>&1; then
+                NEON_API_KEY="$neon_api_key" neon branches delete "$branch_id" \
+                  --project-id "$NEON_PROJECT_ID" --no-color >/dev/null 2>&1 || true
+                delete_requested=true
+              else
+                cleanup_status=uncertain
+                cleanup_note='Could not re-verify the exact disposable child before branch deletion; it was preserved.'
+              fi
+            fi
+
+            if [ "$cleanup_status" = success ]; then
+              if [ -z "$branch_id" ]; then
+                if [ "$CREATE_REQUESTED" = true ]; then
+                  cleanup_status=uncertain
+                  cleanup_note='Cannot verify endpoint absence because the requested child has no resolved branch ID.'
+                elif [ "$child_absent" = true ]; then
+                  endpoints_absent=true
+                else
+                  cleanup_status=uncertain
+                  cleanup_note='Cannot verify child or endpoint absence without a branch ID.'
+                fi
+              else
+                branch_absent_now=false
+                endpoints_absent_now=false
+                for attempt in $(seq 1 10); do
+                  current_branches="$(NEON_API_KEY="$neon_api_key" neon branches list \
+                    --project-id "$NEON_PROJECT_ID" --output json --no-color 2>/dev/null)" || current_branches=''
+                  current_branch_inventory="$(printf '%s' "$current_branches" | jq -ce '
+                    if type == "array" then .
+                    elif type == "object" and (.branches | type) == "array" then .branches
+                    else error("Unexpected Neon branches-list response.") end
+                    | if all(.[];
+                        type == "object" and
+                        (.id | type) == "string" and (.id | test("^br-[a-z0-9-]{1,60}$")) and
+                        (.name | type) == "string" and (.name | length) > 0 and
+                        has("parent_id") and ((.parent_id == null) or (.parent_id | type) == "string")
+                      ) then . else error("Incomplete Neon branch inventory entry.") end')" || current_branch_inventory=''
+                  if [ -n "$current_branch_inventory" ] && printf '%s' "$current_branch_inventory" | jq -e \
+                    --arg id "$branch_id" --arg name "$child_name" \
+                    '[.[] | select((.id == $id) or .name == $name)] | length == 0' >/dev/null 2>&1; then
+                    branch_absent_now=true
+                  fi
+
+                  current_endpoints="$(NEON_API_KEY="$neon_api_key" neon api "/projects/$NEON_PROJECT_ID/endpoints" \
+                    --output json --no-color 2>/dev/null)" || current_endpoints=''
+                  if [ -n "$current_endpoints" ]; then
+                    current_endpoint_inventory="$(printf '%s' "$current_endpoints" | jq -ce '
+                      if type == "object" and (.endpoints | type) == "array" and
+                        all(.endpoints[];
+                          type == "object" and
+                          (.id | type) == "string" and (.id | test("^ep-[a-z0-9-]{1,60}$")) and
+                          (.branch_id | type) == "string" and (.branch_id | test("^br-[a-z0-9-]{1,60}$"))
+                        ) then .endpoints else error("Incomplete Neon endpoint inventory entry.") end')" || current_endpoint_inventory=''
+                    if [ -z "$current_endpoint_inventory" ]; then
+                      cleanup_status=uncertain
+                      cleanup_note='The final Neon endpoint inventory was malformed; endpoint absence could not be verified.'
+                      break
+                    fi
+                    if printf '%s' "$current_endpoint_inventory" | jq -e \
+                      --arg branch "$branch_id" \
+                      '[.[] | select(.branch_id == $branch)] | length == 0' >/dev/null 2>&1; then
+                      endpoints_absent_now=true
+                    fi
+                  fi
+                  if [ "$branch_absent_now" = true ] && [ "$endpoints_absent_now" = true ]; then
+                    break
+                  fi
+                  if [ "$attempt" -lt 10 ]; then sleep 3; fi
+                done
+                if [ "$cleanup_status" = success ]; then
+                  if [ "$branch_absent_now" = true ] && [ "$endpoints_absent_now" = true ]; then
+                    child_absent=true
+                    endpoints_absent=true
+                  else
+                    cleanup_status=uncertain
+                    cleanup_note='Neon accepted or attempted cleanup, but child branch and endpoint absence could not both be confirmed.'
+                  fi
+                fi
+              fi
+            fi
+            unset neon_api_key
+          fi
+
+          {
+            printf 'branch_id=%s\n' "$branch_id"
+            printf 'branch_name=%s\n' "$child_name"
+            printf 'endpoint_ids=%s\n' "$endpoint_ids"
+            printf 'cleanup_status=%s\n' "$cleanup_status"
+            printf 'delete_requested=%s\n' "$delete_requested"
+            printf 'child_absent=%s\n' "$child_absent"
+            printf 'endpoints_absent=%s\n' "$endpoints_absent"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$cleanup_status" != success ]; then
+            printf '[cleanup] uncertain: %s\n' "$cleanup_note" >&2
+            exit 1
+          fi
+          printf 'Verified cleanup of disposable branch %s and endpoint(s) %s.\n' \
+            "${branch_id:-none}" "${endpoint_ids:-none}"
+
+      - name: Record rehearsal and cleanup disposition
+        if: ${{ always() }}
+        env:
+          CHILD_BRANCH_ID: ${{ steps.cleanup.outputs.branch_id || steps.child.outputs.branch_id }}
+          CHILD_BRANCH_NAME: ${{ steps.cleanup.outputs.branch_name || steps.child.outputs.branch_name }}
+          ENDPOINT_ID: ${{ steps.connection.outputs.endpoint_id }}
+          CLEANUP_ENDPOINT_IDS: ${{ steps.cleanup.outputs.endpoint_ids }}
+          CLEANUP_STATUS: ${{ steps.cleanup.outputs.cleanup_status }}
+          CLEANUP_DELETE_REQUESTED: ${{ steps.cleanup.outputs.delete_requested }}
+          CHILD_ABSENT: ${{ steps.cleanup.outputs.child_absent }}
+          ENDPOINTS_ABSENT: ${{ steps.cleanup.outputs.endpoints_absent }}
+          REPAIR_OUTCOME: ${{ steps.repair.outcome }}
+          MIGRATION_OUTCOME: ${{ steps.migrate_0050.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify_current.outcome }}
+        run: |
+          {
+            echo '### Production schema repair rehearsal'
+            echo
+            echo "- Certified main SHA: \`$EXPECTED_SHA\`"
+            echo "- Recovery source: \`$NEON_RECOVERY_BRANCH_NAME\` (\`$NEON_RECOVERY_BRANCH_ID\`), verified as an unprotected child of \`$NEON_PRODUCTION_BRANCH_ID\`"
+            if [ -n "$CHILD_BRANCH_ID" ]; then
+              echo "- Disposable child: \`$CHILD_BRANCH_NAME\` (\`$CHILD_BRANCH_ID\`)"
+            elif [ -n "$CHILD_BRANCH_NAME" ]; then
+              echo "- Disposable child: \`$CHILD_BRANCH_NAME\` (ID unresolved)"
+            else
+              echo '- Disposable child: not created or its ID could not be determined'
+            fi
+            if [ -n "$ENDPOINT_ID" ]; then
+              echo "- Verified child endpoint: \`$ENDPOINT_ID\`"
+            else
+              echo '- Verified child endpoint: unavailable'
+            fi
+            echo "- Repair script: \`$REPAIR_OUTCOME\`"
+            echo "- Apply exactly 0050: \`$MIGRATION_OUTCOME\`"
+            echo "- Verify pending none: \`$VERIFY_OUTCOME\`"
+            echo "- Cleanup status: \`${CLEANUP_STATUS:-unknown}\`; delete requested: \`${CLEANUP_DELETE_REQUESTED:-false}\`; branch absent: \`${CHILD_ABSENT:-false}\`; endpoints absent: \`${ENDPOINTS_ABSENT:-false}\`"
+            if [ "${CLEANUP_STATUS:-unknown}" = success ]; then
+              echo '- Disposable branch and endpoint cleanup: verified'
+            else
+              echo "- Cleanup needs inspection: branch name \`${CHILD_BRANCH_NAME:-unknown}\`, branch ID \`${CHILD_BRANCH_ID:-unresolved}\`, endpoint ID(s) \`${CLEANUP_ENDPOINT_IDS:-$ENDPOINT_ID:-unknown}\`"
+              echo '- Inspect only this run-specific branch name and any recorded IDs before retrying cleanup; the recovery snapshot was preserved.'
+            fi
+            echo '- The production branch was used only as verified ancestry metadata. No production database connection or mutation ran.'
+          } >> "$GITHUB_STEP_SUMMARY"
