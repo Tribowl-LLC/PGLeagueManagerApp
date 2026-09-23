@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => {
   manual: vi.fn(),
   correct: vi.fn(),
   editCash: vi.fn(),
+  repairHistoricalCash: vi.fn(),
+  repairHistoricalSquare: vi.fn(),
   recoverByRequestKey: vi.fn(),
   RosterPaymentError: MockRosterPaymentError,
   RosterPaymentReplay: MockRosterPaymentReplay,
@@ -56,6 +58,7 @@ vi.mock("../../server/services/roster-payment-core.js", () => ({
   recordCanonicalManualPayment: (...args: unknown[]) => mocks.manual(...args),
   correctCanonicalAllocation: (...args: unknown[]) => mocks.correct(...args),
   editCanonicalCashPayment: (...args: unknown[]) => mocks.editCash(...args),
+  repairHistoricalCashPaymentAllocation: (...args: unknown[]) => mocks.repairHistoricalCash(...args),
   RosterPaymentError: mocks.RosterPaymentError,
   RosterPaymentReplay: mocks.RosterPaymentReplay,
 }));
@@ -65,6 +68,11 @@ vi.mock("../../server/services/roster-payment-recovery.js", () => ({
   RosterPaymentRecoveryError: class extends Error {
     constructor(public readonly code: string, message: string, public readonly status = 409) { super(message); }
   },
+}));
+vi.mock("../../server/services/historical-square-payment-correction.js", () => ({
+  correctHistoricalSquarePaymentAllocation: (...args: unknown[]) => mocks.repairHistoricalSquare(...args),
+  HistoricalSquareAllocationCorrectionError: mocks.RosterPaymentError,
+  HistoricalSquareAllocationCorrectionReplay: mocks.RosterPaymentReplay,
 }));
 
 const router = (await import("../../server/routes/roster-payments.js")).default;
@@ -103,6 +111,7 @@ afterAll(async () => new Promise<void>((resolve, reject) => server.close((error)
 
 beforeEach(() => {
   vi.clearAllMocks();
+  delete process.env.HISTORICAL_PAYMENT_REPAIR_ALLOWLIST;
   mocks.getLeague.mockResolvedValue({ id: 7, organizationId: 11, payingLineupSize: 3 });
   mocks.hasAccess.mockResolvedValue(true);
   mocks.hasAdmin.mockResolvedValue(false);
@@ -369,5 +378,70 @@ describe("roster payment route authorization", () => {
       body: JSON.stringify({ requestKey: "request-key-123456" }),
     })).status).toBe(404);
     expect(mocks.recoverByRequestKey).toHaveBeenCalledTimes(1);
+  });
+
+  it("limits historical cash allocation repair to system administrators", async () => {
+    process.env.HISTORICAL_PAYMENT_REPAIR_ALLOWLIST = JSON.stringify({ organizationId: 11, leagueId: 7, paymentAmountsMinor: { 41: 3000 } });
+    mocks.hasAdmin.mockResolvedValue(true);
+    mocks.repairHistoricalCash.mockResolvedValue({
+      contractVersion: "canonical-historical-cash-reallocation/1",
+      originalPaymentId: 41,
+      replacementPaymentId: 42,
+      amountMinor: 3000,
+      allocationCount: 1,
+      replacementPayment: { providerPaymentId: "must-not-leak" },
+    });
+    const body = {
+      paymentId: 41,
+      expectedOldAllocationFingerprint: `lvrepaircashalloc:v1:${"a".repeat(64)}`,
+      expectedTargetAllocationFingerprint: `lvrepaircashalloc:v1:${"b".repeat(64)}`,
+      targetAllocations: [{ obligationId: "00000000-0000-4000-8000-000000000041", amountMinor: 3000 }],
+      reason: "Correct historical advance-payment assignment",
+      idempotencyKey: testRequestKey("cash-repair"),
+      requestFingerprint: `lvrepaircash:v1:${"c".repeat(64)}`,
+    };
+    const path = "/leagues/7/canonical/historical-cash-reallocation/1";
+    const admin = await request(path, user("admin", 11), { method: "POST", body: JSON.stringify(body) });
+    expect(admin.status).toBe(404);
+    expect(mocks.repairHistoricalCash).not.toHaveBeenCalled();
+
+    const systemAdmin = await request(path, user("system_admin", 11), { method: "POST", body: JSON.stringify(body) });
+    expect(systemAdmin.status).toBe(201);
+    const result = await systemAdmin.json();
+    expect(result).toMatchObject({ data: {
+      originalPaymentId: 41,
+      replacementPaymentId: 42,
+      amountMinor: 3000,
+      allocationCount: 1,
+    } });
+    expect(result.data.replacementPayment).not.toHaveProperty("providerPaymentId");
+    expect(mocks.repairHistoricalCash).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, actorUserId: 1, allowlist: { paymentAmountsMinor: { 41: 3000 } }, request: body });
+    expect(mocks.repairHistoricalCash).toHaveBeenCalledTimes(1);
+
+  });
+
+  it("requires the scoped maintenance allowlist for Square allocation repair", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    mocks.repairHistoricalSquare.mockResolvedValue({ contractVersion: "historical-square-allocation-correction/1", paymentId: 51, amountMinor: 3000 });
+    const body = {
+      paymentId: 51,
+      expectedOldAllocationFingerprint: `lvsquarealloc:v1:${"a".repeat(64)}`,
+      expectedTargetAllocationFingerprint: `lvsquarealloc:v1:${"b".repeat(64)}`,
+      targetAllocations: [{ obligationId: "00000000-0000-4000-8000-000000000051", amountMinor: 3000 }],
+      reason: "Correct historical advance-payment assignment",
+      idempotencyKey: testRequestKey("square-repair"),
+      requestFingerprint: `lvsquarecorr:v1:${"c".repeat(64)}`,
+    };
+    const path = "/leagues/7/canonical/historical-square-reallocation/1";
+    expect((await request(path, user("system_admin"), { method: "POST", body: JSON.stringify(body) })).status).toBe(404);
+    process.env.HISTORICAL_PAYMENT_REPAIR_ALLOWLIST = JSON.stringify({ organizationId: 11, leagueId: 8, paymentAmountsMinor: { 51: 3000 } });
+    expect((await request(path, user("system_admin"), { method: "POST", body: JSON.stringify(body) })).status).toBe(404);
+    process.env.HISTORICAL_PAYMENT_REPAIR_ALLOWLIST = JSON.stringify({ organizationId: 11, leagueId: 7, paymentAmountsMinor: { 51: 3000 } });
+    expect((await request(path, user("org_admin"), { method: "POST", body: JSON.stringify(body) })).status).toBe(404);
+    const response = await request(path, user("system_admin"), { method: "POST", body: JSON.stringify(body) });
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({ data: { amountMinor: 3000 } });
+    expect(mocks.repairHistoricalSquare).toHaveBeenCalledTimes(1);
+    expect(mocks.repairHistoricalSquare).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, actorUserId: 1, allowlist: { paymentAmountsMinor: { 51: 3000 } }, request: body });
   });
 });

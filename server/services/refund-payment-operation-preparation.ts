@@ -4,6 +4,7 @@ import {
   bowlers,
   leagues,
   locations,
+  paymentAllocationCorrections,
   paymentOperations,
   paymentAllocations,
   paymentObligations,
@@ -142,26 +143,56 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
     }
     const sourceAllocations = await tx.select({
       id: paymentAllocations.id,
+      paymentId: paymentAllocations.paymentId,
       obligationId: paymentAllocations.obligationId,
       amountMinor: paymentAllocations.amountMinor,
       currency: paymentAllocations.currency,
       state: paymentAllocations.state,
+      allocationKind: paymentAllocations.allocationKind,
       reviewRequired: paymentAllocations.reviewRequired,
     }).from(paymentAllocations).where(and(
       eq(paymentAllocations.organizationId, organizationId),
       eq(paymentAllocations.leagueId, owned.payment.leagueId),
       eq(paymentAllocations.paymentId, input.paymentId),
     )).orderBy(paymentAllocations.id).for("update");
-    if (sourceAllocations.some((allocation) => allocation.state !== "active")) {
+    const correctionRows = await tx.select().from(paymentAllocationCorrections).where(and(
+      eq(paymentAllocationCorrections.organizationId, organizationId),
+      eq(paymentAllocationCorrections.leagueId, owned.payment.leagueId),
+      eq(paymentAllocationCorrections.paymentId, input.paymentId),
+    )).orderBy(paymentAllocationCorrections.createdAt, paymentAllocationCorrections.id);
+    const allocationById = new Map(sourceAllocations.map((allocation) => [allocation.id, allocation]));
+    const voidedAllocations = sourceAllocations.filter((allocation) => allocation.state === "voided");
+    const correctionBySourceId = new Map(correctionRows.map((correction) => [correction.sourceAllocationId, correction]));
+    const provenVoids = voidedAllocations.every((source) => {
+      const correction = correctionBySourceId.get(source.id);
+      const replacement = correction ? allocationById.get(correction.replacementAllocationId) : undefined;
+      return correction !== undefined
+        && correction.organizationId === organizationId
+        && correction.leagueId === owned.payment.leagueId
+        && correction.paymentId === input.paymentId
+        && correction.sourceObligationId === source.obligationId
+        && correction.amountMinor === source.amountMinor
+        && correction.currency === source.currency
+        && source.allocationKind === "ordinary"
+        && replacement !== undefined
+        && replacement.state === "active"
+        && replacement.allocationKind === "ordinary"
+        && replacement.paymentId === input.paymentId
+        && replacement.obligationId === correction.targetObligationId
+        && replacement.amountMinor === correction.amountMinor
+        && replacement.currency === correction.currency;
+    });
+    if (!provenVoids || correctionRows.length !== voidedAllocations.length) {
       throw new RefundPreparationError("This payment has voided allocation evidence and requires reconciliation before refunding", 409, "REFUND_ALLOCATION_STATE_CONFLICT");
     }
-    if (sourceAllocations.some((allocation) => allocation.reviewRequired)) {
+    const refundSourceAllocations = sourceAllocations.filter((allocation) => allocation.state === "active");
+    if (refundSourceAllocations.some((allocation) => allocation.reviewRequired)) {
       throw new RefundPreparationError("This payment has allocation evidence requiring review before refunding", 409, "REFUND_ALLOCATION_REVIEW_REQUIRED");
     }
-    if (sourceAllocations.length === 0 || sourceAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0) !== owned.payment.amount) {
+    if (refundSourceAllocations.length === 0 || refundSourceAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0) !== owned.payment.amount) {
       throw new RefundPreparationError("This payment's canonical allocation evidence does not match the full refund amount", 409, "REFUND_ALLOCATION_EVIDENCE_MISMATCH");
     }
-    const sourceObligationIds = [...new Set(sourceAllocations.map((allocation) => allocation.obligationId))];
+    const sourceObligationIds = [...new Set(refundSourceAllocations.map((allocation) => allocation.obligationId))];
     if (sourceObligationIds.length > 0) {
       const sourceObligations = await tx.select({ id: paymentObligations.id, payerBowlerId: paymentObligations.payerBowlerId, occurrenceId: paymentObligations.occurrenceId }).from(paymentObligations).where(and(
         eq(paymentObligations.organizationId, organizationId),
@@ -251,7 +282,7 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
       requestedByRole: input.requestedByRole,
       requestedByOrganizationId: input.requestedByOrganizationId,
       disposition: input.disposition as typeof REFUND_PAYMENT_DISPOSITIONS[number],
-      allocations: sourceAllocations.map((allocation) => ({
+      allocations: refundSourceAllocations.map((allocation) => ({
         allocationId: allocation.id,
         obligationId: allocation.obligationId,
         amountMinor: allocation.amountMinor,

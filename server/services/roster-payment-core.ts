@@ -55,6 +55,22 @@ import type {
   calculateRosterPaymentTiming,
 } from "@shared/roster-payment-contract";
 import type { FinancialReadContract, FinancialReadContractV3, FinancialReadRowContractV3 } from "@shared/financial-contract";
+import {
+  canonicalHistoricalCashAllocationRepairFingerprint,
+  historicalCashAllocationFingerprint,
+  type HistoricalCashAllocationRepairRequest,
+} from "@shared/historical-payment-repair";
+export {
+  canonicalHistoricalCashAllocationRepairFingerprint,
+  historicalCashAllocationFingerprint,
+} from "@shared/historical-payment-repair";
+export type {
+  HistoricalCashAllocationFingerprintRow,
+  HistoricalCashAllocationRepairRequest,
+} from "@shared/historical-payment-repair";
+export type HistoricalCashPaymentAllowlist = {
+  paymentAmountsMinor: Readonly<Record<string, number>>;
+};
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { prepareInteractivePaymentOperation } from "./interactive-payment-operation-preparation.js";
@@ -2544,6 +2560,312 @@ export async function editCanonicalCashPayment(input: { organizationId: number; 
       leagueId: input.leagueId,
       commandType: "roster_payment.edit_cash_payment",
       idempotencyKey: input.request.idempotencyKey,
+      result,
+    });
+    return result;
+  });
+}
+
+/**
+ * Apply an explicitly reviewed historical cash allocation correction.
+ *
+ * This is intentionally an internal service surface. A maintenance runner
+ * supplies the exact payment allowlist, source allocation digest, and target
+ * allocation digest after its read-only preflight. The command never invokes
+ * a provider and never derives a new FIFO plan.
+ */
+export async function repairHistoricalCashPaymentAllocation(input: {
+  organizationId: number;
+  leagueId: number;
+  actorUserId: number;
+  allowlist: HistoricalCashPaymentAllowlist;
+  request: HistoricalCashAllocationRepairRequest;
+}) {
+  return db.transaction(async (tx) => {
+    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    const request = input.request;
+    const targetAllocations = Array.isArray(request.targetAllocations) ? request.targetAllocations : null;
+    const { requestFingerprint: _requestFingerprint, ...fingerprintRequest } = request;
+    if (!Number.isSafeInteger(request.paymentId) || request.paymentId <= 0
+      || targetAllocations === null || targetAllocations.length === 0 || targetAllocations.length > 64
+      || typeof request.reason !== "string" || request.reason.trim().length === 0 || request.reason.length > 500
+      || typeof request.expectedOldAllocationFingerprint !== "string" || request.expectedOldAllocationFingerprint.trim().length === 0
+      || typeof request.expectedTargetAllocationFingerprint !== "string" || request.expectedTargetAllocationFingerprint.trim().length === 0
+      || typeof request.idempotencyKey !== "string" || request.idempotencyKey.trim().length === 0
+      || request.requestFingerprint !== canonicalHistoricalCashAllocationRepairFingerprint({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        request: fingerprintRequest,
+      })) {
+      throw new RosterPaymentError("INVALID_REPAIR_REQUEST", "The historical cash repair request is invalid", 422);
+    }
+    if (new Set(targetAllocations.map((row) => row.obligationId)).size !== targetAllocations.length
+      || targetAllocations.some((row) => !/^[0-9a-f-]{36}$/i.test(row.obligationId)
+        || !Number.isSafeInteger(row.amountMinor) || row.amountMinor <= 0)) {
+      throw new RosterPaymentError("INVALID_REPAIR_MAPPING", "The historical cash repair allocation map is invalid", 422);
+    }
+    const calculatedTargetFingerprint = historicalCashAllocationFingerprint(targetAllocations.map((row) => ({
+      obligationId: row.obligationId,
+      amountMinor: row.amountMinor,
+      state: "active" as const,
+      allocationKind: "ordinary" as const,
+    })));
+    if (calculatedTargetFingerprint !== request.expectedTargetAllocationFingerprint) {
+      throw new RosterPaymentError("REPAIR_TARGET_FINGERPRINT_MISMATCH", "The historical cash repair target evidence is stale", 409);
+    }
+    const allowlistedAmount = input.allowlist?.paymentAmountsMinor?.[String(request.paymentId)];
+    if (!Number.isSafeInteger(allowlistedAmount) || allowlistedAmount <= 0) {
+      throw new RosterPaymentError("PAYMENT_NOT_ALLOWLISTED", "This payment is not authorized for historical correction", 409);
+    }
+    await beginFinancialCommand(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      actorUserId: input.actorUserId,
+      commandType: "roster_payment.repair_historical_cash_allocation",
+      idempotencyKey: request.idempotencyKey,
+      requestFingerprint: request.requestFingerprint,
+    });
+
+    const [payment] = await tx.select().from(payments).where(and(
+      eq(payments.id, request.paymentId),
+      eq(payments.organizationId, input.organizationId),
+      eq(payments.leagueId, input.leagueId),
+    )).limit(1).for("update");
+    if (!payment) throw new RosterPaymentError("NOT_FOUND", "Payment not found", 404);
+    if (payment.amount !== allowlistedAmount) {
+      throw new RosterPaymentError("PAYMENT_AMOUNT_MISMATCH", "The payment amount does not match the private correction plan", 409);
+    }
+    await assertPaymentIsNotRotatingCreditFundingInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      paymentId: payment.id,
+    });
+    if (payment.type !== "cash" || payment.status !== "paid" || payment.paymentOperationId !== null
+      || payment.providerPaymentId !== null || payment.refundedAt !== null || payment.squareRefundId !== null
+      || payment.disputeId !== null || payment.disputedAt !== null) {
+      throw new RosterPaymentError("CASH_REPAIR_UNAVAILABLE", "Only an active unlinked cash payment can be repaired", 409);
+    }
+    if (targetAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0) !== payment.amount) {
+      throw new RosterPaymentError("REPAIR_TARGET_AMOUNT_MISMATCH", "The historical cash repair target must conserve the tender amount", 409);
+    }
+
+    const sourceAllocations = await tx.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, input.organizationId),
+      eq(paymentAllocations.leagueId, input.leagueId),
+      eq(paymentAllocations.paymentId, payment.id),
+    )).orderBy(asc(paymentAllocations.id)).for("update");
+    if (sourceAllocations.length === 0
+      || sourceAllocations.some((allocation) => allocation.state !== "active"
+        || allocation.allocationKind !== "ordinary" || allocation.reviewRequired)
+      || sourceAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0) !== payment.amount) {
+      throw new RosterPaymentError("CASH_REPAIR_UNAVAILABLE", "The source cash allocation evidence is not repairable", 409);
+    }
+    const calculatedSourceFingerprint = historicalCashAllocationFingerprint(sourceAllocations.map((allocation) => ({
+      allocationId: allocation.id,
+      obligationId: allocation.obligationId,
+      amountMinor: allocation.amountMinor,
+      state: allocation.state,
+      allocationKind: allocation.allocationKind,
+    })));
+    if (calculatedSourceFingerprint !== request.expectedOldAllocationFingerprint) {
+      throw new RosterPaymentError("REPAIR_SOURCE_FINGERPRINT_MISMATCH", "The historical cash repair source evidence is stale", 409);
+    }
+    const sourceAllocationIds = sourceAllocations.map((allocation) => allocation.id);
+    const refundAdjustments = await tx.select({ id: refundAllocationAdjustments.id }).from(refundAllocationAdjustments).where(and(
+      eq(refundAllocationAdjustments.organizationId, input.organizationId),
+      eq(refundAllocationAdjustments.leagueId, input.leagueId),
+      inArray(refundAllocationAdjustments.sourceAllocationId, sourceAllocationIds),
+    )).limit(1);
+    if (refundAdjustments.length > 0) {
+      throw new RosterPaymentError("CASH_REPAIR_UNAVAILABLE", "The source cash allocation has refund evidence", 409);
+    }
+
+    const sourceObligationIds = sourceAllocations.map((allocation) => allocation.obligationId);
+    const targetObligationIds = targetAllocations.map((allocation) => allocation.obligationId);
+    const touchedObligationIds = [...new Set([...sourceObligationIds, ...targetObligationIds])];
+    const reservations = await tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).where(and(
+      eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+      eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+      eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+      inArray(paymentOperationRosterSnapshotItems.obligationId, touchedObligationIds),
+    )).limit(1).for("update");
+    if (reservations.length > 0) {
+      throw new RosterPaymentError("OBLIGATION_RESERVED", "An automatic payment has reserved a repaired obligation", 409);
+    }
+
+    const obligations = await tx.select().from(paymentObligations).where(and(
+      eq(paymentObligations.organizationId, input.organizationId),
+      eq(paymentObligations.leagueId, input.leagueId),
+      inArray(paymentObligations.id, targetObligationIds),
+    )).for("update");
+    const obligationById = new Map(obligations.map((obligation) => [obligation.id, obligation]));
+    if (obligations.length !== targetObligationIds.length || targetAllocations.some((allocation) => {
+      const obligation = obligationById.get(allocation.obligationId);
+      return !obligation || obligation.state === "voided" || obligation.currency !== payment.currency || obligation.payerBowlerId !== payment.bowlerId;
+    })) {
+      throw new RosterPaymentError("REPAIR_TARGET_UNAVAILABLE", "The historical cash repair target obligations are unavailable", 409);
+    }
+    const activeTargetAllocations = await tx.select({
+      paymentId: paymentAllocations.paymentId,
+      obligationId: paymentAllocations.obligationId,
+      amountMinor: paymentAllocations.amountMinor,
+    }).from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, input.organizationId),
+      eq(paymentAllocations.leagueId, input.leagueId),
+      eq(paymentAllocations.state, "active"),
+      inArray(paymentAllocations.obligationId, targetObligationIds),
+    )).for("share");
+    const activeOtherTotals = new Map<string, number>();
+    for (const allocation of activeTargetAllocations) {
+      if (allocation.paymentId === payment.id) continue;
+      activeOtherTotals.set(allocation.obligationId, (activeOtherTotals.get(allocation.obligationId) ?? 0) + allocation.amountMinor);
+    }
+    if (targetAllocations.some((allocation) => {
+      const obligation = obligationById.get(allocation.obligationId);
+      return obligation !== undefined
+        && (activeOtherTotals.get(allocation.obligationId) ?? 0) + allocation.amountMinor > obligation.amountMinor;
+    })) {
+      throw new RosterPaymentError("REPAIR_TARGET_OVERALLOCATED", "The historical cash repair would exceed an obligation balance", 409);
+    }
+
+    const [alreadyVoided] = await tx.select({ id: paymentVoids.id }).from(paymentVoids).where(and(
+      eq(paymentVoids.organizationId, input.organizationId),
+      eq(paymentVoids.leagueId, input.leagueId),
+      eq(paymentVoids.paymentId, payment.id),
+    )).limit(1).for("update");
+    if (alreadyVoided) throw new RosterPaymentError("CASH_REPAIR_UNAVAILABLE", "The source cash payment is already voided", 409);
+
+    const [voidEvidence] = await tx.insert(paymentVoids).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      paymentId: payment.id,
+      reason: request.reason,
+      recordedByUserId: input.actorUserId,
+    }).returning();
+    if (!voidEvidence) throw new RosterPaymentError("PAYMENT_VOID_FAILED", "The source cash payment could not be retained as void evidence", 503);
+    await tx.update(payments).set({ status: "voided" }).where(and(
+      eq(payments.id, payment.id),
+      eq(payments.organizationId, input.organizationId),
+      eq(payments.leagueId, input.leagueId),
+    ));
+    await tx.update(paymentAllocations).set({ state: "voided" }).where(and(
+      eq(paymentAllocations.organizationId, input.organizationId),
+      eq(paymentAllocations.leagueId, input.leagueId),
+      eq(paymentAllocations.paymentId, payment.id),
+      eq(paymentAllocations.state, "active"),
+    ));
+
+    const [replacement] = await tx.insert(payments).values({
+      organizationId: input.organizationId,
+      bowlerId: payment.bowlerId,
+      leagueId: payment.leagueId,
+      amount: payment.amount,
+      currency: payment.currency,
+      status: "paid",
+      type: "cash",
+      checkNumber: null,
+      providerPaymentId: null,
+      paymentOperationId: null,
+      idempotencyKey: null,
+      squareRefundId: null,
+      refundReason: null,
+      refundedAt: null,
+      disputeId: null,
+      disputedAt: null,
+      receiptUrl: payment.receiptUrl,
+      receiptNumber: payment.receiptNumber,
+      receiptEmailMissing: payment.receiptEmailMissing,
+      notes: payment.notes,
+      paidByUserId: payment.paidByUserId,
+      createdAt: payment.createdAt,
+    }).returning();
+    if (!replacement) throw new RosterPaymentError("PAYMENT_WRITE_FAILED", "The repaired cash tender could not be recorded", 503);
+
+    const createdAllocations = [];
+    for (const allocation of targetAllocations) {
+      const [created] = await tx.insert(paymentAllocations).values({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: replacement.id,
+        obligationId: allocation.obligationId,
+        amountMinor: allocation.amountMinor,
+        currency: payment.currency,
+        allocationKind: "ordinary",
+        recordedByUserId: input.actorUserId,
+      }).returning();
+      if (!created) throw new RosterPaymentError("ALLOCATION_WRITE_FAILED", "The repaired cash allocation could not be recorded", 503);
+      createdAllocations.push(created);
+    }
+
+    const refreshObligationState = async (obligationIds: string[]) => {
+      if (obligationIds.length === 0) return;
+      const touched = await tx.select().from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, input.organizationId),
+        eq(paymentObligations.leagueId, input.leagueId),
+        inArray(paymentObligations.id, obligationIds),
+      )).for("update");
+      for (const obligation of touched) {
+        const active = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
+          eq(paymentAllocations.organizationId, input.organizationId),
+          eq(paymentAllocations.leagueId, input.leagueId),
+          eq(paymentAllocations.obligationId, obligation.id),
+          eq(paymentAllocations.state, "active"),
+        ));
+        const adjustments = active.length === 0 ? [] : await tx.select({
+          sourceAllocationId: refundAllocationAdjustments.sourceAllocationId,
+          amountMinor: refundAllocationAdjustments.amountMinor,
+          disposition: refundAllocationAdjustments.disposition,
+        }).from(refundAllocationAdjustments).where(and(
+          eq(refundAllocationAdjustments.organizationId, input.organizationId),
+          eq(refundAllocationAdjustments.leagueId, input.leagueId),
+          inArray(refundAllocationAdjustments.sourceAllocationId, active.map((row) => row.id)),
+        ));
+        const balance = canonicalObligationBalance({
+          amountMinor: obligation.amountMinor,
+          state: obligation.state,
+          grossAllocatedMinor: active.reduce((sum, row) => sum + row.amountMinor, 0),
+          adjustments,
+        });
+        await tx.update(paymentObligations).set({
+          state: balance.outstandingMinor === 0 ? "settled" : balance.effectiveAllocatedMinor > 0 ? "partially_settled" : "open",
+          voidedAt: null,
+        }).where(and(
+          eq(paymentObligations.id, obligation.id),
+          eq(paymentObligations.organizationId, input.organizationId),
+          eq(paymentObligations.leagueId, input.leagueId),
+        ));
+      }
+    };
+    await refreshObligationState(touchedObligationIds);
+
+    const result = {
+      contractVersion: "canonical-historical-cash-reallocation/1" as const,
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      mode: "repair_cash_allocation" as const,
+      sameTender: true as const,
+      originalPaymentId: payment.id,
+      replacementPaymentId: replacement.id,
+      amountMinor: payment.amount,
+      oldAllocationFingerprint: calculatedSourceFingerprint,
+      targetAllocationFingerprint: calculatedTargetFingerprint,
+      oldAllocations: sourceAllocations.map((allocation) => ({
+        allocationId: allocation.id,
+        obligationId: allocation.obligationId,
+        amountMinor: allocation.amountMinor,
+        state: "voided" as const,
+        allocationKind: allocation.allocationKind,
+      })),
+      replacementPayment: replacement,
+      voidEvidence,
+      allocations: createdAllocations,
+      allocationCount: createdAllocations.length,
+    };
+    await completeFinancialCommand(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      commandType: "roster_payment.repair_historical_cash_allocation",
+      idempotencyKey: request.idempotencyKey,
       result,
     });
     return result;

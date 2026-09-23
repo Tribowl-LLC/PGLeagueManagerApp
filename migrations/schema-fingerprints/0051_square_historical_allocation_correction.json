@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0051_square_historical_allocation_correction",
+    "hash": "07c4a86e1cace467cb5b2cadbb8d8c96ffb07b584304ee53bc0b2ee8c97a1660",
+    "createdAt": 1790190160145
+  },
+  "digest": "e7f527698b875a1328028e19772bca19769dc5b57ef180577ac0e82a791837e4",
+  "counts": {
+    "tables": 86,
+    "columns": 1201,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 32,
+    "constraints": 678,
+    "indexes": 365,
+    "types": 1,
+    "functions": 28,
+    "triggers": 55,
+    "policies": 0
+  }
+}

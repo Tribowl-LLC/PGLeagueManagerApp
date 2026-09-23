@@ -1,6 +1,6 @@
 import { aliasedTable, and, asc, desc, eq, exists, inArray, sql, or } from "drizzle-orm";
 import { db } from "../db.js";
-import { bowlers, leagueOccurrences, leagues, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments, refundAllocationAdjustments, rotatingCreditApplications, rotatingCreditApplicationReversals, rotatingCreditFundings, rotatingCreditPaymentOperationSnapshots, rotatingCreditRefundOperationSnapshots, rotatingCreditRefunds } from "@shared/schema";
+import { bowlers, leagueOccurrences, leagues, paymentAllocationCorrections, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments, refundAllocationAdjustments, rotatingCreditApplications, rotatingCreditApplicationReversals, rotatingCreditFundings, rotatingCreditPaymentOperationSnapshots, rotatingCreditRefundOperationSnapshots, rotatingCreditRefunds, type PaymentAllocationCorrection } from "@shared/schema";
 import type { CanonicalPaymentReport, CanonicalPaymentRow, CanonicalPaymentReportTotals } from "@shared/canonical-payment-report";
 import { canonicalCreditFundingSource, canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
 import { paymentVisibilityCondition } from "../storage/payments.js";
@@ -16,10 +16,121 @@ export interface CanonicalPaymentReportInput {
   limit?: number;
 }
 
+type CorrectionAllocationEvidence = {
+  allocation: typeof paymentAllocations.$inferSelect;
+  obligation: typeof paymentObligations.$inferSelect;
+};
+
+type CorrectionSnapshotEvidence = {
+  snapshot: typeof paymentOperationRosterSnapshots.$inferSelect;
+  item: typeof paymentOperationRosterSnapshotItems.$inferSelect;
+};
+
+/**
+ * A corrected Square payment keeps its original operation snapshot immutable.
+ * The report therefore validates the source against the original finalized
+ * item, then validates the active replacement against the transformed item
+ * set. Any mismatch remains unresolved and is never projected as paid.
+ */
+function validateHistoricalSquareCorrection(input: {
+  payment: typeof payments.$inferSelect;
+  operation: typeof paymentOperations.$inferSelect | undefined;
+  linked: CorrectionAllocationEvidence[];
+  corrections: PaymentAllocationCorrection[];
+  expectedSnapshots: CorrectionSnapshotEvidence[];
+}): { valid: boolean; sourceAllocationIds: Set<string> } {
+  const sourceAllocationIds = new Set(input.corrections.map((row) => row.sourceAllocationId));
+  if (input.corrections.length === 0
+    || input.payment.type !== "square"
+    || !input.operation
+    || input.operation.status !== "succeeded"
+    || input.operation.operationType === "refund"
+    || input.operation.amountMinor !== input.payment.amount
+    || input.operation.currency !== input.payment.currency
+    || input.operation.providerObjectId === null
+    || input.operation.providerObjectId !== input.payment.providerPaymentId) {
+    return { valid: false, sourceAllocationIds };
+  }
+
+  const allocationById = new Map(input.linked.map((row) => [row.allocation.id, row]));
+  const sourceObligationIds = new Set<string>();
+  const targetObligationIds = new Set<string>();
+  const replacementAllocationIds = new Set<string>();
+  for (const correction of input.corrections) {
+    const source = allocationById.get(correction.sourceAllocationId);
+    const replacement = allocationById.get(correction.replacementAllocationId);
+    if (correction.organizationId !== input.payment.organizationId
+      || correction.leagueId !== input.payment.leagueId
+      || correction.paymentId !== input.payment.id
+      || correction.currency !== input.payment.currency
+      || correction.reason.trim().length === 0
+      || !source
+      || source.allocation.paymentId !== input.payment.id
+      || source.allocation.organizationId !== input.payment.organizationId
+      || source.allocation.leagueId !== input.payment.leagueId
+      || source.allocation.state !== "voided"
+      || source.allocation.allocationKind !== "ordinary"
+      || source.allocation.amountMinor !== correction.amountMinor
+      || source.allocation.currency !== correction.currency
+      || source.allocation.obligationId !== correction.sourceObligationId
+      || !replacement
+      || replacement.allocation.id === source.allocation.id
+      || replacement.allocation.paymentId !== input.payment.id
+      || replacement.allocation.organizationId !== input.payment.organizationId
+      || replacement.allocation.leagueId !== input.payment.leagueId
+      || replacement.allocation.state !== "active"
+      || replacement.allocation.allocationKind !== "ordinary"
+      || replacement.allocation.amountMinor !== correction.amountMinor
+      || replacement.allocation.currency !== correction.currency
+      || replacement.allocation.obligationId !== correction.targetObligationId
+      || sourceObligationIds.has(correction.sourceObligationId)
+      || targetObligationIds.has(correction.targetObligationId)
+      || replacementAllocationIds.has(correction.replacementAllocationId)
+      || correction.sourceObligationId === correction.targetObligationId) {
+      return { valid: false, sourceAllocationIds };
+    }
+    sourceObligationIds.add(correction.sourceObligationId);
+    targetObligationIds.add(correction.targetObligationId);
+    replacementAllocationIds.add(correction.replacementAllocationId);
+  }
+
+  const ordinaryVoided = input.linked.filter((row) => row.allocation.state === "voided" && row.allocation.allocationKind === "ordinary");
+  if (ordinaryVoided.length !== input.corrections.length
+    || ordinaryVoided.some((row) => !sourceAllocationIds.has(row.allocation.id))) {
+    return { valid: false, sourceAllocationIds };
+  }
+  if (input.expectedSnapshots.length === 0
+    || input.expectedSnapshots.some((row) => row.item.state !== "finalized")) {
+    return { valid: false, sourceAllocationIds };
+  }
+
+  const expected = input.expectedSnapshots.map((row) => {
+    const correction = input.corrections.find((candidate) => candidate.sourceObligationId === row.item.obligationId);
+    return {
+      obligationId: correction?.targetObligationId ?? row.item.obligationId,
+      amountMinor: row.item.amountMinor,
+      currency: row.snapshot.currency,
+    };
+  });
+  const active = input.linked
+    .filter((row) => row.allocation.state === "active")
+    .map((row) => ({ obligationId: row.allocation.obligationId, amountMinor: row.allocation.amountMinor, currency: row.allocation.currency }));
+  if (active.length !== expected.length) return { valid: false, sourceAllocationIds };
+  const unmatched = [...active];
+  for (const expectedRow of expected) {
+    const index = unmatched.findIndex((row) => row.obligationId === expectedRow.obligationId
+      && row.amountMinor === expectedRow.amountMinor
+      && row.currency === expectedRow.currency);
+    if (index < 0) return { valid: false, sourceAllocationIds };
+    unmatched.splice(index, 1);
+  }
+  return { valid: unmatched.length === 0, sourceAllocationIds };
+}
+
 function rowStatus(payment: typeof payments.$inferSelect, reviewRequired: boolean, corrected: boolean): CanonicalPaymentRow["status"] {
-  // A manual correction is append-only evidence: the original payment row is
-  // retained, but its canonical allocation is voided and superseded. Do not
-  // count that archived row as a second settled payment in report totals.
+  // An unproven manual correction remains review-required. A proven
+  // same-parent Square correction is represented by the active replacement
+  // set and can retain the provider payment's confirmed-paid status.
   if (corrected) return "review_required";
   if (reviewRequired) return "review_required";
   if (payment.disputeId) return "disputed";
@@ -182,6 +293,15 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
       inArray(paymentOperationRosterSnapshotItems.operationId, operationIds),
     ));
+    const allocationCorrections = paymentIds.length === 0 ? [] : await tx.select().from(paymentAllocationCorrections).where(and(
+      eq(paymentAllocationCorrections.organizationId, input.organizationId),
+      eq(paymentAllocationCorrections.leagueId, input.leagueId),
+      inArray(paymentAllocationCorrections.paymentId, paymentIds),
+    ));
+    const correctionsByPaymentId = new Map<number, PaymentAllocationCorrection[]>();
+    for (const correction of allocationCorrections) {
+      correctionsByPaymentId.set(correction.paymentId, [...(correctionsByPaymentId.get(correction.paymentId) ?? []), correction]);
+    }
     const disputes = operationIds.length === 0 ? [] : await tx.select().from(paymentDisputes).where(and(eq(paymentDisputes.organizationId, input.organizationId), inArray(paymentDisputes.paymentOperationId, operationIds))).orderBy(desc(paymentDisputes.updatedAt));
     const visiblePayments = input.bowlerId === undefined
       ? allPayments
@@ -198,9 +318,6 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const creditSnapshot = payment.paymentOperationId === null ? undefined : creditSnapshotByOperationId.get(payment.paymentOperationId);
       const dispute = operation ? disputes.find((candidate) => candidate.paymentOperationId === operation.id) : undefined;
       const voidEvidence = voids.find((candidate) => candidate.paymentId === payment.id);
-      const ordinaryVoidedAllocation = linked.some((candidate) => candidate.allocation.state === "voided"
-        && !(isCreditFunding && candidate.creditApplication && creditReversalByApplicationId.has(candidate.creditApplication.id)));
-      const corrected = Boolean(voidEvidence) || ordinaryVoidedAllocation;
       // A provider operation is not confirmed financial evidence until its
       // immutable roster reservation has an active canonical allocation. A
       // payment row can exist after provider success but before (or instead
@@ -209,6 +326,17 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const expectedSnapshots = payment.paymentOperationId !== null
         ? operationSnapshotItems.filter((candidate) => candidate.item.operationId === payment.paymentOperationId)
         : [];
+      const historicalCorrection = validateHistoricalSquareCorrection({
+        payment,
+        operation,
+        linked: linked.map((candidate) => ({ allocation: candidate.allocation, obligation: candidate.obligation })),
+        corrections: correctionsByPaymentId.get(payment.id) ?? [],
+        expectedSnapshots,
+      });
+      const ordinaryVoidedAllocation = linked.some((candidate) => candidate.allocation.state === "voided"
+        && !(isCreditFunding && candidate.creditApplication && creditReversalByApplicationId.has(candidate.creditApplication.id))
+        && !historicalCorrection.sourceAllocationIds.has(candidate.allocation.id));
+      const corrected = Boolean(voidEvidence) || (ordinaryVoidedAllocation && !historicalCorrection.valid);
       // Every operation-linked parent must reconcile to every immutable
       // snapshot item and matching active allocation.
       const activeLinked = linked.filter((candidate) => candidate.allocation.state === "active");
@@ -350,7 +478,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         ? invalidCreditFunding
         : payment.paymentOperationId !== null && (
         expectedSnapshots.length === 0
-        || expectedSnapshots.some((expected) => expected.item.state !== "finalized" || !activeLinked.some((candidate) => candidate.allocation.obligationId === expected.item.obligationId && candidate.allocation.amountMinor === expected.item.amountMinor && candidate.allocation.currency === expected.snapshot.currency))
+        || (!historicalCorrection.valid && expectedSnapshots.some((expected) => expected.item.state !== "finalized" || !activeLinked.some((candidate) => candidate.allocation.obligationId === expected.item.obligationId && candidate.allocation.amountMinor === expected.item.amountMinor && candidate.allocation.currency === expected.snapshot.currency)))
         || activeLinked.length !== expectedSnapshots.length
         || !operation
         || operation.status !== "succeeded"

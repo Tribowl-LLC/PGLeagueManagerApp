@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(51);
+    expect(migrations).toHaveLength(52);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -539,6 +539,13 @@ describe('normalized migration baseline tools', () => {
       hash: 'f2cecb941b041a4866365b529cf045fbdf097cb7add64f020c1dec175134c78f',
     });
     expect(migrations[50]?.sql).toContain('allocation_kind');
+    expect(migrations[51]).toMatchObject({
+      idx: 51,
+      tag: '0051_square_historical_allocation_correction',
+      createdAt: 1790190160145,
+      hash: '07c4a86e1cace467cb5b2cadbb8d8c96ffb07b584304ee53bc0b2ee8c97a1660',
+    });
+    expect(migrations[51]?.sql).toContain('CREATE TABLE "payment_allocation_corrections"');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 
