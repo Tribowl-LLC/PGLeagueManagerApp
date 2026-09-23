@@ -442,9 +442,12 @@ function teamPage(report: TeamEnvelopeReport, team: TeamEnvelopeReportTeam, inde
         <td class="paid-today"><span class="write-line">&nbsp;</span></td>
       </tr>`).join("")
     : `<tr><td class="empty" colspan="8">No assigned bowlers</td></tr>`;
-  const finalNote = team.showFinalWeekPaid && report.finalWeekFeesDueLocalDate
-    ? `<p class="note">Final Week&#39;s Fees due by ${escapeHtml(displayDate(report.finalWeekFeesDueLocalDate))}</p>`
-    : "";
+  const notes = [
+    `<p class="note">Remaining Credit excludes payments reserved for future final weeks.</p>`,
+    ...(team.showFinalWeekPaid && report.finalWeekFeesDueLocalDate
+      ? [`<p class="note">Final Week&#39;s Fees due by ${escapeHtml(displayDate(report.finalWeekFeesDueLocalDate))}</p>`]
+      : []),
+  ].join("");
   return `<section class="page"${index > 0 ? " style=\"break-before: page;\"" : ""}>
     <article class="slip">
       <header>
@@ -470,7 +473,7 @@ function teamPage(report: TeamEnvelopeReport, team: TeamEnvelopeReportTeam, inde
         </tr></thead>
         <tbody>${body}</tbody>
       </table>
-      ${finalNote}
+      ${notes}
     </article>
   </section>`;
 }

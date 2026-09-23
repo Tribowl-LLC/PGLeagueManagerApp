@@ -131,7 +131,7 @@ function weekThreeFourSeventyDollarInput(): BuildInput {
   return input;
 }
 
-function fiveWeekFinalPartialPaymentInput(): BuildInput {
+function futureFinalPartialPaymentInput(): BuildInput {
   const input = reportInput();
   const localDates = ["2026-09-09", "2026-09-16", "2026-09-23", "2026-09-30", "2026-10-07", "2026-10-14"];
   const occurrences = localDates.map((localDate, index) => occurrence(`week-${index + 1}`, localDate, index + 1));
@@ -161,6 +161,55 @@ function fiveWeekFinalPartialPaymentInput(): BuildInput {
   input.schedule.occurrences = occurrences;
   input.roster.occurrences = occurrences.map((item) => ({ id: item.occurrenceId, startAt: item.startAt, status: item.status }));
   input.financial.asOf = "2026-10-02T16:00:00.000Z";
+  input.financial.rows = rows;
+  input.financial.totals = {
+    amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+    allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+    outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+    collectiblePastDueMinor: 0,
+    reviewCount: 0,
+    settledCount: rows.filter((row) => row.state === "settled").length,
+    voidedCount: 0,
+  };
+  return input;
+}
+
+function twoFuturePairedWeeksInput(): BuildInput {
+  const input = reportInput();
+  const localDates = ["2026-09-09", "2026-09-16", "2026-09-23", "2026-09-30", "2026-10-07", "2026-10-14", "2026-10-21"];
+  const occurrences = localDates.map((localDate, index) => occurrence(`week-${index + 1}`, localDate, index + 1));
+  const groups = [
+    { groupId: "double-pay-4-6", triggerIndex: 3, pairedIndex: 5 },
+    { groupId: "double-pay-5-7", triggerIndex: 4, pairedIndex: 6 },
+  ];
+  for (const group of groups) {
+    occurrences[group.triggerIndex].collectionGroups = [{
+      groupId: group.groupId,
+      groupOrdinal: 1,
+      kind: "double_pay",
+      role: "trigger",
+      pairedOccurrenceId: occurrences[group.pairedIndex].occurrenceId,
+      pairedLocalDate: occurrences[group.pairedIndex].authoritativeLocalDate,
+      state: "published",
+      currentRevision: 1,
+    }];
+    occurrences[group.pairedIndex].collectionGroups = [{
+      groupId: group.groupId,
+      groupOrdinal: 1,
+      kind: "double_pay",
+      role: "paired",
+      pairedOccurrenceId: occurrences[group.triggerIndex].occurrenceId,
+      pairedLocalDate: occurrences[group.triggerIndex].authoritativeLocalDate,
+      state: "published",
+      currentRevision: 1,
+    }];
+  }
+  const dueAt = occurrences.map((item) => `${item.authoritativeLocalDate}T22:30:00.000Z`);
+  const allocations = [2_000, 2_000, 2_000, 2_000, 0, 2_000, 2_000];
+  const rows = occurrences.map((item, index) => financialRow(101, item.occurrenceId, dueAt[index], allocations[index], 10, 2_000));
+  input.schedule.occurrences = occurrences;
+  input.roster.occurrences = occurrences.map((item) => ({ id: item.occurrenceId, startAt: item.startAt, status: item.status }));
+  input.financial.asOf = "2026-10-07T16:00:00.000Z";
   input.financial.rows = rows;
   input.financial.totals = {
     amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
@@ -338,6 +387,15 @@ describe("team envelope report", () => {
     });
   });
 
+  it("keeps future obligations out of due today when upfront due timestamps are identical", () => {
+    const input = weekThreeFourSeventyDollarInput();
+    const sharedDueAt = "2026-09-09T22:30:00.000Z";
+    for (const row of input.financial.rows) row.dueAt = sharedDueAt;
+
+    const row = buildTeamEnvelopeReport(input).teams[0].rows[0];
+    expect(row).toMatchObject({ ytdDueMinor: 4_000, dueTodayMinor: 0 });
+  });
+
   it("reports prior outstanding obligations separately", () => {
     const input = weekThreeFourSeventyDollarInput();
     const firstWeek = input.financial.rows.find((row) => row.occurrenceId === "week-1");
@@ -388,8 +446,8 @@ describe("team envelope report", () => {
     });
   });
 
-  it("shows a partial payment toward a future final week as reserved credit", () => {
-    const input = fiveWeekFinalPartialPaymentInput();
+  it("keeps a full payment toward a future final week out of remaining credit", () => {
+    const input = futureFinalPartialPaymentInput();
     const row = buildTeamEnvelopeReport(input).teams[0].rows[0];
 
     expect(row).toMatchObject({
@@ -398,6 +456,18 @@ describe("team envelope report", () => {
       ytdPaidMinor: 10_000,
       remainingCreditMinor: 0,
       pastDueMinor: 0,
+      dueTodayMinor: 2_000,
+    });
+  });
+
+  it("excludes allocations reserved for more than one future paired week", () => {
+    const row = buildTeamEnvelopeReport(twoFuturePairedWeeksInput()).teams[0].rows[0];
+
+    expect(row).toMatchObject({
+      ytdDueMinor: 8_000,
+      ytdPaidMinor: 12_000,
+      remainingCreditMinor: 0,
+      weeklyDueMinor: 2_000,
       dueTodayMinor: 2_000,
     });
   });
