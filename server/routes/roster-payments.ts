@@ -31,6 +31,7 @@ import {
   readRosterPaymentResponsibility,
   readRosterPaymentResponsibilityV2,
   recordCanonicalManualPayment,
+  repairHistoricalCashPaymentAllocation,
   recordOccurrenceResponsibilities,
   saveRotatingOccurrenceAssignments,
   saveTeamRosterV2,
@@ -48,8 +49,57 @@ import {
   recoverRosterPaymentOperationByRequestKey,
   RosterPaymentRecoveryError,
 } from "../services/roster-payment-recovery.js";
+import {
+  correctHistoricalSquarePaymentAllocation,
+  HistoricalSquareAllocationCorrectionError,
+  HistoricalSquareAllocationCorrectionReplay,
+} from "../services/historical-square-payment-correction.js";
 
 const router = Router();
+
+const historicalCashRepairRequestSchema = z.object({
+  paymentId: z.number().int().positive(),
+  expectedOldAllocationFingerprint: z.string().regex(/^lvrepaircashalloc:v1:[0-9a-f]{64}$/),
+  expectedTargetAllocationFingerprint: z.string().regex(/^lvrepaircashalloc:v1:[0-9a-f]{64}$/),
+  targetAllocations: z.array(z.object({
+    obligationId: z.string().uuid(),
+    amountMinor: z.number().int().positive(),
+  }).strict()).min(1).max(64),
+  reason: z.string().trim().min(1).max(500),
+  idempotencyKey: z.string().trim().min(1).max(255),
+  requestFingerprint: z.string().regex(/^lvrepaircash:v1:[0-9a-f]{64}$/),
+}).strict();
+
+const historicalSquareRepairRequestSchema = z.object({
+  paymentId: z.number().int().positive(),
+  expectedOldAllocationFingerprint: z.string().regex(/^lvsquarealloc:v1:[0-9a-f]{64}$/),
+  expectedTargetAllocationFingerprint: z.string().regex(/^lvsquarealloc:v1:[0-9a-f]{64}$/),
+  targetAllocations: z.array(z.object({
+    obligationId: z.string().uuid(),
+    amountMinor: z.number().int().positive(),
+  }).strict()).min(1).max(64),
+  reason: z.string().trim().min(1).max(500),
+  idempotencyKey: z.string().trim().min(16).max(255),
+  requestFingerprint: z.string().regex(/^lvsquarecorr:v1:[0-9a-f]{64}$/),
+}).strict();
+
+const historicalRepairAllowlistSchema = z.object({
+  organizationId: z.number().int().positive(),
+  leagueId: z.number().int().positive(),
+  paymentAmountsMinor: z.record(z.string().regex(/^\d+$/), z.number().int().positive()),
+}).strict();
+
+function historicalRepairAllowlist(organizationId: number, leagueId: number) {
+  const raw = process.env.HISTORICAL_PAYMENT_REPAIR_ALLOWLIST;
+  if (!raw) return null;
+  try {
+    const parsed = historicalRepairAllowlistSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success || parsed.data.organizationId !== organizationId || parsed.data.leagueId !== leagueId) return null;
+    return { paymentAmountsMinor: parsed.data.paymentAmountsMinor };
+  } catch {
+    return null;
+  }
+}
 
 function leagueIdParam(value: string): number | null {
   if (!/^\d+$/.test(value)) return null;
@@ -90,6 +140,14 @@ function handleError(res: Response, error: unknown): void {
     return;
   }
   if (error instanceof RosterPaymentRecoveryError) {
+    sendError(res, error.message, error.status, error.code);
+    return;
+  }
+  if (error instanceof HistoricalSquareAllocationCorrectionReplay) {
+    sendSuccess(res, rosterWireResult(error.result));
+    return;
+  }
+  if (error instanceof HistoricalSquareAllocationCorrectionError) {
     sendError(res, error.message, error.status, error.code);
     return;
   }
@@ -630,6 +688,52 @@ router.post("/leagues/:leagueId/canonical/corrections/1", adminWriteLimiter, asy
     const result = parsed.data.correctionMode === "edit_cash"
       ? await editCanonicalCashPayment({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, request: parsed.data })
       : await correctCanonicalAllocation({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, request: parsed.data });
+    return sendSuccess(res, rosterWireResult(result), 201);
+  } catch (error) { return handleError(res, error); }
+});
+
+/** Maintenance-only correction of historical cash allocations. The service
+ * requires exact before/after fingerprints and retains the original tender. */
+router.post("/leagues/:leagueId/canonical/historical-cash-reallocation/1", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || req.user?.role !== "system_admin") return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId, true, true);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const allowlist = historicalRepairAllowlist(league.organizationId, leagueId);
+  if (!allowlist) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = historicalCashRepairRequestSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid historical cash repair request", 400, "INVALID_REQUEST");
+  try {
+    const result = await repairHistoricalCashPaymentAllocation({
+      organizationId: league.organizationId,
+      leagueId,
+      actorUserId: req.user.id,
+      allowlist,
+      request: parsed.data,
+    });
+    return sendSuccess(res, rosterWireResult(result), 201);
+  } catch (error) { return handleError(res, error); }
+});
+
+/** Restricted correction of a captured Square allocation; the provider tender
+ * and its charge operation remain unchanged. */
+router.post("/leagues/:leagueId/canonical/historical-square-reallocation/1", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || req.user?.role !== "system_admin") return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId, true, true);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const allowlist = historicalRepairAllowlist(league.organizationId, leagueId);
+  if (!allowlist) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = historicalSquareRepairRequestSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid historical Square repair request", 400, "INVALID_REQUEST");
+  try {
+    const result = await correctHistoricalSquarePaymentAllocation({
+      organizationId: league.organizationId,
+      leagueId,
+      actorUserId: req.user.id,
+      allowlist,
+      request: parsed.data,
+    });
     return sendSuccess(res, rosterWireResult(result), 201);
   } catch (error) { return handleError(res, error); }
 });

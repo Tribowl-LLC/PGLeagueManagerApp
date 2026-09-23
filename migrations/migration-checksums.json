@@ -306,6 +306,12 @@
       "tag": "0050_rotating_team_payments",
       "createdAt": 1790132272166,
       "hash": "f2cecb941b041a4866365b529cf045fbdf097cb7add64f020c1dec175134c78f"
+    },
+    {
+      "idx": 51,
+      "tag": "0051_square_historical_allocation_correction",
+      "createdAt": 1790190160145,
+      "hash": "07c4a86e1cace467cb5b2cadbb8d8c96ffb07b584304ee53bc0b2ee8c97a1660"
     }
   ]
 }

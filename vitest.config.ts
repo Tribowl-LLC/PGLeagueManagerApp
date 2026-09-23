@@ -116,6 +116,7 @@ const UNIT_NO_DB = [
   'tests/unit/sentry-context.test.ts',
   'tests/unit/server-logger-sentry.test.ts',
   'tests/unit/automatic-fifo-payment-allocation.test.ts',
+  'tests/unit/historical-square-payment-correction.test.ts',
   'tests/unit/league-create-payload.test.ts',
   'tests/unit/neon-branches-reveal-password.test.ts',
   'tests/unit/cleanup-connection-aware-sweep.test.ts',
@@ -246,6 +247,7 @@ const PARALLEL_ISOLATED = [
   // spawned Express process or mutable application singleton state.
   'tests/unit/payment-operations.test.ts',
   'tests/unit/roster-payment-finalizer-postgres.test.ts',
+  'tests/unit/historical-square-payment-correction-postgres.test.ts',
   'tests/unit/roster-standing-autopay-postgres.test.ts',
   // The combined-payment provider mock closes over a file-local fake. It
   // must retain module isolation from sibling payment/provider suites.

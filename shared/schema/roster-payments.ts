@@ -386,6 +386,43 @@ export const paymentAllocations = pgTable("payment_allocations", {
   allocationKindCheck: check("payment_allocations_kind_check", sql`${table.allocationKind} IN (${paymentAllocationKinds})`),
 }));
 
+/** Append-only evidence for correcting a historical provider allocation. The
+ * original allocation is retained and moved to `voided`; the replacement is
+ * a new active allocation on the same payment tender. Provider, operation,
+ * and snapshot identities remain owned by their original rows. */
+export const paymentAllocationCorrections = pgTable("payment_allocation_corrections", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  leagueId: integer("league_id").notNull(),
+  paymentId: integer("payment_id").notNull(),
+  sourceAllocationId: uuid("source_allocation_id").notNull(),
+  replacementAllocationId: uuid("replacement_allocation_id").notNull(),
+  sourceObligationId: uuid("source_obligation_id").notNull(),
+  targetObligationId: uuid("target_obligation_id").notNull(),
+  amountMinor: integer("amount_minor").notNull(),
+  currency: varchar("currency", { length: 3 }).notNull().default("USD"),
+  reason: text("reason").notNull(),
+  recordedByUserId: integer("recorded_by_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+}, (table) => ({
+  leagueTenantFk: leagueTenantFk(table, "payment_allocation_corrections_league_tenant_fk"),
+  paymentFk: foreignKey({ name: "payment_allocation_corrections_payment_fk", columns: [table.paymentId, table.organizationId, table.leagueId], foreignColumns: [payments.id, payments.organizationId, payments.leagueId] }).onDelete("restrict"),
+  sourceAllocationFk: foreignKey({ name: "payment_allocation_corrections_source_allocation_fk", columns: [table.sourceAllocationId, table.organizationId, table.leagueId], foreignColumns: [paymentAllocations.id, paymentAllocations.organizationId, paymentAllocations.leagueId] }).onDelete("restrict"),
+  replacementAllocationFk: foreignKey({ name: "payment_allocation_corrections_replacement_allocation_fk", columns: [table.replacementAllocationId, table.organizationId, table.leagueId], foreignColumns: [paymentAllocations.id, paymentAllocations.organizationId, paymentAllocations.leagueId] }).onDelete("restrict"),
+  sourceObligationFk: foreignKey({ name: "payment_allocation_corrections_source_obligation_fk", columns: [table.sourceObligationId, table.organizationId, table.leagueId], foreignColumns: [paymentObligations.id, paymentObligations.organizationId, paymentObligations.leagueId] }).onDelete("restrict"),
+  targetObligationFk: foreignKey({ name: "payment_allocation_corrections_target_obligation_fk", columns: [table.targetObligationId, table.organizationId, table.leagueId], foreignColumns: [paymentObligations.id, paymentObligations.organizationId, paymentObligations.leagueId] }).onDelete("restrict"),
+  tenantIdentityUnique: uniqueIndex("payment_allocation_corrections_tenant_identity_unique").on(table.id, table.organizationId, table.leagueId),
+  sourceUnique: uniqueIndex("payment_allocation_corrections_source_unique").on(table.organizationId, table.leagueId, table.sourceAllocationId),
+  replacementUnique: uniqueIndex("payment_allocation_corrections_replacement_unique").on(table.organizationId, table.leagueId, table.replacementAllocationId),
+  paymentTargetUnique: uniqueIndex("payment_allocation_corrections_payment_target_unique").on(table.organizationId, table.leagueId, table.paymentId, table.targetObligationId),
+  paymentIdx: index("payment_allocation_corrections_payment_idx").on(table.organizationId, table.leagueId, table.paymentId),
+  sourceObligationIdx: index("payment_allocation_corrections_source_obligation_idx").on(table.organizationId, table.leagueId, table.sourceObligationId),
+  targetObligationIdx: index("payment_allocation_corrections_target_obligation_idx").on(table.organizationId, table.leagueId, table.targetObligationId),
+  amountCheck: check("payment_allocation_corrections_amount_check", sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD'`),
+  reasonCheck: check("payment_allocation_corrections_reason_check", sql`length(btrim(${table.reason})) BETWEEN 1 AND 500`),
+  distinctObligationCheck: check("payment_allocation_corrections_distinct_obligation_check", sql`${table.sourceObligationId} <> ${table.targetObligationId}`),
+}));
+
 /** Immutable effect of a completed provider refund on one retained canonical
  * allocation. The source tender/allocation remains untouched; this sidecar
  * is the only evidence used to remove the refunded amount from collection
@@ -685,6 +722,7 @@ export type TeamPaymentPolicyRevision = typeof teamPaymentPolicyRevisions.$infer
 export type OccurrencePaymentResponsibility = typeof occurrencePaymentResponsibilities.$inferSelect;
 export type PaymentObligation = typeof paymentObligations.$inferSelect;
 export type PaymentAllocation = typeof paymentAllocations.$inferSelect;
+export type PaymentAllocationCorrection = typeof paymentAllocationCorrections.$inferSelect;
 export type RefundAllocationAdjustment = typeof refundAllocationAdjustments.$inferSelect;
 export type PaymentVoid = typeof paymentVoids.$inferSelect;
 export type AutopayConsent = typeof autopayConsents.$inferSelect;

@@ -37,7 +37,7 @@ import {
 } from "../../server/services/roster-payment-finalizer";
 import { recoverRosterPaymentOperation, recoverRosterPaymentOperationByRequestKey } from "../../server/services/roster-payment-recovery";
 import { acquireInteractivePaymentOperationDispatchCutoff } from "../../server/storage/payment-operations";
-import { canonicalCashPaymentEditFingerprint, canonicalCorrectionFingerprint, canonicalResponsibilityFingerprint, canonicalRosterFingerprint, chargeInteractiveObligations, correctCanonicalAllocation, editCanonicalCashPayment, quoteInteractiveObligations, recordOccurrenceResponsibilities, saveTeamRoster } from "../../server/services/roster-payment-core";
+import { canonicalCashPaymentEditFingerprint, canonicalCorrectionFingerprint, canonicalHistoricalCashAllocationRepairFingerprint, canonicalResponsibilityFingerprint, canonicalRosterFingerprint, chargeInteractiveObligations, correctCanonicalAllocation, editCanonicalCashPayment, historicalCashAllocationFingerprint, quoteInteractiveObligations, recordOccurrenceResponsibilities, repairHistoricalCashPaymentAllocation, saveTeamRoster, type HistoricalCashAllocationRepairRequest } from "../../server/services/roster-payment-core";
 import { interactivePaymentOperationExecutor } from "../../server/services/interactive-payment-operation-executor";
 import { paymentOperationRetryExecutor } from "../../server/services/payment-operation-retry-executor";
 import { prepareInteractivePaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
@@ -488,6 +488,40 @@ function cashEditRequest(paymentId: number, amountMinor: number, paymentDate: st
   };
   request.requestFingerprint = canonicalCashPaymentEditFingerprint(request);
   return request;
+}
+
+function historicalCashRepairRequest(
+  paymentId: number,
+  sourceAllocation: { id: string; obligationId: string; amountMinor: number },
+  targetObligationId: string,
+  idempotencyKey = `cash-repair-${randomUUID()}`,
+): HistoricalCashAllocationRepairRequest {
+  const targetAllocations = [{ obligationId: targetObligationId, amountMinor: sourceAllocation.amountMinor }];
+  const request: HistoricalCashAllocationRepairRequest = {
+    paymentId,
+    expectedOldAllocationFingerprint: historicalCashAllocationFingerprint([{
+      allocationId: sourceAllocation.id,
+      obligationId: sourceAllocation.obligationId,
+      amountMinor: sourceAllocation.amountMinor,
+      state: "active",
+      allocationKind: "ordinary",
+    }]),
+    expectedTargetAllocationFingerprint: historicalCashAllocationFingerprint(targetAllocations.map((allocation) => ({
+      ...allocation,
+      state: "active" as const,
+      allocationKind: "ordinary" as const,
+    }))),
+    targetAllocations,
+    reason: "historical cash allocation repair fixture",
+    idempotencyKey,
+    requestFingerprint: "",
+  };
+  request.requestFingerprint = canonicalHistoricalCashAllocationRepairFingerprint({ organizationId, leagueId, request });
+  return request;
+}
+
+function historicalCashRepairAllowlist(paymentId: number, amountMinor: number) {
+  return { paymentAmountsMinor: { [String(paymentId)]: amountMinor } };
 }
 
 describe("PR1 roster snapshot finalization on PostgreSQL", () => {
@@ -2559,6 +2593,197 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       const changedRequest = { ...request, amountMinor: 1_500 };
       changedRequest.requestFingerprint = canonicalCashPaymentEditFingerprint(changedRequest);
       await expect(editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: changedRequest })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    });
+
+    it("reallocates an audited cash tender through a same-amount same-date replacement", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const sourceFixture = await createOccurrence();
+      const targetFixture = await createOccurrence();
+      const source = await createCashEvidence(sourceFixture.obligation.id, 2_000);
+      const request = historicalCashRepairRequest(source.payment.id, source.allocation, targetFixture.obligation.id);
+      const allowlist = historicalCashRepairAllowlist(source.payment.id, source.payment.amount);
+
+      const result = await repairHistoricalCashPaymentAllocation({ organizationId, leagueId, actorUserId, allowlist, request });
+
+      expect(result).toMatchObject({
+        contractVersion: "canonical-historical-cash-reallocation/1",
+        mode: "repair_cash_allocation",
+        sameTender: true,
+        originalPaymentId: source.payment.id,
+        amountMinor: source.payment.amount,
+        oldAllocationFingerprint: request.expectedOldAllocationFingerprint,
+        targetAllocationFingerprint: request.expectedTargetAllocationFingerprint,
+      });
+      expect(result.replacementPaymentId).not.toBe(source.payment.id);
+      expect(result.replacementPayment.createdAt).toBe(source.payment.createdAt);
+      expect(result.replacementPayment.amount).toBe(source.payment.amount);
+      expect(result.replacementPayment.type).toBe("cash");
+      expect(result.replacementPayment.providerPaymentId).toBeNull();
+      expect(result.replacementPayment.paymentOperationId).toBeNull();
+      expect(result.oldAllocations).toEqual([{
+        allocationId: source.allocation.id,
+        obligationId: sourceFixture.obligation.id,
+        amountMinor: 2_000,
+        state: "voided",
+        allocationKind: "ordinary",
+      }]);
+      expect(result.allocations).toHaveLength(1);
+      expect(result.allocations[0]).toMatchObject({
+        paymentId: result.replacementPaymentId,
+        obligationId: targetFixture.obligation.id,
+        amountMinor: 2_000,
+        state: "active",
+        allocationKind: "ordinary",
+      });
+
+      const [sourceAfter] = await db.select({ status: payments.status }).from(payments).where(and(
+        eq(payments.organizationId, organizationId),
+        eq(payments.leagueId, leagueId),
+        eq(payments.id, source.payment.id),
+      ));
+      const [replacementAfter] = await db.select({ amount: payments.amount, createdAt: payments.createdAt, status: payments.status }).from(payments).where(and(
+        eq(payments.organizationId, organizationId),
+        eq(payments.leagueId, leagueId),
+        eq(payments.id, result.replacementPaymentId),
+      ));
+      expect(sourceAfter?.status).toBe("voided");
+      expect(replacementAfter).toEqual({ amount: 2_000, createdAt: source.payment.createdAt, status: "paid" });
+      expect(await db.select({ state: paymentAllocations.state }).from(paymentAllocations).where(eq(paymentAllocations.id, source.allocation.id))).toEqual([{ state: "voided" }]);
+
+      const allocations = await db.select({ paymentId: paymentAllocations.paymentId, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, state: paymentAllocations.state }).from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, leagueId),
+        inArray(paymentAllocations.obligationId, [sourceFixture.obligation.id, targetFixture.obligation.id]),
+      )).orderBy(paymentAllocations.createdAt);
+      expect(allocations).toEqual([
+        { paymentId: source.payment.id, obligationId: sourceFixture.obligation.id, amountMinor: 2_000, state: "voided" },
+        { paymentId: result.replacementPaymentId, obligationId: targetFixture.obligation.id, amountMinor: 2_000, state: "active" },
+      ]);
+      const obligationStates = await db.select({ id: paymentObligations.id, state: paymentObligations.state }).from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        inArray(paymentObligations.id, [sourceFixture.obligation.id, targetFixture.obligation.id]),
+      )).orderBy(paymentObligations.id);
+      expect(Object.fromEntries(obligationStates.map((row) => [row.id, row.state]))).toEqual({
+        [sourceFixture.obligation.id]: "open",
+        [targetFixture.obligation.id]: "settled",
+      });
+
+      const [command] = await db.select({ state: financialCommands.state, result: financialCommands.result }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        eq(financialCommands.commandType, "roster_payment.repair_historical_cash_allocation"),
+        eq(financialCommands.idempotencyKey, request.idempotencyKey),
+      ));
+      expect(command?.state).toBe("applied");
+      expect(command?.result).toMatchObject({
+        contractVersion: "canonical-historical-cash-reallocation/1",
+        originalPaymentId: source.payment.id,
+        replacementPaymentId: result.replacementPaymentId,
+        oldAllocationFingerprint: request.expectedOldAllocationFingerprint,
+        targetAllocationFingerprint: request.expectedTargetAllocationFingerprint,
+      });
+    });
+
+    it("fails closed when a payment is absent from or mismatched with the private allowlist", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const sourceFixture = await createOccurrence();
+      const targetFixture = await createOccurrence();
+      const source = await createCashEvidence(sourceFixture.obligation.id, 2_000);
+      const request = historicalCashRepairRequest(source.payment.id, source.allocation, targetFixture.obligation.id);
+
+      await expect(repairHistoricalCashPaymentAllocation({
+        organizationId,
+        leagueId,
+        actorUserId,
+        allowlist: historicalCashRepairAllowlist(source.payment.id, 1_999),
+        request,
+      })).rejects.toMatchObject({ code: "PAYMENT_AMOUNT_MISMATCH" });
+      await expect(repairHistoricalCashPaymentAllocation({
+        organizationId,
+        leagueId,
+        actorUserId,
+        allowlist: { paymentAmountsMinor: {} },
+        request,
+      })).rejects.toMatchObject({ code: "PAYMENT_NOT_ALLOWLISTED" });
+
+      const [payment] = await db.select({ status: payments.status }).from(payments).where(and(
+        eq(payments.organizationId, organizationId),
+        eq(payments.leagueId, leagueId),
+        eq(payments.id, source.payment.id),
+      ));
+      expect(payment?.status).toBe("paid");
+      expect(await db.select({ id: financialCommands.id }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        eq(financialCommands.idempotencyKey, request.idempotencyKey),
+      ))).toHaveLength(0);
+    });
+
+    it("replays an audited cash repair and rejects a conflicting reuse of its command key", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const sourceFixture = await createOccurrence();
+      const targetFixture = await createOccurrence();
+      const source = await createCashEvidence(sourceFixture.obligation.id, 2_000);
+      const request = historicalCashRepairRequest(source.payment.id, source.allocation, targetFixture.obligation.id);
+      const allowlist = historicalCashRepairAllowlist(source.payment.id, source.payment.amount);
+      const first = await repairHistoricalCashPaymentAllocation({ organizationId, leagueId, actorUserId, allowlist, request });
+
+      await expect(repairHistoricalCashPaymentAllocation({ organizationId, leagueId, actorUserId, allowlist, request })).rejects.toMatchObject({ code: "IDEMPOTENCY_REPLAY" });
+
+      const changedRequest: HistoricalCashAllocationRepairRequest = {
+        ...request,
+        reason: "different audited reason",
+        requestFingerprint: "",
+      };
+      changedRequest.requestFingerprint = canonicalHistoricalCashAllocationRepairFingerprint({ organizationId, leagueId, request: changedRequest });
+      await expect(repairHistoricalCashPaymentAllocation({ organizationId, leagueId, actorUserId, allowlist, request: changedRequest })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+
+      expect(await db.select({ id: payments.id }).from(payments).where(and(
+        eq(payments.organizationId, organizationId),
+        eq(payments.leagueId, leagueId),
+        eq(payments.status, "paid"),
+      ))).toHaveLength(1);
+      expect((await db.select({ id: financialCommands.id }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        eq(financialCommands.commandType, "roster_payment.repair_historical_cash_allocation"),
+        eq(financialCommands.idempotencyKey, request.idempotencyKey),
+      ))).length).toBe(1);
+      expect(first.replacementPaymentId).not.toBe(source.payment.id);
+    });
+
+    it("rejects stale source allocation evidence without recording a command or changing the tender", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const sourceFixture = await createOccurrence();
+      const targetFixture = await createOccurrence();
+      const source = await createCashEvidence(sourceFixture.obligation.id, 2_000);
+      const request = historicalCashRepairRequest(source.payment.id, source.allocation, targetFixture.obligation.id);
+      const allowlist = historicalCashRepairAllowlist(source.payment.id, source.payment.amount);
+      const staleRequest: HistoricalCashAllocationRepairRequest = {
+        ...request,
+        expectedOldAllocationFingerprint: "lvrepaircashalloc:v1:" + "0".repeat(64),
+        requestFingerprint: "",
+      };
+      staleRequest.requestFingerprint = canonicalHistoricalCashAllocationRepairFingerprint({ organizationId, leagueId, request: staleRequest });
+
+      await expect(repairHistoricalCashPaymentAllocation({ organizationId, leagueId, actorUserId, allowlist, request: staleRequest })).rejects.toMatchObject({ code: "REPAIR_SOURCE_FINGERPRINT_MISMATCH" });
+      const [payment] = await db.select({ status: payments.status }).from(payments).where(and(
+        eq(payments.organizationId, organizationId),
+        eq(payments.leagueId, leagueId),
+        eq(payments.id, source.payment.id),
+      ));
+      expect(payment?.status).toBe("paid");
+      expect(await db.select({ id: paymentVoids.id }).from(paymentVoids).where(and(
+        eq(paymentVoids.organizationId, organizationId),
+        eq(paymentVoids.leagueId, leagueId),
+        eq(paymentVoids.paymentId, source.payment.id),
+      ))).toHaveLength(0);
+      expect(await db.select({ id: financialCommands.id }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        eq(financialCommands.idempotencyKey, staleRequest.idempotencyKey),
+      ))).toHaveLength(0);
     });
 
     it.each([
