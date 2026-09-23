@@ -14,7 +14,15 @@ const repairRehearsalWorkflow = readFileSync(
   resolve('.github/workflows/production-schema-repair-rehearsal.yml'),
   'utf8',
 );
+const incidentCleanupWorkflow = readFileSync(
+  resolve('.github/workflows/production-schema-rehearsal-cleanup-35838463508.yml'),
+  'utf8',
+);
 const repairScript = readFileSync(resolve('scripts/repair-production-show-db-tree.ts'), 'utf8');
+const rehearsalCatalogCheck = readFileSync(
+  resolve('scripts/check-rehearsal-catalog-security.ts'),
+  'utf8',
+);
 
 describe('production database migration workflow', () => {
   it('keeps migration dispatch manual and validates the protected production target', () => {
@@ -133,23 +141,101 @@ describe('production database migration workflow', () => {
     expect(repairRehearsalWorkflow).toContain('EXPECTED_MIGRATION: 0050_rotating_team_payments');
     expect(repairRehearsalWorkflow).toContain('DB_MIGRATION_EXPECTED_PENDING: none');
     expect(repairRehearsalWorkflow).toContain('if: ${{ always() }}');
-    expect(repairRehearsalWorkflow).toContain('neon branches delete "$branch_id"');
     expect(repairRehearsalWorkflow).toContain('[ "$branch_id" = "$NEON_RECOVERY_BRANCH_ID" ]');
     expect(repairRehearsalWorkflow).toContain('[ "$branch_id" = "$NEON_PRODUCTION_BRANCH_ID" ]');
     expect(repairRehearsalWorkflow).toContain('Verified cleanup of disposable branch');
     expect(repairRehearsalWorkflow).toContain('No production database connection or mutation ran.');
     expect(repairRehearsalWorkflow).not.toContain('neon connection-string "$NEON_PRODUCTION_BRANCH_ID"');
 
+    const cleanupStepStart = repairRehearsalWorkflow.indexOf(
+      '- name: Remove only the disposable child endpoint and branch',
+    );
+    const cleanupSummaryStart = repairRehearsalWorkflow.indexOf(
+      '- name: Record rehearsal and cleanup disposition',
+    );
+    const cleanupStep = repairRehearsalWorkflow.slice(cleanupStepStart, cleanupSummaryStart);
+    expect(cleanupStep).toContain('api_request GET "/projects/$NEON_PROJECT_ID/branches/$branch_id"');
+    expect(cleanupStep).toContain('api_request GET "/projects/$NEON_PROJECT_ID/endpoints/$endpoint_id"');
+    expect(cleanupStep).toContain('api_request DELETE "/projects/$NEON_PROJECT_ID/endpoints/$endpoint_id"');
+    expect(cleanupStep).toContain('api_request DELETE "/projects/$NEON_PROJECT_ID/branches/$branch_id"');
+    expect(cleanupStep).toContain('--connect-timeout 5 --max-time 15');
+    expect(cleanupStep).toContain('.project_id == $project');
+    expect(cleanupStep).toContain('.parent_id == $parent');
+    expect(cleanupStep).toContain('The child creation request was sent, but its ID is unresolved');
+    expect(cleanupStep).toContain('No child creation request or resource ID was recorded; no cleanup was needed.');
+    expect(cleanupStep).toContain('The recorded child name does not match this run');
+    expect(cleanupStep).toContain('api_status" != 404');
+    expect(cleanupStep).not.toContain('branches list');
+    expect(cleanupStep).not.toContain('rm -rf');
+    expect(cleanupStep).toContain('rm -f -- "$auth_file" "$response_file"');
+    expect(cleanupStep.indexOf('api_request DELETE "/projects/$NEON_PROJECT_ID/endpoints/$endpoint_id"')).toBeLessThan(
+      cleanupStep.indexOf('api_request DELETE "/projects/$NEON_PROJECT_ID/branches/$branch_id"'),
+    );
+
     const repairStep = repairRehearsalWorkflow.indexOf(
       '- name: Run the same guarded 0049 repair against the disposable child',
     );
     const migrationStep = repairRehearsalWorkflow.indexOf('- name: Apply exactly migration 0050 to the disposable child');
     const verifyStep = repairRehearsalWorkflow.indexOf('- name: Verify no migrations remain pending on the disposable child');
-    const cleanupStep = repairRehearsalWorkflow.indexOf('- name: Remove only the disposable child endpoint and branch');
+    const cleanupStepPosition = cleanupStepStart;
     expect(repairStep).toBeGreaterThan(-1);
     expect(migrationStep).toBeGreaterThan(repairStep);
     expect(verifyStep).toBeGreaterThan(migrationStep);
-    expect(cleanupStep).toBeGreaterThan(verifyStep);
+    expect(cleanupStepPosition).toBeGreaterThan(verifyStep);
+  });
+
+  it('limits retained-run cleanup to exact IDs after a read-only catalog guard', () => {
+    expect(incidentCleanupWorkflow).toMatch(/^on:\n {2}workflow_dispatch:/m);
+    expect(incidentCleanupWorkflow).not.toMatch(/^ {2}(push|pull_request|schedule):/m);
+    expect(incidentCleanupWorkflow).toContain('environment: production');
+    expect(incidentCleanupWorkflow).toContain('CLEANUP_SCHEMA_REPAIR_REHEARSAL_35838463508');
+    expect(incidentCleanupWorkflow).toContain('test "$EXPECTED_SHA" = "$GITHUB_SHA"');
+    expect(incidentCleanupWorkflow).toContain('exact-main-certification.yml');
+    expect(incidentCleanupWorkflow).toContain('INCIDENT_REHEARSAL_RUN_ID: 35838463508');
+    expect(incidentCleanupWorkflow).toContain('INCIDENT_CERTIFIED_SHA: 4872871868f235b077b87af86e759c16fb5a04f8');
+    expect(incidentCleanupWorkflow).toContain('TARGET_BRANCH_ID: br-floral-brook-aq6y24el');
+    expect(incidentCleanupWorkflow).toContain('TARGET_BRANCH_NAME: schema-repair-rehearsal-35838463508-1');
+    expect(incidentCleanupWorkflow).toContain('TARGET_ENDPOINT_ID: ep-long-union-aqus2pg5');
+    expect(incidentCleanupWorkflow).toContain('NEON_RECOVERY_BRANCH_ID: br-sweet-base-aqm07odq');
+    expect(incidentCleanupWorkflow).toContain('NEON_PRODUCTION_BRANCH_ID: br-late-glitter-aqm4u4fc');
+    expect(incidentCleanupWorkflow).toContain('NEON_PROJECT_ID: dark-firefly-25282046');
+    expect(incidentCleanupWorkflow).toContain('Verify retained child catalog evidence in a read-only transaction');
+    expect(incidentCleanupWorkflow).toContain('if: ${{ steps.catalog.outcome == \'success\' }}');
+    expect(incidentCleanupWorkflow).toContain('./node_modules/.bin/tsx scripts/check-rehearsal-catalog-security.ts');
+    expect(incidentCleanupWorkflow).toContain('api_request GET "/projects/$NEON_PROJECT_ID/branches/$TARGET_BRANCH_ID"');
+    expect(incidentCleanupWorkflow).toContain('api_request GET "/projects/$NEON_PROJECT_ID/endpoints/$TARGET_ENDPOINT_ID"');
+    expect(incidentCleanupWorkflow).toContain('api_request DELETE "/projects/$NEON_PROJECT_ID/endpoints/$TARGET_ENDPOINT_ID"');
+    expect(incidentCleanupWorkflow).toContain('api_request DELETE "/projects/$NEON_PROJECT_ID/branches/$TARGET_BRANCH_ID"');
+    expect(incidentCleanupWorkflow.match(/--connect-timeout 5 --max-time 15/g)).toHaveLength(2);
+    expect(incidentCleanupWorkflow).toContain('test "$api_status" = 404');
+    expect(incidentCleanupWorkflow).not.toContain('branches list');
+    expect(incidentCleanupWorkflow).not.toContain('rm -rf');
+    expect(incidentCleanupWorkflow).toContain('rm -f -- "$auth_file" "$response_file"');
+    expect(incidentCleanupWorkflow.indexOf('api_request DELETE "/projects/$NEON_PROJECT_ID/endpoints/$TARGET_ENDPOINT_ID"')).toBeLessThan(
+      incidentCleanupWorkflow.indexOf('api_request DELETE "/projects/$NEON_PROJECT_ID/branches/$TARGET_BRANCH_ID"'),
+    );
+
+    const catalogStepStart = incidentCleanupWorkflow.indexOf(
+      '- name: Verify retained child catalog evidence in a read-only transaction',
+    );
+    const deleteStepStart = incidentCleanupWorkflow.indexOf(
+      '- name: Remove only the verified incident endpoint and branch',
+    );
+    expect(catalogStepStart).toBeGreaterThan(-1);
+    expect(deleteStepStart).toBeGreaterThan(catalogStepStart);
+    expect(incidentCleanupWorkflow).not.toContain('neon connection-string "$NEON_PRODUCTION_BRANCH_ID"');
+
+    expect(rehearsalCatalogCheck).toContain('process.env.NEON_API_KEY !== undefined');
+    expect(rehearsalCatalogCheck).toContain('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    expect(rehearsalCatalogCheck).toContain('assertExpectedConnectionUrlTarget(connectionString, expectedTarget)');
+    expect(rehearsalCatalogCheck).toContain('assertShowDbTreeCatalogSecurityState(actual)');
+    expect(rehearsalCatalogCheck).toContain('pg_catalog.pg_get_functiondef(procedure.oid)');
+    expect(rehearsalCatalogCheck).toContain('target_function.proacl IS NOT NULL');
+    expect(rehearsalCatalogCheck).toContain('pg_catalog.aclexplode');
+    expect(rehearsalCatalogCheck).toContain('pg_catalog.pg_depend');
+    expect(rehearsalCatalogCheck).toContain('[catalog-precheck] fail field=${field}');
+    expect(rehearsalCatalogCheck).not.toContain('console.log');
+    expect(rehearsalCatalogCheck).not.toContain('process.stdout.write(row.definition');
   });
 
   it('uses one serializable repair transaction with RESTRICT and unchanged journal verification', () => {

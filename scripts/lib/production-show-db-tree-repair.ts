@@ -102,7 +102,14 @@ function compareJsonValues(left: unknown, right: unknown): number {
 function normalizeAcl(
   grants: readonly ShowDbTreeAclGrant[],
 ): ShowDbTreeAclGrant[] {
-  return grants.map((grant) => ({ ...grant })).sort(compareJsonValues);
+  return grants
+    .map((grant) => ({
+      grantor: grant.grantor,
+      grantee: grant.grantee,
+      privilegeType: grant.privilegeType,
+      isGrantable: grant.isGrantable,
+    }))
+    .sort(compareJsonValues);
 }
 
 function normalizeDependents(
@@ -117,17 +124,33 @@ export function assertShowDbTreeCatalogSecurityState(
   actual: ShowDbTreeCatalogSecurityState,
 ): void {
   const expected = pinnedShowDbTreeCatalogSecurityState();
+  if (actual.rawDefinitionSha256 !== expected.rawDefinitionSha256) {
+    throw new Error(
+      "The show_db_tree catalog guard failed: raw definition hash mismatch.",
+    );
+  }
+  if (actual.owner !== expected.owner) {
+    throw new Error("The show_db_tree catalog guard failed: owner mismatch.");
+  }
+  if (actual.explicitAclPresent !== expected.explicitAclPresent) {
+    throw new Error(
+      "The show_db_tree catalog guard failed: explicit ACL mismatch.",
+    );
+  }
   if (
-    actual.owner !== expected.owner ||
-    actual.explicitAclPresent !== expected.explicitAclPresent ||
-    actual.rawDefinitionSha256 !== expected.rawDefinitionSha256 ||
     stableJson(normalizeAcl(actual.acl)) !==
-      stableJson(normalizeAcl(expected.acl)) ||
-    stableJson(normalizeDependents(actual.dependents)) !==
-      stableJson(normalizeDependents(expected.dependents))
+    stableJson(normalizeAcl(expected.acl))
   ) {
     throw new Error(
-      "The show_db_tree definition, owner, ACL, or dependency state does not match the reviewed clone evidence.",
+      "The show_db_tree catalog guard failed: expanded ACL mismatch.",
+    );
+  }
+  if (
+    stableJson(normalizeDependents(actual.dependents)) !==
+    stableJson(normalizeDependents(expected.dependents))
+  ) {
+    throw new Error(
+      "The show_db_tree catalog guard failed: dependency mismatch.",
     );
   }
 }

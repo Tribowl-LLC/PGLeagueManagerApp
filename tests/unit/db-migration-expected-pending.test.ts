@@ -189,16 +189,16 @@ describe('production migration expected-pending guard', () => {
       rawDefinitionSha256: SHOW_DB_TREE_REPAIR_RAW_DEFINITION_SHA256,
       acl: [
         {
-          grantor: 'neondb_owner',
-          grantee: 'PUBLIC',
-          privilegeType: 'EXECUTE',
           isGrantable: false,
+          privilegeType: 'EXECUTE',
+          grantee: 'PUBLIC',
+          grantor: 'neondb_owner',
         },
         {
-          grantor: 'neondb_owner',
-          grantee: 'neondb_owner',
-          privilegeType: 'EXECUTE',
           isGrantable: false,
+          privilegeType: 'EXECUTE',
+          grantee: 'neondb_owner',
+          grantor: 'neondb_owner',
         },
       ],
       dependents: [],
@@ -207,15 +207,39 @@ describe('production migration expected-pending guard', () => {
     expect(() => assertShowDbTreeCatalogSecurityState({
       ...reviewedState,
       owner: 'other_role',
-    })).toThrow('does not match the reviewed clone evidence');
+    })).toThrowError(new Error('The show_db_tree catalog guard failed: owner mismatch.'));
     expect(() => assertShowDbTreeCatalogSecurityState({
       ...reviewedState,
       explicitAclPresent: true,
-    })).toThrow('does not match the reviewed clone evidence');
+    })).toThrowError(new Error('The show_db_tree catalog guard failed: explicit ACL mismatch.'));
     expect(() => assertShowDbTreeCatalogSecurityState({
       ...reviewedState,
       acl: reviewedState.acl.slice(1),
-    })).toThrow('does not match the reviewed clone evidence');
+    })).toThrowError(new Error('The show_db_tree catalog guard failed: expanded ACL mismatch.'));
+    expect(() => assertShowDbTreeCatalogSecurityState({
+      ...reviewedState,
+      acl: reviewedState.acl.map((grant) => grant.grantee === 'PUBLIC'
+        ? { ...grant, privilegeType: 'USAGE' }
+        : grant),
+    })).toThrowError(new Error('The show_db_tree catalog guard failed: expanded ACL mismatch.'));
+    expect(() => assertShowDbTreeCatalogSecurityState({
+      ...reviewedState,
+      acl: reviewedState.acl.map((grant) => grant.grantee === 'PUBLIC'
+        ? { ...grant, grantor: 'unexpected_role' }
+        : grant),
+    })).toThrowError(new Error('The show_db_tree catalog guard failed: expanded ACL mismatch.'));
+    expect(() => assertShowDbTreeCatalogSecurityState({
+      ...reviewedState,
+      acl: reviewedState.acl.map((grant) => grant.grantee === 'PUBLIC'
+        ? { ...grant, grantee: 'unexpected_grantee' }
+        : grant),
+    })).toThrowError(new Error('The show_db_tree catalog guard failed: expanded ACL mismatch.'));
+    expect(() => assertShowDbTreeCatalogSecurityState({
+      ...reviewedState,
+      acl: reviewedState.acl.map((grant) => grant.grantee === 'PUBLIC'
+        ? { ...grant, isGrantable: true }
+        : grant),
+    })).toThrowError(new Error('The show_db_tree catalog guard failed: expanded ACL mismatch.'));
     expect(() => assertShowDbTreeCatalogSecurityState({
       ...reviewedState,
       dependents: [{
@@ -225,10 +249,10 @@ describe('production migration expected-pending guard', () => {
         dependencyType: 'n',
         description: 'unexpected dependent',
       }],
-    })).toThrow('does not match the reviewed clone evidence');
+    })).toThrowError(new Error('The show_db_tree catalog guard failed: dependency mismatch.'));
     expect(() => assertShowDbTreeCatalogSecurityState({
       ...reviewedState,
       rawDefinitionSha256: '0'.repeat(64),
-    })).toThrow('does not match the reviewed clone evidence');
+    })).toThrowError(new Error('The show_db_tree catalog guard failed: raw definition hash mismatch.'));
   });
 });

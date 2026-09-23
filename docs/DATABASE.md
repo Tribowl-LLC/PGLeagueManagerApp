@@ -147,16 +147,45 @@ SHA, approve its `production` environment, and provide its exact confirmation
 child of the preserved recovery snapshot, verifies its lineage and direct TLS
 endpoint, runs the same guarded repair script on that child, applies only
 `0050_rotating_team_payments`, verifies `pending=none`, and deletes only the
-run-specific child and endpoint. It has no production database connection or
-mutation. Review and record the successful rehearsal run ID, including all
-three schema-step outcomes and verified child/endpoint cleanup, against the
-same certified SHA. Supply its numeric value to the repair workflow's required
-`rehearsal_run_id` input. Before backup or database connection, that workflow
+run-specific child and endpoint. Cleanup uses direct exact-ID API reads to
+confirm project, run-specific name, recovery parent, unprotected status, and
+endpoint ownership; it deletes the endpoint before the child and reports
+success only after direct GETs return 404 for both IDs. It does not use a
+project-wide branch listing to decide that an exact child is absent. If child
+creation was requested but its ID or the endpoint ID is unresolved, cleanup
+reports uncertainty and preserves any known resource. The rehearsal has no
+production database connection or mutation. Review and record the successful
+rehearsal run ID, including all three schema-step outcomes and verified
+child/endpoint cleanup, against the same certified SHA. Supply its numeric
+value to the repair workflow's required `rehearsal_run_id` input. Before backup
+or database connection, that workflow
 uses the read-only GitHub Actions API to confirm the exact rehearsal workflow,
 successful conclusion, certified SHA, `main` branch, and manual-dispatch
 event. If a step fails, cleanup is uncertain, or evidence differs, resolve that
 uncertainty before production repair while preserving the recovery snapshot.
 Resolve the documented `PUBLIC EXECUTE` usage question too.
+
+The failed rehearsal recorded as run `35838463508` retained the exact
+disposable child `br-floral-brook-aq6y24el` and endpoint
+`ep-long-union-aqus2pg5`. The original cleanup stopped before any delete after
+the CLI branch-list response failed strict inventory validation; the response
+did not establish which unrelated record field was incomplete. Do not infer
+absence from that list or manually delete a similarly named resource. The
+manual, protected **Clean up failed schema repair rehearsal 35838463508**
+workflow is limited to those recorded IDs, their exact project and lineage,
+and the recorded run-specific name. Dispatch only from the currently certified
+`main` SHA with confirmation
+`CLEANUP_SCHEMA_REPAIR_REHEARSAL_35838463508`. Before requesting either
+delete, it connects directly to the verified disposable endpoint and performs
+a `REPEATABLE READ READ ONLY` catalog check for the pinned function-definition
+SHA, owner, NULL explicit ACL, canonical expanded ACL, and zero catalog
+dependents. It emits only field names and pass/fail status. A mismatch or
+connection-target error stops the workflow and preserves the child for
+analysis. After a passing check, it deletes the exact endpoint and then the
+exact child branch, requiring direct GET 404 responses for both. The check
+does not connect to production or execute SQL mutations. Preserve the recovery
+snapshot; do not broaden this workflow to another branch or retry it against an
+unresolved ID.
 
 The disposable-clone diagnostic was recorded in protected workflow run
 `35833733189`: the observed drift fingerprint is

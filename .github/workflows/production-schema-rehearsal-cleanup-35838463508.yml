@@ -1,0 +1,414 @@
+name: Clean up failed schema repair rehearsal 35838463508
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Full SHA of the currently certified main commit containing this workflow
+        required: true
+        type: string
+      confirmation:
+        description: Type CLEANUP_SCHEMA_REPAIR_REHEARSAL_35838463508
+        required: true
+        type: string
+
+concurrency:
+  group: production-database-migration
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  validate:
+    name: Validate exact cleanup request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      EXPECTED_CONFIRMATION: CLEANUP_SCHEMA_REPAIR_REHEARSAL_35838463508
+      INCIDENT_REHEARSAL_RUN_ID: 35838463508
+      INCIDENT_CERTIFIED_SHA: 4872871868f235b077b87af86e759c16fb5a04f8
+    steps:
+      - name: Check out the dispatched main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify current certification and failed incident run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_SHA"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_SHA"
+
+          current_certification="$(gh run list \
+            --workflow exact-main-certification.yml \
+            --branch main \
+            --commit "$EXPECTED_SHA" \
+            --status success \
+            --limit 1 \
+            --json headSha,conclusion \
+            --jq '.[0] | select(.conclusion == "success") | .headSha')"
+          test "$current_certification" = "$EXPECTED_SHA"
+
+          incident_run="$(gh run view "$INCIDENT_REHEARSAL_RUN_ID" \
+            --json workflowName,event,headBranch,headSha,conclusion,status)"
+          printf '%s' "$incident_run" | jq -e \
+            --arg sha "$INCIDENT_CERTIFIED_SHA" \
+            '.workflowName == "Production schema repair rehearsal" and
+              .event == "workflow_dispatch" and .headBranch == "main" and
+              .headSha == $sha and .conclusion == "failure" and
+              .status == "completed"' >/dev/null
+
+          incident_certification="$(gh run list \
+            --workflow exact-main-certification.yml \
+            --branch main \
+            --commit "$INCIDENT_CERTIFIED_SHA" \
+            --status success \
+            --limit 1 \
+            --json headSha,conclusion \
+            --jq '.[0] | select(.conclusion == "success") | .headSha')"
+          test "$incident_certification" = "$INCIDENT_CERTIFIED_SHA"
+          test "$CONFIRMATION" = "$EXPECTED_CONFIRMATION"
+
+  cleanup:
+    name: Verify catalog evidence and remove only the retained child
+    needs: validate
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      EXPECTED_CONFIRMATION: CLEANUP_SCHEMA_REPAIR_REHEARSAL_35838463508
+      INCIDENT_REHEARSAL_RUN_ID: 35838463508
+      INCIDENT_CERTIFIED_SHA: 4872871868f235b077b87af86e759c16fb5a04f8
+      NEON_PROJECT_ID: dark-firefly-25282046
+      NEON_PRODUCTION_BRANCH_ID: br-late-glitter-aqm4u4fc
+      NEON_RECOVERY_BRANCH_ID: br-sweet-base-aqm07odq
+      NEON_RECOVERY_BRANCH_NAME: backup-pre-migration-cbd11e5e3666-35824851019-1
+      TARGET_BRANCH_ID: br-floral-brook-aq6y24el
+      TARGET_BRANCH_NAME: schema-repair-rehearsal-35838463508-1
+      TARGET_ENDPOINT_ID: ep-long-union-aqus2pg5
+      NEON_DATABASE_NAME: neondb
+      NEON_ROLE_NAME: neondb_owner
+      NEON_CLI_VERSION: 4.14.0
+    steps:
+      - name: Check out the dispatched main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Recheck current certified main and incident provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$CONFIRMATION" = "$EXPECTED_CONFIRMATION"
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_SHA"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_SHA"
+          incident_run="$(gh run view "$INCIDENT_REHEARSAL_RUN_ID" \
+            --json workflowName,event,headBranch,headSha,conclusion,status)"
+          printf '%s' "$incident_run" | jq -e \
+            --arg sha "$INCIDENT_CERTIFIED_SHA" \
+            '.workflowName == "Production schema repair rehearsal" and
+              .event == "workflow_dispatch" and .headBranch == "main" and
+              .headSha == $sha and .conclusion == "failure" and
+              .status == "completed"' >/dev/null
+
+      - name: Set up cached dependencies
+        uses: ./.github/actions/setup-node-dependencies
+        with:
+          node-version: '22.22.0'
+
+      - name: Install pinned Neon CLI without database credentials
+        run: |
+          set -euo pipefail
+          npm install --global --ignore-scripts --no-audit --no-fund "neon@$NEON_CLI_VERSION"
+          test "$(neon --version)" = "$NEON_CLI_VERSION"
+
+      - name: Verify exact child, endpoint ownership, and acquire its direct TLS URL
+        id: target
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$NEON_API_KEY"
+          test "$TARGET_BRANCH_ID" != "$NEON_RECOVERY_BRANCH_ID"
+          test "$TARGET_BRANCH_ID" != "$NEON_PRODUCTION_BRANCH_ID"
+
+          neon_api_key="$NEON_API_KEY"
+          unset NEON_API_KEY
+          temp_dir="$(mktemp -d)"
+          chmod 700 "$temp_dir"
+          auth_file="$temp_dir/authorization-header"
+          response_file="$temp_dir/response.json"
+          printf 'Authorization: Bearer %s\n' "$neon_api_key" > "$auth_file"
+          chmod 600 "$auth_file"
+          cleanup_temp_files() {
+            rm -f -- "$auth_file" "$response_file"
+            rmdir -- "$temp_dir"
+          }
+          trap 'cleanup_temp_files; unset neon_api_key' EXIT
+          api_root="https://console.neon.tech/api/v2"
+          api_status=000
+
+          api_request() {
+            local path="$1"
+            local response_status
+            if ! response_status="$(curl --silent --show-error \
+              --connect-timeout 5 --max-time 15 \
+              --output "$response_file" --write-out '%{http_code}' \
+              --header "@$auth_file" --header 'Accept: application/json' \
+              "$api_root$path")"; then
+              api_status=000
+              return 1
+            fi
+            if ! printf '%s' "$response_status" | grep -Eq '^[0-9]{3}$'; then
+              api_status=000
+              return 1
+            fi
+            api_status="$response_status"
+          }
+
+          require_get_200() {
+            test "$api_status" = 200 || {
+              printf 'Unexpected Neon API response status for exact target GET: %s\n' "$api_status" >&2
+              return 1
+            }
+          }
+
+          api_request "/projects/$NEON_PROJECT_ID/branches/$NEON_PRODUCTION_BRANCH_ID"
+          require_get_200
+          jq -e --arg id "$NEON_PRODUCTION_BRANCH_ID" \
+            --arg project "$NEON_PROJECT_ID" \
+            '(.branch // .) | .id == $id and .project_id == $project and
+              .name == "production" and
+              .default == true and .protected == true' "$response_file" >/dev/null
+          api_request "/projects/$NEON_PROJECT_ID/branches/$NEON_RECOVERY_BRANCH_ID"
+          require_get_200
+          jq -e --arg id "$NEON_RECOVERY_BRANCH_ID" \
+            --arg project "$NEON_PROJECT_ID" \
+            --arg name "$NEON_RECOVERY_BRANCH_NAME" \
+            --arg parent "$NEON_PRODUCTION_BRANCH_ID" \
+            '(.branch // .) | .id == $id and .project_id == $project and
+              .name == $name and
+              .parent_id == $parent and .protected == false and .default != true' \
+            "$response_file" >/dev/null
+          api_request "/projects/$NEON_PROJECT_ID/branches/$TARGET_BRANCH_ID"
+          require_get_200
+          jq -e --arg id "$TARGET_BRANCH_ID" --arg name "$TARGET_BRANCH_NAME" \
+            --arg project "$NEON_PROJECT_ID" \
+            --arg parent "$NEON_RECOVERY_BRANCH_ID" \
+            '(.branch // .) | .id == $id and .project_id == $project and
+              .name == $name and
+              .parent_id == $parent and .protected == false and .default != true' \
+            "$response_file" >/dev/null
+          api_request "/projects/$NEON_PROJECT_ID/endpoints/$TARGET_ENDPOINT_ID"
+          require_get_200
+          jq -e --arg id "$TARGET_ENDPOINT_ID" --arg project "$NEON_PROJECT_ID" \
+            --arg branch "$TARGET_BRANCH_ID" \
+            '(.endpoint // .) | .id == $id and .project_id == $project and
+              .branch_id == $branch and .type == "read_write" and
+              .disabled != true and (.current_state == "active" or .current_state == "idle")' \
+            "$response_file" >/dev/null
+          endpoint_host="$(jq -er '(.endpoint // .).host | strings | select(length > 0)' "$response_file")"
+
+          database_url="$(NEON_API_KEY="$neon_api_key" neon connection-string "$TARGET_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" \
+            --database-name "$NEON_DATABASE_NAME" \
+            --role-name "$NEON_ROLE_NAME" \
+            --ssl verify-full \
+            --no-color)"
+          unset neon_api_key
+          test -n "$database_url"
+          echo "::add-mask::$database_url"
+          host_fingerprint="$(EXPECTED_ENDPOINT_HOST="$endpoint_host" node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            const host = process.env.EXPECTED_ENDPOINT_HOST.toLowerCase();
+            if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host)) {
+              throw new Error("Invalid endpoint metadata.");
+            }
+            process.stdout.write(`sha256:${createHash("sha256").update(`${host}:5432`).digest("hex")}`);
+          ')"
+          url_host_fingerprint="$(DATABASE_URL="$database_url" node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            const target = new URL(process.env.DATABASE_URL);
+            if (!/^postgres(ql)?:$/.test(target.protocol) || target.hostname.toLowerCase().includes("-pooler") ||
+                (target.port && target.port !== "5432") ||
+                decodeURIComponent(target.pathname.slice(1)) !== "neondb" ||
+                decodeURIComponent(target.username) !== "neondb_owner" ||
+                target.searchParams.get("sslmode") !== "verify-full") {
+              throw new Error("Connection target metadata mismatch.");
+            }
+            const host = target.hostname.toLowerCase();
+            process.stdout.write(`sha256:${createHash("sha256").update(`${host}:5432`).digest("hex")}`);
+          ')"
+          test "$url_host_fingerprint" = "$host_fingerprint"
+
+          {
+            printf 'database_url=%s\n' "$database_url"
+            printf 'host_fingerprint=%s\n' "$host_fingerprint"
+          } >> "$GITHUB_OUTPUT"
+          cleanup_temp_files
+          trap - EXIT
+          printf 'Verified exact incident branch and endpoint ownership; database target is the disposable child.\n'
+
+      - name: Verify retained child catalog evidence in a read-only transaction
+        id: catalog
+        env:
+          DATABASE_URL: ${{ steps.target.outputs.database_url }}
+          DB_REHEARSAL_CATALOG_EXPECTED_HOST_FINGERPRINT: ${{ steps.target.outputs.host_fingerprint }}
+        run: |
+          set -euo pipefail
+          test -z "${NEON_API_KEY:-}"
+          ./node_modules/.bin/tsx scripts/check-rehearsal-catalog-security.ts
+
+      - name: Remove only the verified incident endpoint and branch
+        id: cleanup
+        if: ${{ steps.catalog.outcome == 'success' }}
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$NEON_API_KEY"
+          neon_api_key="$NEON_API_KEY"
+          unset NEON_API_KEY
+          temp_dir="$(mktemp -d)"
+          chmod 700 "$temp_dir"
+          auth_file="$temp_dir/authorization-header"
+          response_file="$temp_dir/response.json"
+          printf 'Authorization: Bearer %s\n' "$neon_api_key" > "$auth_file"
+          chmod 600 "$auth_file"
+          cleanup_temp_files() {
+            rm -f -- "$auth_file" "$response_file"
+            rmdir -- "$temp_dir"
+          }
+          trap 'cleanup_temp_files; unset neon_api_key' EXIT
+          api_root="https://console.neon.tech/api/v2"
+          api_status=000
+
+          api_request() {
+            local method="$1"
+            local path="$2"
+            local response_status
+            if ! response_status="$(curl --silent --show-error \
+              --connect-timeout 5 --max-time 15 \
+              --output "$response_file" --write-out '%{http_code}' \
+              --request "$method" --header "@$auth_file" \
+              --header 'Accept: application/json' "$api_root$path")"; then
+              api_status=000
+              return 1
+            fi
+            if ! printf '%s' "$response_status" | grep -Eq '^[0-9]{3}$'; then
+              api_status=000
+              return 1
+            fi
+            api_status="$response_status"
+          }
+
+          branch_matches() {
+            jq -e --arg id "$TARGET_BRANCH_ID" --arg project "$NEON_PROJECT_ID" \
+              --arg name "$TARGET_BRANCH_NAME" \
+              --arg parent "$NEON_RECOVERY_BRANCH_ID" \
+              '(.branch // .) | .id == $id and .project_id == $project and
+                .name == $name and
+                .parent_id == $parent and .protected == false and .default != true' \
+              "$response_file" >/dev/null 2>&1
+          }
+          endpoint_matches() {
+            jq -e --arg id "$TARGET_ENDPOINT_ID" --arg project "$NEON_PROJECT_ID" \
+              --arg branch "$TARGET_BRANCH_ID" \
+              '(.endpoint // .) | .id == $id and .project_id == $project and
+                .branch_id == $branch and .type == "read_write"' \
+              "$response_file" >/dev/null 2>&1
+          }
+
+          api_request GET "/projects/$NEON_PROJECT_ID/branches/$TARGET_BRANCH_ID"
+          test "$api_status" = 200
+          branch_matches || { echo 'The child branch identity changed after catalog verification.' >&2; exit 1; }
+          api_request GET "/projects/$NEON_PROJECT_ID/endpoints/$TARGET_ENDPOINT_ID"
+          test "$api_status" = 200
+          endpoint_matches || { echo 'The endpoint is not owned by the exact incident child.' >&2; exit 1; }
+
+          printf 'endpoint_delete_requested=true\n' >> "$GITHUB_OUTPUT"
+          api_request DELETE "/projects/$NEON_PROJECT_ID/endpoints/$TARGET_ENDPOINT_ID" || true
+          endpoint_absent=false
+          for attempt in $(seq 1 10); do
+            api_request GET "/projects/$NEON_PROJECT_ID/endpoints/$TARGET_ENDPOINT_ID"
+            if [ "$api_status" = 404 ]; then
+              endpoint_absent=true
+              break
+            fi
+            test "$api_status" = 200
+            endpoint_matches || { echo 'Endpoint ownership changed during cleanup.' >&2; exit 1; }
+            if [ "$attempt" -lt 10 ]; then sleep 3; fi
+          done
+          test "$endpoint_absent" = true
+
+          api_request GET "/projects/$NEON_PROJECT_ID/branches/$TARGET_BRANCH_ID"
+          test "$api_status" = 200
+          branch_matches || { echo 'The child branch identity changed before branch deletion.' >&2; exit 1; }
+          printf 'branch_delete_requested=true\n' >> "$GITHUB_OUTPUT"
+          api_request DELETE "/projects/$NEON_PROJECT_ID/branches/$TARGET_BRANCH_ID" || true
+          branch_absent=false
+          for attempt in $(seq 1 10); do
+            api_request GET "/projects/$NEON_PROJECT_ID/branches/$TARGET_BRANCH_ID"
+            if [ "$api_status" = 404 ]; then
+              branch_absent=true
+              break
+            fi
+            test "$api_status" = 200
+            branch_matches || { echo 'The branch ID no longer matches the exact incident child.' >&2; exit 1; }
+            if [ "$attempt" -lt 10 ]; then sleep 3; fi
+          done
+          test "$branch_absent" = true
+
+          api_request GET "/projects/$NEON_PROJECT_ID/branches/$TARGET_BRANCH_ID"
+          test "$api_status" = 404
+          api_request GET "/projects/$NEON_PROJECT_ID/endpoints/$TARGET_ENDPOINT_ID"
+          test "$api_status" = 404
+          unset neon_api_key
+          cleanup_temp_files
+          trap - EXIT
+          printf 'Verified explicit 404 for the exact incident branch and endpoint.\n'
+
+      - name: Record incident cleanup disposition
+        if: ${{ always() }}
+        env:
+          CATALOG_OUTCOME: ${{ steps.catalog.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          ENDPOINT_DELETE_REQUESTED: ${{ steps.cleanup.outputs.endpoint_delete_requested }}
+          BRANCH_DELETE_REQUESTED: ${{ steps.cleanup.outputs.branch_delete_requested }}
+        run: |
+          set -euo pipefail
+          {
+            echo '### Failed rehearsal cleanup 35838463508'
+            echo
+            echo '- Target: the exact disposable child and endpoint recorded for this run.'
+            echo "- Catalog precheck: ${CATALOG_OUTCOME:-not run}."
+            echo "- Endpoint delete requested: ${ENDPOINT_DELETE_REQUESTED:-false}."
+            echo "- Branch delete requested: ${BRANCH_DELETE_REQUESTED:-false}."
+            echo "- Cleanup step: ${CLEANUP_OUTCOME:-not run}."
+            if [ "$CLEANUP_OUTCOME" = success ]; then
+              echo '- Exact child branch and endpoint absence: verified by direct GET 404 responses.'
+            else
+              echo '- Cleanup remains incomplete or was stopped before deletion; preserve the recovery branch and inspect only the recorded incident child.'
+            fi
+            echo '- The catalog check is read-only and connects only to the verified disposable child endpoint.'
+          } >> "$GITHUB_STEP_SUMMARY"

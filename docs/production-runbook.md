@@ -365,6 +365,25 @@ ID, successful conclusion, exact certified SHA, `main` branch, and manual
 dispatch event. Do not dispatch production repair until the run evidence is
 reviewed for the same certified SHA.
 
+The failed rehearsal run `35838463508` retained child
+`br-floral-brook-aq6y24el` and endpoint `ep-long-union-aqus2pg5`. Its cleanup
+stopped before deletion when strict validation rejected the branch-list
+inventory; the log does not identify which unrelated record field was
+incomplete. Use only the manual, protected **Clean up failed schema repair
+rehearsal 35838463508** workflow, dispatched from the currently certified
+`main` SHA with confirmation `CLEANUP_SCHEMA_REPAIR_REHEARSAL_35838463508`.
+That workflow verifies the exact child ID, run-specific name, project,
+recovery-parent lineage, unprotected status, and endpoint ownership by direct
+GETs. Before deletion, it connects only to the direct TLS child endpoint and
+checks the pinned function-definition SHA, owner, NULL explicit ACL, canonical
+expanded ACL, and zero `pg_depend` dependents in a `REPEATABLE READ READ ONLY`
+transaction. It reports only pass/fail field names. Any mismatch or target
+error stops before deletion and leaves the child available for analysis. After
+a passing catalog check it removes the exact endpoint, then the exact child,
+and requires direct GET 404 responses for both. It never uses project-wide
+branch-list absence and does not connect to production. Preserve the recovery
+branch. Do not attempt cleanup using a guessed or unresolved ID.
+
 The repair script takes the shared schema advisory lock and runs one
 serializable transaction with short timeouts. It requires the exact 50-entry
 journal prefix through `0049_account_ready_standalone_resend`, exactly

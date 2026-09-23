@@ -331,252 +331,239 @@ jobs:
           endpoints_absent=false
           delete_requested=false
           branch_id="$REHEARSAL_BRANCH_ID"
-          endpoint_ids="$REHEARSAL_ENDPOINT_ID"
-          child_name="schema-repair-rehearsal-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          endpoint_id="$REHEARSAL_ENDPOINT_ID"
+          endpoint_ids="$endpoint_id"
+          child_name="schema-repair-rehearsal-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           cleanup_note=''
+          endpoint_present=false
+          api_status=000
 
-          if [ -z "${NEON_API_KEY:-}" ]; then
+          mark_uncertain() {
             cleanup_status=uncertain
-            cleanup_note='Neon API credentials were unavailable to cleanup.'
+            cleanup_note="$1"
+          }
+
+          if [ -z "$branch_id" ]; then
+            if [ "${CREATE_REQUESTED:-}" = true ]; then
+              mark_uncertain "The child creation request was sent, but its ID is unresolved; inspect only run-specific branch name $child_name."
+            elif [ -n "$endpoint_id" ]; then
+              mark_uncertain 'An endpoint ID was recorded without a resolved child branch ID; no endpoint or branch was deleted.'
+            else
+              child_absent=true
+              endpoints_absent=true
+            fi
+          elif [ -z "${NEON_API_KEY:-}" ]; then
+            mark_uncertain 'Neon API credentials were unavailable to cleanup.'
+          elif ! printf '%s' "$branch_id" | grep -Eq '^br-[a-z0-9-]{1,60}$'; then
+            mark_uncertain 'The recorded child branch ID is invalid; the branch and endpoint were preserved.'
+          elif [ "${CREATE_REQUESTED:-}" != true ]; then
+            mark_uncertain 'A child ID was recorded without this run requesting creation; the branch and endpoint were preserved.'
+          elif [ "${REHEARSAL_BRANCH_NAME:-}" != "$child_name" ]; then
+            mark_uncertain 'The recorded child name does not match this run; the branch and endpoint were preserved.'
+          elif [ "$branch_id" = "$NEON_RECOVERY_BRANCH_ID" ] || [ "$branch_id" = "$NEON_PRODUCTION_BRANCH_ID" ]; then
+            mark_uncertain 'The recorded child ID resolves to a protected recovery or production branch; it was preserved.'
+          elif [ -z "$endpoint_id" ]; then
+            mark_uncertain 'The child endpoint ID was not recorded; exact endpoint ownership and absence cannot be verified, so the child was preserved.'
+          elif ! printf '%s' "$endpoint_id" | grep -Eq '^ep-[a-z0-9-]{1,60}$'; then
+            mark_uncertain 'The recorded child endpoint ID is invalid; the branch and endpoint were preserved.'
           else
             neon_api_key="$NEON_API_KEY"
             unset NEON_API_KEY
+            temp_dir="$(mktemp -d)"
+            chmod 700 "$temp_dir"
+            auth_file="$temp_dir/authorization-header"
+            response_file="$temp_dir/response.json"
+            printf 'Authorization: Bearer %s\n' "$neon_api_key" > "$auth_file"
+            chmod 600 "$auth_file"
+            cleanup_temp_files() {
+              rm -f -- "$auth_file" "$response_file"
+              rmdir -- "$temp_dir"
+            }
+            trap 'cleanup_temp_files; unset neon_api_key' EXIT
+            api_root="https://console.neon.tech/api/v2"
 
-            branch_record=''
-            match_count=0
-            branch_listing_valid=false
-            for attempt in $(seq 1 10); do
-              if ! branches_json="$(NEON_API_KEY="$neon_api_key" neon branches list \
-                --project-id "$NEON_PROJECT_ID" --output json --no-color)"; then
-                if [ "$attempt" -lt 10 ]; then sleep 3; fi
-                continue
+            api_request() {
+              local method="$1"
+              local path="$2"
+              local response_status
+              if ! response_status="$(curl --silent --show-error \
+                --connect-timeout 5 --max-time 15 \
+                --output "$response_file" --write-out '%{http_code}' \
+                --request "$method" --header "@$auth_file" \
+                --header 'Accept: application/json' "$api_root$path")"; then
+                api_status=000
+                return 1
               fi
+              if ! printf '%s' "$response_status" | grep -Eq '^[0-9]{3}$'; then
+                api_status=000
+                return 1
+              fi
+              api_status="$response_status"
+              return 0
+            }
 
-              branch_inventory="$(printf '%s' "$branches_json" | jq -ce '
-                if type == "array" then .
-                elif type == "object" and (.branches | type) == "array" then .branches
-                else error("Unexpected Neon branches-list response.") end
-                | if all(.[];
-                    type == "object" and
-                    (.id | type) == "string" and (.id | test("^br-[a-z0-9-]{1,60}$")) and
-                    (.name | type) == "string" and (.name | length) > 0 and
-                    has("parent_id") and ((.parent_id == null) or (.parent_id | type) == "string")
-                  ) then . else error("Incomplete Neon branch inventory entry.") end')" || branch_inventory='invalid'
-              if [ "$branch_inventory" = invalid ]; then
-                cleanup_status=uncertain
-                cleanup_note='The Neon branches-list response shape or branch entries were incomplete; cleanup stopped without deleting a branch.'
-                break
-              fi
-              branch_listing_valid=true
+            branch_identity_matches() {
+              jq -e --arg id "$branch_id" --arg project "$NEON_PROJECT_ID" \
+                --arg name "$child_name" \
+                --arg parent "$NEON_RECOVERY_BRANCH_ID" \
+                '(.branch // .) |
+                  .id == $id and .project_id == $project and
+                  .name == $name and .parent_id == $parent and
+                  .protected == false and .default != true' \
+                "$response_file" >/dev/null 2>&1
+            }
 
-              branch_matches="$(printf '%s' "$branch_inventory" | jq -ce \
-                --arg name "$child_name" --arg id "$branch_id" \
-                '[.[] | select((.name == $name) or ($id != "" and .id == $id))]')" || branch_matches='invalid'
-              if [ "$branch_matches" = invalid ]; then
-                cleanup_status=uncertain
-                cleanup_note='Could not evaluate the validated branch inventory for the run-specific child.'
-                break
-              fi
+            endpoint_identity_matches() {
+              jq -e --arg id "$endpoint_id" --arg branch "$branch_id" \
+                --arg project "$NEON_PROJECT_ID" \
+                '(.endpoint // .) |
+                  .id == $id and .project_id == $project and
+                  .branch_id == $branch and .type == "read_write"' \
+                "$response_file" >/dev/null 2>&1
+            }
 
-              match_count="$(printf '%s' "$branch_matches" | jq -r 'length')"
-              if [ "$match_count" -gt 1 ]; then
-                cleanup_status=uncertain
-                cleanup_note='More than one branch matched this run-specific rehearsal identity.'
-                break
+            if ! api_request GET "/projects/$NEON_PROJECT_ID/branches/$branch_id"; then
+              mark_uncertain 'Could not inspect the exact child branch by ID; branch and endpoint were preserved.'
+            elif [ "$api_status" = 200 ]; then
+              if branch_identity_matches; then
+                :
+              else
+                mark_uncertain 'The exact branch ID failed run-specific child identity and lineage checks; it was preserved.'
               fi
-              if [ "$match_count" -eq 1 ]; then
-                branch_record="$(printf '%s' "$branch_matches" | jq -c '.[0]')"
-                break
-              fi
+            elif [ "$api_status" = 404 ]; then
+              child_absent=true
+            else
+              mark_uncertain 'The exact child branch GET returned an unrecognized status; branch and endpoint were preserved.'
+            fi
 
-              if [ "$CREATE_REQUESTED" != true ] && [ -z "$branch_id" ]; then
-                child_absent=true
-                break
-              fi
-              if [ "$attempt" -lt 10 ]; then sleep 3; fi
-            done
-
-            if [ "$cleanup_status" = success ] && [ "$match_count" -eq 0 ] && [ -z "$branch_record" ]; then
-              if [ -n "$branch_id" ]; then
-                direct_branch_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$branch_id" \
-                  --project-id "$NEON_PROJECT_ID" --output json --no-color 2>/dev/null)" || direct_branch_json=''
-                if [ -n "$direct_branch_json" ] && printf '%s' "$direct_branch_json" | jq -e \
-                  --arg id "$branch_id" --arg name "$child_name" --arg parent "$NEON_RECOVERY_BRANCH_ID" \
-                  '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false and .default != true' >/dev/null 2>&1; then
-                  branch_record="$(printf '%s' "$direct_branch_json" | jq -c '.branch // .')"
-                  match_count=1
+            if [ "$cleanup_status" = success ]; then
+              if ! api_request GET "/projects/$NEON_PROJECT_ID/endpoints/$endpoint_id"; then
+                mark_uncertain 'Could not inspect the recorded endpoint by ID; branch and endpoint were preserved.'
+              elif [ "$api_status" = 200 ]; then
+                if endpoint_identity_matches; then
+                  endpoint_present=true
                 else
-                  cleanup_status=uncertain
-                  cleanup_note='The exact branch ID was not visible in the validated listing and could not be verified by ID; endpoint and branch deletion were skipped.'
+                  mark_uncertain 'The recorded endpoint is not owned by the exact disposable child; it was preserved.'
                 fi
-              elif [ "$CREATE_REQUESTED" = true ]; then
-                cleanup_status=uncertain
-                cleanup_note='The child creation request was sent, but its ID is unresolved after bounded exact-name lookup; inspect the run-specific branch name.'
-              elif [ "$branch_listing_valid" = true ]; then
-                child_absent=true
+              elif [ "$api_status" = 404 ]; then
+                endpoints_absent=true
               else
-                cleanup_status=uncertain
-                cleanup_note='No valid branch inventory was available to establish child absence.'
+                mark_uncertain 'The exact endpoint GET returned an unrecognized status; branch and endpoint were preserved.'
               fi
             fi
 
-            if [ "$cleanup_status" = success ] && [ -n "$branch_record" ]; then
-              discovered_id="$(printf '%s' "$branch_record" | jq -r '.id // ""')"
-              discovered_name="$(printf '%s' "$branch_record" | jq -r '.name // ""')"
-              discovered_parent="$(printf '%s' "$branch_record" | jq -r '.parent_id // ""')"
-              discovered_protected="$(printf '%s' "$branch_record" | jq -r '.protected // ""')"
-              discovered_default="$(printf '%s' "$branch_record" | jq -r '.default // false')"
-              if [ -z "$branch_id" ]; then branch_id="$discovered_id"; fi
-              if [ "$discovered_id" != "$branch_id" ] || \
-                [ "$discovered_name" != "$child_name" ] || \
-                [ "$discovered_parent" != "$NEON_RECOVERY_BRANCH_ID" ] || \
-                [ "$discovered_protected" != false ] || \
-                [ "$discovered_default" = true ] || \
-                [ "$branch_id" = "$NEON_RECOVERY_BRANCH_ID" ] || \
-                [ "$branch_id" = "$NEON_PRODUCTION_BRANCH_ID" ]; then
-                cleanup_status=uncertain
-                cleanup_note='The matching branch failed exact child identity and lineage checks; it was preserved.'
-              fi
-            fi
-
-            if [ "$cleanup_status" = success ] && [ -n "$branch_id" ]; then
-              if ! endpoints_json="$(NEON_API_KEY="$neon_api_key" neon api "/projects/$NEON_PROJECT_ID/endpoints" --output json --no-color)"; then
-                cleanup_status=uncertain
-                cleanup_note='Could not inspect endpoint ownership for the exact child branch.'
-              elif ! printf '%s' "$endpoints_json" | jq -e '
-                type == "object" and (.endpoints | type) == "array" and
-                all(.endpoints[];
-                  type == "object" and
-                  (.id | type) == "string" and (.id | test("^ep-[a-z0-9-]{1,60}$")) and
-                  (.branch_id | type) == "string" and (.branch_id | test("^br-[a-z0-9-]{1,60}$"))
-                )' >/dev/null 2>&1; then
-                cleanup_status=uncertain
-                cleanup_note='The Neon endpoint-list response or endpoint identity fields were incomplete; the child was preserved.'
-              else
-                child_endpoint_ids="$(printf '%s' "$endpoints_json" | jq -r \
-                  --arg branch "$branch_id" \
-                  '[.endpoints[] | select(.branch_id == $branch) | .id] | unique | .[]')"
-                if [ -n "$child_endpoint_ids" ]; then
-                  endpoint_ids="$(printf '%s\n%s\n' "$endpoint_ids" "$child_endpoint_ids" | sed '/^$/d' | sort -u | paste -sd, -)"
-                  while IFS= read -r endpoint_id; do
-                    [ -n "$endpoint_id" ] || continue
-                    if ! printf '%s' "$endpoint_id" | grep -Eq '^ep-[a-z0-9-]{1,60}$'; then
-                      cleanup_status=uncertain
-                      cleanup_note='A child endpoint had an invalid identifier and was preserved.'
-                      continue
-                    fi
-                    NEON_API_KEY="$neon_api_key" neon api \
-                      "/projects/$NEON_PROJECT_ID/endpoints/$endpoint_id" \
-                      -X DELETE --output json --no-color >/dev/null 2>&1 || true
-                  done <<< "$child_endpoint_ids"
+            if [ "$cleanup_status" = success ] && [ "$endpoint_present" = true ]; then
+              delete_requested=true
+              api_request DELETE "/projects/$NEON_PROJECT_ID/endpoints/$endpoint_id" || true
+              for attempt in $(seq 1 10); do
+                if ! api_request GET "/projects/$NEON_PROJECT_ID/endpoints/$endpoint_id"; then
+                  mark_uncertain 'Could not verify the exact endpoint after its delete request; the branch was preserved.'
+                  break
+                elif [ "$api_status" = 404 ]; then
+                  endpoints_absent=true
+                  endpoint_present=false
+                  break
+                elif [ "$api_status" = 200 ] && endpoint_identity_matches; then
+                  if [ "$attempt" -lt 10 ]; then sleep 3; fi
+                elif [ "$api_status" = 200 ]; then
+                  mark_uncertain 'Endpoint ownership changed during cleanup; the branch was preserved.'
+                  break
+                else
+                  mark_uncertain 'The endpoint absence check returned an unrecognized status; the branch was preserved.'
+                  break
                 fi
-              fi
-            fi
-
-            if [ "$cleanup_status" = success ] && [ -n "$branch_id" ] && [ "$child_absent" != true ]; then
-              branch_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$branch_id" \
-                --project-id "$NEON_PROJECT_ID" --output json --no-color 2>/dev/null)"
-              if printf '%s' "$branch_json" | jq -e \
-                --arg id "$branch_id" --arg name "$child_name" --arg parent "$NEON_RECOVERY_BRANCH_ID" \
-                '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false and .default != true' >/dev/null 2>&1; then
-                NEON_API_KEY="$neon_api_key" neon branches delete "$branch_id" \
-                  --project-id "$NEON_PROJECT_ID" --no-color >/dev/null 2>&1 || true
-                delete_requested=true
-              else
-                cleanup_status=uncertain
-                cleanup_note='Could not re-verify the exact disposable child before branch deletion; it was preserved.'
+              done
+              if [ "$cleanup_status" = success ] && [ "$endpoints_absent" != true ]; then
+                mark_uncertain 'The recorded child endpoint remained present after bounded cleanup verification; the branch was preserved.'
               fi
             fi
 
             if [ "$cleanup_status" = success ]; then
-              if [ -z "$branch_id" ]; then
-                if [ "$CREATE_REQUESTED" = true ]; then
-                  cleanup_status=uncertain
-                  cleanup_note='Cannot verify endpoint absence because the requested child has no resolved branch ID.'
-                elif [ "$child_absent" = true ]; then
-                  endpoints_absent=true
+              if ! api_request GET "/projects/$NEON_PROJECT_ID/branches/$branch_id"; then
+                mark_uncertain 'Could not re-verify the exact child branch before deletion; it was preserved.'
+              elif [ "$api_status" = 200 ]; then
+                if ! branch_identity_matches; then
+                  mark_uncertain 'The exact branch ID no longer matches the disposable child identity; it was preserved.'
                 else
-                  cleanup_status=uncertain
-                  cleanup_note='Cannot verify child or endpoint absence without a branch ID.'
-                fi
-              else
-                branch_absent_now=false
-                endpoints_absent_now=false
-                for attempt in $(seq 1 10); do
-                  current_branches="$(NEON_API_KEY="$neon_api_key" neon branches list \
-                    --project-id "$NEON_PROJECT_ID" --output json --no-color 2>/dev/null)" || current_branches=''
-                  current_branch_inventory="$(printf '%s' "$current_branches" | jq -ce '
-                    if type == "array" then .
-                    elif type == "object" and (.branches | type) == "array" then .branches
-                    else error("Unexpected Neon branches-list response.") end
-                    | if all(.[];
-                        type == "object" and
-                        (.id | type) == "string" and (.id | test("^br-[a-z0-9-]{1,60}$")) and
-                        (.name | type) == "string" and (.name | length) > 0 and
-                        has("parent_id") and ((.parent_id == null) or (.parent_id | type) == "string")
-                      ) then . else error("Incomplete Neon branch inventory entry.") end')" || current_branch_inventory=''
-                  if [ -n "$current_branch_inventory" ] && printf '%s' "$current_branch_inventory" | jq -e \
-                    --arg id "$branch_id" --arg name "$child_name" \
-                    '[.[] | select((.id == $id) or .name == $name)] | length == 0' >/dev/null 2>&1; then
-                    branch_absent_now=true
-                  fi
-
-                  current_endpoints="$(NEON_API_KEY="$neon_api_key" neon api "/projects/$NEON_PROJECT_ID/endpoints" \
-                    --output json --no-color 2>/dev/null)" || current_endpoints=''
-                  if [ -n "$current_endpoints" ]; then
-                    current_endpoint_inventory="$(printf '%s' "$current_endpoints" | jq -ce '
-                      if type == "object" and (.endpoints | type) == "array" and
-                        all(.endpoints[];
-                          type == "object" and
-                          (.id | type) == "string" and (.id | test("^ep-[a-z0-9-]{1,60}$")) and
-                          (.branch_id | type) == "string" and (.branch_id | test("^br-[a-z0-9-]{1,60}$"))
-                        ) then .endpoints else error("Incomplete Neon endpoint inventory entry.") end')" || current_endpoint_inventory=''
-                    if [ -z "$current_endpoint_inventory" ]; then
-                      cleanup_status=uncertain
-                      cleanup_note='The final Neon endpoint inventory was malformed; endpoint absence could not be verified.'
+                  delete_requested=true
+                  api_request DELETE "/projects/$NEON_PROJECT_ID/branches/$branch_id" || true
+                  for attempt in $(seq 1 10); do
+                    if ! api_request GET "/projects/$NEON_PROJECT_ID/branches/$branch_id"; then
+                      mark_uncertain 'Could not verify the exact child branch after its delete request.'
+                      break
+                    elif [ "$api_status" = 404 ]; then
+                      child_absent=true
+                      break
+                    elif [ "$api_status" = 200 ] && branch_identity_matches; then
+                      if [ "$attempt" -lt 10 ]; then sleep 3; fi
+                    elif [ "$api_status" = 200 ]; then
+                      mark_uncertain 'The branch ID no longer matches the disposable child identity.'
+                      break
+                    else
+                      mark_uncertain 'The branch absence check returned an unrecognized status.'
                       break
                     fi
-                    if printf '%s' "$current_endpoint_inventory" | jq -e \
-                      --arg branch "$branch_id" \
-                      '[.[] | select(.branch_id == $branch)] | length == 0' >/dev/null 2>&1; then
-                      endpoints_absent_now=true
-                    fi
-                  fi
-                  if [ "$branch_absent_now" = true ] && [ "$endpoints_absent_now" = true ]; then
-                    break
-                  fi
-                  if [ "$attempt" -lt 10 ]; then sleep 3; fi
-                done
-                if [ "$cleanup_status" = success ]; then
-                  if [ "$branch_absent_now" = true ] && [ "$endpoints_absent_now" = true ]; then
-                    child_absent=true
-                    endpoints_absent=true
-                  else
-                    cleanup_status=uncertain
-                    cleanup_note='Neon accepted or attempted cleanup, but child branch and endpoint absence could not both be confirmed.'
+                  done
+                  if [ "$cleanup_status" = success ] && [ "$child_absent" != true ]; then
+                    mark_uncertain 'The child branch remained present after bounded cleanup verification.'
                   fi
                 fi
+              elif [ "$api_status" = 404 ]; then
+                child_absent=true
+              else
+                mark_uncertain 'The exact child branch recheck returned an unrecognized status.'
               fi
             fi
+
+            if [ "$cleanup_status" = success ]; then
+              if ! api_request GET "/projects/$NEON_PROJECT_ID/branches/$branch_id"; then
+                mark_uncertain 'Could not make the final exact child branch absence check.'
+              elif [ "$api_status" != 404 ]; then
+                mark_uncertain 'The final exact child branch GET did not return 404.'
+              else
+                child_absent=true
+              fi
+            fi
+
+            if [ "$cleanup_status" = success ]; then
+              if ! api_request GET "/projects/$NEON_PROJECT_ID/endpoints/$endpoint_id"; then
+                mark_uncertain 'Could not make the final exact child endpoint absence check.'
+              elif [ "$api_status" != 404 ]; then
+                mark_uncertain 'The final exact child endpoint GET did not return 404.'
+              else
+                endpoints_absent=true
+              fi
+            fi
+
             unset neon_api_key
+            cleanup_temp_files
+            trap - EXIT
           fi
 
+          branch_name_output="$child_name"
+          if [ "${CREATE_REQUESTED:-}" != true ] && [ -z "$branch_id" ]; then
+            branch_name_output=''
+          fi
           {
             printf 'branch_id=%s\n' "$branch_id"
-            printf 'branch_name=%s\n' "$child_name"
+            printf 'branch_name=%s\n' "$branch_name_output"
             printf 'endpoint_ids=%s\n' "$endpoint_ids"
             printf 'cleanup_status=%s\n' "$cleanup_status"
             printf 'delete_requested=%s\n' "$delete_requested"
             printf 'child_absent=%s\n' "$child_absent"
             printf 'endpoints_absent=%s\n' "$endpoints_absent"
           } >> "$GITHUB_OUTPUT"
+
           if [ "$cleanup_status" != success ]; then
             printf '[cleanup] uncertain: %s\n' "$cleanup_note" >&2
             exit 1
           fi
-          printf 'Verified cleanup of disposable branch %s and endpoint(s) %s.\n' \
-            "${branch_id:-none}" "${endpoint_ids:-none}"
-
+          if [ -z "$branch_id" ]; then
+            printf 'No child creation request or resource ID was recorded; no cleanup was needed.\n'
+          else
+            printf 'Verified cleanup of disposable branch %s and endpoint %s.\n' \
+              "$branch_id" "$endpoint_id"
+          fi
       - name: Record rehearsal and cleanup disposition
         if: ${{ always() }}
         env:
