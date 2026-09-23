@@ -43,7 +43,7 @@ interface NavItem {
   icon: typeof LayoutDashboard;
   label: string;
   // For navigable items this is the route. For dropdown-only parents
-  // (e.g. "Super Admin") this is just a stable key — there is no
+  // (e.g. "Admin") this is just a stable key — there is no
   // landing page and the row is never rendered as a `<Link>`.
   href: string;
   adminOnly?: boolean;
@@ -71,24 +71,6 @@ const navItems: NavItem[] = [
     icon: Home,
     label: "Dashboard",
     href: "/"
-  },
-  {
-    icon: Settings,
-    label: "Business Settings",
-    href: "/business-settings",
-    adminOnly: true,
-  },
-  {
-    icon: MapPin,
-    label: "Locations",
-    href: "/locations",
-    orgAdminOnly: true,
-  },
-  {
-    icon: Users,
-    label: "Users",
-    href: "/users",
-    orgAdminOnly: true,
   },
   {
     icon: Trophy,
@@ -121,18 +103,36 @@ const navItems: NavItem[] = [
     orgAdminOnly: true,
     badgeQueryKey: UNCLAIMED_USERS_COUNT_QUERY_KEY,
   },
-  // System-admin-only grouping pinned to the bottom of the sidebar.
+  // Admin grouping pinned to the bottom of the sidebar.
   // The parent has no landing page; clicking it expands the sub-menu.
   // Pending-count badges from the children are aggregated onto the
   // parent row so admins still see "work waiting" at a glance when the
   // dropdown is collapsed (#591).
   {
     icon: ShieldCheck,
-    label: "Super Admin",
+    label: "Admin",
     href: "/__super-admin",
-    adminOnly: true,
+    orgAdminOnly: true,
     pinToBottom: true,
     subItems: [
+      {
+        icon: Settings,
+        label: "Business Settings",
+        href: "/business-settings",
+        adminOnly: true,
+      },
+      {
+        icon: MapPin,
+        label: "Locations",
+        href: "/locations",
+        orgAdminOnly: true,
+      },
+      {
+        icon: Users,
+        label: "Users",
+        href: "/users",
+        orgAdminOnly: true,
+      },
       {
         icon: Mail,
         label: "Email Templates",
@@ -250,7 +250,7 @@ function getBadgeCount(item: NavItem, badgeCounts: Record<string, number>): numb
 }
 
 // Flat leaf nav row used both at the top level and inside the
-// Super Admin dropdown (in the nested-list and popover variants).
+// Admin dropdown (in the nested-list and popover variants).
 //
 // Rendered as a single `<a>` (wouter's `<Link>` produces an anchor by
 // default) so middle-click / cmd-click open the route in a new tab and
@@ -316,7 +316,7 @@ function NavLeafRow({
   );
 }
 
-// Parent row with a static list of sub-items (e.g. "Super Admin").
+// Parent row with a static list of sub-items (e.g. "Admin").
 // - Expanded sidebar / mobile sheet: collapsible nested list, auto-open
 //   when a child route is active.
 // - Collapsed sidebar: icon button that opens a side popover listing the
@@ -489,10 +489,17 @@ function SidebarNav({
     if (item.orgAdminOnly && !canSeeOrgAdminItems && !(item.paymentManagerAllowed && isPaymentManager)) return null;
 
     if (item.subItems && item.subItems.length > 0) {
+      const visibleSubItems = item.subItems.filter((sub) => {
+        if (sub.adminOnly && !isAdmin) return false;
+        if (sub.orgAdminOnly && !canSeeOrgAdminItems && !(sub.paymentManagerAllowed && isPaymentManager)) return false;
+        return true;
+      });
+      if (visibleSubItems.length === 0) return null;
+
       return (
         <NavSubMenu
           key={item.href}
-          item={item}
+          item={{ ...item, subItems: visibleSubItems }}
           isCollapsed={isCollapsed}
           location={location}
           onNavigate={onNavigate}
