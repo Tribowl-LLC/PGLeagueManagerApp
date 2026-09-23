@@ -8,10 +8,17 @@ import {
   paymentOperationRosterSnapshotItems,
   paymentOperations,
   payments,
+  rotatingCreditFundings,
+  rotatingCreditPaymentOperationSnapshots,
+  rotatingCreditApplications,
 } from "@shared/schema";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 import { reconstructInteractivePartnerSnapshot, type InteractivePartnerPaymentSnapshot } from "./interactive-partner-payment-snapshot.js";
+import { reconstructRotatingCreditOperationSnapshot } from "./rotating-credit-operation-snapshot.js";
+import { applyRotatingCreditToConfirmedObligationsInTransaction, RotatingCreditLedgerError } from "./rotating-credit-applications.js";
+import { createHash } from "node:crypto";
+import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
 
 /**
  * Expected local evidence failures are durable reconciliation outcomes, not
@@ -98,6 +105,43 @@ export async function validateRosterSnapshotForDispatchInTransaction(
   tx: PaymentOperationTransaction,
   input: { organizationId: number; leagueId: number; operationId: string },
 ): Promise<boolean> {
+  const [creditSnapshot] = await tx.select().from(rotatingCreditPaymentOperationSnapshots).where(and(
+    eq(rotatingCreditPaymentOperationSnapshots.operationId, input.operationId),
+    eq(rotatingCreditPaymentOperationSnapshots.organizationId, input.organizationId),
+    eq(rotatingCreditPaymentOperationSnapshots.leagueId, input.leagueId),
+  )).limit(1).for("share");
+  if (creditSnapshot) {
+    const [creditOperation] = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+    )).limit(1).for("share");
+    const [rosterSnapshot] = await tx.select({ operationId: paymentOperationRosterSnapshots.operationId })
+      .from(paymentOperationRosterSnapshots).where(and(
+        eq(paymentOperationRosterSnapshots.operationId, input.operationId),
+        eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
+        eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
+      )).limit(1).for("share");
+    if (!creditOperation || rosterSnapshot) throw new RosterSnapshotFinalizationError("SNAPSHOT_INVALID", "The rotating credit operation snapshot is inconsistent");
+    try {
+      const snapshot = reconstructRotatingCreditOperationSnapshot({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        providerName: creditOperation.providerName,
+        providerIdempotencyKey: creditOperation.providerIdempotencyKey,
+        stored: creditSnapshot,
+      });
+      if (creditOperation.operationType !== "interactive_charge"
+        || creditOperation.amountMinor !== snapshot.amountMinor
+        || creditOperation.currency !== snapshot.currency
+        || creditOperation.authorizingUserId === null) {
+        throw new Error("rotating credit operation identity mismatch");
+      }
+    } catch {
+      throw new RosterSnapshotFinalizationError("SNAPSHOT_INVALID", "The rotating credit operation snapshot failed immutable validation");
+    }
+    return true;
+  }
   const [snapshot] = await tx.select().from(paymentOperationRosterSnapshots).where(and(
     eq(paymentOperationRosterSnapshots.operationId, input.operationId),
     eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
@@ -178,6 +222,132 @@ export async function finalizeRosterSnapshotInTransaction(
     eq(paymentOperations.id, input.operationId),
   )).limit(1).for("update");
   if (!operation) throw new RosterSnapshotFinalizationError("OPERATION_NOT_FOUND", "The payment operation is unavailable");
+
+  const [creditSnapshot] = await tx.select().from(rotatingCreditPaymentOperationSnapshots).where(and(
+    eq(rotatingCreditPaymentOperationSnapshots.operationId, operation.id),
+    eq(rotatingCreditPaymentOperationSnapshots.organizationId, input.organizationId),
+    eq(rotatingCreditPaymentOperationSnapshots.leagueId, input.leagueId),
+  )).limit(1).for("update");
+  if (creditSnapshot) {
+    const [rosterSnapshot] = await tx.select({ operationId: paymentOperationRosterSnapshots.operationId }).from(paymentOperationRosterSnapshots).where(and(
+      eq(paymentOperationRosterSnapshots.operationId, operation.id),
+      eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
+      eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
+    )).limit(1).for("share");
+    if (rosterSnapshot || operation.operationType !== "interactive_charge" || operation.amountMinor !== creditSnapshot.amountMinor
+      || operation.currency !== creditSnapshot.currency || operation.providerObjectId === null
+      || (operation.status !== "succeeded" && operation.status !== "reconciliation_required")) {
+      throw new RosterSnapshotFinalizationError("SNAPSHOT_INVALID", "The rotating credit provider evidence is incomplete");
+    }
+    let snapshot;
+    try {
+      snapshot = reconstructRotatingCreditOperationSnapshot({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        providerName: operation.providerName,
+        providerIdempotencyKey: operation.providerIdempotencyKey,
+        stored: creditSnapshot,
+      });
+    } catch {
+      throw new RosterSnapshotFinalizationError("SNAPSHOT_INVALID", "The rotating credit operation snapshot failed immutable validation");
+    }
+    const rows = await tx.select().from(payments).where(and(
+      eq(payments.organizationId, input.organizationId),
+      eq(payments.leagueId, input.leagueId),
+      eq(payments.paymentOperationId, operation.id),
+    )).orderBy(asc(payments.id)).for("update");
+    if (rows.length > 1) {
+      throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_INCOMPLETE", "Provider payment evidence is incomplete for rotating credit");
+    }
+    let providerPayment = rows[0];
+    if (!providerPayment) {
+      const authorizingUserId = input.actorUserId ?? operation.authorizingUserId;
+      if (authorizingUserId === null || authorizingUserId === undefined) {
+        throw new RosterSnapshotFinalizationError("ACTOR_EVIDENCE_MISSING", "The rotating credit purchase has no immutable authorizing actor");
+      }
+      const [recoveredPayment] = await tx.insert(payments).values({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        bowlerId: snapshot.bowlerId,
+        amount: snapshot.amountMinor,
+        currency: "USD",
+        status: "paid",
+        type: "square",
+        providerPaymentId: operation.providerObjectId,
+        idempotencyKey: `rotating-credit-operation:${operation.id}`,
+        paidByUserId: authorizingUserId,
+        paymentOperationId: operation.id,
+        notes: "Rotating share credit top-up",
+        receiptEmailMissing: snapshot.buyerEmail === null,
+        createdAt: input.now,
+      }).returning();
+      providerPayment = recoveredPayment;
+    }
+    if (!providerPayment || providerPayment.amount !== operation.amountMinor || providerPayment.bowlerId !== snapshot.bowlerId
+      || providerPayment.providerPaymentId !== operation.providerObjectId || providerPayment.type !== "square" || providerPayment.status !== "paid") {
+      throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_INCOMPLETE", "Provider payment evidence is incomplete for rotating credit");
+    }
+    const actorUserId = input.actorUserId ?? operation.authorizingUserId ?? providerPayment.paidByUserId ?? null;
+    if (actorUserId === null) throw new RosterSnapshotFinalizationError("ACTOR_EVIDENCE_MISSING", "The rotating credit purchase has no immutable authorizing actor");
+    const [existingFunding] = await tx.select().from(rotatingCreditFundings).where(and(
+      eq(rotatingCreditFundings.organizationId, input.organizationId),
+      eq(rotatingCreditFundings.leagueId, input.leagueId),
+      eq(rotatingCreditFundings.paymentId, providerPayment.id),
+    )).limit(1).for("update");
+    if (existingFunding) {
+      if (existingFunding.bowlerId !== snapshot.bowlerId || existingFunding.amountMinor !== snapshot.amountMinor
+        || existingFunding.idempotencyKey !== snapshot.idempotencyKey || existingFunding.fundingKind !== "provider") {
+        throw new RosterSnapshotFinalizationError("FUNDING_EVIDENCE_MISMATCH", "Existing rotating credit funding does not match the provider operation");
+      }
+      const allocations = await tx.select({ allocationId: rotatingCreditApplications.allocationId }).from(rotatingCreditApplications).where(and(
+        eq(rotatingCreditApplications.organizationId, input.organizationId),
+        eq(rotatingCreditApplications.leagueId, input.leagueId),
+        eq(rotatingCreditApplications.fundingId, existingFunding.id),
+      ));
+      return { finalized: true, allocationIds: allocations.map((row) => row.allocationId) };
+    }
+    const requestFingerprint = `lvrotcrreq:v1:${createHash("sha256").update(canonicalizePaymentOperationInput({
+      contract: "rotating-credit-funding-request/1",
+      operationId: operation.id,
+      snapshotFingerprint: creditSnapshot.snapshotFingerprint,
+      idempotencyKey: snapshot.idempotencyKey,
+    })).digest("hex")}`;
+    const [funding] = await tx.insert(rotatingCreditFundings).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      bowlerId: snapshot.bowlerId,
+      paymentId: providerPayment.id,
+      amountMinor: snapshot.amountMinor,
+      currency: "USD",
+      fundingKind: "provider",
+      idempotencyKey: snapshot.idempotencyKey,
+      requestFingerprint,
+      quoteFingerprint: snapshot.quoteFingerprint,
+      actorUserId,
+      createdAt: input.now,
+    }).returning({ id: rotatingCreditFundings.id });
+    if (!funding) throw new RosterSnapshotFinalizationError("FUNDING_CREATE_FAILED", "Rotating credit funding was not recorded");
+    let newApplicationIds: string[];
+    try {
+      newApplicationIds = await applyRotatingCreditToConfirmedObligationsInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        bowlerId: snapshot.bowlerId,
+        actorUserId,
+        now: input.now,
+      });
+    } catch (error) {
+      if (error instanceof RotatingCreditLedgerError) throw new RosterSnapshotFinalizationError(error.code, "Rotating credit applications could not be finalized");
+      throw error;
+    }
+    if (newApplicationIds.length === 0) return { finalized: true, allocationIds: [] };
+    const allocations = await tx.select({ allocationId: rotatingCreditApplications.allocationId }).from(rotatingCreditApplications).where(and(
+      eq(rotatingCreditApplications.organizationId, input.organizationId),
+      eq(rotatingCreditApplications.leagueId, input.leagueId),
+      inArray(rotatingCreditApplications.id, newApplicationIds),
+    ));
+    return { finalized: true, allocationIds: allocations.map((row) => row.allocationId) };
+  }
 
   const [snapshot] = await tx.select().from(paymentOperationRosterSnapshots).where(and(
     eq(paymentOperationRosterSnapshots.operationId, operation.id),

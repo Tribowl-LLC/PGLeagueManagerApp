@@ -109,6 +109,9 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
                         >
                           {displayStatus}
                         </button>
+                        {row.source === "prepaid_credit" && <Badge variant="secondary">Unused share credit</Badge>}
+                        {row.source === "held_credit" && <Badge variant="secondary">Share credit refund on hold</Badge>}
+                        {row.source === "refunded_credit" && <Badge variant="secondary">Refunded share credit</Badge>}
                         {hasSeparateReviewIndicator && <Badge variant="destructive">Review required</Badge>}
                         {row.correctionEvidence?.status === "voided" && <Badge variant="secondary">Voided</Badge>}
                       </div>

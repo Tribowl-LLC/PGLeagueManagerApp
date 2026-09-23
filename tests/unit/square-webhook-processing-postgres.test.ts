@@ -70,6 +70,11 @@ let secondBowlerId: number;
 let actorUserId: number;
 let webhookOccurrenceOrdinal = 0;
 
+function requirePayerBowlerId(payerBowlerId: number | null): number {
+  if (payerBowlerId === null) throw new Error("Expected a bowler-owned webhook fixture obligation");
+  return payerBowlerId;
+}
+
 beforeAll(async () => {
   const leftovers = await db.select({ id: organizations.id }).from(organizations)
     .where(inArray(organizations.slug, [slug]));
@@ -241,7 +246,7 @@ async function preparedInteractiveCharge(options: { combined?: boolean } = {}) {
       return [
         {
           allocationIndex: 0,
-          bowlerId: first.payerBowlerId,
+          bowlerId: requirePayerBowlerId(first.payerBowlerId),
           amountMinor: first.amountMinor,
           notes: "Synthetic combined webhook allocation A",
           paidByUserId: null,
@@ -251,7 +256,7 @@ async function preparedInteractiveCharge(options: { combined?: boolean } = {}) {
         },
         {
           allocationIndex: 1,
-          bowlerId: second.payerBowlerId,
+          bowlerId: requirePayerBowlerId(second.payerBowlerId),
           amountMinor: second.amountMinor,
           notes: "Synthetic combined webhook allocation B",
           paidByUserId: null,
@@ -266,7 +271,7 @@ async function preparedInteractiveCharge(options: { combined?: boolean } = {}) {
       if (!first) throw new Error("webhook fixture obligation was not selected");
       return [{
         allocationIndex: 0,
-        bowlerId: first.payerBowlerId,
+        bowlerId: requirePayerBowlerId(first.payerBowlerId),
         amountMinor: first.amountMinor,
         notes: "Synthetic webhook charge fixture",
         paidByUserId: null,

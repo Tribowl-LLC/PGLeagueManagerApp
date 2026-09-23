@@ -53,7 +53,7 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
   const canOpenReceipt = isInitiatingPayer
     && row.paymentId !== null
     && ["confirmed_paid", "refunded", "disputed"].includes(row.status);
-  const { initiatingPayerBowlerId: _initiatingPayerBowlerId, ...safeRow } = row;
+  const { initiatingPayerBowlerId: _initiatingPayerBowlerId, creditRefunds, ...safeRow } = row;
   const appliedTo: CanonicalPaymentAppliedToRow[] = visibleAllocations.map((allocation) => ({
     plannedOrdinal: allocation.plannedOrdinal ?? null,
     occurrenceLocalDate: allocation.occurrenceLocalDate ?? null,
@@ -85,6 +85,7 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     // internal child allocation evidence or interactive controls.
     allocations: [],
     appliedTo,
+    ...(isInitiatingPayer && creditRefunds ? { creditRefunds } : {}),
     refund: { ...row.refund, amountMinor: safeRefundAmount, providerRefundId: null },
     dispute: { ...row.dispute, amountMinor: safeDisputeAmount, disputeId: null },
     receipt: { ...row.receipt, availability: isInitiatingPayer ? row.receipt.availability : "unavailable", canOpenReceipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: [], sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null } },

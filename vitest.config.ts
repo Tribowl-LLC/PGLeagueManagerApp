@@ -158,6 +158,14 @@ const UNIT_NO_DB = [
   'tests/unit/roster-standing-autopay-contract.test.ts',
   'tests/unit/roster-standing-autopay-wake.test.ts',
   'tests/unit/roster-payment-route-boundaries.test.ts',
+  'tests/unit/rotating-credit-refund-snapshot.test.ts',
+  'tests/unit/rotating-credit-route-boundaries.test.ts',
+  'tests/unit/rotating-credit-refund-replay.test.ts',
+  'tests/unit/rotating-credit-ledger-guards.test.ts',
+  'tests/unit/shared-schema-browser-compat.test.ts',
+  // Square's provider contract suite mocks tenant storage and SDK resources,
+  // so it needs module isolation but no database clone.
+  'server/services/__tests__/square.test.ts',
   // This route suite mocks storage and the payment services and does not
   // need a database or spawned app. Keeping it in the no-DB project also
   // prevents its mocked route registry from affecting payment integration
@@ -175,7 +183,6 @@ const PARALLEL_ISOLATED = [
   'tests/e2e/password-reset-journey.test.ts',
   'server/routes/__tests__/leagues-square-missing-alerts.test.ts',
   'server/services/__tests__/apple-pay-worker.test.ts',
-  'server/services/__tests__/square.test.ts',
   'server/services/__tests__/square-version-header.test.ts',
   'server/services/__tests__/square-version-runtime-guard.test.ts',
   'server/services/__tests__/third-party-pins.test.ts',

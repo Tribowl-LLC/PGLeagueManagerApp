@@ -19,6 +19,8 @@ import {
   paymentVoids,
   paymentOperationRosterSnapshots,
   payments,
+  rotatingCreditFundings,
+  rotatingCreditRefunds,
   teamPaymentPolicies,
   teamPaymentSlots,
   teams,
@@ -57,6 +59,11 @@ let teamId: number;
 let bowlerId: number;
 let actorUserId: number;
 let occurrenceOrdinal = 0;
+
+function requirePayerBowlerId(payerBowlerId: number | null): number {
+  if (payerBowlerId === null) throw new Error("Expected a bowler-owned roster obligation");
+  return payerBowlerId;
+}
 
 beforeAll(async () => {
   const leftovers = await db.select({ id: organizations.id }).from(organizations).where(eq(organizations.slug, slug));
@@ -484,6 +491,123 @@ function cashEditRequest(paymentId: number, amountMinor: number, paymentDate: st
 }
 
 describe("PR1 roster snapshot finalization on PostgreSQL", () => {
+  it("reports valid unused rotating credit without labeling it unresolved evidence", async () => {
+    const idempotencyKey = `unused-credit-${randomUUID()}`;
+    const paymentId = await db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        bowlerId,
+        leagueId,
+        amount: 750,
+        status: "paid",
+        type: "cash",
+        idempotencyKey: `${idempotencyKey}:payment`,
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("unused rotating-credit tender was not created");
+      await tx.insert(rotatingCreditFundings).values({
+        organizationId,
+        leagueId,
+        bowlerId,
+        paymentId: payment.id,
+        amountMinor: 750,
+        currency: "USD",
+        fundingKind: "cash",
+        idempotencyKey,
+        requestFingerprint: `lvrotcrreq:v1:${"a".repeat(64)}`,
+        quoteFingerprint: `lvrotcrquote:v1:${"b".repeat(64)}`,
+        actorUserId,
+      });
+      return payment.id;
+    });
+
+    const report = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId, page: 1, limit: 1 });
+    const row = report.rows[0];
+    expect(row).toMatchObject({
+      paymentId,
+      source: "prepaid_credit",
+      unresolved: false,
+      reviewRequired: false,
+      allocatedMinor: 0,
+      unallocatedMinor: 750,
+      creditRefunds: { completedAmountMinor: 0, heldAmountMinor: 0, reviewRequired: false },
+    });
+    expect(row?.receipt.source).toBe("prepaid_credit");
+
+    // This is a tenant-wide report fixture; remove the independent prepaid
+    // tender so it cannot affect later totals in the shared organization.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+      await tx.delete(rotatingCreditFundings).where(eq(rotatingCreditFundings.paymentId, paymentId));
+      await tx.delete(payments).where(eq(payments.id, paymentId));
+    });
+  });
+
+  it("does not label a fully refunded unused rotating-credit lot as prepaid credit", async () => {
+    const idempotencyKey = `full-refund-credit-${randomUUID()}`;
+    const paymentId = await db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        bowlerId,
+        leagueId,
+        amount: 750,
+        status: "paid",
+        type: "cash",
+        idempotencyKey: `${idempotencyKey}:payment`,
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("fully refunded rotating-credit tender was not created");
+      const [funding] = await tx.insert(rotatingCreditFundings).values({
+        organizationId,
+        leagueId,
+        bowlerId,
+        paymentId: payment.id,
+        amountMinor: 750,
+        currency: "USD",
+        fundingKind: "cash",
+        idempotencyKey,
+        requestFingerprint: `lvrotcrreq:v1:${"a".repeat(64)}`,
+        quoteFingerprint: `lvrotcrquote:v1:${"b".repeat(64)}`,
+        actorUserId,
+      }).returning({ id: rotatingCreditFundings.id });
+      if (!funding) throw new Error("fully refunded rotating-credit funding was not created");
+      await tx.insert(rotatingCreditRefunds).values({
+        organizationId,
+        leagueId,
+        fundingId: funding.id,
+        paymentId: payment.id,
+        bowlerId,
+        amountMinor: 750,
+        currency: "USD",
+        refundKind: "cash",
+        refundOperationId: null,
+        reference: "cash refund receipt 17",
+        reason: "Unused share credit refunded in full",
+        actorUserId,
+        idempotencyKey: `full-refund-${randomUUID()}`,
+        requestFingerprint: `lvrotcrrefund:v1:${"c".repeat(64)}`,
+        issuedAt: new Date().toISOString(),
+      });
+      return payment.id;
+    });
+
+    const report = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId, page: 1, limit: 1 });
+    const row = report.rows[0];
+    expect(row).toMatchObject({
+      paymentId,
+      source: "refunded_credit",
+      allocatedMinor: 0,
+      unallocatedMinor: 0,
+      creditRefunds: { completedAmountMinor: 750, heldAmountMinor: 0, reviewRequired: false },
+    });
+    expect(row?.receipt.source).toBe("refunded_credit");
+
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+      await tx.delete(rotatingCreditRefunds).where(eq(rotatingCreditRefunds.paymentId, paymentId));
+      await tx.delete(rotatingCreditFundings).where(eq(rotatingCreditFundings.paymentId, paymentId));
+      await tx.delete(payments).where(eq(payments.id, paymentId));
+    });
+  });
+
   it("reports unresolved operation evidence in league-local dates and preserves upfront mode", async () => {
     const fixture = await createOccurrence();
     await db.update(leagues).set({ paymentMode: "upfront", timezone: "Pacific/Kiritimati" }).where(eq(leagues.id, leagueId));
@@ -514,14 +638,14 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         snapshotKind: "interactive",
         locationId,
         providerLocationId: null,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         requestKind: "direct",
         encryptedSourceId: "fixture-source",
         sourceKind: "new_card",
         quoteFingerprint: `lvrosterquote:v1:${"a".repeat(64)}`,
         amountMinor: fixture.obligation.amountMinor,
         currency: "USD",
-        obligations: [{ id: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version, payerBowlerId: fixture.obligation.payerBowlerId, amountMinor: fixture.obligation.amountMinor }],
+        obligations: [{ id: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version, payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId), amountMinor: fixture.obligation.amountMinor }],
         lineItems: [],
         snapshotFingerprint: `lvrosterexec:v1:${"e".repeat(64)}`,
       });
@@ -568,14 +692,14 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         snapshotKind: "interactive",
         locationId,
         providerLocationId: null,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         requestKind: "direct",
         encryptedSourceId: "fixture-source",
         sourceKind: "new_card",
         quoteFingerprint: `lvrosterquote:v1:${"a".repeat(64)}`,
         amountMinor: fixture.obligation.amountMinor,
         currency: "USD",
-        obligations: [{ id: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version, payerBowlerId: fixture.obligation.payerBowlerId, amountMinor: fixture.obligation.amountMinor }],
+        obligations: [{ id: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version, payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId), amountMinor: fixture.obligation.amountMinor }],
         lineItems: [],
         snapshotFingerprint: `lvrosterexec:v1:${"2".repeat(64)}`,
       });
@@ -944,7 +1068,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       organizationId,
       leagueId,
       amountMinor: 1_000,
-      payerBowlerId: fixture.obligation.payerBowlerId,
+      payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
     });
     const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute").mockImplementation(async ({ operationId }) => {
       const [operation] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, operationId));
@@ -957,7 +1081,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         await tx.update(paymentOperations).set({ status: "succeeded", providerObjectId, completedAt: "2038-03-01T21:00:00.000Z", nextAttemptAt: null }).where(eq(paymentOperations.id, operationId));
         await tx.insert(payments).values({
           organizationId,
-          bowlerId: fixture.obligation.payerBowlerId,
+          bowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
           leagueId,
           amount: item.amountMinor,
           status: "paid",
@@ -983,7 +1107,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         organizationId,
         leagueId,
         actorUserId,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         request: {
           amountMinor: 1_000,
           sourceId: "card-source-preparation-test",
@@ -1007,14 +1131,14 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         organizationId,
         leagueId,
         amountMinor: 1_000,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
       });
       expect(secondQuote.amountMinor).toBe(1_000);
       const secondResult = await chargeInteractiveObligations({
         organizationId,
         leagueId,
         actorUserId,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         request: {
           amountMinor: 1_000,
           sourceId: "card-source-preparation-test-second",
@@ -1044,12 +1168,12 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
   ])("rejects a $label before provider dispatch", async ({ storedEmail, requestedEmail }) => {
     const fixture = await createOccurrence();
     await db.update(leagues).set({ paymentMode: "weekly", timezone: "UTC" }).where(eq(leagues.id, leagueId));
-    await db.update(bowlers).set({ email: storedEmail }).where(eq(bowlers.id, fixture.obligation.payerBowlerId));
+    await db.update(bowlers).set({ email: storedEmail }).where(eq(bowlers.id, requirePayerBowlerId(fixture.obligation.payerBowlerId)));
     const quote = await quoteInteractiveObligations({
       organizationId,
       leagueId,
       amountMinor: 1_000,
-      payerBowlerId: fixture.obligation.payerBowlerId,
+      payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
     });
     const provider = vi.spyOn(paymentProviderFactory, "getPaymentProvider").mockResolvedValue({ providerName: "square" } as Awaited<ReturnType<typeof paymentProviderFactory.getPaymentProvider>>);
     const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute");
@@ -1058,7 +1182,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         organizationId,
         leagueId,
         actorUserId,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         request: {
           amountMinor: 1_000,
           sourceId: `email-validation-${randomUUID()}`,
@@ -1073,7 +1197,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     } finally {
       provider.mockRestore();
       execute.mockRestore();
-      await db.update(bowlers).set({ email: "roster-main@example.test" }).where(eq(bowlers.id, fixture.obligation.payerBowlerId));
+      await db.update(bowlers).set({ email: "roster-main@example.test" }).where(eq(bowlers.id, requirePayerBowlerId(fixture.obligation.payerBowlerId)));
     }
   });
 
@@ -1084,7 +1208,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       organizationId,
       leagueId,
       amountMinor: 1_000,
-      payerBowlerId: fixture.obligation.payerBowlerId,
+      payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
     });
     const provider = vi.spyOn(paymentProviderFactory, "getPaymentProvider").mockResolvedValue({ providerName: "square" } as Awaited<ReturnType<typeof paymentProviderFactory.getPaymentProvider>>);
     const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute");
@@ -1094,7 +1218,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         organizationId,
         leagueId,
         actorUserId,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         request: {
           amountMinor: 1_000,
           sourceId: "admin-card-save-source",
@@ -1121,20 +1245,20 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
   it("allows the payer account to save its own new card", async () => {
     const fixture = await createOccurrence();
     await db.update(leagues).set({ paymentMode: "weekly", timezone: "UTC" }).where(eq(leagues.id, leagueId));
-    await db.update(bowlers).set({ paymentCustomerId: "customer-self-save" }).where(eq(bowlers.id, fixture.obligation.payerBowlerId));
+    await db.update(bowlers).set({ paymentCustomerId: "customer-self-save" }).where(eq(bowlers.id, requirePayerBowlerId(fixture.obligation.payerBowlerId)));
     const [payerUser] = await db.insert(users).values({
       email: `roster-payer-${randomUUID()}@example.test`,
       password: "deterministic-test-password-hash",
       name: "Roster Payer",
       role: "user",
       organizationId,
-      bowlerId: fixture.obligation.payerBowlerId,
+      bowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
     }).returning({ id: users.id });
     const quote = await quoteInteractiveObligations({
       organizationId,
       leagueId,
       amountMinor: 1_000,
-      payerBowlerId: fixture.obligation.payerBowlerId,
+      payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
     });
     const provider = vi.spyOn(paymentProviderFactory, "getPaymentProvider").mockResolvedValue({ providerName: "square" } as Awaited<ReturnType<typeof paymentProviderFactory.getPaymentProvider>>);
     const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute").mockResolvedValue(undefined);
@@ -1143,7 +1267,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         organizationId,
         leagueId,
         actorUserId: payerUser.id,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         request: {
           amountMinor: 1_000,
           sourceId: "self-card-save-source",
@@ -1168,7 +1292,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       organizationId,
       leagueId,
       amountMinor: fixture.obligation.amountMinor,
-      payerBowlerId: fixture.obligation.payerBowlerId,
+      payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
     });
     const requestKey = `email-replay-${randomUUID()}`;
     const provider = vi.spyOn(paymentProviderFactory, "getPaymentProvider").mockResolvedValue({ providerName: "square" } as Awaited<ReturnType<typeof paymentProviderFactory.getPaymentProvider>>);
@@ -1184,7 +1308,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         if (!item) throw new Error("prepared roster item was not persisted");
         const [payment] = await tx.insert(payments).values({
           organizationId,
-          bowlerId: fixture.obligation.payerBowlerId,
+          bowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
           leagueId,
           amount: item.amountMinor,
           status: "paid",
@@ -1209,7 +1333,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         organizationId,
         leagueId,
         actorUserId,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         request: {
           amountMinor: fixture.obligation.amountMinor,
           sourceId: "email-replay-source",
@@ -1228,7 +1352,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         organizationId,
         leagueId,
         actorUserId,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         request: {
           amountMinor: fixture.obligation.amountMinor,
           sourceId: "email-replay-source",
@@ -1261,14 +1385,14 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         leagueId,
         locationId,
         providerLocationId: null,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         requestKind: "direct",
         sourceId: "webhook-test-source",
         customerId: null,
         buyerEmail: null,
         storeCard: false,
         sourceKind: "new_card",
-        allocations: [{ allocationIndex: 0, bowlerId: fixture.obligation.payerBowlerId, amountMinor: fixture.obligation.amountMinor, notes: "webhook test", paidByUserId: actorUserId, obligationId: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version }],
+        allocations: [{ allocationIndex: 0, bowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId), amountMinor: fixture.obligation.amountMinor, notes: "webhook test", paidByUserId: actorUserId, obligationId: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version }],
         lineItems: [],
         quoteFingerprint: `lvrosterquote:v1:${"a".repeat(64)}`,
         transaction: tx,
@@ -1440,14 +1564,14 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         snapshotKind: "interactive",
         locationId,
         providerLocationId: null,
-        payerBowlerId: fixture.obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         requestKind: "direct",
         encryptedSourceId: "fixture-source",
         sourceKind: "new_card",
         quoteFingerprint: `lvrosterquote:v1:${"a".repeat(64)}`,
         amountMinor: fixture.obligation.amountMinor,
         currency: "USD",
-        obligations: [{ id: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version, payerBowlerId: fixture.obligation.payerBowlerId, amountMinor: fixture.obligation.amountMinor }],
+        obligations: [{ id: fixture.obligation.id, responsibilityId: fixture.responsibility.id, responsibilityVersion: fixture.responsibility.version, payerBowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId), amountMinor: fixture.obligation.amountMinor }],
         lineItems: [],
         snapshotFingerprint: `lvrosterexec:v1:${"5".repeat(64)}`,
       });
@@ -1462,7 +1586,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       });
       const [payment] = await tx.insert(payments).values({
         organizationId,
-        bowlerId: fixture.obligation.payerBowlerId,
+        bowlerId: requirePayerBowlerId(fixture.obligation.payerBowlerId),
         leagueId,
         amount: fixture.obligation.amountMinor,
         status: "paid",

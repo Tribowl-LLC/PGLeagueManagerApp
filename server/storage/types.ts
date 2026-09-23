@@ -112,6 +112,10 @@ export interface IPaymentOperationStorage {
     input: import("./payment-operations").CreateOrGetRefundPaymentOperationInput,
     existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
   ): Promise<PaymentOperation>;
+  createOrGetRotatingCreditRefundPaymentOperation(
+    input: import("./payment-operations").CreateOrGetRotatingCreditRefundPaymentOperationInput,
+    existingTransaction?: import("./payment-operations").PaymentOperationTransaction,
+  ): Promise<PaymentOperation>;
   getPaymentOperationForOrganization(
     organizationId: number,
     operationId: string,
@@ -181,16 +185,21 @@ export interface IPaymentOperationStorage {
   getRosterOperationSnapshotForOrganization(
     organizationId: number,
     operationId: string,
-  ): Promise<import("../services/roster-operation-snapshot").RosterOperationSemanticSnapshot | undefined>;
+  ): Promise<import("./payment-operations").RosterOperationExecutionSnapshot | undefined>;
   persistRefundPaymentOperationSnapshot(
     operation: PaymentOperation,
     snapshot: import("../services/refund-payment-operation-snapshot").RefundPaymentSemanticSnapshot,
     transaction: import("./payment-operations").PaymentOperationTransaction,
   ): Promise<import("../services/refund-payment-operation-snapshot").RefundPaymentSemanticSnapshot>;
+  persistRotatingCreditRefundPaymentOperationSnapshot(
+    operation: PaymentOperation,
+    snapshot: import("../services/rotating-credit-refund-snapshot").RotatingCreditRefundSnapshotInput,
+    transaction: import("./payment-operations").PaymentOperationTransaction,
+  ): Promise<import("../services/rotating-credit-refund-snapshot").RotatingCreditRefundSemanticSnapshot>;
   getRefundPaymentOperationSnapshotForOrganization(
     organizationId: number,
     operationId: string,
-  ): Promise<import("../services/refund-payment-operation-snapshot").RefundPaymentSemanticSnapshot | undefined>;
+  ): Promise<import("../services/refund-payment-operation-snapshot").RefundPaymentSemanticSnapshot | import("../services/rotating-credit-refund-snapshot").RotatingCreditRefundSemanticSnapshot | undefined>;
   finalizeRefundPaymentOperationSuccess(
     input: import("./payment-operations").LeasedPaymentOperationInput & { providerObjectId: string },
   ): Promise<{ operation: PaymentOperation; payment: Payment }>;

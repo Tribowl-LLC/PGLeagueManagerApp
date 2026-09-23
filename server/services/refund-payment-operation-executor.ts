@@ -23,6 +23,7 @@ import {
 import type { PaymentProvider, RefundResult } from "./payment-provider.js";
 import { createLogger } from "../logger.js";
 import { captureUnexpectedPaymentProviderError } from "./payment-error-telemetry.js";
+import { fingerprintRotatingCreditRefundSnapshot } from "./rotating-credit-refund-snapshot.js";
 
 const log = createLogger("RefundPaymentLedger");
 const LEASE_MS = Math.min(2 * 60_000, PAYMENT_OPERATION_MAX_LEASE_MS);
@@ -94,6 +95,7 @@ export class RefundPaymentOperationExecutor {
     const leaseToken = operation.leaseToken;
     if (!leaseToken) throw new Error("leased refund operation has no fencing token");
     const snapshot = await getRefundPaymentOperationSnapshotForOrganization(operation.organizationId, operation.id);
+    const creditRefund = snapshot !== undefined && "kind" in snapshot && snapshot.kind === "rotating_credit_refund";
     if (
       !snapshot
       || operation.operationType !== "refund"
@@ -101,17 +103,19 @@ export class RefundPaymentOperationExecutor {
       || snapshot.amountMinor !== operation.amountMinor
       || snapshot.currency !== operation.currency
       || snapshot.providerName !== operation.providerName
-      || snapshot.snapshotVersion !== 2
-      || snapshot.disposition === undefined
-      || snapshot.disposition === null
-      || snapshot.allocations.length === 0
+      || (creditRefund
+        ? snapshot.snapshotFingerprint !== fingerprintRotatingCreditRefundSnapshot(snapshot)
+        : snapshot.snapshotVersion !== 2
+          || snapshot.disposition === undefined
+          || snapshot.disposition === null
+          || snapshot.allocations.length === 0)
     ) {
       // A legacy snapshot does not contain the immutable disposition or
       // allocation map. Even without a provider id, a crashed attempt may
       // have reached Square, so the absence of that id is not proof that the
       // provider was never called. Preserve provider truth and require
       // reconciliation rather than inventing a failed refund outcome.
-      if (snapshot?.snapshotVersion === 1) {
+      if (snapshot && !creditRefund && snapshot.snapshotVersion === 1) {
         return recordPaymentOperationReconciliationRequired({
           organizationId: operation.organizationId,
           operationId: operation.id,

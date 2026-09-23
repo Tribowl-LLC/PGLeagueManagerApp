@@ -625,6 +625,59 @@ describe('Resource authorization boundaries', () => {
       expect([403, 404, 410]).toContain(f5BowlerScope.status);
     });
 
+    it('org A cannot read org B canonical due, roster responsibility, or rotating credit surfaces', async () => {
+      if (orgBLeagueId === null || orgBBowlerId === null || orgBTeamId === null) {
+        throw new Error('org B league, team, and bowler fixtures are required');
+      }
+      expect(sessionB.user.organizationId).not.toBeNull();
+
+      const assertDeniedWithoutOrgLeak = (response: { status: number; data: { success: boolean } }) => {
+        expect([403, 404]).toContain(response.status);
+        expect(response.data.success).toBe(false);
+        expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+      };
+
+      const duePastDueV3 = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/canonical-due-past-due/3`,
+        sessionA,
+      );
+      assertDeniedWithoutOrgLeak(duePastDueV3);
+
+      // Query-path coverage marker; the request below supplies orgBBowlerId.
+      // /api/financials/leagues/:leagueId/canonical-due-past-due/3?bowlerId=...
+      const duePastDueV3ForOrgBBowler = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/canonical-due-past-due/3?bowlerId=${orgBBowlerId}`,
+        sessionA,
+      );
+      assertDeniedWithoutOrgLeak(duePastDueV3ForOrgBBowler);
+
+      const rosterResponsibilityV2 = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/roster-payment-responsibility/2`,
+        sessionA,
+      );
+      assertDeniedWithoutOrgLeak(rosterResponsibilityV2);
+
+      const selfRotatingCredit = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/rotating-credit/1`,
+        sessionA,
+      );
+      assertDeniedWithoutOrgLeak(selfRotatingCredit);
+
+      const adminBowlerCreditPath = `/api/financials/leagues/${orgBLeagueId}/rotating-credit/admin/${orgBBowlerId}/1`;
+      const adminBowlerCredit = await apiGet(adminBowlerCreditPath, sessionA);
+      assertDeniedWithoutOrgLeak(adminBowlerCredit);
+      const orgBOwnerBowlerCredit = await apiGet(adminBowlerCreditPath, sessionB);
+      expect(orgBOwnerBowlerCredit.status).toBe(200);
+      expect(orgBOwnerBowlerCredit.data.success).toBe(true);
+
+      const adminTeamMembersPath = `/api/financials/leagues/${orgBLeagueId}/rotating-credit/admin/teams/${orgBTeamId}/members/1`;
+      const adminTeamMembers = await apiGet(adminTeamMembersPath, sessionA);
+      assertDeniedWithoutOrgLeak(adminTeamMembers);
+      const orgBOwnerTeamMembers = await apiGet(adminTeamMembersPath, sessionB);
+      expect(orgBOwnerTeamMembers.status).toBe(200);
+      expect(orgBOwnerTeamMembers.data.success).toBe(true);
+    });
+
     it('org A GET /api/teams listing must not include the org B team id', async () => {
       const { status, data } = await apiGet<Team[]>('/api/teams', sessionA);
       expect(status).toBe(200);

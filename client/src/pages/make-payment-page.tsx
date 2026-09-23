@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import type { ApiResponse, BowlerDetailsResponse, SavedCard, User } from "@shared/schema";
+import type { RotatingCreditBalanceWire } from "@shared/rotating-credit-contract";
+import type { StandingAutopayConsentWire } from "@shared/standing-autopay-contract";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { LeagueSwitcherSheet } from "@/components/league-switcher-sheet";
 import { BowlerOneTimePaymentCard, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
 import { StandingAutopayCard } from "@/components/standing-autopay-card";
+import { RotatingShareCreditCard } from "@/components/rotating-share-credit-card";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageErrorState, PageLoadingState } from "@/components/page-states";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { useSelectedLeague } from "@/hooks/use-selected-league";
@@ -13,7 +18,7 @@ import { useSquarePayment } from "@/hooks/use-square-payment";
 import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import { useWalletPayments } from "@/hooks/use-wallet-payments";
 import { useSavedCardDefault } from "@/hooks/use-saved-card-default";
-import { csrfFetch, queryClient } from "@/lib/queryClient";
+import { apiRequest, csrfFetch, queryClient } from "@/lib/queryClient";
 import { tokenizeCard } from "@/lib/square";
 import { formatCurrency } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -216,6 +221,31 @@ export default function MakePaymentPage() {
   });
   const participants = useMemo(() => participantsResponse?.data?.participants ?? [], [participantsResponse?.data?.participants]);
   const paymentMode: InteractivePaymentMode = participantsResponse?.data?.paymentMode ?? league?.paymentMode ?? "weekly";
+  const rotatingCreditEligibilityQuery = useQuery<ApiResponse<RotatingCreditBalanceWire>>({
+    queryKey: [`/api/financials/leagues/${leagueId ?? 0}/rotating-credit/1`],
+    enabled: !!bowlerId && !!leagueId,
+    retry: false,
+  });
+  const isRotatingPoolMember = rotatingCreditEligibilityQuery.data?.success === true && rotatingCreditEligibilityQuery.data.data?.eligibleForCredit === true;
+  const standingAutopayStatusQuery = useQuery<ApiResponse<StandingAutopayConsentWire>>({
+    queryKey: [`/api/financials/leagues/${leagueId ?? 0}/standing-autopay/1`],
+    enabled: !!bowlerId && !!leagueId && paymentMode !== "upfront" && isRotatingPoolMember,
+    retry: false,
+  });
+  const rotatingLegacyConsent = standingAutopayStatusQuery.data?.success ? standingAutopayStatusQuery.data.data : undefined;
+  const rotatingAutopayRevokeKeyRef = useRef<string | null>(null);
+  const revokeRotatingLegacyAutopay = useMutation({
+    mutationFn: async () => {
+      rotatingAutopayRevokeKeyRef.current ??= `rotating-revoke-${crypto.randomUUID().replace(/-/g, "")}`;
+      return apiRequest(`/api/financials/leagues/${leagueId}/standing-autopay/1/revoke`, "POST", { commandKey: rotatingAutopayRevokeKeyRef.current });
+    },
+    onSuccess: async () => {
+      rotatingAutopayRevokeKeyRef.current = null;
+      await queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] });
+      toast({ title: "Automatic weekly payments revoked", description: "Rotating members pay manually for confirmed dates." });
+    },
+    onError: (error: Error) => toast({ title: "Could not revoke automatic payments", description: error.message, variant: "destructive" }),
+  });
 
   const savedCardsQueryEnabled = !!bowlerId && !!leagueId;
   const {
@@ -937,7 +967,27 @@ export default function MakePaymentPage() {
           onResetRecipientSelection={resetRecipientSelection}
         />}
       </ErrorBoundary>
-      {paymentMode !== "upfront" && <ErrorBoundary level="section"><StandingAutopayCard league={league} bowlerId={bowlerId} savedCards={savedCards} bowlerHasEmail={!!bowlerEmail} card={card} isInitialized={isInitialized && cardEditorMode === "autopay"} cardEditorMode={cardEditorMode} initializeCard={initializeCard} cleanupCard={cleanupCard} onCardEditorModeChange={selectEditorMode} /></ErrorBoundary>}
+      <ErrorBoundary level="section"><RotatingShareCreditCard
+        key={`${league.id}-${bowlerId ?? "unknown"}`}
+        league={league}
+        bowlerId={bowlerId}
+        bowlerEmail={bowlerEmail}
+        savedCards={savedCards}
+      /></ErrorBoundary>
+      {paymentMode !== "upfront" && !isRotatingPoolMember && <ErrorBoundary level="section"><StandingAutopayCard league={league} bowlerId={bowlerId} savedCards={savedCards} bowlerHasEmail={!!bowlerEmail} card={card} isInitialized={isInitialized && cardEditorMode === "autopay"} cardEditorMode={cardEditorMode} initializeCard={initializeCard} cleanupCard={cleanupCard} onCardEditorModeChange={selectEditorMode} /></ErrorBoundary>}
+      {paymentMode !== "upfront" && isRotatingPoolMember && standingAutopayStatusQuery.isLoading && <Card aria-busy="true"><CardContent><p className="py-4 text-sm text-muted-foreground">Checking existing automatic-payment status…</p></CardContent></Card>}
+      {paymentMode !== "upfront" && isRotatingPoolMember && (standingAutopayStatusQuery.error || standingAutopayStatusQuery.data?.success === false) && <Card><CardContent><div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between"><p role="alert" className="text-sm">{standingAutopayStatusQuery.error instanceof Error ? standingAutopayStatusQuery.error.message : standingAutopayStatusQuery.data?.error?.message ?? "Existing automatic-payment status could not be checked."}</p><Button type="button" variant="outline" size="sm" onClick={() => void standingAutopayStatusQuery.refetch()}>Retry</Button></div></CardContent></Card>}
+      {paymentMode !== "upfront" && isRotatingPoolMember && rotatingLegacyConsent?.state === "active" && <Card>
+        <CardHeader><CardTitle>Existing automatic payment</CardTitle></CardHeader>
+        <CardContent><div className="space-y-3">
+          <p className="text-sm">Automatic payments are enabled from before this bowler joined the rotating pool. Rotating members buy shares manually; no new automatic-payment setup is available.</p>
+          <p className="text-sm font-medium">Status: enabled</p>
+          <Button type="button" variant="outline" disabled={revokeRotatingLegacyAutopay.isPending} onClick={() => revokeRotatingLegacyAutopay.mutate()}>
+            {revokeRotatingLegacyAutopay.isPending ? "Revoking…" : "Revoke existing automatic payments"}
+          </Button>
+          {revokeRotatingLegacyAutopay.error && <p role="alert" className="text-sm text-destructive">{revokeRotatingLegacyAutopay.error.message}</p>}
+        </div></CardContent>
+      </Card>}
     </div>
     <LeagueSwitcherSheet open={leagueSheetOpen} onClose={() => setLeagueSheetOpen(false)} bowlerLeagues={bowlerLeagues} leagueMap={leagueMap} selectedLeagueId={leagueId} onSelect={(nextId) => { setSelectedLeagueId(nextId); intentAppliedRef.current = false; navigate(`/make-payment?leagueId=${nextId}`); }} />
   </BowlerLayout>;

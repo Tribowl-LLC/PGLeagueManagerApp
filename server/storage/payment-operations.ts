@@ -23,6 +23,10 @@ import {
   canonicalCollectionGroupMembers,
   bowlerPaymentLinks,
   refundPaymentOperationSnapshots,
+  rotatingCreditPaymentOperationSnapshots,
+  rotatingCreditRefundOperationSnapshots,
+  rotatingCreditFundings,
+  rotatingCreditRefunds,
   users,
   PAYMENT_OPERATION_ERROR_CLASSIFICATIONS,
   PAYMENT_OPERATION_MAX_ATTEMPTS,
@@ -52,7 +56,22 @@ import {
   reconstructInteractivePartnerSnapshot,
   type InteractivePartnerPaymentSnapshot,
 } from "../services/interactive-partner-payment-snapshot.js";
-export type RosterOperationExecutionSnapshot = RosterOperationSemanticSnapshot | InteractivePartnerPaymentSnapshot;
+import {
+  encryptRotatingCreditOperationSnapshot,
+  fingerprintRotatingCreditOperationSnapshot,
+  reconstructRotatingCreditOperationSnapshot,
+  type RotatingCreditOperationExecutionSnapshot,
+} from "../services/rotating-credit-operation-snapshot.js";
+import type { RotatingCreditOperationSemanticSnapshot } from "../services/rotating-credit-operation-snapshot.js";
+import type { RotatingCreditOperationSnapshotInput } from "../services/rotating-credit-operation-snapshot.js";
+import {
+  createRotatingCreditRefundSnapshot,
+  fingerprintRotatingCreditRefundSnapshot,
+  reconstructRotatingCreditRefundSnapshot,
+  type RotatingCreditRefundSemanticSnapshot,
+  type RotatingCreditRefundSnapshotInput,
+} from "../services/rotating-credit-refund-snapshot.js";
+export type RosterOperationExecutionSnapshot = RosterOperationSemanticSnapshot | InteractivePartnerPaymentSnapshot | RotatingCreditOperationExecutionSnapshot;
 import { deriveSquareCardSaveIdempotencyKey } from "../services/payment-operation-idempotency.js";
 import {
   encryptRefundPaymentSnapshot,
@@ -158,6 +177,17 @@ export interface CreateOrGetRefundPaymentOperationInput {
   amountMinor: number;
   currency: string;
   providerName: string;
+  now?: Date;
+}
+
+export interface CreateOrGetRotatingCreditRefundPaymentOperationInput {
+  organizationId: number;
+  leagueId: number;
+  targetKey: string;
+  amountMinor: number;
+  currency: string;
+  providerName: string;
+  authorizingUserId: number;
   now?: Date;
 }
 
@@ -291,7 +321,13 @@ async function insertLinkedPaymentRows(
     eq(paymentOperationRosterSnapshots.operationId, operationId),
     eq(paymentOperationRosterSnapshots.organizationId, organizationId),
   )).limit(1);
-  if (rosterSnapshot && rows[0]?.values.amount !== rosterSnapshot.amountMinor) {
+  const [creditSnapshot] = await executor.select({ amountMinor: rotatingCreditPaymentOperationSnapshots.amountMinor }).from(rotatingCreditPaymentOperationSnapshots).where(and(
+    eq(rotatingCreditPaymentOperationSnapshots.operationId, operationId),
+    eq(rotatingCreditPaymentOperationSnapshots.organizationId, organizationId),
+  )).limit(1);
+  if ((rosterSnapshot && creditSnapshot)
+    || (rosterSnapshot && rows[0]?.values.amount !== rosterSnapshot.amountMinor)
+    || (creditSnapshot && rows[0]?.values.amount !== creditSnapshot.amountMinor)) {
     throw new PaymentOperationValidationError("a roster provider operation must create exactly one tender parent row");
   }
   const bowlerIds = [...new Set(rows.map((row) => row.values.bowlerId))];
@@ -596,6 +632,12 @@ export async function createOrGetRefundPaymentOperation(
   const request = identity.normalizedRequest;
   const now = toIso(input.now ?? new Date(), "now");
   const run = async (tx: PaymentOperationTransaction): Promise<PaymentOperation> => {
+    const [creditBacked] = await tx.select({ id: rotatingCreditFundings.id }).from(rotatingCreditFundings).where(and(
+      eq(rotatingCreditFundings.organizationId, input.organizationId),
+      eq(rotatingCreditFundings.leagueId, input.leagueId),
+      eq(rotatingCreditFundings.paymentId, input.paymentId),
+    )).limit(1).for("share");
+    if (creditBacked) throw new PaymentOperationValidationError("rotating credit funding must use its lot refund ledger");
     const [created] = await tx.insert(paymentOperations).values({
       organizationId: request.organizationId,
       operationType: "refund",
@@ -625,6 +667,54 @@ export async function createOrGetRefundPaymentOperation(
   return existingTransaction ? run(existingTransaction) : db.transaction(run);
 }
 
+/** One Square refund operation per credit-lot refund request. The target key
+ * is already a server-generated hash of the lot and caller idempotency key. */
+export async function createOrGetRotatingCreditRefundPaymentOperation(
+  input: CreateOrGetRotatingCreditRefundPaymentOperationInput,
+  existingTransaction?: PaymentOperationTransaction,
+): Promise<PaymentOperation> {
+  const identity = buildPaymentOperationIdentity({
+    organizationId: input.organizationId,
+    operationType: "refund",
+    targetKey: input.targetKey,
+    amountMinor: input.amountMinor,
+    currency: input.currency,
+    providerName: input.providerName,
+  });
+  const request = identity.normalizedRequest;
+  const now = toIso(input.now ?? new Date(), "now");
+  const run = async (tx: PaymentOperationTransaction): Promise<PaymentOperation> => {
+    const [created] = await tx.insert(paymentOperations).values({
+      organizationId: request.organizationId,
+      authorizingUserId: input.authorizingUserId,
+      operationType: "refund",
+      leagueId: input.leagueId,
+      targetKey: request.targetKey,
+      amountMinor: request.amountMinor,
+      currency: request.currency,
+      requestFingerprint: identity.requestFingerprint,
+      providerIdempotencyKey: identity.providerIdempotencyKey,
+      providerName: request.providerName,
+      status: "pending",
+      nextAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    }).onConflictDoNothing().returning();
+    if (created) return created;
+    const [existing] = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.operationType, "refund"),
+      eq(paymentOperations.targetKey, request.targetKey),
+    )).limit(1);
+    if (!existing || !immutableRefundOperationMatches(existing, identity, input.leagueId)
+      || existing.authorizingUserId !== input.authorizingUserId) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+    return existing;
+  };
+  return existingTransaction ? run(existingTransaction) : db.transaction(run);
+}
+
 /**
  * Concurrent callers converge on the operation target uniqueness constraint.
  * A conflict is returned only when every immutable field still matches;
@@ -632,7 +722,7 @@ export async function createOrGetRefundPaymentOperation(
  */
 async function validateRosterOperationSnapshotTenantReferences(
   executor: PaymentOperationTransaction,
-  snapshot: RosterOperationExecutionSnapshot,
+  snapshot: RosterOperationSemanticSnapshot | InteractivePartnerPaymentSnapshot,
 ): Promise<void> {
   const bowlerIds = [...new Set([snapshot.payerBowlerId, ...snapshot.allocations.map((row) => row.bowlerId)])];
   const paidByUserIds = [...new Set(snapshot.allocations.map((row) => row.paidByUserId).filter((id): id is number => id !== null))];
@@ -658,12 +748,27 @@ async function loadRosterOperationSnapshot(
   operation: PaymentOperation,
 ): Promise<RosterOperationExecutionSnapshot | undefined> {
   if (operation.operationType !== "interactive_charge" || operation.leagueId === null) return undefined;
+  const [storedCredit] = await executor.select().from(rotatingCreditPaymentOperationSnapshots).where(and(
+    eq(rotatingCreditPaymentOperationSnapshots.operationId, operation.id),
+    eq(rotatingCreditPaymentOperationSnapshots.organizationId, operation.organizationId),
+    eq(rotatingCreditPaymentOperationSnapshots.leagueId, operation.leagueId),
+  )).limit(1);
   const [stored] = await executor.select().from(paymentOperationRosterSnapshots).where(and(
     eq(paymentOperationRosterSnapshots.operationId, operation.id),
     eq(paymentOperationRosterSnapshots.organizationId, operation.organizationId),
     eq(paymentOperationRosterSnapshots.leagueId, operation.leagueId),
     eq(paymentOperationRosterSnapshots.snapshotKind, "interactive"),
   )).limit(1);
+  if (storedCredit) {
+    if (stored) throw new PaymentOperationImmutableMismatchError();
+    return reconstructRotatingCreditOperationSnapshot({
+      organizationId: operation.organizationId,
+      leagueId: operation.leagueId,
+      providerName: operation.providerName,
+      providerIdempotencyKey: operation.providerIdempotencyKey,
+      stored: storedCredit,
+    });
+  }
   if (!stored) return undefined;
   if (stored.requestKind === null || stored.sourceKind === null || stored.encryptedSourceId === null || stored.payerBowlerId === null || stored.quoteFingerprint === null) {
     throw new PaymentOperationImmutableMismatchError();
@@ -692,6 +797,82 @@ async function loadRosterOperationSnapshot(
     allocations: allocations as RosterOperationSemanticSnapshot["allocations"],
     lineItems: stored.lineItems,
   });
+}
+
+export async function persistRotatingCreditPaymentOperationSnapshot(
+  operation: PaymentOperation,
+  snapshot: RotatingCreditOperationSnapshotInput,
+  transaction: PaymentOperationTransaction,
+): Promise<RotatingCreditOperationExecutionSnapshot> {
+  if (operation.operationType !== "interactive_charge"
+    || operation.leagueId !== snapshot.leagueId
+    || operation.organizationId !== snapshot.organizationId
+    || operation.amountMinor !== snapshot.amountMinor
+    || operation.currency !== snapshot.currency
+    || operation.providerName !== snapshot.providerName) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const [storedOperation] = await transaction.select().from(paymentOperations).where(and(
+    eq(paymentOperations.id, operation.id),
+    eq(paymentOperations.organizationId, operation.organizationId),
+  )).limit(1).for("share");
+  if (!storedOperation || storedOperation.operationType !== operation.operationType
+    || storedOperation.leagueId !== snapshot.leagueId
+    || storedOperation.targetKey !== operation.targetKey
+    || storedOperation.amountMinor !== operation.amountMinor
+    || storedOperation.currency !== operation.currency
+    || storedOperation.providerName !== operation.providerName
+    || storedOperation.requestFingerprint !== operation.requestFingerprint
+    || storedOperation.providerIdempotencyKey !== operation.providerIdempotencyKey) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const encrypted = encryptRotatingCreditOperationSnapshot(snapshot);
+  const [created] = await transaction.insert(rotatingCreditPaymentOperationSnapshots).values({
+    operationId: operation.id,
+    organizationId: snapshot.organizationId,
+    leagueId: snapshot.leagueId,
+    bowlerId: snapshot.bowlerId,
+    amountMinor: snapshot.amountMinor,
+    currency: snapshot.currency,
+    shareCount: snapshot.shareCount,
+    locationId: snapshot.locationId,
+    providerLocationId: snapshot.providerLocationId,
+    sourceKind: encrypted.sourceKind,
+    encryptedSourceId: encrypted.encryptedSourceId,
+    encryptedCustomerId: encrypted.encryptedCustomerId,
+    encryptedBuyerEmail: encrypted.encryptedBuyerEmail,
+    quoteFingerprint: snapshot.quoteFingerprint,
+    idempotencyKey: snapshot.idempotencyKey,
+    snapshotFingerprint: encrypted.snapshotFingerprint,
+  }).onConflictDoNothing().returning({ operationId: rotatingCreditPaymentOperationSnapshots.operationId });
+  const stored = await loadRosterOperationSnapshot(transaction, operation);
+  if (!stored || !("kind" in stored) || stored.kind !== "rotating_credit"
+    || fingerprintRotatingCreditOperationSnapshot({
+      snapshotVersion: stored.snapshotVersion,
+      organizationId: stored.organizationId,
+      leagueId: stored.leagueId,
+      bowlerId: stored.bowlerId,
+      amountMinor: stored.amountMinor,
+      currency: stored.currency,
+      shareCount: stored.shareCount,
+      providerName: stored.providerName,
+      locationId: stored.locationId,
+      providerLocationId: stored.providerLocationId,
+      sourceKind: stored.sourceKind,
+      sourceId: stored.sourceId,
+      customerId: stored.customerId,
+      buyerEmail: stored.buyerEmail,
+      quoteFingerprint: stored.quoteFingerprint,
+      idempotencyKey: stored.idempotencyKey,
+    }) !== encrypted.snapshotFingerprint) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  if (!created) {
+    const existing = stored;
+    if (!("kind" in existing) || existing.kind !== "rotating_credit"
+      || existing.snapshotFingerprint !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
+  }
+  return stored;
 }
 
 /** Persist the v3 interactive partner snapshot without widening or rewriting
@@ -983,6 +1164,56 @@ async function loadRefundPaymentOperationSnapshot(
   });
 }
 
+async function loadRotatingCreditRefundPaymentOperationSnapshot(
+  executor: typeof db | PaymentOperationTransaction,
+  operation: PaymentOperation,
+): Promise<RotatingCreditRefundSemanticSnapshot | undefined> {
+  if (operation.operationType !== "refund") return undefined;
+  const [stored] = await executor.select().from(rotatingCreditRefundOperationSnapshots).where(and(
+    eq(rotatingCreditRefundOperationSnapshots.operationId, operation.id),
+    eq(rotatingCreditRefundOperationSnapshots.organizationId, operation.organizationId),
+  )).limit(1);
+  if (!stored) return undefined;
+  return reconstructRotatingCreditRefundSnapshot({ operation, stored });
+}
+
+export async function persistRotatingCreditRefundPaymentOperationSnapshot(
+  operation: PaymentOperation,
+  snapshotInput: RotatingCreditRefundSnapshotInput,
+  transaction: PaymentOperationTransaction,
+): Promise<RotatingCreditRefundSemanticSnapshot> {
+  const snapshot = createRotatingCreditRefundSnapshot(snapshotInput);
+  if (operation.operationType !== "refund"
+    || operation.organizationId !== snapshot.organizationId
+    || operation.leagueId !== snapshot.leagueId
+    || operation.amountMinor !== snapshot.amountMinor
+    || operation.currency !== snapshot.currency
+    || operation.providerName !== snapshot.providerName) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const [created] = await transaction.insert(rotatingCreditRefundOperationSnapshots).values({
+    operationId: operation.id,
+    organizationId: snapshot.organizationId,
+    leagueId: snapshot.leagueId,
+    fundingId: snapshot.fundingId,
+    paymentId: snapshot.paymentId,
+    bowlerId: snapshot.bowlerId,
+    amountMinor: snapshot.amountMinor,
+    currency: snapshot.currency,
+    providerPaymentId: snapshot.providerPaymentId,
+    locationId: snapshot.locationId,
+    reason: snapshot.reason,
+    snapshotFingerprint: snapshot.snapshotFingerprint,
+  }).onConflictDoNothing().returning({ operationId: rotatingCreditRefundOperationSnapshots.operationId });
+  const stored = await loadRotatingCreditRefundPaymentOperationSnapshot(transaction, operation);
+  if (!stored || (created && fingerprintRotatingCreditRefundSnapshot(stored) !== stored.snapshotFingerprint)) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const expected = createRotatingCreditRefundSnapshot(snapshotInput);
+  if (stored.snapshotFingerprint !== expected.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
+  return stored;
+}
+
 export async function persistRefundPaymentOperationSnapshot(
   operation: PaymentOperation,
   snapshot: RefundPaymentSemanticSnapshot,
@@ -1019,10 +1250,13 @@ export async function persistRefundPaymentOperationSnapshot(
 export async function getRefundPaymentOperationSnapshotForOrganization(
   organizationId: number,
   operationId: string,
-): Promise<RefundPaymentSemanticSnapshot | undefined> {
+): Promise<RefundPaymentSemanticSnapshot | RotatingCreditRefundSemanticSnapshot | undefined> {
   const operation = await getPaymentOperationForOrganization(organizationId, operationId);
   if (!operation) return undefined;
-  return loadRefundPaymentOperationSnapshot(db, operation);
+  const creditSnapshot = await loadRotatingCreditRefundPaymentOperationSnapshot(db, operation);
+  const normalSnapshot = await loadRefundPaymentOperationSnapshot(db, operation);
+  if (creditSnapshot && normalSnapshot) throw new PaymentOperationImmutableMismatchError();
+  return creditSnapshot ?? normalSnapshot;
 }
 
 export async function getRosterOperationSnapshotForOrganization(
@@ -1835,6 +2069,34 @@ export async function finalizeRefundPaymentOperationSuccess(input: LeasedPayment
   validateLeaseToken(input.leaseToken);
   validateProviderObjectId(input.providerObjectId);
   return db.transaction(async (tx) => {
+    const [creditScope] = await tx.select({ leagueId: rotatingCreditRefundOperationSnapshots.leagueId }).from(paymentOperations).innerJoin(
+      rotatingCreditRefundOperationSnapshots,
+      eq(rotatingCreditRefundOperationSnapshots.operationId, paymentOperations.id),
+    ).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.operationType, "refund"),
+    )).limit(1);
+    if (creditScope) {
+      await lockLeagueSchedule(tx, input.organizationId, creditScope.leagueId);
+      const [creditOperation] = await tx.select().from(paymentOperations).where(and(
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.id, input.operationId),
+        eq(paymentOperations.operationType, "refund"),
+      )).limit(1).for("update");
+      if (!creditOperation) throw new PaymentOperationNotFoundError();
+      const snapshot = await loadRotatingCreditRefundPaymentOperationSnapshot(tx, creditOperation);
+      if (!snapshot || !["leased", "succeeded"].includes(creditOperation.status)
+        || creditOperation.leaseToken !== input.leaseToken) {
+        throw new PaymentOperationInvalidTransitionError(creditOperation.status);
+      }
+      return finalizeRotatingCreditRefundEvidenceInTransaction(tx, {
+        operation: creditOperation,
+        snapshot,
+        providerObjectId: input.providerObjectId,
+        now: input.now,
+      });
+    }
     const [scope] = await tx.select({ leagueId: refundPaymentOperationSnapshots.leagueId }).from(paymentOperations).innerJoin(
       refundPaymentOperationSnapshots,
       eq(refundPaymentOperationSnapshots.operationId, paymentOperations.id),
@@ -2023,13 +2285,35 @@ function rosterWebhookPaymentRows(
   snapshot: RosterOperationExecutionSnapshot,
   input: ProviderWebhookCompletionEvidence,
 ): PaymentOperationLinkedPaymentInput[] {
+  if ("kind" in snapshot && snapshot.kind === "rotating_credit") {
+    return [{
+      allocationIndex: 0,
+      values: {
+        organizationId: input.organizationId,
+        bowlerId: snapshot.bowlerId,
+        leagueId: snapshot.leagueId,
+        amount: operation.amountMinor,
+        status: "paid" as const,
+        type: providerNameToPaymentType(snapshot.providerName),
+        providerPaymentId: input.providerPaymentId,
+        receiptUrl: input.receiptUrl ?? undefined,
+        receiptNumber: input.receiptNumber ?? undefined,
+        receiptEmailMissing: snapshot.buyerEmail === null,
+        paidByUserId: operation.authorizingUserId,
+        notes: `Rotating credit purchase (${snapshot.shareCount} share${snapshot.shareCount === 1 ? "" : "s"})`,
+      },
+    }];
+  }
   const first = snapshot.allocations[0];
   if (!first) return [];
+  const bowlerId = snapshot.snapshotVersion === 1
+    ? snapshot.bowlerId
+    : snapshot.payerBowlerId ?? first.bowlerId;
   return [{
     allocationIndex: 0,
     values: {
       organizationId: input.organizationId,
-      bowlerId: snapshot.payerBowlerId ?? first.bowlerId,
+      bowlerId,
       leagueId: snapshot.leagueId,
       amount: operation.amountMinor,
       status: "paid" as const,
@@ -2227,12 +2511,113 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
   });
 }
 
+async function finalizeRotatingCreditRefundEvidenceInTransaction(
+  tx: PaymentOperationTransaction,
+  input: {
+    operation: PaymentOperation;
+    snapshot: RotatingCreditRefundSemanticSnapshot;
+    providerObjectId: string;
+    now?: Date;
+  },
+): Promise<{ operation: PaymentOperation; payment: Payment }> {
+  const now = toIso(input.now ?? new Date(), "now");
+  const { operation, snapshot } = input;
+  if (operation.organizationId !== snapshot.organizationId
+    || operation.leagueId !== snapshot.leagueId
+    || operation.amountMinor !== snapshot.amountMinor
+    || operation.currency !== snapshot.currency
+    || operation.providerName !== snapshot.providerName
+    || snapshot.snapshotFingerprint !== fingerprintRotatingCreditRefundSnapshot(snapshot)) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const [refund] = await tx.select().from(rotatingCreditRefunds).where(and(
+    eq(rotatingCreditRefunds.organizationId, snapshot.organizationId),
+    eq(rotatingCreditRefunds.leagueId, snapshot.leagueId),
+    eq(rotatingCreditRefunds.fundingId, snapshot.fundingId),
+    eq(rotatingCreditRefunds.paymentId, snapshot.paymentId),
+    eq(rotatingCreditRefunds.bowlerId, snapshot.bowlerId),
+    eq(rotatingCreditRefunds.refundOperationId, operation.id),
+    eq(rotatingCreditRefunds.refundKind, "provider"),
+    eq(rotatingCreditRefunds.amountMinor, snapshot.amountMinor),
+    eq(rotatingCreditRefunds.currency, "USD"),
+  )).limit(1).for("update");
+  if (!refund) throw new PaymentOperationImmutableMismatchError();
+  const [payment] = await tx.select().from(payments).where(and(
+    eq(payments.id, snapshot.paymentId),
+    eq(payments.organizationId, snapshot.organizationId),
+    eq(payments.leagueId, snapshot.leagueId),
+  )).limit(1).for("update");
+  if (!payment || payment.bowlerId !== snapshot.bowlerId
+    || payment.amount < snapshot.amountMinor
+    || payment.currency !== "USD"
+    || payment.providerPaymentId !== snapshot.providerPaymentId
+    || payment.status !== "paid") {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  if (operation.status === "succeeded") {
+    if (operation.providerObjectId !== input.providerObjectId) throw new PaymentOperationImmutableMismatchError();
+    return { operation, payment };
+  }
+  if (!webhookCompletableStatuses.has(operation.status)
+    || (operation.providerObjectId !== null && operation.providerObjectId !== input.providerObjectId)) {
+    throw new PaymentOperationInvalidTransitionError(operation.status);
+  }
+  const [completed] = await tx.update(paymentOperations).set({
+    status: "succeeded",
+    providerObjectId: input.providerObjectId,
+    nextAttemptAt: null,
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    errorClassification: null,
+    errorCode: null,
+    completedAt: now,
+    updatedAt: now,
+  }).where(and(
+    eq(paymentOperations.id, operation.id),
+    eq(paymentOperations.organizationId, operation.organizationId),
+    eq(paymentOperations.status, operation.status),
+    operation.leaseToken === null ? isNull(paymentOperations.leaseToken) : eq(paymentOperations.leaseToken, operation.leaseToken),
+    or(isNull(paymentOperations.providerObjectId), eq(paymentOperations.providerObjectId, input.providerObjectId)),
+  )).returning();
+  if (!completed) throw new PaymentOperationInvalidTransitionError(operation.status);
+  return { operation: completed, payment };
+}
+
 export async function finalizeRefundFromWebhookEvidenceInTransaction(
   tx: PaymentOperationTransaction,
   input: ProviderWebhookCompletionEvidence,
 ): Promise<{ operation: PaymentOperation; payment: Payment }> {
   validateProviderObjectId(input.providerObjectId);
   const now = toIso(input.now ?? new Date(), "now");
+  const [creditScope] = await tx.select({ leagueId: rotatingCreditRefundOperationSnapshots.leagueId }).from(paymentOperations).innerJoin(
+    rotatingCreditRefundOperationSnapshots,
+    eq(rotatingCreditRefundOperationSnapshots.operationId, paymentOperations.id),
+  ).where(and(
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.id, input.operationId),
+    eq(paymentOperations.operationType, "refund"),
+  )).limit(1);
+  if (creditScope) {
+    await lockLeagueSchedule(tx, input.organizationId, creditScope.leagueId);
+    const [operation] = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.id, input.operationId),
+      eq(paymentOperations.operationType, "refund"),
+    )).limit(1).for("update");
+    if (!operation) throw new PaymentOperationNotFoundError();
+    const snapshot = await loadRotatingCreditRefundPaymentOperationSnapshot(tx, operation);
+    if (!snapshot || operation.amountMinor !== input.amountMinor || operation.currency !== input.currency
+      || snapshot.locationId !== input.locationId || snapshot.providerPaymentId !== input.providerPaymentId
+      || (operation.providerObjectId !== null && operation.providerObjectId !== input.providerObjectId)) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+    return finalizeRotatingCreditRefundEvidenceInTransaction(tx, {
+      operation,
+      snapshot,
+      providerObjectId: input.providerObjectId,
+      now: input.now,
+    });
+  }
   // Refund operations predate the roster operation league foreign key and
   // carry their league in the immutable refund snapshot. Resolve that scope
   // before taking any financial row locks, then re-read the operation under

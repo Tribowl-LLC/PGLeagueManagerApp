@@ -11,10 +11,35 @@ import { cacheFetch, cacheInvalidate } from '../utils/cache';
 import { lockLeagueSchedule } from './league-schedule-lock.js';
 import { materializeRosterPaymentOccurrenceInTransaction, revokeStandingAutopayForBowlerInTransaction } from '../services/roster-payment-materializer.js';
 import { deleteUnusedBowler } from '../services/bowler-deletion.js';
+import { readConfirmedRotatingObligationsForCredit } from '../services/rotating-team-payments.js';
 
 const log = createLogger("StorageBowlers");
 
 const BOWLERS_TTL = 30_000;
+
+export class BowlerLeagueMutationError extends Error {
+  readonly code = "ROTATING_MEMBER_HAS_OPEN_ASSIGNMENT";
+  readonly status = 409;
+
+  constructor() {
+    super("A bowler with a confirmed rotating date must remain eligible until that date is corrected or settled");
+    this.name = "BowlerLeagueMutationError";
+  }
+}
+
+async function assertNoOpenConfirmedRotatingAssignmentInTransaction(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  input: { organizationId: number; leagueId: number; teamId: number; bowlerId: number },
+): Promise<void> {
+  const confirmed = await readConfirmedRotatingObligationsForCredit(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    bowlerId: input.bowlerId,
+  });
+  if (confirmed.some((row) => row.teamId === input.teamId)) {
+    throw new BowlerLeagueMutationError();
+  }
+}
 
 async function lockRosterLeague(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], leagueId: number): Promise<void> {
   const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, leagueId)).limit(1);
@@ -433,10 +458,21 @@ export async function updateBowlerLeague(id: number, bowlerLeague: UpdateBowlerL
       throw new Error('LEAGUE_MOVE_REQUIRES_REASSIGNMENT');
     }
     await lockRosterLeague(tx, current.leagueId);
+    const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
+    const removesEligibility = (bowlerLeague.bowlerId !== undefined && bowlerLeague.bowlerId !== current.bowlerId)
+      || (bowlerLeague.teamId !== undefined && bowlerLeague.teamId !== current.teamId)
+      || (current.active && bowlerLeague.active === false);
+    if (removesEligibility && league?.organizationId !== null && league?.organizationId !== undefined) {
+      await assertNoOpenConfirmedRotatingAssignmentInTransaction(tx, {
+        organizationId: league.organizationId,
+        leagueId: current.leagueId,
+        teamId: current.teamId,
+        bowlerId: current.bowlerId,
+      });
+    }
     const [updated] = await tx.update(bowlerLeagues).set(bowlerLeague).where(eq(bowlerLeagues.id, id)).returning();
     const bowlerIdentityChanged = bowlerLeague.bowlerId !== undefined && bowlerLeague.bowlerId !== current.bowlerId;
     if ((bowlerIdentityChanged || bowlerLeague.active === false || (bowlerLeague.teamId !== undefined && bowlerLeague.teamId !== current.teamId)) && updated) {
-      const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
       if (league?.organizationId !== null && league?.organizationId !== undefined) {
         const now = new Date().toISOString();
         const auditUserId = actorUserId ?? (await tx.select({ id: users.id }).from(users).where(eq(users.organizationId, league.organizationId)).limit(1))[0]?.id;
@@ -529,11 +565,17 @@ export async function updateBowlerLeagueOrder(id: number, newOrder: number): Pro
 
 export async function deleteBowlerLeague(id: number): Promise<boolean> {
   const result = await db.transaction(async (tx) => {
-    const [current] = await tx.select({ leagueId: bowlerLeagues.leagueId, bowlerId: bowlerLeagues.bowlerId }).from(bowlerLeagues).where(eq(bowlerLeagues.id, id)).limit(1);
+    const [current] = await tx.select({ leagueId: bowlerLeagues.leagueId, bowlerId: bowlerLeagues.bowlerId, teamId: bowlerLeagues.teamId }).from(bowlerLeagues).where(eq(bowlerLeagues.id, id)).limit(1);
     if (!current) return [];
     await lockRosterLeague(tx, current.leagueId);
     const [league] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, current.leagueId)).limit(1);
     if (league?.organizationId !== null && league?.organizationId !== undefined) {
+      await assertNoOpenConfirmedRotatingAssignmentInTransaction(tx, {
+        organizationId: league.organizationId,
+        leagueId: current.leagueId,
+        teamId: current.teamId,
+        bowlerId: current.bowlerId,
+      });
       await clearMainRosterSlotsForBowler(tx, { organizationId: league.organizationId, leagueId: current.leagueId, bowlerId: current.bowlerId });
     }
     return tx.delete(bowlerLeagues).where(eq(bowlerLeagues.id, id)).returning();

@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0050_rotating_team_payments",
+    "hash": "f2cecb941b041a4866365b529cf045fbdf097cb7add64f020c1dec175134c78f",
+    "createdAt": 1790132272166
+  },
+  "digest": "ef53034298c743a823a5a4fdcb651227acc81ec8543db988fa50fd00817d3195",
+  "counts": {
+    "tables": 85,
+    "columns": 1188,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 32,
+    "constraints": 666,
+    "indexes": 357,
+    "types": 1,
+    "functions": 26,
+    "triggers": 53,
+    "policies": 0
+  }
+}

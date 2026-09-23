@@ -71,15 +71,38 @@ function paymentRows(
   result: PaymentResult,
 ): PaymentOperationLinkedPaymentInput[] {
   if (!result.id) return [];
+  if ("kind" in snapshot && snapshot.kind === "rotating_credit") {
+    return [{
+      allocationIndex: 0,
+      values: {
+        organizationId: operation.organizationId,
+        bowlerId: snapshot.bowlerId,
+        leagueId: snapshot.leagueId,
+        amount: operation.amountMinor,
+        status: "paid" as const,
+        type: providerNameToPaymentType(snapshot.providerName),
+        providerPaymentId: result.id,
+        receiptUrl: result.receiptUrl,
+        receiptNumber: result.receiptNumber,
+        receiptEmailMissing: snapshot.providerName === "square" && snapshot.buyerEmail === null,
+        idempotencyKey: operation.id,
+        notes: `Rotating credit purchase (${snapshot.shareCount} share${snapshot.shareCount === 1 ? "" : "s"})`,
+        paidByUserId: operation.authorizingUserId,
+      },
+    }];
+  }
   const first = snapshot.allocations[0];
   if (!first) return [];
+  const bowlerId = snapshot.snapshotVersion === 1
+    ? snapshot.bowlerId
+    : snapshot.payerBowlerId ?? first.bowlerId;
   // A provider transaction is one tender regardless of how many canonical
   // obligations it settles. Allocations remain the internal breakdown.
   return [{
     allocationIndex: 0,
     values: {
       organizationId: operation.organizationId,
-      bowlerId: snapshot.payerBowlerId ?? first.bowlerId,
+      bowlerId,
       leagueId: snapshot.leagueId,
       amount: operation.amountMinor,
       status: "paid" as const,

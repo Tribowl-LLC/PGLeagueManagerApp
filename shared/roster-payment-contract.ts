@@ -2,7 +2,9 @@ import { z } from "zod";
 import { WEEKLY_BILLING_GRACE_PERIOD_MS } from "./schedule-utils";
 
 export const ROSTER_PAYMENT_RESPONSIBILITY_CONTRACT = "roster-payment-responsibility/1" as const;
+export const ROSTER_PAYMENT_RESPONSIBILITY_CONTRACT_V2 = "roster-payment-responsibility/2" as const;
 export const CANONICAL_DUE_PAST_DUE_CONTRACT_V2 = "canonical-due-past-due/2" as const;
+export const CANONICAL_DUE_PAST_DUE_CONTRACT_V3 = "canonical-due-past-due/3" as const;
 export const INTERACTIVE_OBLIGATION_QUOTE_CONTRACT_V2 = "interactive-obligation-quote/2" as const;
 export const AUTOMATIC_FIFO_PAYMENT_CONTRACT_V1 = "automatic-fifo-payment/1" as const;
 
@@ -29,6 +31,67 @@ export const rosterPaymentResponsibilityRequestSchema = z.object({
   policy: z.enum(["main_pays_full", "sub_pays_full", "special_split"]).optional(),
   slots: z.array(rosterSlotInputSchema).min(1),
 }).strict();
+
+export const rosterSlotInputV2Schema = z.object({
+  slotIndex: z.number().int().min(0).max(3),
+  occupant: z.enum(["main", "vacant", "unassigned", "rotating"]),
+  mainBowlerId: z.number().int().positive().nullable().optional(),
+}).strict().superRefine((slot, context) => {
+  if (slot.occupant === "main" && slot.mainBowlerId == null) {
+    context.addIssue({ code: "custom", path: ["mainBowlerId"], message: "A Main slot requires a bowler" });
+  }
+  if (slot.occupant !== "main" && slot.mainBowlerId != null) {
+    context.addIssue({ code: "custom", path: ["mainBowlerId"], message: "Only a Main slot may contain a Main bowler identity" });
+  }
+});
+
+export const rosterPaymentResponsibilityRequestV2Schema = z.object({
+  commandKey: z.string().trim().min(1).max(255),
+  requestFingerprint: z.string().trim().min(1).max(128),
+  lineupSize: z.union([z.literal(3), z.literal(4)]),
+  policy: z.enum(["main_pays_full", "sub_pays_full", "special_split"]).optional(),
+  slots: z.array(rosterSlotInputV2Schema).min(1),
+  eligibleRotatingBowlerIds: z.array(z.number().int().positive()).max(100),
+}).strict().superRefine((request, context) => {
+  const slotIndexes = request.slots.map((slot) => slot.slotIndex);
+  if (new Set(slotIndexes).size !== slotIndexes.length) {
+    context.addIssue({ code: "custom", path: ["slots"], message: "Each lineup slot may appear once" });
+  }
+  const mainBowlerIds = request.slots.flatMap((slot) => slot.occupant === "main" && slot.mainBowlerId != null ? [slot.mainBowlerId] : []);
+  if (new Set(mainBowlerIds).size !== mainBowlerIds.length) {
+    context.addIssue({ code: "custom", path: ["slots"], message: "A bowler may occupy only one Main slot" });
+  }
+  if (new Set(request.eligibleRotatingBowlerIds).size !== request.eligibleRotatingBowlerIds.length) {
+    context.addIssue({ code: "custom", path: ["eligibleRotatingBowlerIds"], message: "Each eligible bowler may appear once" });
+  }
+  if (!request.slots.some((slot) => slot.occupant === "rotating") && request.eligibleRotatingBowlerIds.length > 0) {
+    context.addIssue({ code: "custom", path: ["eligibleRotatingBowlerIds"], message: "A rotation pool requires at least one rotating slot" });
+  }
+});
+
+export const rotatingOccurrenceAssignmentInputSchema = z.object({
+  occurrenceId: z.string().uuid(),
+  teamId: z.number().int().positive(),
+  slotIndex: z.number().int().min(0).max(3),
+  expectedRevision: z.number().int().positive().nullable(),
+  actualBowlerId: z.number().int().positive().nullable(),
+  correctionReason: z.string().trim().min(1).max(500).optional(),
+}).strict().superRefine((assignment, context) => {
+  if (assignment.expectedRevision === null && assignment.actualBowlerId === null) {
+    context.addIssue({ code: "custom", path: ["actualBowlerId"], message: "A new assignment must identify the rotating bowler" });
+  }
+});
+
+export const rotatingOccurrenceAssignmentRequestSchema = z.object({
+  commandKey: z.string().trim().min(1).max(255),
+  requestFingerprint: z.string().trim().min(1).max(128),
+  assignments: z.array(rotatingOccurrenceAssignmentInputSchema).min(1).max(200),
+}).strict().superRefine((request, context) => {
+  const keys = request.assignments.map((row) => `${row.occurrenceId}:${row.teamId}:${row.slotIndex}`);
+  if (new Set(keys).size !== keys.length) {
+    context.addIssue({ code: "custom", path: ["assignments"], message: "Each occurrence slot may appear once" });
+  }
+});
 
 export const occurrenceResponsibilityInputSchema = z.object({
   occurrenceId: z.string().uuid(),
@@ -148,11 +211,105 @@ export const canonicalCorrectionRequestSchema = z.object({
 });
 
 export type RosterPaymentResponsibilityRequest = z.infer<typeof rosterPaymentResponsibilityRequestSchema>;
+export type RosterPaymentResponsibilityRequestV2 = z.infer<typeof rosterPaymentResponsibilityRequestV2Schema>;
+export type RotatingOccurrenceAssignmentInput = z.infer<typeof rotatingOccurrenceAssignmentInputSchema>;
+export type RotatingOccurrenceAssignmentRequest = z.infer<typeof rotatingOccurrenceAssignmentRequestSchema>;
 export type OccurrenceResponsibilityInput = z.infer<typeof occurrenceResponsibilityInputSchema>;
 export type InteractiveObligationQuoteRequestV2 = z.infer<typeof interactiveObligationQuoteRequestV2Schema>;
 export type InteractiveObligationChargeRequestV2 = z.infer<typeof interactiveObligationChargeRequestV2Schema>;
 export type AutomaticFifoPaymentQuoteRequest = z.infer<typeof automaticFifoPaymentQuoteRequestSchema>;
 export type AutomaticFifoPaymentChargeRequest = z.infer<typeof automaticFifoPaymentChargeRequestSchema>;
+
+export interface RosterPaymentResponsibilityReadContractV2 {
+  contractVersion: typeof ROSTER_PAYMENT_RESPONSIBILITY_CONTRACT_V2;
+  organizationId: number;
+  leagueId: number;
+  payingLineupSize: 3 | 4 | null;
+  weeklyFee: number;
+  lineageFee: number | null;
+  prizeFundFee: number | null;
+  substituteAccess: "team_only" | "floating";
+  substitutePaymentRegime: "team_choice" | "league_lineage_prize_split";
+  ready: boolean;
+  incompleteTeamIds: number[];
+  occurrences: Array<{
+    id: string;
+    startAt: string;
+    occurrenceLocalDate: string;
+    plannedOrdinal: number;
+    billingOrdinal: number | null;
+    status: "scheduled" | "completed";
+  }>;
+  teams: Array<{
+    id: number;
+    name: string;
+    number: number;
+    policy: "main_pays_full" | "sub_pays_full" | "special_split";
+    eligibleRotatingBowlerIds: number[];
+    slots: Array<{
+      teamId: number;
+      slotIndex: number;
+      occupant: "main" | "vacant" | "unassigned" | "rotating";
+      mainBowlerId: number | null;
+      currentRevision: number;
+    }>;
+  }>;
+  rotationAssignments: Array<{
+    occurrenceId: string;
+    teamId: number;
+    slotIndex: number;
+    responsibilityId: string | null;
+    obligationIds: string[];
+    assignmentId: string | null;
+    actualBowlerId: number | null;
+    revision: number | null;
+    assignedAt: string | null;
+    recordedByUserId: number | null;
+  }>;
+  occurrenceResponsibilities: Array<{
+    occurrenceId: string;
+    teamId: number;
+    slotIndex: number;
+    positionIndex: number;
+    responsibilityKind: "main" | "substitute" | "split" | "vacant" | "rotating";
+    mainBowlerId: number | null;
+    substituteBowlerId: number | null;
+    payerBowlerId: number | null;
+    policy: "main_pays_full" | "sub_pays_full" | "special_split";
+    amountMinor: number;
+    lineageAmountMinor: number | null;
+    prizeFundAmountMinor: number | null;
+  }>;
+  substituteBowlerOptions: Array<{ id: number; name: string; teamId: number | null }>;
+}
+
+export type CanonicalRotatingRosterFingerprintInput = Pick<RosterPaymentResponsibilityRequestV2,
+  "lineupSize" | "policy" | "slots" | "eligibleRotatingBowlerIds"
+>;
+
+export function serializeCanonicalRotatingRosterFingerprint(request: CanonicalRotatingRosterFingerprintInput): string {
+  return JSON.stringify({
+    lineupSize: request.lineupSize,
+    policy: request.policy ?? "main_pays_full",
+    slots: [...request.slots]
+      .sort((a, b) => a.slotIndex - b.slotIndex)
+      .map((slot) => ({ slotIndex: slot.slotIndex, occupant: slot.occupant, mainBowlerId: slot.mainBowlerId ?? null })),
+    eligibleRotatingBowlerIds: [...request.eligibleRotatingBowlerIds].sort((a, b) => a - b),
+  });
+}
+
+export function serializeRotatingOccurrenceAssignmentFingerprint(assignments: RotatingOccurrenceAssignmentInput[]): string {
+  return JSON.stringify([...assignments]
+    .sort((a, b) => a.occurrenceId.localeCompare(b.occurrenceId) || a.teamId - b.teamId || a.slotIndex - b.slotIndex)
+    .map((assignment) => ({
+      occurrenceId: assignment.occurrenceId,
+      teamId: assignment.teamId,
+      slotIndex: assignment.slotIndex,
+      expectedRevision: assignment.expectedRevision,
+      actualBowlerId: assignment.actualBowlerId,
+      correctionReason: assignment.correctionReason ?? null,
+    })));
+}
 
 export type CanonicalResponsibilityFingerprintInput = Pick<OccurrenceResponsibilityInput,
   "occurrenceId" | "teamId" | "slotIndex" | "positionIndex" | "kind"

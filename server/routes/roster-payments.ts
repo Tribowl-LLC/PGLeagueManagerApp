@@ -8,6 +8,8 @@ import {
   interactiveObligationChargeRequestV2Schema,
   interactiveObligationQuoteRequestV2Schema,
   rosterPaymentResponsibilityRequestSchema,
+  rosterPaymentResponsibilityRequestV2Schema,
+  rotatingOccurrenceAssignmentRequestSchema,
   occurrenceResponsibilityInputSchema,
 } from "@shared/roster-payment-contract";
 import {
@@ -25,9 +27,13 @@ import {
   chargeInteractiveObligations,
   quoteInteractiveObligations,
   readCanonicalDuePastDue,
+  readCanonicalDuePastDueV3,
   readRosterPaymentResponsibility,
+  readRosterPaymentResponsibilityV2,
   recordCanonicalManualPayment,
   recordOccurrenceResponsibilities,
+  saveRotatingOccurrenceAssignments,
+  saveTeamRosterV2,
   RosterPaymentError,
   RosterPaymentReplay,
   saveTeamRoster,
@@ -102,7 +108,7 @@ function wireObject(value: unknown): WireObject | null {
 function rosterWireResult(value: unknown): Record<string, unknown> {
   const source = wireObject(value) ?? {};
   const base: Record<string, unknown> = {};
-  for (const key of ["contractVersion", "automaticContractVersion", "organizationId", "leagueId", "teamId", "ready", "commandKey", "requestFingerprint", "mode", "restoredObligationId", "payerBowlerId", "amountMinor", "currency", "fingerprint", "originalPaymentId", "replacementPaymentId", "oldAmountMinor", "newAmountMinor", "oldPaymentDate", "newPaymentDate", "allocationMode", "allocationCount"]) {
+  for (const key of ["contractVersion", "automaticContractVersion", "organizationId", "leagueId", "teamId", "ready", "commandKey", "requestFingerprint", "mode", "restoredObligationId", "payerBowlerId", "amountMinor", "currency", "fingerprint", "originalPaymentId", "replacementPaymentId", "oldAmountMinor", "newAmountMinor", "oldPaymentDate", "newPaymentDate", "allocationMode", "allocationCount", "eligibleRotatingBowlerIds"]) {
     if (source[key] !== undefined) base[key] = source[key];
   }
   if (source.operationId !== undefined) {
@@ -111,7 +117,22 @@ function rosterWireResult(value: unknown): Record<string, unknown> {
   }
   if (Array.isArray(source.slots)) base.slots = source.slots.map((slot) => {
     const row = wireObject(slot) ?? {};
-    return { id: row.id, teamId: row.teamId, slotIndex: row.slotIndex, occupant: row.occupant, mainBowlerId: row.mainBowlerId ?? null };
+    return { id: row.id, teamId: row.teamId, slotIndex: row.slotIndex, occupant: row.occupant, mainBowlerId: row.mainBowlerId ?? null, currentRevision: row.currentRevision };
+  });
+  if (Array.isArray(source.assignments)) base.assignments = source.assignments.map((assignment) => {
+    const row = wireObject(assignment) ?? {};
+    return {
+      id: row.id,
+      occurrenceId: row.occurrenceId,
+      teamId: row.teamId,
+      slotIndex: row.slotIndex,
+      responsibilityId: row.responsibilityId,
+      version: row.version,
+      actualBowlerId: row.actualBowlerId ?? null,
+      correctionReason: row.correctionReason ?? null,
+      createdAt: row.createdAt,
+      recordedByUserId: row.recordedByUserId,
+    };
   });
   const wirePayment = (payment: unknown): WireObject | null => {
     const row = wireObject(payment);
@@ -273,6 +294,39 @@ router.post("/leagues/:leagueId/interactive-payment-charge/3", paymentWriteLimit
   } catch (error) { return handleError(res, error); }
 });
 
+router.get("/leagues/:leagueId/roster-payment-responsibility/2", async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    const roster = await readRosterPaymentResponsibilityV2({ organizationId: league.organizationId, leagueId });
+    const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
+    if (privileged) return sendSuccess(res, roster);
+    const ownBowlerId = req.user.bowlerId;
+    const rotatingSlotKeys = new Set(roster.teams.flatMap((team) => team.slots
+      .filter((slot) => slot.occupant === "rotating")
+      .map((slot) => `${team.id}:${slot.slotIndex}`)));
+    return sendSuccess(res, {
+      ...roster,
+      teams: roster.teams.map((team) => ({
+        ...team,
+        eligibleRotatingBowlerIds: ownBowlerId !== null && team.eligibleRotatingBowlerIds.includes(ownBowlerId) ? [ownBowlerId] : [],
+        slots: team.slots.map((slot) => slot.mainBowlerId === ownBowlerId ? slot : { ...slot, mainBowlerId: null }),
+      })),
+      rotationAssignments: roster.rotationAssignments.filter((assignment) => ownBowlerId !== null && assignment.actualBowlerId === ownBowlerId),
+      occurrenceResponsibilities: roster.occurrenceResponsibilities
+        .filter((responsibility) => !rotatingSlotKeys.has(`${responsibility.teamId}:${responsibility.slotIndex}`) && responsibility.payerBowlerId === ownBowlerId)
+        .map((responsibility) => ({
+          ...responsibility,
+          mainBowlerId: responsibility.mainBowlerId === ownBowlerId ? ownBowlerId : null,
+          substituteBowlerId: responsibility.substituteBowlerId === ownBowlerId ? ownBowlerId : null,
+        })),
+      substituteBowlerOptions: [],
+    });
+  } catch (error) { return handleError(res, error); }
+});
+
 router.get("/leagues/:leagueId/roster-payment-responsibility/1", async (req, res) => {
   const leagueId = leagueIdParam(req.params.leagueId);
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
@@ -281,19 +335,71 @@ router.get("/leagues/:leagueId/roster-payment-responsibility/1", async (req, res
   try {
     const roster = await readRosterPaymentResponsibility({ organizationId: league.organizationId, leagueId });
     const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
-    if (privileged) return sendSuccess(res, roster);
+    const rotatingSlotKeys = new Set(roster.teams.flatMap((team) => team.slots
+      .filter((slot) => slot.occupant === "rotating")
+      .map((slot) => `${team.id}:${slot.slotIndex}`)));
+    const rotatingTeamIds = [...new Set(roster.teams.flatMap((team) => team.slots.some((slot) => slot.occupant === "rotating") ? [team.id] : []))];
+    const legacyRoster = {
+      ...roster,
+      ready: roster.ready && rotatingTeamIds.length === 0,
+      incompleteTeamIds: [...new Set([...roster.incompleteTeamIds, ...rotatingTeamIds])],
+      teams: roster.teams.map((team) => ({
+        ...team,
+        slots: team.slots.map((slot) => slot.occupant === "rotating" ? { ...slot, occupant: "unassigned" as const, mainBowlerId: null } : slot),
+      })),
+      occurrenceResponsibilities: roster.occurrenceResponsibilities
+        .filter((responsibility) => !rotatingSlotKeys.has(`${responsibility.teamId}:${responsibility.slotIndex}`)),
+    };
+    if (privileged) return sendSuccess(res, legacyRoster);
     const ownBowlerId = req.user.bowlerId;
     return sendSuccess(res, {
-      ...roster,
-      teams: roster.teams.map((team) => ({
+      ...legacyRoster,
+      teams: legacyRoster.teams.map((team) => ({
         ...team,
         slots: team.slots.map((slot) => slot.mainBowlerId === ownBowlerId ? slot : { ...slot, mainBowlerId: null }),
       })),
-      occurrenceResponsibilities: roster.occurrenceResponsibilities
+      occurrenceResponsibilities: legacyRoster.occurrenceResponsibilities
         .filter((responsibility) => responsibility.payerBowlerId === ownBowlerId)
         .map((responsibility) => ({ ...responsibility, mainBowlerId: responsibility.mainBowlerId === ownBowlerId ? ownBowlerId : null, substituteBowlerId: responsibility.substituteBowlerId === ownBowlerId ? ownBowlerId : null })),
       substituteBowlerOptions: [],
     });
+  } catch (error) { return handleError(res, error); }
+});
+
+router.post("/leagues/:leagueId/roster-payment-responsibility/2/teams/:teamId", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  const teamId = leagueIdParam(String(req.params.teamId));
+  if (!leagueId || !teamId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId, true);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = rosterPaymentResponsibilityRequestV2Schema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid roster responsibility request", 400, "INVALID_REQUEST");
+  try {
+    return sendSuccess(res, rosterWireResult(await saveTeamRosterV2({
+      organizationId: league.organizationId,
+      leagueId,
+      teamId,
+      actorUserId: req.user.id,
+      request: parsed.data,
+    })), 201);
+  } catch (error) { return handleError(res, error); }
+});
+
+router.post("/leagues/:leagueId/roster-payment-responsibility/2/rotating-assignments", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId, true);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = rotatingOccurrenceAssignmentRequestSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid rotating assignment request", 400, "INVALID_REQUEST");
+  try {
+    const result = await saveRotatingOccurrenceAssignments({
+      organizationId: league.organizationId,
+      leagueId,
+      actorUserId: req.user.id,
+      request: parsed.data,
+    });
+    return sendSuccess(res, rosterWireResult(result), 201);
   } catch (error) { return handleError(res, error); }
 });
 
@@ -331,6 +437,18 @@ router.get("/leagues/:leagueId/canonical-due-past-due/2", async (req, res) => {
   if (!privileged && (payerBowlerId === undefined || payerBowlerId !== req.user.bowlerId)) return sendError(res, "Not found", 404, "NOT_FOUND");
   if (payerBowlerId !== undefined && (!Number.isSafeInteger(payerBowlerId) || payerBowlerId <= 0)) return sendError(res, "Invalid bowler", 400, "INVALID_REQUEST");
   try { return sendSuccess(res, await readCanonicalDuePastDue({ organizationId: league.organizationId, leagueId, payerBowlerId })); } catch (error) { return handleError(res, error); }
+});
+
+router.get("/leagues/:leagueId/canonical-due-past-due/3", async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const privileged = await hasAdminAccessToLeague(req, leagueId) || await hasPaymentManagerAccessToLeague(req, leagueId);
+  const bowlerId = req.query.bowlerId === undefined ? (privileged ? undefined : req.user.bowlerId ?? undefined) : Number(req.query.bowlerId);
+  if (!privileged && (bowlerId === undefined || bowlerId !== req.user.bowlerId)) return sendError(res, "Not found", 404, "NOT_FOUND");
+  if (bowlerId !== undefined && (!Number.isSafeInteger(bowlerId) || bowlerId <= 0)) return sendError(res, "Invalid bowler", 400, "INVALID_REQUEST");
+  try { return sendSuccess(res, await readCanonicalDuePastDueV3({ organizationId: league.organizationId, leagueId, bowlerId })); } catch (error) { return handleError(res, error); }
 });
 
 router.post("/leagues/:leagueId/interactive-obligation-quote/2", paymentWriteLimiter, async (req, res) => {

@@ -17,6 +17,7 @@ interface TeamViewBowlersTableProps {
   teamId: number;
   leagueId: number;
   canManage: boolean;
+  paymentMode?: "fixed" | "rotating" | "unavailable";
   onEditBowler?: (bowler: Bowler) => void;
   onRemoveBowler?: (target: { bowlerId: number; name: string }) => void;
 }
@@ -64,9 +65,9 @@ function rosterFingerprint(lineupSize: number, policy: string, slots: Slot[]): P
   );
 }
 
-export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, canManage, onEditBowler, onRemoveBowler }: TeamViewBowlersTableProps) {
+export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, canManage, paymentMode = "fixed", onEditBowler, onRemoveBowler }: TeamViewBowlersTableProps) {
   const { toast } = useToast();
-  const rosterQuery = useQuery<{ data: RosterResponse }>({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`], enabled: canManage });
+  const rosterQuery = useQuery<{ data: RosterResponse }>({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`], enabled: canManage && paymentMode === "fixed" });
   const current = rosterQuery.data?.data?.teams.find((team) => team.id === teamId);
   const lineupSize = rosterQuery.data?.data?.payingLineupSize ?? league?.payingLineupSize ?? 0;
   const [slots, setSlots] = useState<Slot[]>([]);
@@ -179,6 +180,25 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
       setSlots((rows) => rows.map((row) => row.mainBowlerId === bowlerId ? { ...row, occupant: "vacant", mainBowlerId: null } : row));
     }
   };
+
+  if (paymentMode !== "fixed") {
+    if (paymentMode === "unavailable") {
+      return <div className="mt-4 rounded-md border p-4 text-sm text-muted-foreground" role="status" aria-busy="true">Loading team payment roles…</div>;
+    }
+    return <div className="mt-4 overflow-x-auto rounded-md border">
+      <Table>
+        <TableHeader><TableRow><TableHead>Team member</TableHead><TableHead>Membership</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader>
+        <TableBody>
+          {teamBowlers.map(({ bowler, bowlerLeague }) => <TableRow key={`rotating-member-${bowlerLeague.id}`}>
+            <TableCell><div className="flex items-center gap-1.5"><CheckCircle2 className={`size-4 ${bowler.hasAccount ? "text-success-500" : "text-muted-foreground/40"}`} /><Link href={`/bowlers/${bowler.id}?from=team&fromTeamId=${teamId}`} className="hover:underline">{bowler.name}</Link></div></TableCell>
+            <TableCell><Badge variant={bowler.active && bowlerLeague.active ? "default" : "secondary"}>{bowler.active && bowlerLeague.active ? "Active" : "Inactive"}</Badge></TableCell>
+            <TableCell><div className="flex items-center gap-2">{onEditBowler && <Button variant="outline" size="sm" aria-label={`Edit ${bowler.name}`} onClick={() => onEditBowler(bowler)}><Pencil className="mr-2 size-4" />Edit</Button>}{onRemoveBowler && <Button variant="ghost" size="sm" aria-label={`Remove ${bowler.name}`} onClick={() => onRemoveBowler({ bowlerId: bowler.id, name: bowler.name })}><Trash2 className="size-4" /></Button>}</div></TableCell>
+          </TableRow>)}
+          {teamBowlers.length === 0 && <TableRow><TableCell colSpan={3}><span className="text-sm text-muted-foreground">No team members are assigned.</span></TableCell></TableRow>}
+        </TableBody>
+      </Table>
+    </div>;
+  }
 
   return <div className="space-y-4"><div className="rounded-md border"><Table><TableHeader><TableRow><TableHead>Position</TableHead><TableHead>Name</TableHead><TableHead>Payer role</TableHead><TableHead>Weekly Fee</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader><TableBody>
     {normalizedSlots.filter((slot) => slot.occupant !== "main").map((slot) => {

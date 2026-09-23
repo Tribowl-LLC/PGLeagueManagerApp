@@ -83,9 +83,11 @@ export class DatabaseStorage implements IStorage {
   createOrGetInteractivePaymentOperation!: IStorage["createOrGetInteractivePaymentOperation"];
   createOrGetGeneralInteractivePaymentOperation!: IStorage["createOrGetGeneralInteractivePaymentOperation"];
   createOrGetRefundPaymentOperation!: IStorage["createOrGetRefundPaymentOperation"];
+  createOrGetRotatingCreditRefundPaymentOperation!: IStorage["createOrGetRotatingCreditRefundPaymentOperation"];
   persistRosterOperationSnapshot!: IStorage["persistRosterOperationSnapshot"];
   getRosterOperationSnapshotForOrganization!: IStorage["getRosterOperationSnapshotForOrganization"];
   persistRefundPaymentOperationSnapshot!: IStorage["persistRefundPaymentOperationSnapshot"];
+  persistRotatingCreditRefundPaymentOperationSnapshot!: IStorage["persistRotatingCreditRefundPaymentOperationSnapshot"];
   getRefundPaymentOperationSnapshotForOrganization!: IStorage["getRefundPaymentOperationSnapshotForOrganization"];
   getPaymentOperationForOrganization!: IStorage["getPaymentOperationForOrganization"];
   getGeneralInteractivePaymentOperationForOrganization!: IStorage["getGeneralInteractivePaymentOperationForOrganization"];

@@ -108,11 +108,16 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
   const [receiptError, setReceiptError] = useState<string | null>(null);
   const initialEditStarted = useRef(false);
 
+  const isRotatingCreditFunding = evidence?.creditRefunds !== undefined
+    || evidence?.source === "prepaid_credit"
+    || evidence?.source === "held_credit"
+    || evidence?.source === "refunded_credit";
   const canEditCash = Boolean(
     canCorrect
       && payment
       && evidence?.paymentId !== null
       && evidence?.paymentType === "cash"
+      && !isRotatingCreditFunding
       && payment.type === "cash"
       && payment.status === "paid"
       && evidence.status === "confirmed_paid"
@@ -140,9 +145,13 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
   const canVoid = canCorrect
     && payment !== null
     && evidence.paymentId !== null
+    && !isRotatingCreditFunding
     && (evidence.paymentType === "cash" || evidence.paymentType === "check")
     && evidence.allocations.some((allocation) => allocation.state === "active");
   const displayStatus = paymentEvidenceDisplayStatus(evidence);
+  const unusedShareCredit = evidence.source === "prepaid_credit";
+  const heldShareCredit = evidence.source === "held_credit";
+  const refundedShareCredit = evidence.source === "refunded_credit";
   // The server marks ordinary-reader partner rows with canOpenReceipt=false.
   // Do not infer permission from cached URL availability: payer/admin rows may
   // legitimately lazy-backfill a receipt when the URL is not cached yet.
@@ -153,6 +162,13 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     ? evidence.allocations
     : (evidence.appliedTo ?? []);
   const hasRecipientNames = appliedAllocations.some((allocation) => Boolean(allocation.bowlerName?.trim()));
+  const showAdditionalSettlementEvidence = (evidence.unallocatedMinor > 0 && !unusedShareCredit)
+    || evidence.refund.present
+    || (evidence.waivedMinor ?? 0) > 0
+    || evidence.dispute.present
+    || evidence.reviewRequired
+    || evidence.dispute.reviewRequired === true
+    || Boolean(evidence.correctionEvidence);
 
   const openReceipt = async () => {
     if (evidence.paymentId === null) return;
@@ -262,6 +278,9 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
           <div><dt className="text-muted-foreground">Collected</dt><dd>{formatLocalDate(evidence.authoritativeLocalDate)}</dd></div>
           <div><dt className="text-muted-foreground">{hasRecipientNames ? "Payment total" : "Paid for"}</dt><dd>{formatCurrency(evidence.amountMinor, evidence.currency)}</dd></div>
           <div><dt className="text-muted-foreground">Payment type</dt><dd>{paymentTypeLabel(evidence.paymentType, payment?.checkNumber)}</dd></div>
+          {unusedShareCredit && <div><dt className="text-muted-foreground">Credit application</dt><dd>Unused share credit</dd></div>}
+          {heldShareCredit && <div><dt className="text-muted-foreground">Credit status</dt><dd>Refund on hold</dd></div>}
+          {refundedShareCredit && <div><dt className="text-muted-foreground">Credit application</dt><dd>Refunded share credit</dd></div>}
           {evidence.paidByName && <div><dt className="text-muted-foreground">Paid by</dt><dd>{evidence.paidByName}</dd></div>}
           <div>
             <dt className="text-muted-foreground">Settlement</dt>
@@ -275,7 +294,13 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
         <section className="space-y-2" aria-labelledby="payment-allocation-heading">
           <h3 id="payment-allocation-heading" className="font-medium">{hasRecipientNames ? "Payment breakdown" : "Paid for"}</h3>
           {appliedAllocations.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No canonical allocation is recorded.</p>
+            <p className="text-sm text-muted-foreground">{unusedShareCredit
+              ? "No confirmed league date has received credit from this amount."
+              : heldShareCredit
+                ? "A share credit refund is unresolved. The remaining credit stays held until its outcome is confirmed."
+                : refundedShareCredit
+                  ? "This share credit was refunded in full before it was applied to a league date."
+                  : "No canonical allocation is recorded."}</p>
           ) : (
             <div className="divide-y rounded-md border">
               {appliedAllocations.map((allocation, index) => (
@@ -296,10 +321,11 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
           )}
         </section>
 
-        {(evidence.unallocatedMinor > 0 || evidence.refund.present || (evidence.waivedMinor ?? 0) > 0 || evidence.dispute.present || evidence.reviewRequired || evidence.dispute.reviewRequired === true || evidence.correctionEvidence) && (
+        {showAdditionalSettlementEvidence && (
           <section className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm" aria-label="Additional settlement evidence">
-            {evidence.unallocatedMinor > 0 && <p>Unallocated: {formatCurrency(evidence.unallocatedMinor, evidence.currency)}</p>}
+            {evidence.unallocatedMinor > 0 && !unusedShareCredit && !refundedShareCredit && <p>Unallocated: {formatCurrency(evidence.unallocatedMinor, evidence.currency)}</p>}
             {evidence.refund.present && <p>Refunded: {formatCurrency(evidence.refund.amountMinor, evidence.currency)}</p>}
+            {(evidence.creditRefunds?.heldAmountMinor ?? 0) > 0 && <p>Refund on hold: {formatCurrency(evidence.creditRefunds?.heldAmountMinor ?? 0, evidence.currency)}</p>}
             {(evidence.waivedMinor ?? 0) > 0 && <p>Waived roster amount: {formatCurrency(evidence.waivedMinor ?? 0, evidence.currency)} (not counted as paid)</p>}
             {evidence.dispute.present && <p>Dispute: {evidence.dispute.state ?? "Review required"}{evidence.dispute.amountMinor > 0 ? ` · ${formatCurrency(evidence.dispute.amountMinor, evidence.currency)}` : ""}</p>}
             {(evidence.reviewRequired || evidence.dispute.reviewRequired === true) && <p className="font-medium text-destructive">This payment requires review.</p>}
