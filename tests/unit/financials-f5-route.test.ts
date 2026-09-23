@@ -2,6 +2,7 @@ import express from "express";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 
 const mocks = vi.hoisted(() => ({
   getLeague: vi.fn(),
@@ -27,7 +28,8 @@ vi.mock("../../server/utils/access-control.js", () => ({
   isPaymentManager: (user: { role?: string } | undefined) => user?.role === "payment_manager",
 }));
 
-const router = (await import("../../server/routes/financials-f5.js")).default;
+const financialRoute = await import("../../server/routes/financials-f5.js");
+const router = financialRoute.default;
 let server: Server;
 let baseUrl: string;
 
@@ -64,6 +66,42 @@ async function get(path: string, currentUser?: ReturnType<typeof user>) {
 }
 
 describe("F5 canonical payment report route", () => {
+  it("shows rotating credit refund history only to the funding tender owner", () => {
+    const row: CanonicalPaymentRow = {
+      paymentId: 21,
+      leagueId: 7,
+      bowlerId: 42,
+      amountMinor: 3_000,
+      currency: "USD",
+      status: "confirmed_paid",
+      paymentType: "square",
+      businessDate: "2038-01-01",
+      authoritativeLocalDate: "2038-01-01",
+      providerPaymentId: "provider-secret",
+      paymentOperationId: "operation-secret",
+      operationType: "interactive_charge",
+      operationStatus: "succeeded",
+      allocatedMinor: 1_000,
+      unallocatedMinor: 2_000,
+      reviewRequired: false,
+      source: "canonical_allocation",
+      refund: { present: true, amountMinor: 500, providerRefundId: null },
+      creditRefunds: { completedAmountMinor: 500, heldAmountMinor: 250, reviewRequired: true, providerRefundIds: ["refund-secret"] },
+      dispute: { present: false, amountMinor: 0, disputeId: null },
+      unresolved: true,
+      receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded" },
+      allocations: [{ allocationId: "allocation-secret", obligationId: "obligation-secret", occurrenceId: "occurrence-secret", bowlerId: 43, amountMinor: 1_000, currency: "USD", state: "active" }],
+      initiatingPayerBowlerId: 42,
+    };
+
+    const ownerView = financialRoute.redactCanonicalPaymentRow(row, 42);
+    const participantView = financialRoute.redactCanonicalPaymentRow(row, 43);
+    expect(ownerView.creditRefunds).toEqual(row.creditRefunds);
+    expect(ownerView.refund.amountMinor).toBe(500);
+    expect(participantView).not.toHaveProperty("creditRefunds");
+    expect(participantView.refund.amountMinor).toBe(0);
+  });
+
   it("requires a league and explicit system-admin organization scope", async () => {
     const missingLeague = await get("/payments", user("org_admin", 11));
     expect(missingLeague.status).toBe(400);

@@ -73,7 +73,10 @@ const bowler = (id: number, name: string): BowlerWithAccount => ({ id, name, act
 // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 const bowlerLeague = (id: number, bowlerId: number): BowlerLeague => ({ id, bowlerId, leagueId: 1, teamId: 9, active: true } as BowlerLeague);
 
-function renderRoster() {
+function renderRoster(
+  paymentMode: "fixed" | "rotating" | "unavailable" = "fixed",
+  callbacks: { onEditBowler?: (bowler: Bowler) => void; onRemoveBowler?: (target: { bowlerId: number; name: string }) => void } = {},
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => {
     const response = await fetch(String(queryKey[0]));
     return response.json();
@@ -84,6 +87,9 @@ function renderRoster() {
     teamId={9}
     leagueId={1}
     canManage
+    paymentMode={paymentMode}
+    onEditBowler={callbacks.onEditBowler}
+    onRemoveBowler={callbacks.onRemoveBowler}
   /></QueryClientProvider>);
 }
 
@@ -108,6 +114,32 @@ afterEach(() => {
 });
 
 describe("Team Rosters payment responsibility surface", () => {
+  it("keeps fixed teams on the existing v1 role and occurrence override controls", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(rosterResponse), { status: 200, headers: { "content-type": "application/json" } })));
+    renderRoster("fixed");
+
+    expect(await screen.findByText("Payment override for one occurrence")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save roster" })).toBeInTheDocument();
+    expect(screen.getAllByLabelText(/Payer role /).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Rotating team payments")).not.toBeInTheDocument();
+  });
+
+  it("keeps rotating teams out of the v1 fixed save and override form while retaining member actions", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const onEdit = vi.fn();
+    const onRemove = vi.fn();
+    renderRoster("rotating", { onEditBowler: onEdit, onRemoveBowler: onRemove });
+    expect(screen.queryByRole("button", { name: "Save roster" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Payment override for one occurrence")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Main One" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Main One" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Main One" }));
+    expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 10, name: "Main One" }));
+    expect(onRemove).toHaveBeenCalledWith({ bowlerId: 10, name: "Main One" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("edits one selected occurrence and hydrates overrides independently by occurrence and slot", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(rosterResponse), { status: 200, headers: { "content-type": "application/json" } })));
     renderRoster();

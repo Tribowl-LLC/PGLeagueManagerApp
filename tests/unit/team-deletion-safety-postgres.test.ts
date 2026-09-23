@@ -42,6 +42,11 @@ const db = getTestDb();
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
 const organizationIds: number[] = [];
 
+function requirePayerBowlerId(payerBowlerId: number | null): number {
+  if (payerBowlerId === null) throw new Error("Expected a bowler-owned team-deletion fixture obligation");
+  return payerBowlerId;
+}
+
 interface Fixture {
   organizationId: number;
   actorUserId: number;
@@ -382,7 +387,7 @@ async function addSnapshotEvidence(
       amountMinor: obligation.amountMinor,
       currency: "USD",
       obligations: [{ obligationId: obligation.id, responsibilityId: obligation.responsibilityId, amountMinor: obligation.amountMinor }],
-      payerBowlerId: obligation.payerBowlerId,
+      payerBowlerId: requirePayerBowlerId(obligation.payerBowlerId),
       requestKind: "direct",
       encryptedSourceId: "synthetic-source",
       sourceKind: "new_card",
@@ -511,7 +516,7 @@ describe("team deletion safety boundaries", () => {
     if (kind === "settled obligation") {
       await db.update(paymentObligations).set({ state: "settled" }).where(eq(paymentObligations.id, obligation.id));
     } else if (kind === "refunded payment allocation" || kind === "voided payment allocation") {
-      await addPaymentForObligation(f, obligation.id, obligation.payerBowlerId, obligation.amountMinor, obligation.amountMinor, kind === "voided payment allocation" ? "voided" : "refunded");
+      await addPaymentForObligation(f, obligation.id, requirePayerBowlerId(obligation.payerBowlerId), obligation.amountMinor, obligation.amountMinor, kind === "voided payment allocation" ? "voided" : "refunded");
     } else if (kind === "released operation snapshot") {
       await addSnapshotEvidence(f, obligation);
     } else if (kind === "JSON-only failed operation snapshot") {
@@ -670,7 +675,7 @@ describe("team deletion safety boundaries", () => {
       organizationId: f.base.organizationId,
       leagueId: f.base.leagueId,
       amountMinor: obligation.amountMinor,
-      payerBowlerId: obligation.payerBowlerId,
+      payerBowlerId: requirePayerBowlerId(obligation.payerBowlerId),
     });
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
@@ -689,7 +694,7 @@ describe("team deletion safety boundaries", () => {
       actorUserId: f.base.actorUserId,
       request: {
         amountMinor: obligation.amountMinor,
-        payerBowlerId: obligation.payerBowlerId,
+        payerBowlerId: requirePayerBowlerId(obligation.payerBowlerId),
         type: "cash",
         idempotencyKey: `synthetic-payment-wins-${randomUUID()}`,
         requestFingerprint: quote.fingerprint,
@@ -725,7 +730,7 @@ describe("team deletion safety boundaries", () => {
       expect(await db.select({ id: payments.id }).from(payments).where(and(
         eq(payments.organizationId, f.base.organizationId),
         eq(payments.leagueId, f.base.leagueId),
-        eq(payments.bowlerId, obligation.payerBowlerId),
+        eq(payments.bowlerId, requirePayerBowlerId(obligation.payerBowlerId)),
       ))).toHaveLength(1);
       expect(await db.select({ id: paymentAllocations.id }).from(paymentAllocations).where(eq(paymentAllocations.obligationId, obligation.id))).toHaveLength(1);
     } finally {
@@ -742,7 +747,7 @@ describe("team deletion safety boundaries", () => {
     const f = await richFixture("deletion-wins-stale-quote");
     const siblingObligation = await addSameLeagueSiblingObligation(f, 11);
     const targetObligation = await firstTargetObligation(f, f.bowlerIds[0]);
-    const payerBowlerId = targetObligation.payerBowlerId;
+    const payerBowlerId = requirePayerBowlerId(targetObligation.payerBowlerId);
     const quote = await quoteInteractiveObligations({
       organizationId: f.base.organizationId,
       leagueId: f.base.leagueId,

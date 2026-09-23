@@ -1,16 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, render, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 const mocks = vi.hoisted(() => {
   const standingAutopayCard = vi.fn((..._args: unknown[]) => null);
   const oneTimePaymentCard = vi.fn((..._args: unknown[]) => null);
+  const rotatingShareCreditCard = vi.fn((..._args: unknown[]) => null);
   let paymentMode: "upfront" | "weekly" = "upfront";
   let paidInFull = false;
   let zeroParticipants = false;
   let includePartner = false;
   let remainingMinor = 8_750;
   const csrfFetch = vi.fn();
+  const apiRequest = vi.fn();
   const tokenizeCard = vi.fn();
   const toast = vi.fn();
   const clearPaymentIntent = vi.fn();
@@ -28,6 +30,8 @@ const mocks = vi.hoisted(() => {
   let participantRefreshGate: Promise<void> | null = null;
   let participantRefreshMissing = false;
   const standingQueryCalls: unknown[][] = [];
+  let rotatingPoolMember = false;
+  let standingAutopayState: "pending" | "active" | "revoked" | "expired" | "none" = "none";
   const financialData = () => ({
     contractVersion: "canonical-due-past-due/2",
     authoritativeSource: "payment_obligations",
@@ -87,10 +91,26 @@ const mocks = vi.hoisted(() => {
       reason: null,
     }] : [])],
   });
-  const query = vi.fn(({ queryKey }: { queryKey: unknown[] }) => {
+  const query = vi.fn(({ queryKey, enabled = true }: { queryKey: unknown[]; enabled?: boolean }) => {
     const key = String(queryKey[0]);
-    if (key.startsWith("/api/financials/leagues/") && key.includes("/standing-autopay/")) {
+    if (enabled && key.startsWith("/api/financials/leagues/") && key.includes("/standing-autopay/")) {
       standingQueryCalls.push(queryKey);
+    }
+    if (key.startsWith("/api/financials/leagues/") && key.includes("/rotating-credit/1")) {
+      return {
+        data: { success: true, data: { eligibleForCredit: rotatingPoolMember, shareAmountMinor: rotatingPoolMember ? 1_000 : null } },
+        isLoading: false,
+        error: null,
+        refetch: vi.fn(),
+      };
+    }
+    if (key.startsWith("/api/financials/leagues/") && key.endsWith("/standing-autopay/1")) {
+      return {
+        data: { success: true, data: { contractVersion: "standing-autopay-consent/1", organizationId: 1, leagueId: 17, payerBowlerId: 42, consentId: standingAutopayState === "active" ? "consent-1" : null, consentVersion: standingAutopayState === "active" ? 1 : null, state: standingAutopayState, paymentMode: "weekly", partnerBowlerIds: [], paymentAttention: null } },
+        isLoading: false,
+        error: null,
+        refetch: vi.fn(),
+      };
     }
     if (key === "/api/user") {
       return { data: { success: true, data: { id: 1, bowlerId: 42 } }, isLoading: false, error: null };
@@ -175,9 +195,13 @@ const mocks = vi.hoisted(() => {
   return {
     standingAutopayCard,
     oneTimePaymentCard,
+    rotatingShareCreditCard,
+    apiRequest,
     query,
     standingQueryCalls,
     setPaymentMode: (mode: "upfront" | "weekly") => { paymentMode = mode; },
+    setRotatingPoolMember: (value: boolean) => { rotatingPoolMember = value; },
+    setStandingAutopayState: (state: "pending" | "active" | "revoked" | "expired" | "none") => { standingAutopayState = state; },
     setPaidInFull: (value: boolean) => { paidInFull = value; },
     setZeroParticipants: (value: boolean) => { zeroParticipants = value; },
     setIncludePartner: (value: boolean) => { includePartner = value; },
@@ -198,13 +222,14 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("@tanstack/react-query", () => ({ useQuery: mocks.query }));
+vi.mock("@tanstack/react-query", async (importOriginal) => ({ ...(await importOriginal<typeof import("@tanstack/react-query")>()), useQuery: mocks.query, useMutation: () => ({ mutate: vi.fn(), isPending: false, error: null }) }));
 vi.mock("@/components/bowler-layout", () => ({ BowlerLayout: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
 vi.mock("@/components/league-switcher-sheet", () => ({ LeagueSwitcherSheet: () => null }));
 vi.mock("@/components/error-boundary", () => ({ ErrorBoundary: ({ children }: { children: ReactNode }) => <>{children}</> }));
 vi.mock("@/components/page-states", () => ({ PageErrorState: () => null, PageLoadingState: () => null }));
 vi.mock("@/components/bowler-one-time-payment-card", () => ({ BowlerOneTimePaymentCard: mocks.oneTimePaymentCard }));
 vi.mock("@/components/standing-autopay-card", () => ({ StandingAutopayCard: mocks.standingAutopayCard }));
+vi.mock("@/components/rotating-share-credit-card", () => ({ RotatingShareCreditCard: mocks.rotatingShareCreditCard }));
 vi.mock("@/hooks/use-selected-league", () => ({ useSelectedLeague: () => [17, vi.fn()] }));
 vi.mock("@/hooks/use-saved-card-default", () => ({ useSavedCardDefault: vi.fn() }));
 vi.mock("@/hooks/use-square-payment", () => ({ useSquarePayment: () => ({ card: mocks.squareCard, isInitialized: true, initializeCard: vi.fn(), cleanupCard: mocks.cleanupCard }) }));
@@ -232,7 +257,7 @@ vi.mock("@/hooks/use-wallet-payments", () => ({ useWalletPayments: (options: {
 } }));
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
 vi.mock("wouter", () => ({ useLocation: () => ["/make-payment", vi.fn()], useSearch: () => "?leagueId=17", Link: () => null }));
-vi.mock("@/lib/queryClient", () => ({ csrfFetch: mocks.csrfFetch, queryClient: { invalidateQueries: vi.fn(), cancelQueries: vi.fn(async () => {}), removeQueries: vi.fn() } }));
+vi.mock("@/lib/queryClient", () => ({ apiRequest: mocks.apiRequest, csrfFetch: mocks.csrfFetch, queryClient: { invalidateQueries: vi.fn(), cancelQueries: vi.fn(async () => {}), removeQueries: vi.fn() } }));
 vi.mock("@/lib/payment-history-financial-query", () => ({ paymentHistoryFinancialQueryKey: (leagueId: number, bowlerId: number) => ["financial", leagueId, bowlerId], invalidatePaymentHistoryFinancials: mocks.invalidatePaymentHistoryFinancials }));
 vi.mock("@/lib/square", () => ({ tokenizeCard: mocks.tokenizeCard }));
 vi.mock("@/lib/logger", () => ({ logger: { error: vi.fn() } }));
@@ -259,10 +284,14 @@ import MakePaymentPage from "@/pages/make-payment-page";
 
 afterEach(() => {
   mocks.query.mockClear();
+  mocks.apiRequest.mockReset();
   mocks.standingAutopayCard.mockClear();
   mocks.oneTimePaymentCard.mockClear();
+  mocks.rotatingShareCreditCard.mockClear();
   mocks.standingQueryCalls.length = 0;
   mocks.setPaymentMode("upfront");
+  mocks.setRotatingPoolMember(false);
+  mocks.setStandingAutopayState("none");
   mocks.setPaidInFull(false);
   mocks.setZeroParticipants(false);
   mocks.setIncludePartner(false);
@@ -291,6 +320,18 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
       recipientRows: [expect.objectContaining({ bowlerId: 42, role: "self", selected: true })],
     });
+  });
+
+  it("replaces standing autopay setup with a revoke path for a rotating member who has legacy consent", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.setRotatingPoolMember(true);
+    mocks.setStandingAutopayState("active");
+    render(<MakePaymentPage />);
+
+    expect(await screen.findByText("Existing automatic payment")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Revoke existing automatic payments" })).toBeInTheDocument();
+    expect(screen.getByText(/Rotating members buy shares manually/)).toBeInTheDocument();
+    expect(mocks.standingAutopayCard).not.toHaveBeenCalled();
   });
 
   it("keeps the solo self selected after a selected partner is removed, while stale guard blocks charging", async () => {
@@ -404,6 +445,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     render(<MakePaymentPage />);
 
     await waitFor(() => expect(mocks.standingAutopayCard).toHaveBeenCalled());
+    expect(mocks.rotatingShareCreditCard).toHaveBeenCalled();
     expect(mocks.standingAutopayCard.mock.calls.at(-1)?.[0]).toMatchObject({
       league: expect.objectContaining({ paymentMode: "weekly" }),
     });

@@ -15,6 +15,10 @@ import {
   payments,
   refundAllocationAdjustments,
   refundPaymentOperationSnapshots,
+  rotatingCreditFundings,
+  rotatingCreditPaymentOperationSnapshots,
+  rotatingCreditRefundOperationSnapshots,
+  rotatingCreditRefunds,
   teamPaymentSlots,
   teams,
   users,
@@ -313,6 +317,78 @@ async function createPaidPayment(fixture: Fixture, overrides: Partial<typeof pay
   });
 }
 
+async function createUnallocatedRotatingCreditFundingPayment(fixture: Fixture) {
+  const amountMinor = 2_000;
+  const operationId = randomUUID();
+  const providerPaymentId = `square-credit-payment-${randomUUID()}`;
+  const idempotencyKey = `refund-guard-credit-${randomUUID()}`;
+  const quoteFingerprint = `lvrotcrquote:v1:${"b".repeat(64)}`;
+  const targetFingerprint = operationId.replaceAll("-", "").padEnd(64, "0");
+  return db.transaction(async (tx) => {
+    await tx.insert(paymentOperations).values({
+      id: operationId,
+      organizationId: fixture.organizationId,
+      authorizingUserId: fixture.actorUserId,
+      operationType: "interactive_charge",
+      targetKey: `interactive-charge:rotating-credit:${targetFingerprint}`,
+      leagueId: fixture.leagueId,
+      amountMinor,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"a".repeat(64)}`,
+      providerIdempotencyKey: `refund-guard-charge-${operationId}`.slice(0, 45),
+      providerName: "square",
+      providerObjectId: providerPaymentId,
+      status: "succeeded",
+      nextAttemptAt: null,
+      completedAt: fixedNow.toISOString(),
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+    });
+    const [payment] = await tx.insert(payments).values({
+      organizationId: fixture.organizationId,
+      bowlerId: fixture.bowlerId,
+      leagueId: fixture.leagueId,
+      amount: amountMinor,
+      currency: "USD",
+      status: "paid",
+      type: "square",
+      providerPaymentId,
+      paymentOperationId: operationId,
+    }).returning();
+    const [funding] = await tx.insert(rotatingCreditFundings).values({
+      organizationId: fixture.organizationId,
+      leagueId: fixture.leagueId,
+      bowlerId: fixture.bowlerId,
+      paymentId: payment.id,
+      amountMinor,
+      currency: "USD",
+      fundingKind: "provider",
+      idempotencyKey,
+      requestFingerprint: `lvrotcrreq:v1:${"c".repeat(64)}`,
+      quoteFingerprint,
+      actorUserId: fixture.actorUserId,
+    }).returning();
+    await tx.insert(rotatingCreditPaymentOperationSnapshots).values({
+      operationId,
+      organizationId: fixture.organizationId,
+      leagueId: fixture.leagueId,
+      bowlerId: fixture.bowlerId,
+      amountMinor,
+      currency: "USD",
+      shareCount: 1,
+      locationId: fixture.locationId,
+      providerLocationId: null,
+      sourceKind: "new_card",
+      encryptedSourceId: "test-encrypted-source",
+      quoteFingerprint,
+      idempotencyKey,
+      snapshotFingerprint: `lvrotcrexec:v1:${"d".repeat(64)}`,
+    });
+    if (!payment || !funding) throw new Error("rotating credit funding fixture was incomplete");
+    return payment;
+  });
+}
+
 async function prepare(fixture: Fixture, paymentId: number, reason: string | undefined = "Customer request", disposition: "still_owed" | "waived" = "still_owed") {
   return prepareRefundPaymentOperation({
     paymentId,
@@ -356,6 +432,149 @@ afterAll(async () => {
 });
 
 describe("durable refund payment operations", () => {
+  it("routes credit funding tenders through the credit refund ledger before making a provider operation", async () => {
+    const fixture = fixtures[0];
+    const payment = await createUnallocatedRotatingCreditFundingPayment(fixture);
+
+    await expect(prepare(fixture, payment.id)).rejects.toMatchObject({
+      statusCode: 409,
+      code: "ROTATING_CREDIT_REFUND_REQUIRED",
+    });
+
+    const operations = await db.select().from(paymentOperations)
+      .where(eq(paymentOperations.targetKey, `${REFUND_TARGET_PREFIX}${payment.id}`));
+    const snapshots = await db.select().from(refundPaymentOperationSnapshots)
+      .where(eq(refundPaymentOperationSnapshots.paymentId, payment.id));
+    expect(operations).toHaveLength(0);
+    expect(snapshots).toHaveLength(0);
+  });
+
+  it("requires a refund snapshot and releases only an exact Square REFUND_DECLINED outcome in the database guard", async () => {
+    const fixture = fixtures[0];
+    const missingSnapshotPayment = await createUnallocatedRotatingCreditFundingPayment(fixture);
+    const [missingSnapshotFunding] = await db.select().from(rotatingCreditFundings)
+      .where(eq(rotatingCreditFundings.paymentId, missingSnapshotPayment.id));
+    if (!missingSnapshotFunding) throw new Error("provider credit funding fixture is missing");
+    const missingSnapshotOperationId = randomUUID();
+    const missingSnapshotKey = `rotating-credit-refund:${missingSnapshotFunding.id}:${"a".repeat(64)}`;
+    await expect(db.transaction(async (tx) => {
+      await tx.insert(paymentOperations).values({
+        id: missingSnapshotOperationId,
+        organizationId: fixture.organizationId,
+        authorizingUserId: fixture.actorUserId,
+        operationType: "refund",
+        targetKey: missingSnapshotKey,
+        leagueId: fixture.leagueId,
+        amountMinor: 500,
+        currency: "USD",
+        requestFingerprint: `lvpayreq:v1:${"b".repeat(64)}`,
+        providerIdempotencyKey: `missing-refund-snapshot-${randomUUID()}`.slice(0, 45),
+        providerName: "square",
+        status: "action_required",
+        errorClassification: "hard_decline",
+        errorCode: "REFUND_DECLINED",
+        attemptCount: 1,
+        nextAttemptAt: null,
+        startedAt: fixedNow.toISOString(),
+        completedAt: fixedNow.toISOString(),
+      });
+      await tx.insert(rotatingCreditRefunds).values({
+        organizationId: fixture.organizationId,
+        leagueId: fixture.leagueId,
+        fundingId: missingSnapshotFunding.id,
+        paymentId: missingSnapshotPayment.id,
+        bowlerId: fixture.bowlerId,
+        amountMinor: 500,
+        currency: "USD",
+        refundKind: "provider",
+        refundOperationId: missingSnapshotOperationId,
+        reason: "declined refund without immutable snapshot",
+        actorUserId: fixture.actorUserId,
+        idempotencyKey: `missing-snapshot-${randomUUID()}`,
+        requestFingerprint: `lvrotcrrefund:v1:${"c".repeat(64)}`,
+      });
+    })).rejects.toMatchObject({
+      cause: expect.objectContaining({ message: expect.stringContaining("immutable refund snapshot") }),
+    });
+
+    const declinedPayment = await createUnallocatedRotatingCreditFundingPayment(fixture);
+    const declinedProviderPaymentId = declinedPayment.providerPaymentId;
+    const [declinedFunding] = await db.select().from(rotatingCreditFundings)
+      .where(eq(rotatingCreditFundings.paymentId, declinedPayment.id));
+    if (!declinedFunding || !declinedProviderPaymentId) throw new Error("declined refund funding evidence is incomplete");
+    const declinedOperationId = randomUUID();
+    const declinedKey = `rotating-credit-refund:${declinedFunding.id}:${"d".repeat(64)}`;
+    await db.transaction(async (tx) => {
+      await tx.insert(paymentOperations).values({
+        id: declinedOperationId,
+        organizationId: fixture.organizationId,
+        authorizingUserId: fixture.actorUserId,
+        operationType: "refund",
+        targetKey: declinedKey,
+        leagueId: fixture.leagueId,
+        amountMinor: 750,
+        currency: "USD",
+        requestFingerprint: `lvpayreq:v1:${"e".repeat(64)}`,
+        providerIdempotencyKey: `declined-refund-${randomUUID()}`.slice(0, 45),
+        providerName: "square",
+        status: "action_required",
+        errorClassification: "hard_decline",
+        errorCode: "REFUND_DECLINED",
+        attemptCount: 1,
+        nextAttemptAt: null,
+        startedAt: fixedNow.toISOString(),
+        completedAt: fixedNow.toISOString(),
+      });
+      await tx.insert(rotatingCreditRefundOperationSnapshots).values({
+        operationId: declinedOperationId,
+        organizationId: fixture.organizationId,
+        leagueId: fixture.leagueId,
+        fundingId: declinedFunding.id,
+        paymentId: declinedPayment.id,
+        bowlerId: fixture.bowlerId,
+        amountMinor: 750,
+        currency: "USD",
+        providerPaymentId: declinedProviderPaymentId,
+        locationId: fixture.locationId,
+        reason: "confirmed no-object decline",
+        snapshotFingerprint: `lvrotcrrefundexec:v1:${"f".repeat(64)}`,
+      });
+      await tx.insert(rotatingCreditRefunds).values({
+        organizationId: fixture.organizationId,
+        leagueId: fixture.leagueId,
+        fundingId: declinedFunding.id,
+        paymentId: declinedPayment.id,
+        bowlerId: fixture.bowlerId,
+        amountMinor: 750,
+        currency: "USD",
+        refundKind: "provider",
+        refundOperationId: declinedOperationId,
+        reason: "confirmed no-object decline",
+        actorUserId: fixture.actorUserId,
+        idempotencyKey: `declined-refund-${randomUUID()}`,
+        requestFingerprint: `lvrotcrrefund:v1:${"1".repeat(64)}`,
+      });
+      // This follow-up manual refund would exceed the funding amount only if
+      // the declined provider attempt were incorrectly held as a refund.
+      await tx.insert(rotatingCreditRefunds).values({
+        organizationId: fixture.organizationId,
+        leagueId: fixture.leagueId,
+        fundingId: declinedFunding.id,
+        paymentId: declinedPayment.id,
+        bowlerId: fixture.bowlerId,
+        amountMinor: 1_500,
+        currency: "USD",
+        refundKind: "cash",
+        reference: `manual refund after decline ${randomUUID()}`,
+        reason: "manual refund after provider decline",
+        actorUserId: fixture.actorUserId,
+        idempotencyKey: `manual-after-decline-${randomUUID()}`,
+        requestFingerprint: `lvrotcrrefund:v1:${"2".repeat(64)}`,
+        issuedAt: fixedNow.toISOString(),
+      });
+    });
+  });
+
   it("prepares one encrypted tenant-scoped operation and rejects changed immutable semantics", async () => {
     const fixture = fixtures[0];
     const payment = await createPaidPayment(fixture);

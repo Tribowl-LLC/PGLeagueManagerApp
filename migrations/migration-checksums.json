@@ -300,6 +300,12 @@
       "tag": "0049_account_ready_standalone_resend",
       "createdAt": 1789769091560,
       "hash": "3542cd98ff47e3c276c2ec9b0d1e11a2118a269d274d983a81c1eea97cb11a69"
+    },
+    {
+      "idx": 50,
+      "tag": "0050_rotating_team_payments",
+      "createdAt": 1790132272166,
+      "hash": "f2cecb941b041a4866365b529cf045fbdf097cb7add64f020c1dec175134c78f"
     }
   ]
 }

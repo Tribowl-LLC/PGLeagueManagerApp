@@ -592,6 +592,28 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     expect(participants).toMatchObject([{ obligationId: afterConsent.obligation.id, bowlerId: payerBowlerId, role: "payer", consentVersion: 1 }]);
   });
 
+  it("preserves standing consent for a no-rotation league member without a fixed Main slot", async () => {
+    standingProviderMock.mockResolvedValue({
+      providerName: "square",
+      getProviderLocationId: vi.fn().mockResolvedValue("square-location-fixture"),
+      validateCardId: vi.fn().mockReturnValue(true),
+      hasCardOnFile: vi.fn().mockResolvedValue(true),
+    });
+    try {
+      const { activateStandingAutopayConsent } = await import("../../server/services/roster-standing-autopay");
+      const consent = await activateStandingAutopayConsent({
+        organizationId,
+        leagueId,
+        payerBowlerId: partnerBowlerId,
+        actorUserId,
+        request: { commandKey: `standing-no-rotation-${randomUUID()}`, sourceId: "partner-source", partnerBowlerIds: [] },
+      });
+      expect(consent).toMatchObject({ state: "active", payerBowlerId: partnerBowlerId });
+    } finally {
+      standingProviderMock.mockReset();
+    }
+  });
+
   it("keeps a whole-week still-owed hold after the refunded source is manually repaid", async () => {
     const target = await publishOccurrence("2039-06-07T19:00:00.000Z");
     const sibling = await insertSiblingObligation(target);
@@ -988,7 +1010,14 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
       requestFingerprint: "",
       lineupSize: 3 as const,
       policy: rosterTeam!.policy,
-      slots: rosterTeam!.slots.map((slot) => ({ slotIndex: slot.slotIndex, occupant: slot.occupant, mainBowlerId: slot.slotIndex === 0 ? partnerBowlerId : slot.mainBowlerId })),
+      slots: rosterTeam!.slots.map((slot) => ({
+        slotIndex: slot.slotIndex,
+        occupant: (() => {
+          if (slot.occupant === "rotating") throw new Error("The no-rotation standing fixture unexpectedly has a rotating slot");
+          return slot.occupant;
+        })(),
+        mainBowlerId: slot.slotIndex === 0 ? partnerBowlerId : slot.mainBowlerId,
+      })),
     };
     rosterRequest.requestFingerprint = canonicalRosterFingerprint(rosterRequest);
     await expect(saveTeamRoster({ organizationId, leagueId, teamId, actorUserId, request: rosterRequest })).rejects.toMatchObject({ code: "OBLIGATION_RESERVED" });

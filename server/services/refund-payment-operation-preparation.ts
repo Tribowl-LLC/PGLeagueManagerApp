@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import {
   REFUND_PAYMENT_SNAPSHOT_VERSION,
   bowlers,
@@ -9,6 +9,7 @@ import {
   paymentObligations,
   paymentOperationRosterSnapshotItems,
   payments,
+  rotatingCreditFundings,
   users,
 } from "@shared/schema";
 import { isCardPaymentType } from "@shared/schema/constants";
@@ -102,6 +103,18 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
     ) {
       throw new RefundPreparationError("You don't have access to refund this payment", 403, "FORBIDDEN");
     }
+    const [creditFunding] = await tx.select({ id: rotatingCreditFundings.id }).from(rotatingCreditFundings).where(and(
+      eq(rotatingCreditFundings.organizationId, organizationId),
+      eq(rotatingCreditFundings.leagueId, owned.payment.leagueId),
+      eq(rotatingCreditFundings.paymentId, input.paymentId),
+    )).limit(1).for("share");
+    if (creditFunding) {
+      throw new RefundPreparationError(
+        "Credit funding tenders can only be refunded through their personal credit balance",
+        409,
+        "ROTATING_CREDIT_REFUND_REQUIRED",
+      );
+    }
     const [ownedBowler] = await tx.select({ id: bowlers.id }).from(bowlers).where(and(
       eq(bowlers.id, owned.payment.bowlerId),
       eq(bowlers.organizationId, organizationId),
@@ -158,12 +171,19 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
       if (sourceObligations.length !== sourceObligationIds.length) {
         throw new RefundPreparationError("This payment's allocation evidence references a missing obligation", 409, "REFUND_ALLOCATION_EVIDENCE_MISMATCH");
       }
-      const payerIds = [...new Set(sourceObligations.map((obligation) => obligation.payerBowlerId))];
+      const payerIds = [...new Set(sourceObligations
+        .map((obligation) => obligation.payerBowlerId)
+        .filter((payerBowlerId): payerBowlerId is number => payerBowlerId !== null))];
+      const includesUnassignedPayer = sourceObligations.some((obligation) => obligation.payerBowlerId === null);
       const occurrenceIds = [...new Set(sourceObligations.map((obligation) => obligation.occurrenceId))];
       const samePayerWeekObligations = await tx.select({ id: paymentObligations.id, payerBowlerId: paymentObligations.payerBowlerId, occurrenceId: paymentObligations.occurrenceId }).from(paymentObligations).where(and(
         eq(paymentObligations.organizationId, organizationId),
         eq(paymentObligations.leagueId, owned.payment.leagueId),
-        inArray(paymentObligations.payerBowlerId, payerIds),
+        payerIds.length > 0 && includesUnassignedPayer
+          ? or(inArray(paymentObligations.payerBowlerId, payerIds), isNull(paymentObligations.payerBowlerId))
+          : payerIds.length > 0
+            ? inArray(paymentObligations.payerBowlerId, payerIds)
+            : isNull(paymentObligations.payerBowlerId),
         inArray(paymentObligations.occurrenceId, occurrenceIds),
       ));
       const sourceKeys = new Set(sourceObligations.map((obligation) => `${obligation.payerBowlerId}:${obligation.occurrenceId}`));

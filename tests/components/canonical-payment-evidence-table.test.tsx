@@ -142,4 +142,29 @@ describe("CanonicalPaymentEvidenceTable", () => {
     render(<CanonicalPaymentEvidenceTable rows={[row({ status: "confirmed_paid", source: "canonical_allocation", unresolved: false, paidByName: "Alex Payer" })]} />);
     expect(screen.getByText("Paid by Alex Payer")).toBeInTheDocument();
   });
+
+  it("marks unused share credit without replacing the paid status, tender, or receipt", async () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 52,
+      status: "confirmed_paid",
+      paymentType: "cash",
+      source: "prepaid_credit",
+      unresolved: false,
+      reviewRequired: false,
+      allocatedMinor: 0,
+      unallocatedMinor: 2000,
+      allocations: [],
+      receipt: { ...row().receipt, source: "prepaid_credit", availability: "available", canOpenReceipt: true, receiptUrl: "https://receipt.example", receiptNumber: "R-Share" },
+    })]} />);
+
+    expect(screen.getByText("Unused share credit")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View payment details: Confirmed paid" })).toBeInTheDocument();
+    expect(screen.getAllByText("Cash").length).toBeGreaterThan(0);
+
+    await fireEvent.click(screen.getByRole("button", { name: "View payment details: Confirmed paid" }));
+    expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
+    expect(screen.getByText("Payment type").parentElement).toHaveTextContent("Cash");
+    expect(screen.getByText("Credit application").parentElement).toHaveTextContent("Unused share credit");
+    expect(screen.getByRole("button", { name: "Receipt" })).toBeInTheDocument();
+  });
 });

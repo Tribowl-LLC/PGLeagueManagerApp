@@ -36,6 +36,11 @@ let performancePayerBowlerId: number;
 let performanceTeamId: number;
 let performanceSlotBowlerIds: number[];
 
+function requirePayerBowlerId(payerBowlerId: number | null): number {
+  if (payerBowlerId === null) throw new Error("Expected a bowler-owned performance fixture obligation");
+  return payerBowlerId;
+}
+
 function trackPoolQueries(pool: Pool): () => number {
   let queryCount = 0;
   const originals = new Map<PoolClient, PoolClient["query"]>();
@@ -248,7 +253,7 @@ describe("canonical schedule edit batching (PostgreSQL)", () => {
     expect(afterObligations.filter((row) => row.state === "open")).toHaveLength(960);
     expect(afterObligations.filter((row) => row.state === "voided")).toHaveLength(960);
     const openAfterObligations = afterObligations.filter((row) => row.state === "open");
-    expect(openAfterObligations.map(({ state: _state, occurrenceId: _occurrenceId, dueAt: _dueAt, pastDueAt: _pastDueAt, ...row }) => row).sort((a, b) => a.payer - b.payer || a.amount - b.amount || a.key.localeCompare(b.key))).toEqual(beforeObligations.map(({ state: _state, dueAt: _dueAt, pastDueAt: _pastDueAt, ...row }) => row).sort((a, b) => a.payer - b.payer || a.amount - b.amount || a.key.localeCompare(b.key)));
+    expect(openAfterObligations.map(({ state: _state, occurrenceId: _occurrenceId, dueAt: _dueAt, pastDueAt: _pastDueAt, ...row }) => row).sort((a, b) => requirePayerBowlerId(a.payer) - requirePayerBowlerId(b.payer) || a.amount - b.amount || a.key.localeCompare(b.key))).toEqual(beforeObligations.map(({ state: _state, dueAt: _dueAt, pastDueAt: _pastDueAt, ...row }) => row).sort((a, b) => requirePayerBowlerId(a.payer) - requirePayerBowlerId(b.payer) || a.amount - b.amount || a.key.localeCompare(b.key)));
     const beforeTiming = new Map(beforeObligations.map((row) => [`${row.key}:${row.component}`, row.dueAt]));
     expect(openAfterObligations.every((row) => beforeTiming.get(`${row.key}:${row.component}`) !== row.dueAt)).toBe(true);
     expect(openAfterObligations.every((row) => new Date(row.pastDueAt).getTime() - new Date(row.dueAt).getTime() === 3 * 60 * 60 * 1000)).toBe(true);

@@ -126,6 +126,30 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.getByText("$20.00")).toBeInTheDocument();
   });
 
+  it("explains unused share credit without presenting it as an unresolved payment or date allocation", () => {
+    const creditEvidence: CanonicalPaymentRow = {
+      ...evidence,
+      paymentId: 52,
+      paymentType: "cash",
+      status: "confirmed_paid",
+      source: "prepaid_credit",
+      unresolved: false,
+      reviewRequired: false,
+      allocatedMinor: 0,
+      unallocatedMinor: 5000,
+      allocations: [],
+    };
+    render(<PaymentDetailsDialog payment={null} evidence={creditEvidence} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
+
+    expect(screen.getByText("Confirmed paid")).toBeInTheDocument();
+    expect(screen.getByText("Payment type").parentElement).toHaveTextContent("Cash");
+    expect(screen.getByText("Credit application").parentElement).toHaveTextContent("Unused share credit");
+    expect(screen.getByText("No confirmed league date has received credit from this amount.")).toBeInTheDocument();
+    expect(screen.queryByText(/Unallocated:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Week \d+/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Review required")).not.toBeInTheDocument();
+  });
+
   it("preserves the authorized cash correction flow and refreshes both projections", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();

@@ -16,6 +16,10 @@ const mocks = vi.hoisted(() => {
     payments: {
       create: vi.fn(),
     },
+    refunds: {
+      refundPayment: vi.fn(),
+      get: vi.fn(),
+    },
     catalog: {
       list: vi.fn(),
       searchItems: vi.fn(),
@@ -43,6 +47,7 @@ vi.mock('square', () => ({
     return {
       customers: mocks.customers,
       payments: mocks.payments,
+      refunds: mocks.refunds,
       catalog: mocks.catalog,
       cards: mocks.cards,
     };
@@ -84,6 +89,10 @@ vi.mock('../../storage', () => ({
 vi.mock('../../logger', () => ({
   createLogger: () => mocks.log,
 }));
+
+process.env.DATABASE_URL ??= 'postgresql://unit-test:unit-test@127.0.0.1:5432/unit-test';
+process.env.SESSION_SECRET ??= 'deterministic-unit-test-session-secret';
+process.env.FIELD_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 const {
   SquarePaymentProvider,
@@ -663,6 +672,52 @@ describe('Square Service', () => {
         name: 'ProviderNotConfiguredError',
         code: 'PROVIDER_NOT_CONFIGURED',
         locationId: 999,
+      });
+    });
+  });
+
+  describe('rotating credit provider contract', () => {
+    it('replays a charge with the same operation identity and exact USD minor-unit amount', async () => {
+      mocks.payments.create.mockResolvedValue({ payment: { id: 'square-credit-payment', status: 'COMPLETED' } });
+      const identity = {
+        paymentKey: 'rotating-credit-payment-key',
+        referenceId: '00000000-0000-4000-8000-000000000003',
+      };
+
+      await provider.processPayment('cnon:credit-source', 3_750, false, undefined, undefined, identity);
+      await provider.processPayment('cnon:credit-source', 3_750, false, undefined, undefined, identity);
+
+      expect(mocks.payments.create).toHaveBeenCalledTimes(2);
+      expect(mocks.payments.create).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        idempotencyKey: identity.paymentKey,
+        amountMoney: { amount: BigInt(3_750), currency: 'USD' },
+        referenceId: identity.referenceId,
+      }));
+      expect(mocks.payments.create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        idempotencyKey: identity.paymentKey,
+        amountMoney: { amount: BigInt(3_750), currency: 'USD' },
+        referenceId: identity.referenceId,
+      }));
+    });
+
+    it('refunds only the quoted unused-credit amount with the durable Square refund key', async () => {
+      mocks.refunds.refundPayment.mockResolvedValue({
+        refund: { id: 'square-credit-refund', status: 'COMPLETED' },
+      });
+      const refundKey = 'rotating-credit-refund-key';
+
+      await expect(provider.refundPayment(
+        'square-credit-payment',
+        2_250,
+        'Unused rotating credit',
+        refundKey,
+      )).resolves.toEqual({ refundId: 'square-credit-refund', status: 'COMPLETED' });
+
+      expect(mocks.refunds.refundPayment).toHaveBeenCalledWith({
+        idempotencyKey: refundKey,
+        paymentId: 'square-credit-payment',
+        amountMoney: { amount: BigInt(2_250), currency: 'USD' },
+        reason: 'Unused rotating credit',
       });
     });
   });

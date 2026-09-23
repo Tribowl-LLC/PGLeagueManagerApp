@@ -351,6 +351,13 @@
       "when": 1789769091560,
       "tag": "0049_account_ready_standalone_resend",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1790132272166,
+      "tag": "0050_rotating_team_payments",
+      "breakpoints": true
     }
   ]
 }

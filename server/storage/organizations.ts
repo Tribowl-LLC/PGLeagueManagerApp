@@ -54,6 +54,16 @@ import {
   paymentOperationRosterSnapshotItems,
   paymentOperationStandingAutopayBindings,
   paymentOperationStandingAutopayParticipants,
+  paymentObligationOwnerRevisions,
+  rotatingOccurrenceAssignments,
+  teamPaymentRotationMembers,
+  teamPaymentRotationMemberRevisions,
+  rotatingCreditFundings,
+  rotatingCreditApplications,
+  rotatingCreditApplicationReversals,
+  rotatingCreditRefunds,
+  rotatingCreditPaymentOperationSnapshots,
+  rotatingCreditRefundOperationSnapshots,
   canonicalCollectionGroups,
   canonicalCollectionGroupMembers,
   canonicalCollectionGroupRevisions,
@@ -320,6 +330,16 @@ export async function deleteOrganization(id: number): Promise<void> {
     // Remove corrections/obligations/responsibilities before slots and the
     // retained general payment ledger. This path is the explicit teardown
     // exception; ordinary mutations remain append-only/locked.
+    await tx.delete(rotatingCreditApplicationReversals).where(eq(rotatingCreditApplicationReversals.organizationId, id));
+    await tx.delete(rotatingCreditApplications).where(eq(rotatingCreditApplications.organizationId, id));
+    await tx.delete(rotatingCreditRefundOperationSnapshots).where(eq(rotatingCreditRefundOperationSnapshots.organizationId, id));
+    await tx.delete(rotatingCreditRefunds).where(eq(rotatingCreditRefunds.organizationId, id));
+    await tx.delete(rotatingCreditPaymentOperationSnapshots).where(eq(rotatingCreditPaymentOperationSnapshots.organizationId, id));
+    await tx.delete(rotatingCreditFundings).where(eq(rotatingCreditFundings.organizationId, id));
+    await tx.delete(rotatingOccurrenceAssignments).where(eq(rotatingOccurrenceAssignments.organizationId, id));
+    await tx.delete(paymentObligationOwnerRevisions).where(eq(paymentObligationOwnerRevisions.organizationId, id));
+    await tx.delete(teamPaymentRotationMemberRevisions).where(eq(teamPaymentRotationMemberRevisions.organizationId, id));
+    await tx.delete(teamPaymentRotationMembers).where(eq(teamPaymentRotationMembers.organizationId, id));
     await tx.delete(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.organizationId, id));
     await tx.delete(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.organizationId, id));
     await tx.delete(paymentVoids).where(eq(paymentVoids.organizationId, id));

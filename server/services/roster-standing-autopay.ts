@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, isNull, lte, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, lt, ne, or, sql } from "drizzle-orm";
 import {
   autopayConsentPartners,
   autopayConsents,
@@ -21,6 +21,8 @@ import {
   paymentOperationStandingAutopayParticipants,
   paymentOperations,
   refundPaymentOperationSnapshots,
+  teamPaymentRotationMembers,
+  teamPaymentSlots,
   teams,
   users,
   type PaymentOperation,
@@ -39,6 +41,8 @@ import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { validateRosterSnapshotForDispatchInTransaction } from "./roster-payment-finalizer.js";
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
+import { isCurrentBowlerOwnedObligationSql } from "./roster-obligation-owners.js";
+import { resolvePaymentObligationOwnersInTransaction } from "./roster-obligation-owners.js";
 
 const CONSENT_FP_PREFIX = "lvstandingconsent:v1:";
 const PARTNER_FP_PREFIX = "lvpartnerlink:v1:";
@@ -70,6 +74,47 @@ export class StandingAutopayReplay extends StandingAutopayError {
 }
 
 type StandingTx = PaymentOperationTransaction;
+
+function currentBowlerOwnerPredicate(input: { organizationId: number; leagueId: number; payerBowlerIds: number[] }) {
+  if (input.payerBowlerIds.length === 0) return sql`false`;
+  return or(...input.payerBowlerIds.map((bowlerId) => and(
+    eq(paymentObligations.payerBowlerId, bowlerId),
+    isCurrentBowlerOwnedObligationSql({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      obligationId: paymentObligations.id,
+      payerBowlerId: paymentObligations.payerBowlerId,
+      bowlerId,
+    }),
+  ))) ?? sql`false`;
+}
+
+async function assertNotActiveRotatingPoolMemberForStandingAutopay(
+  tx: StandingTx,
+  input: { organizationId: number; leagueId: number; bowlerId: number },
+): Promise<void> {
+  const [rotatingMembership] = await tx.select({ id: teamPaymentRotationMembers.id }).from(teamPaymentRotationMembers)
+    .innerJoin(teamPaymentSlots, and(
+      eq(teamPaymentSlots.organizationId, teamPaymentRotationMembers.organizationId),
+      eq(teamPaymentSlots.leagueId, teamPaymentRotationMembers.leagueId),
+      eq(teamPaymentSlots.teamId, teamPaymentRotationMembers.teamId),
+      eq(teamPaymentSlots.occupant, "rotating"),
+    ))
+    .innerJoin(teams, and(eq(teams.id, teamPaymentRotationMembers.teamId), eq(teams.leagueId, input.leagueId), eq(teams.active, true)))
+    .innerJoin(bowlerLeagues, and(
+      eq(bowlerLeagues.bowlerId, teamPaymentRotationMembers.bowlerId),
+      eq(bowlerLeagues.leagueId, teamPaymentRotationMembers.leagueId),
+      eq(bowlerLeagues.teamId, teamPaymentRotationMembers.teamId),
+      eq(bowlerLeagues.active, true),
+    ))
+    .where(and(
+      eq(teamPaymentRotationMembers.organizationId, input.organizationId),
+      eq(teamPaymentRotationMembers.leagueId, input.leagueId),
+      eq(teamPaymentRotationMembers.bowlerId, input.bowlerId),
+      eq(teamPaymentRotationMembers.active, true),
+    )).limit(1);
+  if (rotatingMembership) throw new StandingAutopayError("ROTATING_MEMBER_MANUAL_ONLY", "A bowler in an active rotating team pool must pay manually", 409);
+}
 
 function digest(prefix: string, value: unknown): string {
   return `${prefix}${createHash("sha256").update(canonicalizePaymentOperationInput(value)).digest("hex")}`;
@@ -225,9 +270,10 @@ async function pendingRefundPayerWeekKeys(
       eq(refundPaymentOperationSnapshots.leagueId, input.leagueId),
       inArray(paymentOperations.status, unresolvedRefundOperationStatuses),
       inArray(paymentObligations.payerBowlerId, input.payerBowlerIds),
+      currentBowlerOwnerPredicate(input),
       inArray(paymentObligations.occurrenceId, input.occurrenceIds),
     ));
-  return new Set(rows.map((row) => `${row.payerBowlerId}:${row.occurrenceId}`));
+  return new Set(rows.flatMap((row) => row.payerBowlerId === null ? [] : [`${row.payerBowlerId}:${row.occurrenceId}`]));
 }
 
 async function eligibleRows(
@@ -245,6 +291,7 @@ async function eligibleRows(
     .where(and(
       eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId),
       inArray(paymentObligations.payerBowlerId, input.payerBowlerIds),
+      currentBowlerOwnerPredicate(input),
       inArray(paymentObligations.state, ["open", "partially_settled"] as const),
       gte(paymentObligations.dueAt, input.activationAt),
       ...(input.dueMode === "exact" ? [eq(paymentObligations.dueAt, input.cutoffAt)] : []),
@@ -257,6 +304,7 @@ async function eligibleRows(
     eq(paymentObligations.organizationId, input.organizationId),
     eq(paymentObligations.leagueId, input.leagueId),
     inArray(paymentObligations.payerBowlerId, input.payerBowlerIds),
+    currentBowlerOwnerPredicate(input),
     inArray(paymentObligations.occurrenceId, allOccurrenceIds),
   ));
   const allObligationIds = [...new Set(allPayerWeekObligations.map((row) => row.obligation.id))];
@@ -293,6 +341,7 @@ async function eligibleRows(
   const outstandingByPayerWeek = new Map<string, number>();
   const stillOwedByPayerWeek = new Set<string>();
   for (const row of allPayerWeekObligations) {
+    if (row.obligation.payerBowlerId === null) throw new StandingAutopayError("OWNER_EVIDENCE_INVALID", "A standing payment candidate has no historical payer", 503);
     const key = `${row.obligation.payerBowlerId}:${row.obligation.occurrenceId}`;
     const balance = canonicalObligationBalance({
       amountMinor: row.obligation.amountMinor,
@@ -313,6 +362,7 @@ async function eligibleRows(
     occurrenceIds: allOccurrenceIds,
   })) heldPayerWeeks.add(key);
   for (const row of obligations) {
+    if (row.obligation.payerBowlerId === null) throw new StandingAutopayError("OWNER_EVIDENCE_INVALID", "A standing payment candidate has no historical payer", 503);
     const balance = canonicalObligationBalance({
       amountMinor: row.obligation.amountMinor,
       state: row.obligation.state,
@@ -341,6 +391,7 @@ async function assertNoStandingArrears(
     eq(paymentObligations.organizationId, input.organizationId),
     eq(paymentObligations.leagueId, input.leagueId),
     inArray(paymentObligations.payerBowlerId, input.payerBowlerIds),
+    currentBowlerOwnerPredicate(input),
     inArray(paymentObligations.state, ["open", "partially_settled"] as const),
     lt(paymentObligations.dueAt, input.cutoffAt),
   )).for("update");
@@ -404,6 +455,7 @@ async function hasOpenReservedObligations(
     eq(paymentObligations.organizationId, input.organizationId),
     eq(paymentObligations.leagueId, input.leagueId),
     inArray(paymentObligations.payerBowlerId, input.payerBowlerIds),
+    currentBowlerOwnerPredicate(input),
     inArray(paymentObligations.state, ["open", "partially_settled"] as const),
     gte(paymentObligations.dueAt, input.activationAt),
     ...(input.dueMode === "exact" ? [eq(paymentObligations.dueAt, input.cutoffAt)] : []),
@@ -601,6 +653,7 @@ export async function activateStandingAutopayConsent(input: { organizationId: nu
     if (lockedProvider.providerName !== providerName || lockedProviderLocationId !== providerLocationId) throw new StandingAutopayError("LEAGUE_PROVIDER_LOCATION_CHANGED", "The payment provider location changed; retry consent setup", 409);
     await beginCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: input.actorUserId, commandType: COMMAND_CONSENT, key: input.request.commandKey, fingerprint: commandFingerprint });
     if (!(await activeMembership(tx, input.organizationId, input.leagueId, [input.payerBowlerId, ...partnerIds]))) throw new StandingAutopayError("BOWLER_NOT_IN_LEAGUE", "Every standing payer must be an active league member", 403);
+    await assertNotActiveRotatingPoolMemberForStandingAutopay(tx, { organizationId: input.organizationId, leagueId: input.leagueId, bowlerId: input.payerBowlerId });
     const links = partnerIds.length === 0 ? [] : await tx.select().from(bowlerPaymentLinks).where(and(eq(bowlerPaymentLinks.organizationId, input.organizationId), eq(bowlerPaymentLinks.status, "accepted"), or(...partnerIds.map((id) => or(and(eq(bowlerPaymentLinks.bowlerAId, input.payerBowlerId), eq(bowlerPaymentLinks.bowlerBId, id)), and(eq(bowlerPaymentLinks.bowlerAId, id), eq(bowlerPaymentLinks.bowlerBId, input.payerBowlerId))))))).for("update");
     if (links.length !== partnerIds.length) throw new StandingAutopayError("PARTNER_AUTHORIZATION_REQUIRED", "Every selected partner must have an accepted same-tenant payment link", 403);
     const timestampResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS activated_at`);
@@ -650,6 +703,7 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
     const league = await leagueFor(tx, input.organizationId, input.leagueId);
     const consent = await activeConsent(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId });
     if (!consent) throw new StandingAutopayError("CONSENT_NOT_ACTIVE", "Standing automatic payments are not active", 404);
+    await assertNotActiveRotatingPoolMemberForStandingAutopay(tx, { organizationId: input.organizationId, leagueId: input.leagueId, bowlerId: input.payerBowlerId });
     const partners = await consentPartners(tx, { organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, payerBowlerId: input.payerBowlerId });
     const payerIds = [input.payerBowlerId, ...partners.map((row) => row.partnerBowlerId)];
     if (!(await activeMembership(tx, input.organizationId, input.leagueId, payerIds))) throw new StandingAutopayError("BOWLER_NOT_IN_LEAGUE", "The standing payer is not an active league member", 403);
@@ -659,7 +713,7 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
     const activationAt = new Date(consent.activatedAt).toISOString();
     const [next] = await tx.select({ dueAt: paymentObligations.dueAt }).from(paymentObligations).innerJoin(occurrencePaymentResponsibilities, and(
       eq(paymentObligations.responsibilityId, occurrencePaymentResponsibilities.id), eq(occurrencePaymentResponsibilities.organizationId, input.organizationId), eq(occurrencePaymentResponsibilities.leagueId, input.leagueId), eq(occurrencePaymentResponsibilities.state, "active"),
-    )).where(and(eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId), inArray(paymentObligations.payerBowlerId, payerIds), inArray(paymentObligations.state, ["open", "partially_settled"] as const), gte(paymentObligations.dueAt, activationAt), gte(paymentObligations.dueAt, new Date(asOf).toISOString()), sql`NOT EXISTS (
+    )).where(and(eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId), inArray(paymentObligations.payerBowlerId, payerIds), currentBowlerOwnerPredicate({ organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds }), inArray(paymentObligations.state, ["open", "partially_settled"] as const), gte(paymentObligations.dueAt, activationAt), gte(paymentObligations.dueAt, new Date(asOf).toISOString()), sql`NOT EXISTS (
       SELECT 1
         FROM canonical_collection_group_members paired_member
         INNER JOIN canonical_collection_groups paired_group
@@ -684,7 +738,10 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
     const rows = [...triggerRows, ...pairedRows];
     if (group.mode === "double_pay" && group.occurrenceIds.some((occurrenceId) => payerIds.some((payerBowlerId) => !rows.some((row) => row.obligation.occurrenceId === occurrenceId && row.obligation.payerBowlerId === payerBowlerId)))) throw new StandingAutopayError("DOUBLE_PAY_INCOMPLETE", "The complete double-pay group is not eligible at its trigger cutoff", 409);
     const amountMinor = rows.reduce((sum, row) => sum + row.outstandingMinor, 0);
-    const result = { contractVersion: "standing-autopay-quote/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, collectionMode: rows.length ? group.mode : null, amountMinor, obligations: rows.map((row) => ({ obligationId: row.obligation.id, occurrenceId: row.obligation.occurrenceId, payerBowlerId: row.obligation.payerBowlerId, amountMinor: row.obligation.amountMinor, outstandingMinor: row.outstandingMinor, dueAt: row.obligation.dueAt, collectionGroupId: group.groupId })), fingerprint: digest("lvstandingquote:v1:", { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, groupId: group.groupId, rows: rows.map((row) => [row.obligation.id, row.outstandingMinor]) }) };
+    const result = { contractVersion: "standing-autopay-quote/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, collectionMode: rows.length ? group.mode : null, amountMinor, obligations: rows.map((row) => {
+      if (row.obligation.payerBowlerId === null) throw new StandingAutopayError("OWNER_EVIDENCE_INVALID", "A standing payment candidate has no historical payer", 503);
+      return { obligationId: row.obligation.id, occurrenceId: row.obligation.occurrenceId, payerBowlerId: row.obligation.payerBowlerId, amountMinor: row.obligation.amountMinor, outstandingMinor: row.outstandingMinor, dueAt: row.obligation.dueAt, collectionGroupId: group.groupId };
+    }), fingerprint: digest("lvstandingquote:v1:", { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, groupId: group.groupId, rows: rows.map((row) => [row.obligation.id, row.outstandingMinor]) }) };
     void league;
     return result;
   });
@@ -698,6 +755,7 @@ export async function prepareStandingAutopayCutoff(input: { organizationId: numb
     await leagueFor(tx, input.organizationId, input.leagueId);
     const consent = await activeConsent(tx, { organizationId: input.organizationId, leagueId: input.leagueId, consentId: input.consentId });
     if (!consent) return undefined;
+    await assertNotActiveRotatingPoolMemberForStandingAutopay(tx, { organizationId: input.organizationId, leagueId: input.leagueId, bowlerId: consent.payerBowlerId });
     const partners = await consentPartners(tx, { organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, payerBowlerId: consent.payerBowlerId });
     const payerIds = [consent.payerBowlerId, ...partners.map((row) => row.partnerBowlerId)];
     if (!(await activeMembership(tx, input.organizationId, input.leagueId, payerIds))) throw new StandingAutopayError("BOWLER_NOT_IN_LEAGUE", "A standing payer is no longer active in the league", 409);
@@ -827,7 +885,10 @@ export async function prepareStandingAutopayCutoff(input: { organizationId: numb
       organizationId: input.organizationId, authorizingUserId: payerUser.id, operationType: "standing_autopay_charge", targetKey, triggerOccurrenceId: group.triggerOccurrenceId, leagueId: input.leagueId, amountMinor, currency: "USD", requestFingerprint: identity.requestFingerprint, providerIdempotencyKey: identity.providerIdempotencyKey, providerName: consent.providerName ?? "square", status: "pending", nextAttemptAt: now.toISOString(), createdAt: now.toISOString(), updatedAt: now.toISOString(), attemptCount: 0,
     }).returning();
     if (!operation) throw new StandingAutopayError("OPERATION_WRITE_FAILED", "The standing payment operation could not be created", 500);
-    const snapshotRows = rows.map((row, index) => ({ allocationIndex: index, obligationId: row.obligation.id, amountMinor: row.outstandingMinor, occurrenceId: row.obligation.occurrenceId, responsibilityId: row.obligation.responsibilityId, responsibilityVersion: row.responsibilityVersion, payerBowlerId: row.obligation.payerBowlerId, dueAt: row.obligation.dueAt }));
+    const snapshotRows = rows.map((row, index) => {
+      if (row.obligation.payerBowlerId === null) throw new StandingAutopayError("OWNER_EVIDENCE_INVALID", "A standing payment candidate has no historical payer", 503);
+      return { allocationIndex: index, obligationId: row.obligation.id, amountMinor: row.outstandingMinor, occurrenceId: row.obligation.occurrenceId, responsibilityId: row.obligation.responsibilityId, responsibilityVersion: row.responsibilityVersion, payerBowlerId: row.obligation.payerBowlerId, dueAt: row.obligation.dueAt };
+    });
     await tx.insert(paymentOperationRosterSnapshots).values({ operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, snapshotVersion: 2, snapshotKind: "standing_autopay", collectionMode: group.mode, cutoffAt, amountMinor, currency: "USD", obligations: snapshotRows, snapshotFingerprint: evidenceFingerprint });
     await tx.insert(paymentOperationStandingAutopayBindings).values({ operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, providerName: consent.providerName ?? "square", providerLocationId: consent.providerLocationId ?? "", triggerOccurrenceId: group.triggerOccurrenceId, pairedOccurrenceId: group.pairedOccurrenceId, collectionGroupId: group.groupId, collectionGroupRevision: group.groupRevision, collectionGroupFingerprint: group.groupFingerprint, triggerMemberId: group.triggerMemberId, pairedMemberId: group.pairedMemberId, cutoffAt, collectionMode: group.mode, evidenceFingerprint });
     await tx.insert(paymentOperationRosterSnapshotItems).values(snapshotRows.map((row) => ({ operationId: operation.id, organizationId: input.organizationId, leagueId: input.leagueId, obligationId: row.obligationId, allocationIndex: row.allocationIndex, amountMinor: row.amountMinor, state: "reserved" as const })));
@@ -876,14 +937,23 @@ async function validateStandingRefundHoldsForDispatchInTransaction(
       eq(paymentOperationRosterSnapshotItems.operationId, input.operationId),
     ));
   if (snapshotRows.length === 0) throw new StandingAutopayError("SNAPSHOT_INVALID", "The standing operation snapshot is unavailable");
-  const reservedObligations = await tx.select({ payerBowlerId: paymentObligations.payerBowlerId, occurrenceId: paymentObligations.occurrenceId })
-    .from(paymentObligations)
+  const reservedObligations = await tx.select().from(paymentObligations)
     .where(and(
       eq(paymentObligations.organizationId, input.organizationId),
       eq(paymentObligations.leagueId, input.leagueId),
       inArray(paymentObligations.id, snapshotRows.map((row) => row.obligationId)),
     ));
-  const payerIds = [...new Set(reservedObligations.map((row) => row.payerBowlerId))];
+  if (reservedObligations.some((row) => row.payerBowlerId === null)) throw new StandingAutopayError("SNAPSHOT_INVALID", "The standing operation references team-owned liability", 409);
+  const owners = await resolvePaymentObligationOwnersInTransaction(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    obligations: reservedObligations,
+  });
+  if (reservedObligations.some((row) => {
+    const owner = owners.get(row.id);
+    return owner?.kind !== "bowler" || owner.bowlerId !== row.payerBowlerId;
+  })) throw new StandingAutopayError("SNAPSHOT_INVALID", "The standing operation no longer references fixed bowler-owned liability", 409);
+  const payerIds = [...new Set(reservedObligations.flatMap((row) => row.payerBowlerId === null ? [] : [row.payerBowlerId]))];
   const occurrenceIds = [...new Set(reservedObligations.map((row) => row.occurrenceId))];
   if (payerIds.length === 0 || occurrenceIds.length === 0) throw new StandingAutopayError("SNAPSHOT_INVALID", "The standing operation snapshot references no obligations");
   if ((await pendingRefundPayerWeekKeys(tx, {
@@ -898,6 +968,7 @@ async function validateStandingRefundHoldsForDispatchInTransaction(
     eq(paymentObligations.organizationId, input.organizationId),
     eq(paymentObligations.leagueId, input.leagueId),
     inArray(paymentObligations.payerBowlerId, payerIds),
+    currentBowlerOwnerPredicate({ organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds }),
     inArray(paymentObligations.occurrenceId, occurrenceIds),
   ));
   const allObligationIds = allObligations.map((row) => row.obligation.id);
@@ -930,6 +1001,7 @@ async function validateStandingRefundHoldsForDispatchInTransaction(
   const totalOutstandingByKey = new Map<string, number>();
   const heldKeys = new Set<string>();
   for (const row of allObligations) {
+    if (row.obligation.payerBowlerId === null) throw new StandingAutopayError("OWNER_EVIDENCE_INVALID", "A standing payment candidate has no historical payer", 503);
     const key = `${row.obligation.payerBowlerId}:${row.obligation.occurrenceId}`;
     const rowAdjustments = adjustmentsByObligationId.get(row.obligation.id) ?? [];
     const balance = canonicalObligationBalance({
@@ -954,6 +1026,7 @@ export async function validateStandingConsentForDispatchInTransaction(tx: Standi
     if (!binding) throw new StandingAutopayError("STANDING_BINDING_MISSING", "The standing operation binding is unavailable");
     const consent = await activeConsent(tx, { organizationId: input.organizationId, leagueId: input.leagueId, consentId: binding.consentId });
     if (!consent || consent.consentVersion !== binding.consentVersion) throw new StandingAutopayError("CONSENT_REVOKED", "Standing consent changed before dispatch");
+    await assertNotActiveRotatingPoolMemberForStandingAutopay(tx, { organizationId: input.organizationId, leagueId: input.leagueId, bowlerId: consent.payerBowlerId });
     const partners = await consentPartners(tx, { organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, payerBowlerId: consent.payerBowlerId });
     if (!(await activeMembership(tx, input.organizationId, input.leagueId, [consent.payerBowlerId, ...partners.map((row) => row.partnerBowlerId)]))) throw new StandingAutopayError("PARTICIPANT_INACTIVE", "A standing payer is no longer active");
     const [snapshot] = await tx.select().from(paymentOperationRosterSnapshots).where(and(eq(paymentOperationRosterSnapshots.organizationId, input.organizationId), eq(paymentOperationRosterSnapshots.leagueId, input.leagueId), eq(paymentOperationRosterSnapshots.operationId, input.operationId), eq(paymentOperationRosterSnapshots.snapshotKind, "standing_autopay"))).limit(1).for("share");
