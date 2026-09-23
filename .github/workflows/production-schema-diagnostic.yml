@@ -52,6 +52,7 @@ jobs:
       NEON_PRODUCTION_BRANCH_NAME: production
       NEON_RECOVERY_BRANCH_ID: br-sweet-base-aqm07odq
       NEON_RECOVERY_BRANCH_NAME: backup-pre-migration-cbd11e5e3666-35824851019-1
+      STALE_DIAGNOSTIC_BRANCH_ID: br-divine-hill-aqw7ytib
       NEON_DATABASE_NAME: neondb
       NEON_ROLE_NAME: neondb_owner
       INCIDENT_RUN_ID: '35824851019'
@@ -163,15 +164,84 @@ jobs:
             "$NEON_RECOVERY_BRANCH_ID" "$NEON_PRODUCTION_BRANCH_ID"
           printf 'Verified the recovery snapshot has no compute endpoints.\n'
 
-      - name: Create a unique disposable child with a compute
-        id: child
+      - name: Prove the prior diagnostic child and endpoint are absent
+        id: preflight
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
         run: |
+          set -euo pipefail
           test -n "$NEON_API_KEY"
+          test -n "$STALE_DIAGNOSTIC_BRANCH_ID"
+          test "$STALE_DIAGNOSTIC_BRANCH_ID" != "$NEON_RECOVERY_BRANCH_ID"
+          test "$STALE_DIAGNOSTIC_BRANCH_ID" != "$NEON_PRODUCTION_BRANCH_ID"
+          child_name="schema-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'branch_name=%s\n' "$child_name" >> "$GITHUB_OUTPUT"
+          neon_api_key="$NEON_API_KEY"
+          unset NEON_API_KEY
+
+          branches_json="$(NEON_API_KEY="$neon_api_key" neon branches list \
+            --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+          endpoints_json="$(NEON_API_KEY="$neon_api_key" neon api "/projects/$NEON_PROJECT_ID/endpoints" \
+            --output json --no-color)"
+          unset neon_api_key
+
+          branch_count="$(printf '%s' "$branches_json" | jq -er \
+            --arg id "$STALE_DIAGNOSTIC_BRANCH_ID" \
+            'def branch_list:
+               (if type == "array" then .
+                elif type == "object" and (.branches | type) == "array" then .branches
+                else error("Unexpected branch inventory response.")
+                end)
+               | if all(.[]; type == "object" and (.id | type) == "string" and (.name | type) == "string") then .
+                 else error("Malformed branch inventory response.")
+                 end;
+             [branch_list[] | select(.id == $id)] | length')"
+          child_name_count="$(printf '%s' "$branches_json" | jq -er \
+            --arg name "$child_name" \
+            'def branch_list:
+               (if type == "array" then .
+                elif type == "object" and (.branches | type) == "array" then .branches
+                else error("Unexpected branch inventory response.")
+                end)
+               | if all(.[]; type == "object" and (.id | type) == "string" and (.name | type) == "string") then .
+                 else error("Malformed branch inventory response.")
+                 end;
+             [branch_list[] | select(.name == $name)] | length')"
+          endpoint_count="$(printf '%s' "$endpoints_json" | jq -er \
+            --arg id "$STALE_DIAGNOSTIC_BRANCH_ID" \
+            'def endpoint_list:
+               (if type == "array" then .
+                elif type == "object" and (.endpoints | type) == "array" then .endpoints
+                else error("Unexpected endpoint inventory response.")
+                end)
+               | if all(.[]; type == "object" and (.branch_id | type) == "string") then .
+                 else error("Malformed endpoint inventory response.")
+                 end;
+             [endpoint_list[] | select(.branch_id == $id)] | length')"
+
+          if [ "$branch_count" != 0 ] || [ "$endpoint_count" != 0 ] || [ "$child_name_count" != 0 ]; then
+            printf 'Refusing to create a diagnostic child: prior ID %s state or deterministic name %s is still present (branches=%s endpoints=%s name_matches=%s).\n' \
+              "$STALE_DIAGNOSTIC_BRANCH_ID" "$child_name" "$branch_count" "$endpoint_count" "$child_name_count" >&2
+            exit 1
+          fi
+          printf 'old_child_absent=true\n' >> "$GITHUB_OUTPUT"
+          printf 'Verified prior diagnostic child %s and its endpoints are absent; run name %s is unused.\n' \
+            "$STALE_DIAGNOSTIC_BRANCH_ID" "$child_name"
+
+      - name: Create a unique disposable child with a compute
+        id: child
+        if: steps.preflight.outputs.old_child_absent == 'true'
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          DIAGNOSTIC_BRANCH_NAME: ${{ steps.preflight.outputs.branch_name }}
+        run: |
+          test -n "$NEON_API_KEY"
+          test -n "$DIAGNOSTIC_BRANCH_NAME"
           neon_api_key="$NEON_API_KEY"
           unset NEON_API_KEY
           child_name="schema-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$child_name" = "$DIAGNOSTIC_BRANCH_NAME"
+          printf 'branch_name=%s\n' "$child_name" >> "$GITHUB_OUTPUT"
           child_json="$(NEON_API_KEY="$neon_api_key" neon branches create \
             --project-id "$NEON_PROJECT_ID" \
             --parent "$NEON_RECOVERY_BRANCH_ID" \
@@ -431,11 +501,32 @@ jobs:
           ].join('\n') + '\n');
           NODE
 
+      - name: Collect show_db_tree catalog evidence in a read-only transaction
+        id: function_evidence
+        env:
+          DATABASE_URL: ${{ steps.connection.outputs.database_url }}
+          DIAGNOSTIC_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          DB_INVENTORY_EXPECTED_DATABASE: ${{ env.NEON_DATABASE_NAME }}
+          DB_INVENTORY_EXPECTED_ROLE: ${{ env.NEON_ROLE_NAME }}
+          DB_INVENTORY_EXPECTED_HOST_FINGERPRINT: ${{ steps.endpoint.outputs.host_fingerprint }}
+          DB_INVENTORY_EXPECTED_NEON_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          DB_INVENTORY_EXPECTED_NEON_SOURCE_BRANCH_ID: ${{ env.NEON_PRODUCTION_BRANCH_ID }}
+          FUNCTION_EVIDENCE_PATH: ${{ env.EVIDENCE_DIRECTORY }}/function-evidence.json
+        run: |
+          set -euo pipefail
+          test -n "$DATABASE_URL"
+          test -n "$DIAGNOSTIC_BRANCH_ID"
+          test "$DIAGNOSTIC_BRANCH_ID" != "$NEON_RECOVERY_BRANCH_ID"
+          test "$DIAGNOSTIC_BRANCH_ID" != "$NEON_PRODUCTION_BRANCH_ID"
+          test ! -e "$FUNCTION_EVIDENCE_PATH"
+          node --import tsx scripts/db-diagnostic-function-evidence.ts
+
       - name: Encrypt the inventory before artifact upload
         id: encrypt
         env:
           INVENTORY_PATH: ${{ env.INVENTORY_DIRECTORY }}/snapshot-inventory.json
           SUMMARY_PATH: ${{ env.EVIDENCE_DIRECTORY }}/fingerprint-summary.json
+          FUNCTION_EVIDENCE_PATH: ${{ env.EVIDENCE_DIRECTORY }}/function-evidence.json
           EVIDENCE_DIRECTORY: ${{ env.EVIDENCE_DIRECTORY }}
           DIAGNOSTIC_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
           DIAGNOSTIC_BRANCH_NAME: ${{ steps.child.outputs.branch_name }}
@@ -445,6 +536,7 @@ jobs:
           set -euo pipefail
           test -s "$INVENTORY_PATH"
           test -s "$SUMMARY_PATH"
+          test -s "$FUNCTION_EVIDENCE_PATH"
           lineage_path="$EVIDENCE_DIRECTORY/lineage.json"
           tar_path="$EVIDENCE_DIRECTORY/plaintext-evidence.tar.gz"
           encrypted_path="$EVIDENCE_DIRECTORY/schema-diagnostic-evidence.cms"
@@ -467,7 +559,7 @@ jobs:
           writeFileSync(process.env.ENCRYPTED_LINEAGE_PATH, `${JSON.stringify(lineage, null, 2)}\n`, { mode: 0o600 });
           NODE
           tar -C "$EVIDENCE_DIRECTORY" -czf "$tar_path" \
-            fingerprint-summary.json lineage.json \
+            fingerprint-summary.json function-evidence.json lineage.json \
             -C "$INVENTORY_DIRECTORY" snapshot-inventory.json
           openssl cms -encrypt -aes-256-gcm -binary \
             -in "$tar_path" \
@@ -489,50 +581,124 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - name: Remove the exact diagnostic child after evidence upload
+      - name: Remove the exact diagnostic child and verify its absence
         id: cleanup
-        if: success()
+        if: always() && steps.preflight.outputs.old_child_absent == 'true' && steps.preflight.outputs.branch_name != ''
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           DIAGNOSTIC_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
-          DIAGNOSTIC_BRANCH_NAME: ${{ steps.child.outputs.branch_name }}
+          DIAGNOSTIC_BRANCH_NAME: ${{ steps.preflight.outputs.branch_name }}
         run: |
           set -euo pipefail
           test -n "$NEON_API_KEY"
+          test -n "$DIAGNOSTIC_BRANCH_NAME"
+          test "$DIAGNOSTIC_BRANCH_NAME" = "schema-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          neon_api_key="$NEON_API_KEY"
+          unset NEON_API_KEY
+
+          if [ -z "$DIAGNOSTIC_BRANCH_ID" ]; then
+            branches_json="$(NEON_API_KEY="$neon_api_key" neon branches list \
+              --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+            matching_count="$(printf '%s' "$branches_json" | jq -er \
+              --arg name "$DIAGNOSTIC_BRANCH_NAME" \
+              'def branch_list:
+                 (if type == "array" then .
+                  elif type == "object" and (.branches | type) == "array" then .branches
+                  else error("Unexpected branch inventory response.")
+                  end)
+                 | if all(.[]; type == "object" and (.id | type) == "string" and (.name | type) == "string") then .
+                   else error("Malformed branch inventory response.")
+                   end;
+               [branch_list[] | select(.name == $name)] | length')"
+            if [ "$matching_count" = 0 ]; then
+              unset neon_api_key
+              printf 'cleanup_result=no_matching_branch_safe_noop\n' >> "$GITHUB_OUTPUT"
+              printf 'No branch named %s exists; cleanup is a safe no-op and the recovery snapshot is preserved.\n' \
+                "$DIAGNOSTIC_BRANCH_NAME"
+              exit 0
+            fi
+            if [ "$matching_count" != 1 ]; then
+              printf 'Refusing ambiguous cleanup: found %s branches named %s.\n' \
+                "$matching_count" "$DIAGNOSTIC_BRANCH_NAME" >&2
+              exit 1
+            fi
+            candidate_json="$(printf '%s' "$branches_json" | jq -ce \
+              --arg name "$DIAGNOSTIC_BRANCH_NAME" \
+              '[((if type == "array" then . else .branches end)[] | select(.name == $name))][0]')"
+            printf '%s' "$candidate_json" | jq -e \
+              --arg name "$DIAGNOSTIC_BRANCH_NAME" \
+              --arg parent "$NEON_RECOVERY_BRANCH_ID" \
+              'type == "object" and (.id | type) == "string" and (.id | length) > 0 and
+               .name == $name and .parent_id == $parent and .protected == false and .default == false' \
+              >/dev/null || {
+                printf 'Refusing cleanup: the sole matching branch does not prove the expected recovery parent, unprotected state, and non-default status.\n' >&2
+                exit 1
+              }
+            DIAGNOSTIC_BRANCH_ID="$(printf '%s' "$candidate_json" | jq -er '.id')"
+          fi
+
           test -n "$DIAGNOSTIC_BRANCH_ID"
           test "$DIAGNOSTIC_BRANCH_ID" != "$NEON_RECOVERY_BRANCH_ID"
           test "$DIAGNOSTIC_BRANCH_ID" != "$NEON_PRODUCTION_BRANCH_ID"
-          neon_api_key="$NEON_API_KEY"
-          unset NEON_API_KEY
           child_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$DIAGNOSTIC_BRANCH_ID" \
             --project-id "$NEON_PROJECT_ID" --output json --no-color)"
           printf '%s' "$child_json" | jq -e \
             --arg id "$DIAGNOSTIC_BRANCH_ID" \
             --arg name "$DIAGNOSTIC_BRANCH_NAME" \
             --arg parent "$NEON_RECOVERY_BRANCH_ID" \
-            '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false and .default != true' \
+            '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false and .default == false' \
             >/dev/null
+          printf 'resolved_branch_id=%s\n' "$DIAGNOSTIC_BRANCH_ID" >> "$GITHUB_OUTPUT"
+          printf 'cleanup_result=delete_pending\n' >> "$GITHUB_OUTPUT"
           NEON_API_KEY="$neon_api_key" neon branches delete "$DIAGNOSTIC_BRANCH_ID" \
             --project-id "$NEON_PROJECT_ID" --no-color
           printf 'delete_requested=true\n' >> "$GITHUB_OUTPUT"
 
           child_absent=false
+          branch_count=unknown
+          endpoint_count=unknown
           for attempt in $(seq 1 10); do
             branches_json="$(NEON_API_KEY="$neon_api_key" neon branches list \
               --project-id "$NEON_PROJECT_ID" --output json --no-color)"
             branch_count="$(printf '%s' "$branches_json" | jq -er \
               --arg id "$DIAGNOSTIC_BRANCH_ID" \
-              'if (.branches | type) != "array" then error("Unexpected branch inventory response.") else [.branches[] | select(.id == $id)] | length end')"
-            if [ "$branch_count" = 0 ]; then
+              'def branch_list:
+                 (if type == "array" then .
+                  elif type == "object" and (.branches | type) == "array" then .branches
+                  else error("Unexpected branch inventory response.")
+                  end)
+                 | if all(.[]; type == "object" and (.id | type) == "string") then .
+                   else error("Malformed branch inventory response.")
+                   end;
+               [branch_list[] | select(.id == $id)] | length')"
+            endpoints_json="$(NEON_API_KEY="$neon_api_key" neon api "/projects/$NEON_PROJECT_ID/endpoints" \
+              --output json --no-color)"
+            endpoint_count="$(printf '%s' "$endpoints_json" | jq -er \
+              --arg id "$DIAGNOSTIC_BRANCH_ID" \
+              'def endpoint_list:
+                 (if type == "array" then .
+                  elif type == "object" and (.endpoints | type) == "array" then .endpoints
+                  else error("Unexpected endpoint inventory response.")
+                  end)
+                 | if all(.[]; type == "object" and (.branch_id | type) == "string") then .
+                   else error("Malformed endpoint inventory response.")
+                   end;
+               [endpoint_list[] | select(.branch_id == $id)] | length')"
+            if [ "$branch_count" = 0 ] && [ "$endpoint_count" = 0 ]; then
               child_absent=true
               break
             fi
             sleep 3
           done
           unset neon_api_key
-          test "$child_absent" = true
+          if [ "$child_absent" != true ]; then
+            printf 'Cleanup absence check failed for exact child %s (branches=%s endpoints=%s).\n' \
+              "$DIAGNOSTIC_BRANCH_ID" "$branch_count" "$endpoint_count" >&2
+            exit 1
+          fi
           printf 'child_absent=true\n' >> "$GITHUB_OUTPUT"
-          printf 'Deleted disposable diagnostic child %s. The recovery snapshot was preserved.\n' \
+          printf 'cleanup_result=deleted_and_absence_confirmed\n' >> "$GITHUB_OUTPUT"
+          printf 'Deleted disposable diagnostic child %s and confirmed no branch or endpoint remains. The recovery snapshot was preserved.\n' \
             "$DIAGNOSTIC_BRANCH_ID"
 
       - name: Remove plaintext inventory from the runner
@@ -540,14 +706,16 @@ jobs:
         run: |
           rm -f "$INVENTORY_DIRECTORY/snapshot-inventory.json" \
             "$EVIDENCE_DIRECTORY/fingerprint-summary.json" \
+            "$EVIDENCE_DIRECTORY/function-evidence.json" \
             "$EVIDENCE_DIRECTORY/lineage.json" \
             "$EVIDENCE_DIRECTORY/plaintext-evidence.tar.gz"
 
       - name: Record diagnostic disposition
         if: always()
         env:
-          DIAGNOSTIC_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
-          DIAGNOSTIC_BRANCH_NAME: ${{ steps.child.outputs.branch_name }}
+          DIAGNOSTIC_BRANCH_ID: ${{ steps.cleanup.outputs.resolved_branch_id }}
+          CHILD_REPORTED_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          DIAGNOSTIC_BRANCH_NAME: ${{ steps.preflight.outputs.branch_name }}
           DIAGNOSTIC_ENDPOINT_ID: ${{ steps.endpoint.outputs.endpoint_id }}
           JOURNAL_ENTRY_COUNT: ${{ steps.fingerprint.outputs.journal_entry_count }}
           JOURNAL_LATEST_TAG: ${{ steps.fingerprint.outputs.journal_latest_tag }}
@@ -555,12 +723,18 @@ jobs:
           FINGERPRINT_EXPECTED: ${{ steps.fingerprint.outputs.fingerprint_expected }}
           FINGERPRINT_RECEIVED: ${{ steps.fingerprint.outputs.fingerprint_received }}
           FINGERPRINT_MATCHES: ${{ steps.fingerprint.outputs.fingerprint_matches }}
+          FUNCTION_EVIDENCE_OUTCOME: ${{ steps.function_evidence.outcome }}
+          FUNCTION_DEFINITION_SHA256: ${{ steps.function_evidence.outputs.function_definition_sha256 }}
+          FUNCTION_DIRECT_ACL_ENTRY_COUNT: ${{ steps.function_evidence.outputs.function_direct_acl_entry_count }}
+          FUNCTION_EFFECTIVE_EXECUTE_ROLE_COUNT: ${{ steps.function_evidence.outputs.function_effective_execute_role_count }}
+          FUNCTION_PG_DEPENDENT_COUNT: ${{ steps.function_evidence.outputs.function_pg_depend_dependent_count }}
           INVENTORY_OUTCOME: ${{ steps.inventory.outcome }}
           FINGERPRINT_OUTCOME: ${{ steps.fingerprint.outcome }}
           ENCRYPTION_OUTCOME: ${{ steps.encrypt.outcome }}
           ARTIFACT_OUTCOME: ${{ steps.artifact.outcome }}
           ARTIFACT_SHA256: ${{ steps.encrypt.outputs.artifact_sha256 }}
           CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          CLEANUP_RESULT: ${{ steps.cleanup.outputs.cleanup_result }}
           DELETE_REQUESTED: ${{ steps.cleanup.outputs.delete_requested }}
           CHILD_ABSENT: ${{ steps.cleanup.outputs.child_absent }}
         run: |
@@ -571,9 +745,16 @@ jobs:
             echo "- Incident run: \`$INCIDENT_RUN_ID\` (source SHA \`$INCIDENT_SHA\`)"
             echo "- Production parent: \`$NEON_PRODUCTION_BRANCH_ID\`"
             echo "- Preserved recovery snapshot: \`$NEON_RECOVERY_BRANCH_NAME\` (\`$NEON_RECOVERY_BRANCH_ID\`)"
-            if [ -n "$DIAGNOSTIC_BRANCH_ID" ]; then
-              echo "- Diagnostic child: \`$DIAGNOSTIC_BRANCH_NAME\` (\`$DIAGNOSTIC_BRANCH_ID\`)"
-            echo "- Child endpoint: \`$DIAGNOSTIC_ENDPOINT_ID\`"
+            if [ -n "$DIAGNOSTIC_BRANCH_NAME" ]; then
+              echo "- Diagnostic child name: \`$DIAGNOSTIC_BRANCH_NAME\`"
+              if [ -n "$DIAGNOSTIC_BRANCH_ID" ]; then
+                echo "- Resolved diagnostic child ID: \`$DIAGNOSTIC_BRANCH_ID\`"
+              elif [ -n "$CHILD_REPORTED_BRANCH_ID" ]; then
+                echo "- Create-response child ID (cleanup did not resolve an ID): \`$CHILD_REPORTED_BRANCH_ID\`"
+              else
+                echo '- Resolved diagnostic child ID: unavailable'
+              fi
+              echo "- Child endpoint: \`$DIAGNOSTIC_ENDPOINT_ID\`"
             else
               echo '- Diagnostic child: not created or its ID was unavailable'
             fi
@@ -583,22 +764,29 @@ jobs:
             else
               echo '- Journal/fingerprint: not available'
             fi
+            if [ -n "$FUNCTION_DEFINITION_SHA256" ]; then
+              echo "- show_db_tree catalog evidence: \`$FUNCTION_EVIDENCE_OUTCOME\`; definition SHA-256: \`$FUNCTION_DEFINITION_SHA256\`; direct ACL entries: \`$FUNCTION_DIRECT_ACL_ENTRY_COUNT\`; roles with effective EXECUTE: \`$FUNCTION_EFFECTIVE_EXECUTE_ROLE_COUNT\`; pg_depend dependents: \`$FUNCTION_PG_DEPENDENT_COUNT\`"
+            else
+              echo "- show_db_tree catalog evidence: \`$FUNCTION_EVIDENCE_OUTCOME\`"
+            fi
             echo "- Inventory: \`$INVENTORY_OUTCOME\`; fingerprint summary: \`$FINGERPRINT_OUTCOME\`"
             if [ "$ARTIFACT_OUTCOME" = success ]; then
               echo "- Encryption: \`$ENCRYPTION_OUTCOME\`; encrypted artifact upload: success (1 day); ciphertext SHA-256: \`$ARTIFACT_SHA256\`"
             else
               echo "- Encryption: \`$ENCRYPTION_OUTCOME\`; encrypted artifact upload: \`$ARTIFACT_OUTCOME\`"
             fi
-            if [ "$CLEANUP_OUTCOME" = success ]; then
-              echo '- Diagnostic child cleanup: deleted after artifact upload; recovery snapshot preserved'
-            elif [ -n "$DIAGNOSTIC_BRANCH_ID" ]; then
+            if [ "$CLEANUP_RESULT" = no_matching_branch_safe_noop ]; then
+              echo '- Diagnostic child cleanup: no branch with the deterministic name was found; safe no-op; recovery snapshot preserved'
+            elif [ "$CLEANUP_OUTCOME" = success ] && [ "$CLEANUP_RESULT" = deleted_and_absence_confirmed ]; then
+              echo '- Diagnostic child cleanup: deleted and branch/endpoint absence confirmed; recovery snapshot preserved'
+            elif [ -n "$DIAGNOSTIC_BRANCH_NAME" ]; then
               if [ "$DELETE_REQUESTED" = true ]; then
-                echo '- Diagnostic child cleanup: delete was accepted but branch absence was not confirmed; inspect only the recorded diagnostic child ID before any retry. Recovery snapshot preserved.'
+                echo '- Diagnostic child cleanup: delete was accepted but branch absence was not confirmed; inspect only the recorded diagnostic child name and resolved ID before any retry. Recovery snapshot preserved.'
               else
-                echo '- Diagnostic child cleanup: not completed; the diagnostic child may remain and should be inspected by its recorded ID/name before any retry. Recovery snapshot preserved.'
+                echo '- Diagnostic child cleanup: not completed; the diagnostic child may remain and should be inspected by its deterministic name and any reported/resolved ID before any retry. Recovery snapshot preserved.'
               fi
             else
-              echo '- Diagnostic child cleanup: no child ID was recorded; recovery snapshot preserved'
+              echo '- Diagnostic child cleanup: no child name was recorded; recovery snapshot preserved'
             fi
             echo '- Connection material and catalog inventory are not included in this summary'
           } >> "$GITHUB_STEP_SUMMARY"
