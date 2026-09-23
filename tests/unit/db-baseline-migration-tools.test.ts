@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(50);
+    expect(migrations).toHaveLength(51);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -532,6 +532,13 @@ describe('normalized migration baseline tools', () => {
       tag: '0049_account_ready_standalone_resend',
     });
     expect(migrations[49]?.sql).toContain('standalone_delivery_requested');
+    expect(migrations[50]).toMatchObject({
+      idx: 50,
+      tag: '0050_rotating_team_payments',
+      createdAt: 1790132272166,
+      hash: 'f2cecb941b041a4866365b529cf045fbdf097cb7add64f020c1dec175134c78f',
+    });
+    expect(migrations[50]?.sql).toContain('allocation_kind');
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
 
