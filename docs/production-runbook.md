@@ -321,6 +321,90 @@ migration under `migrations/schema-fingerprints/`; retain the prior release
 fingerprint because it is the pre-migration approval boundary. Do not hand-edit
 fingerprint digests or accept an unexpected production mismatch.
 
+### One-time repair of the 0049 `show_db_tree()` drift
+
+The production incident recorded as workflow run `35824851019` has a separately
+reviewed, one-time recovery path for the exact unexpected
+`public.show_db_tree()` function. The live application remains on the approved
+0049 schema; this repair removes only that untracked helper and restores the
+checked-in 0049 fingerprint. It does not apply 0050, modify the Drizzle journal,
+edit a migration, or change a fingerprint file.
+
+Use only the manual **Production schema repair 0049 show_db_tree** workflow
+from the exact certified `main` SHA. Its `production` environment requires
+operator approval and its incident confirmation is fixed to this event. The
+workflow verifies the pinned Neon project and protected production branch,
+creates and verifies a no-compute recovery branch before acquiring a database
+connection, and passes the masked direct `verify-full` URL only to the
+single-purpose repair script. Neon API credentials are restricted to the
+control-plane steps and are not present in the database process.
+
+Before any production repair dispatch, complete the manual **Production schema
+repair rehearsal** workflow using the same exact certified `main` SHA. This
+workflow requires approval through the `production` environment and the exact
+confirmation `REHEARSE_LEAGUEVAULT_0049_SHOW_DB_TREE_35824851019`; it also
+verifies the certification,
+creates a uniquely named disposable child of the preserved recovery snapshot,
+and verifies its branch lineage and direct TLS endpoint. It runs the same
+guarded repair script against that child, applies exactly
+`0050_rotating_team_payments`, then runs the normal migration command with
+`pending=none`. The workflow connects only to the disposable child; it does not
+connect to or mutate the production database.
+
+Review and record the successful rehearsal run ID before repair. Confirm that
+the repair, exact-0050 migration, and pending-none verification all succeeded,
+and that the workflow verified deletion of only its run-specific child and
+endpoint. Any failed step, incomplete cleanup, or mismatch is a stop condition:
+resolve it while preserving the recovery snapshot, and rerun the rehearsal as
+needed. Also resolve the `PUBLIC EXECUTE` usage uncertainty described below.
+Pass the successful numeric run ID through the repair workflow's required
+`rehearsal_run_id` input. Before Neon target verification, backup creation, or
+database connection, the repair workflow uses the read-only GitHub Actions API
+to resolve the exact rehearsal workflow path and verifies the run ID, workflow
+ID, successful conclusion, exact certified SHA, `main` branch, and manual
+dispatch event. Do not dispatch production repair until the run evidence is
+reviewed for the same certified SHA.
+
+The repair script takes the shared schema advisory lock and runs one
+serializable transaction with short timeouts. It requires the exact 50-entry
+journal prefix through `0049_account_ready_standalone_resend`, exactly
+`0050_rotating_team_payments` pending, the recorded pre-repair fingerprint and
+counts, and the exact reviewed helper definition, owner, ACL, and dependency
+state. The retained disposable-clone diagnostic (workflow run `35833733189`)
+recorded the drift fingerprint `sha256:d3251c2f3478da2ae09206506f3076643b46fab2510c1452609d3fba98a1a868`
+with counts `{tables:75, columns:1050, nonTableRelations:0, rewriteRules:0,
+unsupportedPublicObjects:0, extensions:0, sequences:32, constraints:566,
+indexes:321, types:1, functions:20, triggers:33, policies:0}`. The approved
+0049 fingerprint is
+`sha256:d58d7bdcac73fb6ab35c41403809583fbcea42faa862c5d215c82a6b26fe6fd2`
+and has 19 functions. The helper's raw `pg_get_functiondef()` SHA-256 was
+`3cfbbce2aee1851aec351d1e99b7c071fa8bbf4b7c5f165f1fbb7f7e6506389a`.
+The diagnostic recorded owner `neondb_owner`, `proacl IS NULL`, the two default
+`EXECUTE` ACL entries for `PUBLIC` and `neondb_owner`, and zero `pg_depend`
+dependents. It also reported 23 roles with effective `EXECUTE` through the
+default PUBLIC grant; that permission count does not establish actual use. The
+repair checks the raw definition hash and those exact catalog values, plus the
+helper's identity and attributes from the inventory. Its
+normalized inventory-definition hash is
+`5be7a62f70799a7e52d515b40b9a9cfa4104a5aeed4a9e507206298c22ed2dd4`, confirmed
+against the normalized raw definition. `PUBLIC` has default `EXECUTE`; these
+catalog checks cannot establish whether external clients actually call the
+helper. The repair must not be dispatched until the service owner has resolved
+that usage question.
+
+It drops the function with `RESTRICT`, then re-runs the unchanged
+approved 0049 fingerprint check and confirms the journal and sequence are
+unchanged before commit. Any mismatch or dependency aborts and rolls back the
+transaction. The workflow does not delete the recovery branch.
+
+After a successful repair, retain the recovery branch through the normal
+protected 0050 migration and release verification. Run the ordinary
+**Production database migration** workflow for exactly 0050 only after
+reviewing the repair evidence. Do not deploy based on the repair run alone,
+run local production SQL, alter historical fingerprints, or use this workflow
+for any other database state. Any difference from the pinned catalog
+authorization evidence causes the repair to fail closed.
+
 ### Migration 0040 registration-column removal (application first)
 
 Migration `0040_remove_league_public_signup` is the approved application-first
