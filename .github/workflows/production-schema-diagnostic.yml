@@ -1,0 +1,604 @@
+name: Production schema diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Full certified main commit SHA for this diagnostic run
+        required: true
+        type: string
+      confirmation:
+        description: Type DIAGNOSE_LEAGUEVAULT_SCHEMA_STATE_0049
+        required: true
+        type: string
+
+concurrency:
+  group: production-schema-diagnostic
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  validate:
+    name: Validate diagnostic request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      EXPECTED_CONFIRMATION: DIAGNOSE_LEAGUEVAULT_SCHEMA_STATE_0049
+    steps:
+      - name: Validate main ref and explicit confirmation
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test "$CONFIRMATION" = "$EXPECTED_CONFIRMATION"
+
+  diagnose:
+    name: Inventory the retained recovery snapshot
+    needs: validate
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      EXPECTED_CONFIRMATION: DIAGNOSE_LEAGUEVAULT_SCHEMA_STATE_0049
+      NEON_PROJECT_ID: dark-firefly-25282046
+      NEON_PRODUCTION_BRANCH_ID: br-late-glitter-aqm4u4fc
+      NEON_PRODUCTION_BRANCH_NAME: production
+      NEON_RECOVERY_BRANCH_ID: br-sweet-base-aqm07odq
+      NEON_RECOVERY_BRANCH_NAME: backup-pre-migration-cbd11e5e3666-35824851019-1
+      NEON_DATABASE_NAME: neondb
+      NEON_ROLE_NAME: neondb_owner
+      INCIDENT_RUN_ID: '35824851019'
+      INCIDENT_SHA: cbd11e5e3666fb39b75a1dad1b755d3cd7415b5e
+      NEON_CLI_VERSION: 4.14.0
+      DIAGNOSTIC_CONFIRMATION: DIAGNOSE_LEAGUEVAULT_SCHEMA_STATE_0049
+      INVENTORY_DIRECTORY: ${{ github.workspace }}/.artifacts/db-inventory/schema-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+      EVIDENCE_DIRECTORY: ${{ github.workspace }}/.artifacts/db-inventory/schema-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}/evidence
+
+    steps:
+      - name: Check out the dispatched main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Prove exact certified main target and incident identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          test "$CONFIRMATION" = "$DIAGNOSTIC_CONFIRMATION"
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_SHA"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_SHA"
+          test -z "$(git status --short)"
+
+          certification="$(gh run list \
+            --workflow exact-main-certification.yml \
+            --branch main \
+            --commit "$EXPECTED_SHA" \
+            --status success \
+            --limit 1 \
+            --json headSha,conclusion \
+            --jq '.[0] | select(.conclusion == "success") | .headSha')"
+          test "$certification" = "$EXPECTED_SHA"
+
+          incident="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$INCIDENT_RUN_ID")"
+          printf '%s' "$incident" | jq -e \
+            --arg sha "$INCIDENT_SHA" \
+            '.head_sha == $sha and .conclusion == "failure" and .event == "workflow_dispatch" and .path == ".github/workflows/production-database-migration.yml"' \
+            >/dev/null
+
+      - name: Set up cached dependencies
+        uses: ./.github/actions/setup-node-dependencies
+        with:
+          node-version: '22.22.0'
+
+      - name: Install pinned Neon CLI without production credentials
+        run: |
+          npm install --global --ignore-scripts --no-audit --no-fund "neon@$NEON_CLI_VERSION"
+          test "$(neon --version)" = "$NEON_CLI_VERSION"
+
+      - name: Verify encrypted artifact support before Neon access
+        run: |
+          test -s .github/leaguevault-schema-diagnostic-public.crt
+          certificate_fingerprint="$(openssl x509 \
+            -in .github/leaguevault-schema-diagnostic-public.crt \
+            -noout -fingerprint -sha256 | sed 's/^sha256 Fingerprint=//')"
+          test "$certificate_fingerprint" = '73:37:98:DA:9F:1F:70:1B:45:C9:83:BF:62:BC:2C:A1:D9:A9:2B:A7:3D:36:22:47:35:B4:0D:3F:38:AB:B5:51'
+          smoke_directory="$(mktemp -d)"
+          printf '%s\n' 'LeagueVault schema diagnostic encryption check.' > "$smoke_directory/plain.txt"
+          openssl cms -encrypt -aes-256-gcm -binary \
+            -in "$smoke_directory/plain.txt" \
+            -out "$smoke_directory/encrypted.cms" \
+            -outform DER \
+            .github/leaguevault-schema-diagnostic-public.crt
+          test -s "$smoke_directory/encrypted.cms"
+          openssl cms -cmsout -print -inform DER -in "$smoke_directory/encrypted.cms" |
+            grep -Eiq 'aes-?256-?gcm|id-aes256-GCM'
+
+      - name: Verify the protected production source and retained recovery branch
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          test -n "$NEON_API_KEY"
+          neon_api_key="$NEON_API_KEY"
+          unset NEON_API_KEY
+          project_json="$(NEON_API_KEY="$neon_api_key" neon projects get "$NEON_PROJECT_ID" --output json --no-color)"
+          production_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$NEON_PRODUCTION_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+          recovery_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$NEON_RECOVERY_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+          endpoints_json="$(NEON_API_KEY="$neon_api_key" neon api "/projects/$NEON_PROJECT_ID/endpoints" --output json --no-color)"
+          unset neon_api_key
+
+          printf '%s' "$project_json" | jq -e \
+            --arg id "$NEON_PROJECT_ID" \
+            '(.project // .) | .id == $id' >/dev/null
+          printf '%s' "$production_json" | jq -e \
+            --arg id "$NEON_PRODUCTION_BRANCH_ID" \
+            --arg name "$NEON_PRODUCTION_BRANCH_NAME" \
+            '(.branch // .) | .id == $id and .name == $name and .default == true and .protected == true' \
+            >/dev/null
+          printf '%s' "$recovery_json" | jq -e \
+            --arg id "$NEON_RECOVERY_BRANCH_ID" \
+            --arg name "$NEON_RECOVERY_BRANCH_NAME" \
+            --arg parent "$NEON_PRODUCTION_BRANCH_ID" \
+            '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false' \
+            >/dev/null
+          recovery_endpoint_count="$(printf '%s' "$endpoints_json" | jq -er \
+            --arg branch "$NEON_RECOVERY_BRANCH_ID" \
+            '[.endpoints[] | select(.branch_id == $branch)] | length')"
+          test "$recovery_endpoint_count" = 0
+          printf 'Verified recovery snapshot %s with protected parent %s.\n' \
+            "$NEON_RECOVERY_BRANCH_ID" "$NEON_PRODUCTION_BRANCH_ID"
+          printf 'Verified the recovery snapshot has no compute endpoints.\n'
+
+      - name: Create a unique disposable child with a compute
+        id: child
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          test -n "$NEON_API_KEY"
+          neon_api_key="$NEON_API_KEY"
+          unset NEON_API_KEY
+          child_name="schema-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          child_json="$(NEON_API_KEY="$neon_api_key" neon branches create \
+            --project-id "$NEON_PROJECT_ID" \
+            --parent "$NEON_RECOVERY_BRANCH_ID" \
+            --name "$child_name" \
+            --compute \
+            --no-secrets \
+            --no-protected \
+            --output json \
+            --no-color)"
+          unset neon_api_key
+          child_id="$(printf '%s' "$child_json" | jq -er '(.branch // .).id')"
+          test "$child_id" != "$NEON_RECOVERY_BRANCH_ID"
+          test "$child_id" != "$NEON_PRODUCTION_BRANCH_ID"
+          printf 'branch_id=%s\n' "$child_id" >> "$GITHUB_OUTPUT"
+          printf 'branch_name=%s\n' "$child_name" >> "$GITHUB_OUTPUT"
+
+          printf '%s' "$child_json" | jq -e \
+            --arg id "$child_id" \
+            --arg name "$child_name" \
+            --arg parent "$NEON_RECOVERY_BRANCH_ID" \
+            '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false' \
+            >/dev/null
+          printf 'Created disposable child %s (%s) from recovery snapshot %s.\n' \
+            "$child_name" "$child_id" "$NEON_RECOVERY_BRANCH_ID"
+
+      - name: Verify the child branch and its read-write endpoint
+        id: endpoint
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          DIAGNOSTIC_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          DIAGNOSTIC_BRANCH_NAME: ${{ steps.child.outputs.branch_name }}
+        run: |
+          test -n "$NEON_API_KEY"
+          test -n "$DIAGNOSTIC_BRANCH_ID"
+          test "$DIAGNOSTIC_BRANCH_ID" != "$NEON_RECOVERY_BRANCH_ID"
+          test "$DIAGNOSTIC_BRANCH_ID" != "$NEON_PRODUCTION_BRANCH_ID"
+          neon_api_key="$NEON_API_KEY"
+          unset NEON_API_KEY
+
+          child_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$DIAGNOSTIC_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+          printf '%s' "$child_json" | jq -e \
+            --arg id "$DIAGNOSTIC_BRANCH_ID" \
+            --arg name "$DIAGNOSTIC_BRANCH_NAME" \
+            --arg parent "$NEON_RECOVERY_BRANCH_ID" \
+            '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false' \
+            >/dev/null
+
+          endpoint_host=''
+          endpoint_id=''
+          for attempt in $(seq 1 24); do
+            endpoints_json="$(NEON_API_KEY="$neon_api_key" neon api "/projects/$NEON_PROJECT_ID/endpoints" --output json --no-color)"
+            endpoint_count="$(printf '%s' "$endpoints_json" | jq -er \
+              --arg branch "$DIAGNOSTIC_BRANCH_ID" \
+              '[.endpoints[] | select(.branch_id == $branch and .type == "read_write" and .disabled != true)] | length')"
+            if [ "$endpoint_count" = 1 ]; then
+              endpoint_json="$(printf '%s' "$endpoints_json" | jq -ce \
+                --arg branch "$DIAGNOSTIC_BRANCH_ID" \
+                '[.endpoints[] | select(.branch_id == $branch and .type == "read_write" and .disabled != true)] | .[0]')"
+              endpoint_state="$(printf '%s' "$endpoint_json" | jq -r '.current_state // ""')"
+              endpoint_host="$(printf '%s' "$endpoint_json" | jq -r '.host // ""')"
+              endpoint_id="$(printf '%s' "$endpoint_json" | jq -r '.id // ""')"
+              if [ -n "$endpoint_host" ] && [ -n "$endpoint_id" ] && \
+                { [ "$endpoint_state" = active ] || [ "$endpoint_state" = idle ]; }; then
+                break
+              fi
+            fi
+            endpoint_host=''
+            endpoint_id=''
+            sleep 5
+          done
+          unset neon_api_key
+          test -n "$endpoint_host"
+          test -n "$endpoint_id"
+
+          endpoint_fingerprint="$(EXPECTED_ENDPOINT_HOST="$endpoint_host" node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            const endpoint = `${process.env.EXPECTED_ENDPOINT_HOST.toLowerCase()}:5432`;
+            process.stdout.write(`sha256:${createHash("sha256").update(endpoint).digest("hex")}`);
+          ')"
+          printf '%s' "$endpoint_fingerprint" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          printf 'endpoint_id=%s\n' "$endpoint_id" >> "$GITHUB_OUTPUT"
+          printf 'host_fingerprint=%s\n' "$endpoint_fingerprint" >> "$GITHUB_OUTPUT"
+          printf 'Verified one active read-write endpoint for the disposable child; host fingerprint %s.\n' \
+            "$endpoint_fingerprint"
+
+      - name: Acquire and verify the direct diagnostic connection
+        id: connection
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          DIAGNOSTIC_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          EXPECTED_HOST_FINGERPRINT: ${{ steps.endpoint.outputs.host_fingerprint }}
+        run: |
+          set -euo pipefail
+          test -n "$NEON_API_KEY"
+          test -n "$DIAGNOSTIC_BRANCH_ID"
+          test "$DIAGNOSTIC_BRANCH_ID" != "$NEON_RECOVERY_BRANCH_ID"
+          test "$DIAGNOSTIC_BRANCH_ID" != "$NEON_PRODUCTION_BRANCH_ID"
+
+          neon_api_key="$NEON_API_KEY"
+          unset NEON_API_KEY
+          database_url="$(NEON_API_KEY="$neon_api_key" neon connection-string "$DIAGNOSTIC_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" \
+            --database-name "$NEON_DATABASE_NAME" \
+            --role-name "$NEON_ROLE_NAME" \
+            --ssl verify-full \
+            --no-color)"
+          unset neon_api_key
+          test -n "$database_url"
+          echo "::add-mask::$database_url"
+
+          actual_target_fingerprint="$(DATABASE_URL="$database_url" \
+            EXPECTED_DATABASE="$NEON_DATABASE_NAME" \
+            EXPECTED_ROLE="$NEON_ROLE_NAME" \
+            node --input-type=module -e '
+              import { createHash } from "node:crypto";
+              const target = new URL(process.env.DATABASE_URL);
+              if (!/^postgres(ql)?:$/.test(target.protocol)) throw new Error("Unexpected database URL scheme.");
+              if (target.hostname.includes("-pooler")) throw new Error("Diagnostic inventory requires a direct Neon connection.");
+              if (target.port && target.port !== "5432") throw new Error("Unexpected database port.");
+              if (decodeURIComponent(target.pathname.slice(1)) !== process.env.EXPECTED_DATABASE) throw new Error("Unexpected database name.");
+              if (decodeURIComponent(target.username) !== process.env.EXPECTED_ROLE) throw new Error("Unexpected database role.");
+              const endpoint = `${target.hostname.toLowerCase()}:${target.port || "5432"}`;
+              process.stdout.write(`sha256:${createHash("sha256").update(endpoint).digest("hex")}`);
+            ')"
+          test "$actual_target_fingerprint" = "$EXPECTED_HOST_FINGERPRINT"
+
+          printf 'database_url=%s\n' "$database_url" >> "$GITHUB_OUTPUT"
+          printf 'Verified and masked the direct TLS connection target for the disposable child.\n'
+
+      - name: Collect child inventory in a read-only transaction
+        id: inventory
+        env:
+          DATABASE_URL: ${{ steps.connection.outputs.database_url }}
+          DIAGNOSTIC_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          EXPECTED_HOST_FINGERPRINT: ${{ steps.endpoint.outputs.host_fingerprint }}
+        run: |
+          set -euo pipefail
+          test -n "$DATABASE_URL"
+          test -n "$DIAGNOSTIC_BRANCH_ID"
+          test "$DIAGNOSTIC_BRANCH_ID" != "$NEON_RECOVERY_BRANCH_ID"
+          mkdir -p "$INVENTORY_DIRECTORY" "$EVIDENCE_DIRECTORY"
+          chmod 700 "$INVENTORY_DIRECTORY" "$EVIDENCE_DIRECTORY"
+
+          DATABASE_URL="$DATABASE_URL" \
+            DB_INVENTORY_EXPECTED_DATABASE="$NEON_DATABASE_NAME" \
+            DB_INVENTORY_EXPECTED_ROLE="$NEON_ROLE_NAME" \
+            DB_INVENTORY_EXPECTED_HOST_FINGERPRINT="$EXPECTED_HOST_FINGERPRINT" \
+            DB_INVENTORY_EXPECTED_NEON_BRANCH_ID="$DIAGNOSTIC_BRANCH_ID" \
+            DB_INVENTORY_EXPECTED_NEON_SOURCE_BRANCH_ID="$NEON_PRODUCTION_BRANCH_ID" \
+            npm run db:inventory -- --require-expected-target \
+              --output "$INVENTORY_DIRECTORY/snapshot-inventory.json"
+
+      - name: Summarize journal and approved 0049 fingerprint
+        id: fingerprint
+        env:
+          DIAGNOSTIC_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          DIAGNOSTIC_BRANCH_NAME: ${{ steps.child.outputs.branch_name }}
+          DIAGNOSTIC_ENDPOINT_ID: ${{ steps.endpoint.outputs.endpoint_id }}
+          DIAGNOSTIC_HOST_FINGERPRINT: ${{ steps.endpoint.outputs.host_fingerprint }}
+          INVENTORY_PATH: ${{ env.INVENTORY_DIRECTORY }}/snapshot-inventory.json
+          SUMMARY_PATH: ${{ env.EVIDENCE_DIRECTORY }}/fingerprint-summary.json
+        run: |
+          node --import tsx --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+          import { resolve } from 'node:path';
+          import { pathToFileURL } from 'node:url';
+
+          const root = process.env.GITHUB_WORKSPACE;
+          const fingerprintModule = await import(pathToFileURL(resolve(root, 'scripts/lib/db-schema-state-fingerprint.ts')).href);
+          const migrationModule = await import(pathToFileURL(resolve(root, 'scripts/lib/db-migration-assets.ts')).href);
+          const inventory = JSON.parse(readFileSync(process.env.INVENTORY_PATH, 'utf8'));
+          const migrations = migrationModule.loadActiveMigrations();
+          const migration = migrations.find((candidate) => candidate.tag === '0049_account_ready_standalone_resend');
+          if (!migration) throw new Error('The checked-out main commit does not contain migration 0049.');
+          const approved = fingerprintModule.loadApprovedSchemaStateFingerprint(migration);
+
+          const journal = inventory.migrationJournals.find((candidate) =>
+            candidate.schema === 'drizzle' && candidate.table === '__drizzle_migrations');
+          const entries = journal?.entries ?? [];
+          const migrationIndex = migrations.findIndex((candidate) => candidate.tag === migration.tag);
+          const expectedPrefix = migrations.slice(0, migrationIndex + 1);
+          const journalPrefixMatches = entries.length >= expectedPrefix.length &&
+            expectedPrefix.every((candidate, index) =>
+              entries[index]?.createdAt === String(candidate.createdAt) &&
+              entries[index]?.hash === candidate.hash);
+          const latestEntry = entries.at(-1) ?? null;
+          const latestMigration = latestEntry
+            ? migrations.find((candidate) => candidate.createdAt === Number(latestEntry.createdAt)) ?? null
+            : null;
+
+          let actual = null;
+          let fingerprintError = null;
+          try {
+            actual = fingerprintModule.createSchemaStateFingerprint(inventory, migration);
+          } catch (error) {
+            fingerprintError = error instanceof Error ? error.message : String(error);
+          }
+          const matchesApproved = actual !== null &&
+            actual.digest === approved.digest &&
+            JSON.stringify(actual.counts) === JSON.stringify(approved.counts);
+          const summary = {
+            formatVersion: 1,
+            incident: {
+              runId: process.env.INCIDENT_RUN_ID,
+              mainSha: process.env.INCIDENT_SHA,
+              expectedMigration: migration.tag,
+            },
+            lineage: {
+              projectId: process.env.NEON_PROJECT_ID,
+              productionBranchId: process.env.NEON_PRODUCTION_BRANCH_ID,
+              recoveryBranchId: process.env.NEON_RECOVERY_BRANCH_ID,
+              diagnosticBranchId: process.env.DIAGNOSTIC_BRANCH_ID,
+              diagnosticBranchName: process.env.DIAGNOSTIC_BRANCH_NAME,
+              diagnosticEndpointId: process.env.DIAGNOSTIC_ENDPOINT_ID,
+              endpointHostFingerprint: process.env.DIAGNOSTIC_HOST_FINGERPRINT,
+            },
+            target: {
+              database: inventory.target.database,
+              role: inventory.target.role,
+              serverVersion: inventory.target.serverVersion,
+              transactionReadOnly: inventory.target.transactionReadOnly,
+              transactionIsolation: inventory.target.transactionIsolation,
+            },
+            journal: {
+              relation: 'drizzle.__drizzle_migrations',
+              entryCount: entries.length,
+              latestTag: latestMigration?.tag ?? null,
+              latestCreatedAt: latestEntry?.createdAt ?? null,
+              prefixThrough0049Matches: journalPrefixMatches,
+            },
+            fingerprint: {
+              expected: `sha256:${approved.digest}`,
+              received: actual ? `sha256:${actual.digest}` : null,
+              expectedCounts: approved.counts,
+              receivedCounts: actual?.counts ?? null,
+              matchesApproved,
+              error: fingerprintError,
+            },
+          };
+          writeFileSync(process.env.SUMMARY_PATH, `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 });
+          process.stdout.write(
+            `[schema-diagnostic] journal=${summary.journal.entryCount} ` +
+            `latest=${summary.journal.latestTag ?? 'unknown'} ` +
+            `prefix_through_0049=${summary.journal.prefixThrough0049Matches}\n` +
+            `[schema-diagnostic] expected=${summary.fingerprint.expected} ` +
+            `received=${summary.fingerprint.received ?? 'unavailable'} ` +
+            `approved_match=${summary.fingerprint.matchesApproved}\n`,
+          );
+          appendFileSync(process.env.GITHUB_OUTPUT, [
+            `journal_entry_count=${summary.journal.entryCount}`,
+            `journal_latest_tag=${summary.journal.latestTag ?? 'unknown'}`,
+            `journal_prefix_matches=${summary.journal.prefixThrough0049Matches}`,
+            `fingerprint_expected=${summary.fingerprint.expected}`,
+            `fingerprint_received=${summary.fingerprint.received ?? 'unavailable'}`,
+            `fingerprint_matches=${summary.fingerprint.matchesApproved}`,
+          ].join('\n') + '\n');
+          NODE
+
+      - name: Encrypt the inventory before artifact upload
+        id: encrypt
+        env:
+          INVENTORY_PATH: ${{ env.INVENTORY_DIRECTORY }}/snapshot-inventory.json
+          SUMMARY_PATH: ${{ env.EVIDENCE_DIRECTORY }}/fingerprint-summary.json
+          EVIDENCE_DIRECTORY: ${{ env.EVIDENCE_DIRECTORY }}
+          DIAGNOSTIC_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          DIAGNOSTIC_BRANCH_NAME: ${{ steps.child.outputs.branch_name }}
+          DIAGNOSTIC_ENDPOINT_ID: ${{ steps.endpoint.outputs.endpoint_id }}
+          DIAGNOSTIC_HOST_FINGERPRINT: ${{ steps.endpoint.outputs.host_fingerprint }}
+        run: |
+          set -euo pipefail
+          test -s "$INVENTORY_PATH"
+          test -s "$SUMMARY_PATH"
+          lineage_path="$EVIDENCE_DIRECTORY/lineage.json"
+          tar_path="$EVIDENCE_DIRECTORY/plaintext-evidence.tar.gz"
+          encrypted_path="$EVIDENCE_DIRECTORY/schema-diagnostic-evidence.cms"
+          ENCRYPTED_LINEAGE_PATH="$lineage_path" node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          const lineage = {
+            formatVersion: 1,
+            currentMainSha: process.env.EXPECTED_SHA,
+            incidentRunId: process.env.INCIDENT_RUN_ID,
+            incidentSha: process.env.INCIDENT_SHA,
+            projectId: process.env.NEON_PROJECT_ID,
+            productionBranchId: process.env.NEON_PRODUCTION_BRANCH_ID,
+            recoveryBranchId: process.env.NEON_RECOVERY_BRANCH_ID,
+            recoveryBranchName: process.env.NEON_RECOVERY_BRANCH_NAME,
+            diagnosticBranchId: process.env.DIAGNOSTIC_BRANCH_ID,
+            diagnosticBranchName: process.env.DIAGNOSTIC_BRANCH_NAME,
+            diagnosticEndpointId: process.env.DIAGNOSTIC_ENDPOINT_ID,
+            endpointHostFingerprint: process.env.DIAGNOSTIC_HOST_FINGERPRINT,
+          };
+          writeFileSync(process.env.ENCRYPTED_LINEAGE_PATH, `${JSON.stringify(lineage, null, 2)}\n`, { mode: 0o600 });
+          NODE
+          tar -C "$EVIDENCE_DIRECTORY" -czf "$tar_path" \
+            fingerprint-summary.json lineage.json \
+            -C "$INVENTORY_DIRECTORY" snapshot-inventory.json
+          openssl cms -encrypt -aes-256-gcm -binary \
+            -in "$tar_path" \
+            -out "$encrypted_path" \
+            -outform DER \
+            .github/leaguevault-schema-diagnostic-public.crt
+          test -s "$encrypted_path"
+          artifact_sha256="$(sha256sum "$encrypted_path" | cut -d ' ' -f 1)"
+          printf '%s' "$artifact_sha256" | grep -Eq '^[0-9a-f]{64}$'
+          printf 'artifact_sha256=%s\n' "$artifact_sha256" >> "$GITHUB_OUTPUT"
+          printf 'Encrypted the diagnostic inventory with authenticated AES-256-GCM.\n'
+
+      - name: Upload encrypted diagnostic evidence
+        id: artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: leaguevault-schema-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE_DIRECTORY }}/schema-diagnostic-evidence.cms
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Remove the exact diagnostic child after evidence upload
+        id: cleanup
+        if: success()
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          DIAGNOSTIC_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          DIAGNOSTIC_BRANCH_NAME: ${{ steps.child.outputs.branch_name }}
+        run: |
+          set -euo pipefail
+          test -n "$NEON_API_KEY"
+          test -n "$DIAGNOSTIC_BRANCH_ID"
+          test "$DIAGNOSTIC_BRANCH_ID" != "$NEON_RECOVERY_BRANCH_ID"
+          test "$DIAGNOSTIC_BRANCH_ID" != "$NEON_PRODUCTION_BRANCH_ID"
+          neon_api_key="$NEON_API_KEY"
+          unset NEON_API_KEY
+          child_json="$(NEON_API_KEY="$neon_api_key" neon branches get "$DIAGNOSTIC_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+          printf '%s' "$child_json" | jq -e \
+            --arg id "$DIAGNOSTIC_BRANCH_ID" \
+            --arg name "$DIAGNOSTIC_BRANCH_NAME" \
+            --arg parent "$NEON_RECOVERY_BRANCH_ID" \
+            '(.branch // .) | .id == $id and .name == $name and .parent_id == $parent and .protected == false and .default != true' \
+            >/dev/null
+          NEON_API_KEY="$neon_api_key" neon branches delete "$DIAGNOSTIC_BRANCH_ID" \
+            --project-id "$NEON_PROJECT_ID" --no-color
+          printf 'delete_requested=true\n' >> "$GITHUB_OUTPUT"
+
+          child_absent=false
+          for attempt in $(seq 1 10); do
+            branches_json="$(NEON_API_KEY="$neon_api_key" neon branches list \
+              --project-id "$NEON_PROJECT_ID" --output json --no-color)"
+            branch_count="$(printf '%s' "$branches_json" | jq -er \
+              --arg id "$DIAGNOSTIC_BRANCH_ID" \
+              'if (.branches | type) != "array" then error("Unexpected branch inventory response.") else [.branches[] | select(.id == $id)] | length end')"
+            if [ "$branch_count" = 0 ]; then
+              child_absent=true
+              break
+            fi
+            sleep 3
+          done
+          unset neon_api_key
+          test "$child_absent" = true
+          printf 'child_absent=true\n' >> "$GITHUB_OUTPUT"
+          printf 'Deleted disposable diagnostic child %s. The recovery snapshot was preserved.\n' \
+            "$DIAGNOSTIC_BRANCH_ID"
+
+      - name: Remove plaintext inventory from the runner
+        if: always()
+        run: |
+          rm -f "$INVENTORY_DIRECTORY/snapshot-inventory.json" \
+            "$EVIDENCE_DIRECTORY/fingerprint-summary.json" \
+            "$EVIDENCE_DIRECTORY/lineage.json" \
+            "$EVIDENCE_DIRECTORY/plaintext-evidence.tar.gz"
+
+      - name: Record diagnostic disposition
+        if: always()
+        env:
+          DIAGNOSTIC_BRANCH_ID: ${{ steps.child.outputs.branch_id }}
+          DIAGNOSTIC_BRANCH_NAME: ${{ steps.child.outputs.branch_name }}
+          DIAGNOSTIC_ENDPOINT_ID: ${{ steps.endpoint.outputs.endpoint_id }}
+          JOURNAL_ENTRY_COUNT: ${{ steps.fingerprint.outputs.journal_entry_count }}
+          JOURNAL_LATEST_TAG: ${{ steps.fingerprint.outputs.journal_latest_tag }}
+          JOURNAL_PREFIX_MATCHES: ${{ steps.fingerprint.outputs.journal_prefix_matches }}
+          FINGERPRINT_EXPECTED: ${{ steps.fingerprint.outputs.fingerprint_expected }}
+          FINGERPRINT_RECEIVED: ${{ steps.fingerprint.outputs.fingerprint_received }}
+          FINGERPRINT_MATCHES: ${{ steps.fingerprint.outputs.fingerprint_matches }}
+          INVENTORY_OUTCOME: ${{ steps.inventory.outcome }}
+          FINGERPRINT_OUTCOME: ${{ steps.fingerprint.outcome }}
+          ENCRYPTION_OUTCOME: ${{ steps.encrypt.outcome }}
+          ARTIFACT_OUTCOME: ${{ steps.artifact.outcome }}
+          ARTIFACT_SHA256: ${{ steps.encrypt.outputs.artifact_sha256 }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          DELETE_REQUESTED: ${{ steps.cleanup.outputs.delete_requested }}
+          CHILD_ABSENT: ${{ steps.cleanup.outputs.child_absent }}
+        run: |
+          {
+            echo '### Production schema diagnostic'
+            echo
+            echo "- Certified main SHA: \`$EXPECTED_SHA\`"
+            echo "- Incident run: \`$INCIDENT_RUN_ID\` (source SHA \`$INCIDENT_SHA\`)"
+            echo "- Production parent: \`$NEON_PRODUCTION_BRANCH_ID\`"
+            echo "- Preserved recovery snapshot: \`$NEON_RECOVERY_BRANCH_NAME\` (\`$NEON_RECOVERY_BRANCH_ID\`)"
+            if [ -n "$DIAGNOSTIC_BRANCH_ID" ]; then
+              echo "- Diagnostic child: \`$DIAGNOSTIC_BRANCH_NAME\` (\`$DIAGNOSTIC_BRANCH_ID\`)"
+            echo "- Child endpoint: \`$DIAGNOSTIC_ENDPOINT_ID\`"
+            else
+              echo '- Diagnostic child: not created or its ID was unavailable'
+            fi
+            if [ -n "$JOURNAL_ENTRY_COUNT" ]; then
+              echo "- Journal entries: \`$JOURNAL_ENTRY_COUNT\`; latest known migration: \`$JOURNAL_LATEST_TAG\`; prefix through 0049 matches: \`$JOURNAL_PREFIX_MATCHES\`"
+              echo "- Schema fingerprint: expected \`$FINGERPRINT_EXPECTED\`; received \`$FINGERPRINT_RECEIVED\`; approved match: \`$FINGERPRINT_MATCHES\`"
+            else
+              echo '- Journal/fingerprint: not available'
+            fi
+            echo "- Inventory: \`$INVENTORY_OUTCOME\`; fingerprint summary: \`$FINGERPRINT_OUTCOME\`"
+            if [ "$ARTIFACT_OUTCOME" = success ]; then
+              echo "- Encryption: \`$ENCRYPTION_OUTCOME\`; encrypted artifact upload: success (1 day); ciphertext SHA-256: \`$ARTIFACT_SHA256\`"
+            else
+              echo "- Encryption: \`$ENCRYPTION_OUTCOME\`; encrypted artifact upload: \`$ARTIFACT_OUTCOME\`"
+            fi
+            if [ "$CLEANUP_OUTCOME" = success ]; then
+              echo '- Diagnostic child cleanup: deleted after artifact upload; recovery snapshot preserved'
+            elif [ -n "$DIAGNOSTIC_BRANCH_ID" ]; then
+              if [ "$DELETE_REQUESTED" = true ]; then
+                echo '- Diagnostic child cleanup: delete was accepted but branch absence was not confirmed; inspect only the recorded diagnostic child ID before any retry. Recovery snapshot preserved.'
+              else
+                echo '- Diagnostic child cleanup: not completed; the diagnostic child may remain and should be inspected by its recorded ID/name before any retry. Recovery snapshot preserved.'
+              fi
+            else
+              echo '- Diagnostic child cleanup: no child ID was recorded; recovery snapshot preserved'
+            fi
+            echo '- Connection material and catalog inventory are not included in this summary'
+          } >> "$GITHUB_STEP_SUMMARY"
