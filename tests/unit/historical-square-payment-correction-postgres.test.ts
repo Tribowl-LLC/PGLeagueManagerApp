@@ -352,7 +352,9 @@ describe("historical Square payment allocation correction", () => {
       currency: retainedSource.currency,
       reason: "forged active source evidence",
       recordedByUserId: actorUserId,
-    })).rejects.toThrow(/historical Square allocation correction evidence does not match its rows/);
+    })).rejects.toMatchObject({
+      cause: { message: expect.stringMatching(/historical Square allocation correction evidence does not match its rows/) },
+    });
 
     const report = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: payment.id });
     expect(report.rows[0]).toMatchObject({ status: "confirmed_paid", reviewRequired: false, unresolved: false, allocatedMinor: 6_000 });
