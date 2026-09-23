@@ -241,6 +241,105 @@ describe("rotating credit refund replay", () => {
     expect(lockCalls).toEqual([{ table: rotatingCreditRefunds, mode: "update", joined: false }]);
   });
 
+  it("replays an exact partial-lot provider refund after the response was lost", async () => {
+    const providerRequest = {
+      fundingId,
+      refundKind: "provider" as const,
+      quoteFingerprint: `lvrotcrrefundquote:v1:${"d".repeat(64)}`,
+      idempotencyKey: "credit-refund-provider-partial-replay-0001",
+      reason: "Return the unused provider credit",
+    };
+    const semantic = createRotatingCreditRefundSnapshot({
+      organizationId,
+      leagueId,
+      fundingId,
+      paymentId: 501,
+      bowlerId,
+      amountMinor: 1_000,
+      currency: "USD",
+      providerName: "square",
+      providerPaymentId: "square-credit-charge",
+      locationId: 73,
+      reason: providerRequest.reason,
+    });
+    const operation = {
+      id: "4a35aa2b-13cb-4fde-bec1-15dcc6f86daa",
+      organizationId,
+      leagueId,
+      operationType: "refund",
+      targetKey: refundTargetKey(fundingId, providerRequest.idempotencyKey),
+      amountMinor: 1_000,
+      currency: "USD",
+      providerName: "square",
+      authorizingUserId: actorUserId,
+      status: "succeeded",
+      providerObjectId: "square-credit-partial-refund",
+    };
+    const providerRefund = {
+      ...refund,
+      amountMinor: 1_000,
+      refundKind: "provider" as const,
+      refundOperationId: operation.id,
+      reference: null,
+      reason: providerRequest.reason,
+      idempotencyKey: providerRequest.idempotencyKey,
+      requestFingerprint: requestFingerprint({ organizationId, leagueId, fundingId, actorUserId, request: providerRequest }),
+      issuedAt: null,
+    };
+    const storedSnapshot = {
+      organizationId,
+      leagueId,
+      fundingId,
+      paymentId: providerRefund.paymentId,
+      bowlerId,
+      amountMinor: providerRefund.amountMinor,
+      currency: "USD",
+      providerPaymentId: "square-credit-charge",
+      locationId: 73,
+      reason: providerRequest.reason,
+      snapshotFingerprint: semantic.snapshotFingerprint,
+    };
+    mocks.transaction.mockImplementation(async (callback: unknown) => {
+      if (typeof callback !== "function") throw new Error("transaction callback is required");
+      return (callback as (value: unknown) => Promise<unknown>)(transactionFor({
+        refund: providerRefund,
+        bowlerId,
+        operation,
+        snapshot: storedSnapshot,
+        fundingEvidence: {
+          bowlerId,
+          fundingKind: "provider",
+          paymentId: 501,
+          amountMinor: 3_000,
+          currency: "USD",
+          paymentStatus: "paid",
+          paymentAmount: 3_000,
+          paymentCurrency: "USD",
+          paymentType: "square",
+          providerPaymentId: "square-credit-charge",
+          locationId: 73,
+        },
+      }));
+    });
+    mocks.readBalance.mockResolvedValue(emptyBalance({ organizationId, leagueId, bowlerId }));
+
+    const result = await recordRotatingCreditRefund({
+      organizationId,
+      leagueId,
+      actorUserId,
+      request: providerRequest,
+    });
+
+    expect(result).toMatchObject({
+      refundId: providerRefund.id,
+      operationId: operation.id,
+      amountMinor: 1_000,
+      providerRefundId: operation.providerObjectId,
+    });
+    expect(mocks.createRefundOperation).not.toHaveBeenCalled();
+    expect(mocks.executeRefund).not.toHaveBeenCalled();
+  });
+
   it("rejects provider refund replay when its immutable operation evidence differs", async () => {
     const providerRequest = {
       fundingId,

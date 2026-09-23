@@ -312,6 +312,14 @@ router.patch("/:id", async (req, res) => {
     if (error instanceof z.ZodError) {
       return handleZodError(res, error);
     }
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ROTATING_MEMBER_HAS_OPEN_ASSIGNMENT') {
+      return sendError(
+        res,
+        error instanceof Error ? error.message : 'A confirmed rotating date must be corrected or settled first',
+        409,
+        'ROTATING_MEMBER_HAS_OPEN_ASSIGNMENT',
+      );
+    }
     sendError(res, 'Failed to update bowler league');
   }
 });
@@ -357,6 +365,14 @@ router.delete("/:id", async (req, res) => {
     sendSuccess(res, { message: "Bowler league deleted successfully" }, 200);
   } catch (error) {
     log.error('Error:', error);
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ROTATING_MEMBER_HAS_OPEN_ASSIGNMENT') {
+      return sendError(
+        res,
+        error instanceof Error ? error.message : 'A confirmed rotating date must be corrected or settled first',
+        409,
+        'ROTATING_MEMBER_HAS_OPEN_ASSIGNMENT',
+      );
+    }
     sendError(res, 'Failed to delete bowler league');
   }
 });

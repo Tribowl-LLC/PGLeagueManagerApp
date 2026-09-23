@@ -47,8 +47,8 @@ function rotatingCreditIntentScope(leagueId: number, bowlerId: number): string {
   return `rotating-credit:${leagueId}:${bowlerId}`;
 }
 
-function operationMessage(status: RotatingCreditOperationWire["status"]): string {
-  switch (status) {
+function operationMessage(operation: RotatingCreditOperationWire): string {
+  switch (operation.status) {
     case "pending":
     case "leased":
     case "retry_scheduled":
@@ -58,6 +58,9 @@ function operationMessage(status: RotatingCreditOperationWire["status"]): string
     case "reconciliation_required":
       return "This purchase needs payment reconciliation. Your credit is not available while it is being reviewed.";
     case "action_required":
+      if (operation.confirmedNoChargeDecline) {
+        return "The card was declined and no share purchase was completed. You can request a new quote and try another payment source.";
+      }
       return "This purchase needs further payment review. Check its status again; if the status persists, contact league staff. Your credit is not available yet.";
     case "failed_terminal":
       return "The share purchase was not completed. You can request a new quote and try again.";
@@ -68,8 +71,13 @@ function operationMessage(status: RotatingCreditOperationWire["status"]): string
   }
 }
 
-function operationIsUnresolved(status: RotatingCreditOperationWire["status"]): boolean {
-  return RECOVERY_PENDING_STATUSES.has(status);
+function operationIsTerminal(operation: RotatingCreditOperationWire): boolean {
+  return TERMINAL_STATUSES.has(operation.status)
+    || (operation.status === "action_required" && operation.confirmedNoChargeDecline);
+}
+
+function operationIsUnresolved(operation: RotatingCreditOperationWire): boolean {
+  return RECOVERY_PENDING_STATUSES.has(operation.status) && !operationIsTerminal(operation);
 }
 
 function readErrorMessage(error: unknown, fallback: string): string {
@@ -142,7 +150,7 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
   const quote = quoteQuery.data?.data;
   currentQuoteRef.current = quote ?? null;
   const quoteIsCurrent = quote?.shareCount === shareCount && quote.leagueId === league.id && quote.bowlerId === bowlerId;
-  const intentIsUnresolved = operation !== null && operationIsUnresolved(operation.status);
+  const intentIsUnresolved = operation !== null && operationIsUnresolved(operation);
   const hasActiveRequest = pendingRequestKey !== null || intentIsUnresolved || isCheckingStatus;
   const savedCard = savedCards.find((candidate) => candidate.id === selectedSavedCardId);
   const selectedSourceReady = cardMode === "saved" ? !!savedCard : isInitialized;
@@ -174,12 +182,12 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
         pendingIntentRef.current = null;
         setPendingRequestKey(null);
         await queryClient.invalidateQueries({ queryKey: [creditPath] });
-        toast({ title: "Share credit updated", description: operationMessage(result.status) });
-      } else if (TERMINAL_STATUSES.has(result.status)) {
+        toast({ title: "Share credit updated", description: operationMessage(result) });
+      } else if (operationIsTerminal(result)) {
         clearPaymentIntent(exactScope, requestKey);
         pendingIntentRef.current = null;
         setPendingRequestKey(null);
-        setRecoveryMessage(operationMessage(result.status));
+        setRecoveryMessage(operationMessage(result));
       }
       return result;
     } catch (error) {
@@ -219,13 +227,13 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
 
   useEffect(() => {
     const container = cardContainerRef.current;
-    if (cardMode !== "new" || !container || providerLoading || !isProviderConfigured || intentIsUnresolved) {
+    if (!canBuyCredit || cardMode !== "new" || !container || providerLoading || !isProviderConfigured || intentIsUnresolved) {
       cleanupCard();
       return;
     }
     void initializeCard(container);
     return () => cleanupCard();
-  }, [cardMode, providerLoading, isProviderConfigured, intentIsUnresolved, initializeCard, cleanupCard]);
+  }, [canBuyCredit, cardMode, providerLoading, isProviderConfigured, intentIsUnresolved, initializeCard, cleanupCard]);
 
   const applyOperation = useCallback(async (result: RotatingCreditOperationWire, exactIntent: CreditIntent) => {
     setOperation(result);
@@ -235,11 +243,11 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
       setPendingRequestKey(null);
       await queryClient.invalidateQueries({ queryKey: [creditPath] });
       toast({ title: "Share purchase complete", description: `${formatCurrency(result.fundedMinor)} was added to your rotating credit.` });
-    } else if (TERMINAL_STATUSES.has(result.status)) {
+    } else if (operationIsTerminal(result)) {
       clearPaymentIntent(exactIntent.scope, exactIntent.requestKey);
       pendingIntentRef.current = null;
       setPendingRequestKey(null);
-      setRecoveryMessage(operationMessage(result.status));
+      setRecoveryMessage(operationMessage(result));
     }
   }, [creditPath, toast]);
 
@@ -313,7 +321,7 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
     if (!exactIntent) throw new Error("The wallet purchase quote could not be confirmed. Request a new quote.");
     try {
       const result = await submitTokenizedSource(token, "wallet", exactIntent);
-      if (result.status !== "succeeded") setRecoveryMessage(operationMessage(result.status));
+      if (result.status !== "succeeded") setRecoveryMessage(operationMessage(result));
     } catch (error) {
       toast({ title: "Share purchase status unavailable", description: readErrorMessage(error, "Check the payment status before trying again."), variant: "destructive" });
       throw error;
@@ -354,7 +362,7 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
       if (!sourceId) throw new Error("Select a saved card or enter card details before buying shares.");
       chargeAttempted = true;
       const result = await submitTokenizedSource(sourceId, cardMode === "saved" ? "saved_card" : "new_card", exactIntent);
-      if (result.status !== "succeeded") setRecoveryMessage(operationMessage(result.status));
+      if (result.status !== "succeeded") setRecoveryMessage(operationMessage(result));
     } catch (error) {
       if (exactIntent && !chargeAttempted && pendingIntentRef.current?.requestKey === exactIntent.requestKey) {
         // A tokenization failure happened before a request was submitted.
@@ -454,9 +462,9 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
       </div> : <div role="status" className="rounded-md border border-warning-500/40 bg-warning-500/5 p-4 text-sm"><p className="font-medium">New rotating share purchases are unavailable.</p><p className="mt-1 text-muted-foreground">Your existing available or held credit remains in your balance history. Contact league staff for help with a refund or account change.</p></div>}
 
       {(hasActiveRequest || recoveryMessage) && <div role="status" className="space-y-3 rounded-md border border-warning-500/40 bg-warning-500/5 p-4 text-sm">
-        <p>{operation ? operationMessage(operation.status) : recoveryMessage ?? "Checking your share purchase status…"}</p>
+        <p>{operation ? operationMessage(operation) : recoveryMessage ?? "Checking your share purchase status…"}</p>
         {recoveryMessage && <p className="text-muted-foreground">{recoveryMessage}</p>}
-        <Button type="button" variant="outline" size="sm" onClick={() => void retryStatus()} disabled={isCheckingStatus || isCharging}><RotateCcw className="mr-2 size-4" />{isCheckingStatus ? "Checking…" : "Check purchase status"}</Button>
+        {!operation || !operationIsTerminal(operation) ? <Button type="button" variant="outline" size="sm" onClick={() => void retryStatus()} disabled={isCheckingStatus || isCharging}><RotateCcw className="mr-2 size-4" />{isCheckingStatus ? "Checking…" : "Check purchase status"}</Button> : null}
       </div>}
 
       {operation?.status === "succeeded" && <div role="status" className="space-y-3 rounded-md border border-success-500/40 bg-success-500/5 p-4">

@@ -301,8 +301,10 @@ export async function recordRotatingCreditRefund(input: {
           || snapshot.currency !== existingRefund.currency
           || snapshot.reason !== existingRefund.reason
           || funding.fundingKind !== "provider"
+          || funding.bowlerId !== existingRefund.bowlerId
           || funding.paymentId !== existingRefund.paymentId
-          || funding.amountMinor !== existingRefund.amountMinor
+          || existingRefund.amountMinor <= 0
+          || existingRefund.amountMinor > funding.amountMinor
           || funding.currency !== existingRefund.currency
           || funding.paymentStatus !== "paid"
           || funding.paymentAmount !== funding.amountMinor

@@ -20,6 +20,7 @@ import {
   paymentOperationRosterSnapshots,
   payments,
   rotatingCreditFundings,
+  rotatingCreditRefunds,
   teamPaymentPolicies,
   teamPaymentSlots,
   teams,
@@ -536,6 +537,72 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     // tender so it cannot affect later totals in the shared organization.
     await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+      await tx.delete(rotatingCreditFundings).where(eq(rotatingCreditFundings.paymentId, paymentId));
+      await tx.delete(payments).where(eq(payments.id, paymentId));
+    });
+  });
+
+  it("does not label a fully refunded unused rotating-credit lot as prepaid credit", async () => {
+    const idempotencyKey = `full-refund-credit-${randomUUID()}`;
+    const paymentId = await db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        bowlerId,
+        leagueId,
+        amount: 750,
+        status: "paid",
+        type: "cash",
+        idempotencyKey: `${idempotencyKey}:payment`,
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("fully refunded rotating-credit tender was not created");
+      const [funding] = await tx.insert(rotatingCreditFundings).values({
+        organizationId,
+        leagueId,
+        bowlerId,
+        paymentId: payment.id,
+        amountMinor: 750,
+        currency: "USD",
+        fundingKind: "cash",
+        idempotencyKey,
+        requestFingerprint: `lvrotcrreq:v1:${"a".repeat(64)}`,
+        quoteFingerprint: `lvrotcrquote:v1:${"b".repeat(64)}`,
+        actorUserId,
+      }).returning({ id: rotatingCreditFundings.id });
+      if (!funding) throw new Error("fully refunded rotating-credit funding was not created");
+      await tx.insert(rotatingCreditRefunds).values({
+        organizationId,
+        leagueId,
+        fundingId: funding.id,
+        paymentId: payment.id,
+        bowlerId,
+        amountMinor: 750,
+        currency: "USD",
+        refundKind: "cash",
+        refundOperationId: null,
+        reference: "cash refund receipt 17",
+        reason: "Unused share credit refunded in full",
+        actorUserId,
+        idempotencyKey: `full-refund-${randomUUID()}`,
+        requestFingerprint: `lvrotcrrefund:v1:${"c".repeat(64)}`,
+        issuedAt: new Date().toISOString(),
+      });
+      return payment.id;
+    });
+
+    const report = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId, page: 1, limit: 1 });
+    const row = report.rows[0];
+    expect(row).toMatchObject({
+      paymentId,
+      source: "refunded_credit",
+      allocatedMinor: 0,
+      unallocatedMinor: 0,
+      creditRefunds: { completedAmountMinor: 750, heldAmountMinor: 0, reviewRequired: false },
+    });
+    expect(row?.receipt.source).toBe("refunded_credit");
+
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+      await tx.delete(rotatingCreditRefunds).where(eq(rotatingCreditRefunds.paymentId, paymentId));
       await tx.delete(rotatingCreditFundings).where(eq(rotatingCreditFundings.paymentId, paymentId));
       await tx.delete(payments).where(eq(payments.id, paymentId));
     });

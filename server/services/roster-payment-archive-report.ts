@@ -2,7 +2,7 @@ import { aliasedTable, and, asc, desc, eq, exists, inArray, sql, or } from "driz
 import { db } from "../db.js";
 import { bowlers, leagueOccurrences, leagues, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments, refundAllocationAdjustments, rotatingCreditApplications, rotatingCreditApplicationReversals, rotatingCreditFundings, rotatingCreditPaymentOperationSnapshots, rotatingCreditRefundOperationSnapshots, rotatingCreditRefunds } from "@shared/schema";
 import type { CanonicalPaymentReport, CanonicalPaymentRow, CanonicalPaymentReportTotals } from "@shared/canonical-payment-report";
-import { canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
+import { canonicalCreditFundingSource, canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
 import { paymentVisibilityCondition } from "../storage/payments.js";
 
 export class CanonicalPaymentReportIncompatibilityError extends Error {}
@@ -330,9 +330,12 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           throw new CanonicalPaymentReportIncompatibilityError("provider credit refund has an unsupported operation state");
         }
       }
-      if (completedCreditRefundMinor + heldCreditRefundMinor > payment.amount) {
-        throw new CanonicalPaymentReportIncompatibilityError("credit refunds exceed their original tender");
+      if (activeTotal + completedCreditRefundMinor + heldCreditRefundMinor > payment.amount) {
+        throw new CanonicalPaymentReportIncompatibilityError("credit applications and refunds exceed their original tender");
       }
+      const remainingCreditMinor = isCreditFunding
+        ? payment.amount - activeTotal - completedCreditRefundMinor - heldCreditRefundMinor
+        : 0;
       const creditRefundSummary = isCreditFunding ? {
         completedAmountMinor: completedCreditRefundMinor,
         heldAmountMinor: heldCreditRefundMinor,
@@ -395,7 +398,12 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const evidenceSource: CanonicalPaymentRow["source"] = invalidCanonicalAllocation || manualGrossMismatch
         ? "unresolved_operation"
         : isCreditFunding
-          ? activeTotal === 0 ? "prepaid_credit" : "canonical_allocation"
+          ? canonicalCreditFundingSource({
+            amountMinor: payment.amount,
+            allocatedMinor: activeTotal,
+            completedRefundMinor: completedCreditRefundMinor,
+            heldRefundMinor: heldCreditRefundMinor,
+          })
           : linked.length === 0
             ? "unresolved_operation"
             : "canonical_allocation";
@@ -418,7 +426,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         refundedAllocationMinor,
         waivedMinor,
         effectiveAllocatedMinor,
-        unallocatedMinor: Math.max(0, payment.amount - allocatedMinor),
+        unallocatedMinor: isCreditFunding ? Math.max(0, remainingCreditMinor) : Math.max(0, payment.amount - allocatedMinor),
         reviewRequired: reviewRequired || manualGrossMismatch,
         source: evidenceSource,
         unresolved: invalidCanonicalAllocation || manualGrossMismatch || creditRefundReviewRequired || operation?.status === "provider_unknown" || operation?.status === "reconciliation_required",

@@ -17,11 +17,13 @@ import {
   teamPaymentSlots,
   teams,
 } from "@shared/schema";
+import {
+  isConfirmedNoChargeDecline as classifyNoChargeDecline,
+} from "@shared/rotating-credit-contract";
 import type {
   RotatingCreditBalanceWire,
   RotatingCreditManualQuoteWire,
   RotatingCreditQuoteWire,
-  RotatingCreditAdvisoryApplicationWire,
 } from "@shared/rotating-credit-contract";
 import { db } from "../db.js";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
@@ -37,7 +39,11 @@ import { isRotatingCreditFinalizationRecoveryEligible } from "./rotating-credit-
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
 import { providerNameToPaymentType, emailSchema } from "@shared/schema/constants";
-import { RotatingCreditLedgerError, applyRotatingCreditToConfirmedObligationsInTransaction } from "./rotating-credit-applications.js";
+import {
+  RotatingCreditLedgerError,
+  applyRotatingCreditToConfirmedObligationsInTransaction,
+  previewRotatingCreditApplications,
+} from "./rotating-credit-applications.js";
 import type { RotatingCreditChargeRequest, RotatingCreditManualFundingRequest, RotatingCreditOperationWire } from "@shared/rotating-credit-contract";
 
 export class RotatingCreditError extends Error {
@@ -94,7 +100,18 @@ export async function readRotatingCreditTermsInTransaction(
       eq(teamPaymentRotationMembers.bowlerId, input.bowlerId),
       eq(teamPaymentRotationMembers.active, true),
     )).limit(1);
-  const isEligible = Boolean(eligible) && league.paymentMode === "weekly" && league.weeklyFee > 0;
+  let hasConfirmedOutstandingAssignment = false;
+  if (!eligible) {
+    const [activeBowler] = await tx.select({ id: bowlers.id }).from(bowlers).where(and(
+      eq(bowlers.id, input.bowlerId),
+      eq(bowlers.organizationId, input.organizationId),
+      eq(bowlers.active, true),
+    )).limit(1);
+    hasConfirmedOutstandingAssignment = Boolean(activeBowler)
+      && (await readConfirmedRotatingObligationsForCredit(tx, input)).length > 0;
+  }
+  const isEligible = (Boolean(eligible) || hasConfirmedOutstandingAssignment)
+    && league.paymentMode === "weekly" && league.weeklyFee > 0;
   return {
     eligible: isEligible,
     shareAmountMinor: isEligible ? league.weeklyFee : null,
@@ -219,30 +236,6 @@ async function findExistingRotatingCreditChargeInTransaction(
   return operation;
 }
 
-function previewApplications(
-  rows: Awaited<ReturnType<typeof readConfirmedRotatingObligationsForCredit>>,
-  availableMinor: number,
-): RotatingCreditAdvisoryApplicationWire[] {
-  let remaining = availableMinor;
-  const preview: RotatingCreditAdvisoryApplicationWire[] = [];
-  for (const row of rows) {
-    if (remaining <= 0) break;
-    if (row.reviewRequired || row.outstandingMinor <= 0) continue;
-    const amountMinor = Math.min(remaining, row.outstandingMinor);
-    if (amountMinor <= 0) continue;
-    preview.push({
-      obligationId: row.obligationId,
-      occurrenceId: row.occurrenceId,
-      occurrenceLocalDate: row.occurrenceLocalDate,
-      teamId: row.teamId,
-      slotIndex: row.slotIndex,
-      amountMinor,
-    });
-    remaining -= amountMinor;
-  }
-  return preview;
-}
-
 async function buildPurchasePreviewInTransaction(
   tx: PaymentOperationTransaction,
   input: { organizationId: number; leagueId: number; bowlerId: number; amountMinor: number },
@@ -252,7 +245,7 @@ async function buildPurchasePreviewInTransaction(
   const lots = await readRotatingCreditFundingBalancesInTransaction(tx, input);
   const currentAvailableMinor = lots.reduce((sum, lot) => sum + lot.availableMinor, 0);
   const candidates = await readConfirmedRotatingObligationsForCredit(tx, input);
-  const advisoryApplications = previewApplications(candidates, currentAvailableMinor + input.amountMinor);
+  const advisoryApplications = previewRotatingCreditApplications(candidates, currentAvailableMinor + input.amountMinor);
   const expectedAvailableAfterPurchaseMinor = Math.max(0,
     currentAvailableMinor + input.amountMinor - advisoryApplications.reduce((sum, row) => sum + row.amountMinor, 0));
   return { terms, currentAvailableMinor, advisoryApplications, expectedAvailableAfterPurchaseMinor };
@@ -606,6 +599,7 @@ export async function recordRotatingCreditManualFunding(input: {
     status: "succeeded",
     paymentId: result.paymentId,
     providerPaymentId: null,
+    confirmedNoChargeDecline: false,
     fundedMinor: input.request.amountMinor,
     applications,
     balance,
@@ -693,7 +687,12 @@ export async function buildRotatingCreditOperationWire(input: {
   organizationId: number;
   leagueId: number;
   bowlerId: number;
-  operation: { id: string; status: RotatingCreditOperationWire["status"]; providerObjectId: string | null };
+  operation: {
+    id: string;
+    status: RotatingCreditOperationWire["status"];
+    providerObjectId: string | null;
+    errorClassification: string | null;
+  };
 }): Promise<RotatingCreditOperationWire> {
   const [payment] = await db.select().from(payments).where(and(
     eq(payments.organizationId, input.organizationId),
@@ -719,6 +718,12 @@ export async function buildRotatingCreditOperationWire(input: {
     status: input.operation.status,
     paymentId: payment?.id ?? null,
     providerPaymentId: input.operation.providerObjectId,
+    confirmedNoChargeDecline: classifyNoChargeDecline({
+      status: input.operation.status,
+      errorClassification: input.operation.errorClassification,
+      providerObjectId: input.operation.providerObjectId,
+      paymentId: payment?.id ?? null,
+    }),
     fundedMinor: funding?.amountMinor ?? 0,
     applications,
     balance,

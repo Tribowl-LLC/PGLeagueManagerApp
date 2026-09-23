@@ -173,9 +173,22 @@ export interface RotatingCreditOperationWire {
   status: "pending" | "leased" | "provider_unknown" | "retry_scheduled" | "succeeded" | "action_required" | "reconciliation_required" | "failed_terminal" | "canceled";
   paymentId: number | null;
   providerPaymentId: string | null;
+  confirmedNoChargeDecline: boolean;
   fundedMinor: number;
   applications: RotatingCreditApplicationWire[];
   balance: RotatingCreditBalanceWire | null;
+}
+
+export function isConfirmedNoChargeDecline(input: {
+  status: RotatingCreditOperationWire["status"];
+  errorClassification: string | null;
+  providerObjectId: string | null;
+  paymentId: number | null;
+}): boolean {
+  return input.status === "action_required"
+    && input.errorClassification === "hard_decline"
+    && input.providerObjectId === null
+    && input.paymentId === null;
 }
 
 export interface RotatingCreditRefundQuoteWire {

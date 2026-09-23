@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   bowlers,
   bowlerLeagues,
@@ -26,6 +26,7 @@ import {
 } from "@shared/schema";
 import { getTestDb } from "../setup/test-db";
 import { deleteOrganization } from "../../server/storage/organizations";
+import { buildCanonicalScheduleCommandFingerprint, rescheduleOccurrence } from "../../server/services/canonical-occurrence-transactions";
 import {
   canonicalRotatingAssignmentFingerprint,
   canonicalRotatingRosterFingerprint,
@@ -324,6 +325,95 @@ afterAll(async () => {
 });
 
 describe("rotating credit allocation reapplication on PostgreSQL", () => {
+  it("reschedules an untouched future rotating date while keeping assigned dates locked", async () => {
+    const makeRescheduleRequest = (occurrenceId: string, idempotencyKey: string, date: string) => {
+      const request = {
+        organizationId,
+        leagueId,
+        actorUserId,
+        commandType: "reschedule" as const,
+        occurrenceId,
+        now: "2038-01-01T00:00:00.000Z",
+        authoritativeLocalDate: date,
+        authoritativeLocalStartTime: "19:00",
+        timezone: "UTC",
+        ambiguousFold: "reject" as const,
+        idempotencyKey,
+        requestFingerprint: "",
+        reason: "Move an untouched future rotating date",
+      };
+      request.requestFingerprint = buildCanonicalScheduleCommandFingerprint(request);
+      return request;
+    };
+
+    const untouched = await createOccurrence(7);
+    const moved = await rescheduleOccurrence(makeRescheduleRequest(
+      untouched.occurrence.id,
+      `credit-reapplication-reschedule-untouched-${randomUUID()}`,
+      "2038-04-05",
+    ));
+    expect(moved).toMatchObject({ id: untouched.occurrence.id, authoritativeLocalDate: "2038-04-05" });
+    const movedResponsibilities = await db.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, state: occurrencePaymentResponsibilities.state, dueAt: occurrencePaymentResponsibilities.dueAt }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, untouched.occurrence.id),
+      eq(occurrencePaymentResponsibilities.slotIndex, 0),
+    )).orderBy(occurrencePaymentResponsibilities.version);
+    expect(movedResponsibilities.map((row) => row.state)).toEqual(["voided", "active"]);
+    expect(movedResponsibilities.at(-1)).toMatchObject({ version: 2, state: "active" });
+    expect(new Date(movedResponsibilities.at(-1)?.dueAt ?? "").toISOString()).toBe(new Date(moved.startAt).toISOString());
+    const movedObligations = await db.select({ state: paymentObligations.state, dueAt: paymentObligations.dueAt, responsibilityId: paymentObligations.responsibilityId }).from(paymentObligations).where(and(
+      eq(paymentObligations.organizationId, organizationId),
+      eq(paymentObligations.leagueId, leagueId),
+      inArray(paymentObligations.responsibilityId, movedResponsibilities.map((row) => row.id)),
+    )).orderBy(paymentObligations.createdAt);
+    expect(movedObligations.map((row) => row.state)).toEqual(["voided", "open"]);
+    expect(new Date(movedObligations.at(-1)?.dueAt ?? "").toISOString()).toBe(new Date(moved.startAt).toISOString());
+
+    const assigned = await createOccurrence(8);
+    const assignmentRequest = {
+      commandKey: `credit-reapplication-reschedule-assignment-${randomUUID()}`,
+      requestFingerprint: "",
+      assignments: [{
+        occurrenceId: assigned.occurrence.id,
+        teamId,
+        slotIndex: 0,
+        expectedRevision: null,
+        actualBowlerId: bowlerId,
+      }],
+    };
+    assignmentRequest.requestFingerprint = canonicalRotatingAssignmentFingerprint(assignmentRequest);
+    await saveRotatingOccurrenceAssignments({ organizationId, leagueId, actorUserId, request: assignmentRequest });
+    const [assignedBeforeReschedule] = await db.select({ authoritativeLocalDate: leagueOccurrences.authoritativeLocalDate }).from(leagueOccurrences).where(eq(leagueOccurrences.id, assigned.occurrence.id));
+    if (!assignedBeforeReschedule) throw new Error("assigned schedule snapshot is missing");
+    const assignmentResponsibilitiesBeforeNoOp = await db.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, state: occurrencePaymentResponsibilities.state }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, assigned.occurrence.id),
+      eq(occurrencePaymentResponsibilities.slotIndex, 0),
+    )).orderBy(occurrencePaymentResponsibilities.version);
+    const noOpReschedule = await rescheduleOccurrence(makeRescheduleRequest(
+      assigned.occurrence.id,
+      `credit-reapplication-reschedule-noop-${randomUUID()}`,
+      assignedBeforeReschedule.authoritativeLocalDate,
+    ));
+    expect(noOpReschedule.authoritativeLocalDate).toBe(assignedBeforeReschedule.authoritativeLocalDate);
+    const assignmentResponsibilitiesAfterNoOp = await db.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version, state: occurrencePaymentResponsibilities.state }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, assigned.occurrence.id),
+      eq(occurrencePaymentResponsibilities.slotIndex, 0),
+    )).orderBy(occurrencePaymentResponsibilities.version);
+    expect(assignmentResponsibilitiesAfterNoOp).toEqual(assignmentResponsibilitiesBeforeNoOp);
+    await expect(rescheduleOccurrence(makeRescheduleRequest(
+      assigned.occurrence.id,
+      `credit-reapplication-reschedule-assigned-${randomUUID()}`,
+      "2038-04-12",
+    ))).rejects.toThrow("ROTATING_SCHEDULE_EVIDENCE_LOCKED");
+    const [unchangedOccurrence] = await db.select({ authoritativeLocalDate: leagueOccurrences.authoritativeLocalDate }).from(leagueOccurrences).where(eq(leagueOccurrences.id, assigned.occurrence.id));
+    expect(unchangedOccurrence?.authoritativeLocalDate).toBe(assignedBeforeReschedule?.authoritativeLocalDate);
+  });
+
   it("sweeps a partially refunded, corrected lot back to the earlier obligation with multiple active credit children", async () => {
     const earlier = await createOccurrence(1);
     const later = await createOccurrence(2, 600);
@@ -466,6 +556,22 @@ describe("rotating credit allocation reapplication on PostgreSQL", () => {
     expect(assignment[0]?.actualBowlerId).toBe(correctionBowlerId);
     const finalReport = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: creditPayment.id, page: 1, limit: 1 });
     expect(finalReport.rows[0]).toMatchObject({ source: "canonical_allocation", allocatedMinor: 1_000, unresolved: false });
+
+    const [unrelatedMain] = await db.insert(bowlers).values({ name: `Unrelated roster edit Main ${randomUUID()}`, organizationId }).returning({ id: bowlers.id });
+    await db.insert(bowlerLeagues).values({ bowlerId: unrelatedMain.id, leagueId, teamId });
+    const unrelatedRosterRequest = {
+      commandKey: `credit-reapplication-unrelated-roster-edit-${randomUUID()}`,
+      requestFingerprint: "",
+      lineupSize: 3 as const,
+      slots: [
+        { slotIndex: 0, occupant: "rotating" as const, mainBowlerId: null },
+        { slotIndex: 1, occupant: "main" as const, mainBowlerId: unrelatedMain.id },
+        { slotIndex: 2, occupant: "vacant" as const, mainBowlerId: null },
+      ],
+      eligibleRotatingBowlerIds: [bowlerId, correctionBowlerId],
+    };
+    unrelatedRosterRequest.requestFingerprint = canonicalRotatingRosterFingerprint(unrelatedRosterRequest);
+    await expect(saveTeamRoster({ organizationId, leagueId, teamId, actorUserId, request: unrelatedRosterRequest })).resolves.toBeDefined();
 
     // The old settled -> open refund policy is intentionally broad, so test
     // stale reversal rejection from the partial -> open edge instead. This

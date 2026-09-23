@@ -18,6 +18,12 @@ history, non-open obligation, allocation, provider reservation, or credit
 application. Future open obligations with no assignment or payment evidence
 can be voided by the roster save that turns the slot off.
 
+Removing or deactivating a league member, or removing a bowler from the active
+rotating pool, is blocked while that bowler's latest confirmed rotating
+assignment still has an open or partially settled team-owned obligation. Correct
+the assignment or settle the obligation before changing eligibility. Confirmed
+assignment history remains the source for who bowled a date.
+
 The team remains responsible for the rotating slot's obligation. A participant
 may buy personal rotating credit; that credit is applied only after the
 participant is confirmed for an open, team-owned obligation, in published
@@ -49,8 +55,10 @@ only when Square returned no refund object and the recorded classification is
 stays held for review. A dispute or inconsistent tender, allocation, or refund
 snapshot holds the remaining lot for review.
 
-F5 reports mark an unallocated credit funding tender as `prepaid_credit`; applied
-credit uses `canonical_allocation`. The payer-facing F5 view shows provider refund IDs and
+F5 labels unallocated credit with value remaining after applications and
+refund holds as `prepaid_credit`; fully held credit is `held_credit`, and fully
+refunded credit is `refunded_credit`. Credit applied to a date uses
+`canonical_allocation`. The payer-facing F5 view shows provider refund IDs and
 refund history only to the original credit payer. Authorized staff retains
 access for financial reconciliation; other participants do not see that
 provider evidence.

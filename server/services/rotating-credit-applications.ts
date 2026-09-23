@@ -15,6 +15,7 @@ import type { PaymentOperationTransaction } from "../storage/payment-operations.
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 import { readConfirmedRotatingObligationsForCredit } from "./rotating-team-payments.js";
 import { isCardPaymentType } from "@shared/schema/constants";
+import type { RotatingCreditAdvisoryApplicationWire } from "@shared/rotating-credit-contract";
 
 export class RotatingCreditLedgerError extends Error {
   constructor(public readonly code: string) {
@@ -149,12 +150,50 @@ export function isConfirmedNoRefundCreditOutcome(input: {
     || (input.status === "canceled" && input.providerObjectId === null);
 }
 
+export function isRotatingCreditRefundUnresolvedForReversal(input: {
+  status: string;
+  providerObjectId: string | null;
+  errorClassification: string | null;
+  errorCode: string | null;
+}): boolean {
+  return HELD_REFUND_STATUSES.has(input.status) && !isConfirmedNoRefundCreditOutcome(input);
+}
+
 export function spendableRotatingCreditObligationPrefix<T extends {
   reviewRequired: boolean;
   outstandingMinor: number;
 }>(obligations: readonly T[]): T[] {
   const reviewBoundary = obligations.findIndex((obligation) => obligation.reviewRequired && obligation.outstandingMinor > 0);
   return obligations.slice(0, reviewBoundary < 0 ? obligations.length : reviewBoundary);
+}
+
+export function previewRotatingCreditApplications(rows: readonly {
+  obligationId: string;
+  occurrenceId: string;
+  occurrenceLocalDate: string;
+  teamId: number;
+  slotIndex: number;
+  reviewRequired: boolean;
+  outstandingMinor: number;
+}[], availableMinor: number): RotatingCreditAdvisoryApplicationWire[] {
+  let remaining = availableMinor;
+  const preview: RotatingCreditAdvisoryApplicationWire[] = [];
+  for (const row of spendableRotatingCreditObligationPrefix(rows)) {
+    if (remaining <= 0) break;
+    if (row.outstandingMinor <= 0) continue;
+    const amountMinor = Math.min(remaining, row.outstandingMinor);
+    if (amountMinor <= 0) continue;
+    preview.push({
+      obligationId: row.obligationId,
+      occurrenceId: row.occurrenceId,
+      occurrenceLocalDate: row.occurrenceLocalDate,
+      teamId: row.teamId,
+      slotIndex: row.slotIndex,
+      amountMinor,
+    });
+    remaining -= amountMinor;
+  }
+  return preview;
 }
 
 const REVIEW_DISPUTE_STATES = new Set([
@@ -467,7 +506,8 @@ export async function reverseRotatingCreditApplicationsForAssignmentChangeInTran
       eq(rotatingCreditRefunds.leagueId, input.leagueId),
       inArray(rotatingCreditRefunds.fundingId, fundingIds),
     ));
-  const unresolvedFundingIds = new Set(refunds.filter((row) => row.operation !== null && HELD_REFUND_STATUSES.has(row.operation.status)).map((row) => row.refund.fundingId));
+  const unresolvedFundingIds = new Set(refunds.filter((row) => row.operation !== null
+    && isRotatingCreditRefundUnresolvedForReversal(row.operation)).map((row) => row.refund.fundingId));
   const operationIds = [...new Set(rows.map((row) => row.operation?.id).filter((id): id is string => id !== undefined && id !== null))];
   const disputes = operationIds.length === 0 ? [] : await tx.select({ operationId: paymentDisputes.paymentOperationId, state: paymentDisputes.state })
     .from(paymentDisputes).where(and(

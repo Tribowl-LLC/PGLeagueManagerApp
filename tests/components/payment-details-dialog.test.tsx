@@ -204,6 +204,18 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.queryByRole("button", { name: "Void cash/check payment" })).not.toBeInTheDocument();
   });
 
+  it("hides cash edit and void controls for an allocated rotating-credit funding tender", () => {
+    const creditFundingEvidence: CanonicalPaymentRow = {
+      ...evidence,
+      creditRefunds: { completedAmountMinor: 0, heldAmountMinor: 0, reviewRequired: false, providerRefundIds: [] },
+    };
+    render(<PaymentDetailsDialog payment={payment} evidence={creditFundingEvidence} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    expect(screen.queryByRole("region", { name: "Payment correction" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash/check payment" })).not.toBeInTheDocument();
+  });
+
   it("renders evidence-only details without manufacturing a payment", () => {
     render(<PaymentDetailsDialog
       payment={null}

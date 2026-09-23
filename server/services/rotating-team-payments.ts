@@ -1,7 +1,5 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
-  bowlers,
-  bowlerLeagues,
   leagueOccurrenceBillingTerms,
   leagueOccurrences,
   paymentAllocations,
@@ -13,7 +11,6 @@ import {
   refundAllocationAdjustments,
   refundPaymentOperationSnapshots,
   rotatingOccurrenceAssignments,
-  teamPaymentRotationMembers,
   teamPaymentSlots,
 } from "@shared/schema";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
@@ -70,29 +67,11 @@ export async function readConfirmedRotatingObligationsForCredit(
     eq(teamPaymentSlots.occupant, "rotating"),
   ));
   if (slots.length === 0) return [];
-  const teamIds = [...new Set(slots.map((slot) => slot.teamId))];
-  const membership = await tx.select({ teamId: teamPaymentRotationMembers.teamId })
-    .from(teamPaymentRotationMembers)
-    .innerJoin(bowlers, and(
-      eq(bowlers.id, teamPaymentRotationMembers.bowlerId),
-      eq(bowlers.organizationId, scope.organizationId),
-      eq(bowlers.active, true),
-    ))
-    .innerJoin(bowlerLeagues, and(
-      eq(bowlerLeagues.bowlerId, teamPaymentRotationMembers.bowlerId),
-      eq(bowlerLeagues.leagueId, scope.leagueId),
-      eq(bowlerLeagues.teamId, teamPaymentRotationMembers.teamId),
-      eq(bowlerLeagues.active, true),
-    ))
-    .where(and(
-      eq(teamPaymentRotationMembers.organizationId, scope.organizationId),
-      eq(teamPaymentRotationMembers.leagueId, scope.leagueId),
-      eq(teamPaymentRotationMembers.bowlerId, scope.bowlerId),
-      eq(teamPaymentRotationMembers.active, true),
-      inArray(teamPaymentRotationMembers.teamId, teamIds),
-    ));
-  const eligibleTeamIds = new Set(membership.map((row) => row.teamId));
-  if (eligibleTeamIds.size === 0) return [];
+  // Once a date is confirmed, the append-only assignment is the evidence for
+  // who bowled it. Current league membership and rotation-pool membership are
+  // eligibility inputs for future assignments, but must not hide an existing
+  // open obligation if an administrator removes that eligibility later.
+  const rotatingTeamIds = [...new Set(slots.map((slot) => slot.teamId))];
 
   const occurrences = await tx.select({
     id: leagueOccurrences.id,
@@ -132,16 +111,16 @@ export async function readConfirmedRotatingObligationsForCredit(
     eq(occurrencePaymentResponsibilities.leagueId, scope.leagueId),
     eq(occurrencePaymentResponsibilities.state, "active"),
     inArray(occurrencePaymentResponsibilities.occurrenceId, occurrenceIds),
-    inArray(occurrencePaymentResponsibilities.teamId, [...eligibleTeamIds]),
+    inArray(occurrencePaymentResponsibilities.teamId, rotatingTeamIds),
   ));
-  const rotatingSlotKeys = new Set(slots.filter((slot) => eligibleTeamIds.has(slot.teamId)).map((slot) => `${slot.teamId}:${slot.slotIndex}`));
+  const rotatingSlotKeys = new Set(slots.map((slot) => `${slot.teamId}:${slot.slotIndex}`));
   const currentResponsibilities = responsibilities.filter((row) => rotatingSlotKeys.has(`${row.teamId}:${row.slotIndex}`));
   if (currentResponsibilities.length === 0) return [];
   const assignments = await tx.select().from(rotatingOccurrenceAssignments).where(and(
     eq(rotatingOccurrenceAssignments.organizationId, scope.organizationId),
     eq(rotatingOccurrenceAssignments.leagueId, scope.leagueId),
     inArray(rotatingOccurrenceAssignments.occurrenceId, occurrenceIds),
-    inArray(rotatingOccurrenceAssignments.teamId, [...eligibleTeamIds]),
+    inArray(rotatingOccurrenceAssignments.teamId, rotatingTeamIds),
   )).orderBy(asc(rotatingOccurrenceAssignments.occurrenceId), asc(rotatingOccurrenceAssignments.teamId), asc(rotatingOccurrenceAssignments.slotIndex), desc(rotatingOccurrenceAssignments.version));
   const assignmentByKey = new Map<string, typeof assignments[number]>();
   for (const assignment of assignments) {

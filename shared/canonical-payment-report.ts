@@ -23,7 +23,7 @@ export interface CanonicalPaymentReceiptSummary {
   receiptUrl: string | null;
   receiptNumber: string | null;
   deliveryEvidence: "delivery_not_recorded";
-  source?: "canonical_allocation" | "prepaid_credit" | "unresolved_operation" | null;
+  source?: "canonical_allocation" | "prepaid_credit" | "held_credit" | "refunded_credit" | "unresolved_operation" | null;
   refund?: CanonicalPaymentRefundEvidence;
   dispute?: CanonicalPaymentDisputeEvidence;
   paymentTiming?: CanonicalPaymentTiming;
@@ -134,7 +134,7 @@ export interface CanonicalPaymentRow {
   effectiveAllocatedMinor?: number;
   unallocatedMinor: number;
   reviewRequired: boolean;
-  source: "canonical_allocation" | "prepaid_credit" | "unresolved_operation";
+  source: "canonical_allocation" | "prepaid_credit" | "held_credit" | "refunded_credit" | "unresolved_operation";
   paymentTiming?: CanonicalPaymentTiming;
   refund: CanonicalPaymentRefundEvidence;
   creditRefunds?: CanonicalCreditRefundSummary;
@@ -151,6 +151,21 @@ export interface CanonicalPaymentRow {
   initiatingPayerBowlerId?: number | null;
   /** Safe display-only actor name; never includes email or provider identity. */
   paidByName?: string | null;
+}
+
+/** Selects an F5 source label from the current rotating-credit disposition. */
+export function canonicalCreditFundingSource(input: {
+  amountMinor: number;
+  allocatedMinor: number;
+  completedRefundMinor: number;
+  heldRefundMinor: number;
+}): CanonicalPaymentRow["source"] {
+  if (input.allocatedMinor > 0) return "canonical_allocation";
+  const remainingMinor = input.amountMinor - input.allocatedMinor - input.completedRefundMinor - input.heldRefundMinor;
+  if (remainingMinor > 0) return "prepaid_credit";
+  if (input.heldRefundMinor > 0) return "held_credit";
+  if (input.completedRefundMinor === input.amountMinor) return "refunded_credit";
+  return "canonical_allocation";
 }
 
 export interface CanonicalPaymentTransactionGroup {

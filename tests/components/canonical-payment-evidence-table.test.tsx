@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
+import { canonicalCreditFundingSource } from "@shared/canonical-payment-report";
+import { paymentReceiptContract } from "@shared/payment-receipt";
 import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 
 const { csrfFetchMock } = vi.hoisted(() => ({ csrfFetchMock: vi.fn() }));
@@ -43,6 +45,26 @@ const row = (overrides: Partial<PaymentRowFixture> = {}): PaymentRowFixture => (
 });
 
 describe("CanonicalPaymentEvidenceTable", () => {
+  it("keeps applied credit canonical and distinguishes available, held, and fully refunded lots", () => {
+    expect(canonicalCreditFundingSource({ amountMinor: 2_000, allocatedMinor: 500, completedRefundMinor: 0, heldRefundMinor: 0 }))
+      .toBe("canonical_allocation");
+    expect(canonicalCreditFundingSource({ amountMinor: 2_000, allocatedMinor: 0, completedRefundMinor: 500, heldRefundMinor: 0 }))
+      .toBe("prepaid_credit");
+    expect(canonicalCreditFundingSource({ amountMinor: 2_000, allocatedMinor: 0, completedRefundMinor: 0, heldRefundMinor: 2_000 }))
+      .toBe("held_credit");
+    expect(canonicalCreditFundingSource({ amountMinor: 2_000, allocatedMinor: 0, completedRefundMinor: 2_000, heldRefundMinor: 0 }))
+      .toBe("refunded_credit");
+  });
+
+  it("preserves held and completed credit refund sources in receipt evidence", () => {
+    const heldReceipt = paymentReceiptContract({ receiptUrl: null, receiptNumber: null, source: "held_credit" });
+    const refundedReceipt = paymentReceiptContract({ receiptUrl: "https://receipt.example", receiptNumber: "R-Refunded", source: "refunded_credit" });
+
+    expect(heldReceipt.source).toBe("held_credit");
+    expect(refundedReceipt.source).toBe("refunded_credit");
+    expect(refundedReceipt.availability).toBe("available");
+  });
+
   it("does not show a payment-timing caption under the history title", () => {
     render(<CanonicalPaymentEvidenceTable rows={[row()]} />);
     expect(screen.queryByTestId("payment-timing")).not.toBeInTheDocument();
@@ -166,5 +188,59 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByText("Payment type").parentElement).toHaveTextContent("Cash");
     expect(screen.getByText("Credit application").parentElement).toHaveTextContent("Unused share credit");
     expect(screen.getByRole("button", { name: "Receipt" })).toBeInTheDocument();
+  });
+
+  it("marks a fully refunded unallocated share credit without implying it was applied", async () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 53,
+      status: "confirmed_paid",
+      paymentType: "cash",
+      source: "refunded_credit",
+      unresolved: false,
+      reviewRequired: false,
+      allocatedMinor: 0,
+      unallocatedMinor: 0,
+      allocations: [],
+      refund: { present: true, amountMinor: 2000, providerRefundId: null },
+      creditRefunds: { completedAmountMinor: 2000, heldAmountMinor: 0, reviewRequired: false, providerRefundIds: [] },
+      receipt: { ...row().receipt, source: "refunded_credit", availability: "available", canOpenReceipt: true, receiptUrl: "https://receipt.example", receiptNumber: "R-Refunded-Share" },
+    })]} />);
+
+    expect(screen.getByText("Refunded share credit")).toBeInTheDocument();
+    expect(screen.queryByText("Unused share credit")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Cash").length).toBeGreaterThan(0);
+
+    await fireEvent.click(screen.getByRole("button", { name: "View payment details: Confirmed paid" }));
+    expect(screen.getByText("Credit application").parentElement).toHaveTextContent("Refunded share credit");
+    expect(screen.getByText("This share credit was refunded in full before it was applied to a league date.")).toBeInTheDocument();
+    expect(screen.getByText("Refunded: $20.00")).toBeInTheDocument();
+    expect(screen.queryByText(/Unallocated:/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Receipt" })).toBeInTheDocument();
+  });
+
+  it("marks a fully held credit refund as on hold rather than refunded", async () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 54,
+      status: "review_required",
+      paymentType: "check",
+      source: "held_credit",
+      unresolved: true,
+      reviewRequired: true,
+      allocatedMinor: 0,
+      unallocatedMinor: 0,
+      allocations: [],
+      refund: { present: false, amountMinor: 0, providerRefundId: null },
+      creditRefunds: { completedAmountMinor: 0, heldAmountMinor: 2000, reviewRequired: true, providerRefundIds: [] },
+      receipt: { ...row().receipt, source: "held_credit" },
+    })]} />);
+
+    expect(screen.getByText("Share credit refund on hold")).toBeInTheDocument();
+    expect(screen.queryByText("Refunded share credit")).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "View payment details: Review required" }));
+    expect(screen.getByText("Credit status").parentElement).toHaveTextContent("Refund on hold");
+    expect(screen.getByText(/refund is unresolved/)).toBeInTheDocument();
+    expect(screen.getByText("Refund on hold: $20.00")).toBeInTheDocument();
+    expect(screen.queryByText(/Refunded: \$20\.00/)).not.toBeInTheDocument();
+    expect(screen.getAllByText("Check").length).toBeGreaterThan(0);
   });
 });

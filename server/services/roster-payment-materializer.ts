@@ -4,6 +4,7 @@ import {
   bowlers,
   bowlerLeagues,
   leagueOccurrences,
+  leagueOccurrenceRevisions,
   leagues,
   autopayConsentPartners,
   autopayConsents,
@@ -20,6 +21,7 @@ import {
   paymentOperationRosterSnapshotItems,
   paymentOperationStandingAutopayBindings,
   paymentOperations,
+  rotatingOccurrenceAssignments,
   teamPaymentPolicies,
   teamPaymentSlots,
   teams,
@@ -354,6 +356,18 @@ function sameInstant(left: string, right: string): boolean {
     : left === right;
 }
 
+function sameCanonicalPlacementFromSnapshot(snapshot: unknown, occurrence: typeof leagueOccurrences.$inferSelect): boolean {
+  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) return false;
+  const previous = snapshot as Record<string, unknown>;
+  return previous.authoritativeLocalDate === occurrence.authoritativeLocalDate
+    && previous.authoritativeLocalStartTime === occurrence.authoritativeLocalStartTime
+    && previous.timezone === occurrence.timezone
+    && typeof previous.startAt === "string"
+    && sameInstant(previous.startAt, occurrence.startAt)
+    && previous.selectedUtcOffsetMinutes === occurrence.selectedUtcOffsetMinutes
+    && previous.foldResolution === occurrence.foldResolution;
+}
+
 /** Materialize a single occurrence using the shared batched primitive. */
 export async function materializeRosterPaymentOccurrenceInTransaction(
   tx: PaymentOperationTransaction,
@@ -476,6 +490,33 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
       : [];
   }));
 
+  const placementUnchangedByOccurrence = new Map<string, boolean>();
+  if (mode === "reschedule") {
+    const currentCommandIds = [...new Set(occurrences.map((row) => row.lastCommandId).filter((id): id is string => id !== null))];
+    const revisions = currentCommandIds.length === 0 ? [] : await tx.select({
+      occurrenceId: leagueOccurrenceRevisions.occurrenceId,
+      commandId: leagueOccurrenceRevisions.commandId,
+      revisionNumber: leagueOccurrenceRevisions.revisionNumber,
+      beforeSnapshot: leagueOccurrenceRevisions.beforeSnapshot,
+    }).from(leagueOccurrenceRevisions).where(and(
+      eq(leagueOccurrenceRevisions.organizationId, input.organizationId),
+      eq(leagueOccurrenceRevisions.leagueId, input.leagueId),
+      inArray(leagueOccurrenceRevisions.occurrenceId, occurrences.map((row) => row.id)),
+      inArray(leagueOccurrenceRevisions.commandId, currentCommandIds),
+    )).for("share");
+    const revisionByOccurrence = new Map(revisions.map((revision) => [
+      `${revision.occurrenceId}:${revision.commandId}:${revision.revisionNumber}`,
+      revision,
+    ]));
+    for (const occurrence of occurrences) {
+      const revision = occurrence.lastCommandId === null
+        ? undefined
+        : revisionByOccurrence.get(`${occurrence.id}:${occurrence.lastCommandId}:${occurrence.currentRevision}`);
+      const priorSnapshot = revision?.beforeSnapshot ?? null;
+      placementUnchangedByOccurrence.set(occurrence.id, sameCanonicalPlacementFromSnapshot(priorSnapshot, occurrence));
+    }
+  }
+
   const timingByOccurrence = new Map<string, { dueAt: string; pastDueAt: string }>();
   if (league.paymentMode === "upfront") {
     const firstOccurrence = occurrences[0];
@@ -511,7 +552,8 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
         const currentObligations = current ? obligationsByResponsibility.get(current.id) ?? [] : [];
         const currentIsOverride = current !== undefined && (current.responsibilityKind === "substitute" || current.responsibilityKind === "split");
         const unchanged = current !== undefined && !currentIsOverride && kind !== null
-          && !teamOwnedOpenResponsibilityIds.has(current.id)
+          && (mode === "reschedule" || !teamOwnedOpenResponsibilityIds.has(current.id))
+          && (mode !== "reschedule" || placementUnchangedByOccurrence.get(occurrence.id) === true)
           && current.responsibilityKind === kind
           && current.mainBowlerId === mainBowlerId
           && current.substituteBowlerId === null
@@ -535,14 +577,15 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
           // open/partial obligation in place; it must retain the historical
           // responsibility and every tender allocation attached to it.
           action = currentObligations.length === 0 ? "repair" : "none";
+        } else if (rotatingConversion && mode === "reschedule") {
+          // Identical canonical placement needs no responsibility version,
+          // including when an owner revision makes the usual shape compare
+          // differ. A real placement change proceeds only to the evidence
+          // guard below; settled, assigned, or paid dates remain locked.
+          action = placementUnchangedByOccurrence.get(occurrence.id) === true ? "none" : "reschedule";
         } else if (rotatingConversion && fullySettledCurrent) {
           // Closed historical dates retain their fixed-payer owner.
           action = "none";
-        } else if (rotatingConversion && mode === "reschedule" && !unchanged) {
-          // Keeping the same occurrence ID while changing its date would
-          // otherwise strand an assignment on its old responsibility version.
-          // Require a separate audited correction/reconciliation first.
-          throw new Error("ROTATING_SCHEDULE_EVIDENCE_LOCKED");
         } else if (unchanged) {
           // A responsibility can survive a partial/manual repair without its
           // expected default obligation. Recreate only a wholly absent open
@@ -571,6 +614,58 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
     }
   }
 
+  const rotatingReschedulePlans = plans.filter((plan) => mode === "reschedule"
+    && plan.action === "reschedule"
+    && plan.slot.occupant === "rotating"
+    && plan.current !== undefined
+    && plan.current.responsibilityKind !== "vacant");
+  if (rotatingReschedulePlans.length > 0) {
+    const assignmentRows = await tx.select({
+      occurrenceId: rotatingOccurrenceAssignments.occurrenceId,
+      teamId: rotatingOccurrenceAssignments.teamId,
+      slotIndex: rotatingOccurrenceAssignments.slotIndex,
+    }).from(rotatingOccurrenceAssignments).where(and(
+      eq(rotatingOccurrenceAssignments.organizationId, input.organizationId),
+      eq(rotatingOccurrenceAssignments.leagueId, input.leagueId),
+      inArray(rotatingOccurrenceAssignments.occurrenceId, [...new Set(rotatingReschedulePlans.map((plan) => plan.occurrence.id))]),
+      inArray(rotatingOccurrenceAssignments.teamId, [...new Set(rotatingReschedulePlans.map((plan) => plan.team.id))]),
+      inArray(rotatingOccurrenceAssignments.slotIndex, [...new Set(rotatingReschedulePlans.map((plan) => plan.slot.slotIndex))]),
+    )).for("update");
+    const assignmentKeys = new Set(assignmentRows.map((row) => materializationSlotKey(row.occurrenceId, row.teamId, row.slotIndex, row.slotIndex)));
+    if (rotatingReschedulePlans.some((plan) => assignmentKeys.has(materializationSlotKey(plan.occurrence.id, plan.team.id, plan.slot.slotIndex, plan.slot.slotIndex)))) {
+      throw new Error("ROTATING_SCHEDULE_EVIDENCE_LOCKED");
+    }
+
+    const rotatingObligations = rotatingReschedulePlans.flatMap((plan) => plan.currentObligations);
+    const rotatingObligationIds = [...new Set(rotatingObligations.map((obligation) => obligation.id))];
+    if (rotatingObligations.some((obligation) => obligation.state !== "open")) {
+      throw new Error("ROTATING_SCHEDULE_EVIDENCE_LOCKED");
+    }
+    if (rotatingObligationIds.length > 0) {
+      const allocationEvidence = await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, input.organizationId),
+        eq(paymentAllocations.leagueId, input.leagueId),
+        inArray(paymentAllocations.obligationId, rotatingObligationIds),
+      )).for("update");
+      if (allocationEvidence.length > 0) throw new Error("ROTATING_SCHEDULE_EVIDENCE_LOCKED");
+      await assertOpenRosterEvidenceCanBeReplacedForIds(tx, input, rotatingObligations);
+    }
+
+    const linkedOperations = await tx.select({
+      status: paymentOperations.status,
+      dispatchClaimedAt: paymentOperations.dispatchClaimedAt,
+      providerObjectId: paymentOperations.providerObjectId,
+    }).from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      inArray(paymentOperations.triggerOccurrenceId, [...new Set(rotatingReschedulePlans.map((plan) => plan.occurrence.id))]),
+    )).for("update");
+    if (linkedOperations.some((operation) => operation.dispatchClaimedAt !== null
+      || operation.providerObjectId !== null
+      || ["pending", "leased", "provider_unknown", "retry_scheduled", "succeeded", "action_required", "reconciliation_required"].includes(operation.status))) {
+      throw new Error("ROTATING_SCHEDULE_EVIDENCE_LOCKED");
+    }
+  }
+
   // A current fixed Main responsibility can be converted in place only when
   // its existing liability is one ordinary full-week component. Substitution
   // and split evidence requires an explicit financial reconciliation; silently
@@ -578,7 +673,11 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
   const conversionPlans = plans.filter((plan) => plan.slot.occupant === "rotating"
     && plan.current !== undefined
     && plan.current.responsibilityKind !== "vacant"
-    && mode === "roster");
+    && mode === "roster"
+    && plan.currentObligations.some((obligation) => {
+      const owner = currentOwners.get(obligation.id);
+      return owner?.kind === "bowler" && (obligation.state === "open" || obligation.state === "partially_settled");
+    }));
   for (const plan of conversionPlans) {
     const currentObligations = plan.currentObligations;
     if (plan.current?.responsibilityKind !== "main" && plan.current?.responsibilityKind !== "rotating") {
@@ -591,9 +690,12 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
     if (effectiveObligations.length > 1 || effectiveObligations.some((obligation) => obligation.component !== "full")) {
       throw new Error("ROTATING_CONVERSION_COMPONENTS_UNSUPPORTED");
     }
-    const openObligations = effectiveObligations.filter((obligation) => obligation.state === "open" || obligation.state === "partially_settled");
-    await assertRotatingOwnerConversionEvidenceClear(tx, input, openObligations);
-    for (const obligation of openObligations) {
+    const transitioningObligations = effectiveObligations.filter((obligation) => {
+      const owner = currentOwners.get(obligation.id);
+      return owner?.kind === "bowler" && (obligation.state === "open" || obligation.state === "partially_settled");
+    });
+    await assertRotatingOwnerConversionEvidenceClear(tx, input, transitioningObligations);
+    for (const obligation of transitioningObligations) {
       try {
         await appendTeamPaymentObligationOwnerInTransaction(tx, {
           organizationId: input.organizationId,

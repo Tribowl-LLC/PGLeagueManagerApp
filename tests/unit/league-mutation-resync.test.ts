@@ -53,6 +53,7 @@ import {
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
+import { expectErrorLog } from '../helpers/expected-error-logs';
 
 // ---------------------------------------------------------------------------
 // Storage mock — every method any route OR helper under test reaches into.
@@ -1027,6 +1028,27 @@ describe('PATCH /api/bowler-leagues/:id → fires resync (covers active-flip and
     expect(attrs.leagueName).toBe('');
     expect(attrs.leagueSeason).toBe('');
   });
+
+  it('maps an open confirmed rotating assignment fence to a narrow 409', async () => {
+    const league = makeLeague({ id: 146 });
+    const bowler = makeBowler({ id: 5066 });
+    const existing = { id: 9751, bowlerId: bowler.id, leagueId: league.id, teamId: 277, active: true, order: 0 };
+    mockStorage.getBowlerLeague.mockResolvedValue(existing);
+    mockStorage.getTeam.mockResolvedValue({ id: existing.teamId, leagueId: league.id });
+    mockStorage.updateBowlerLeague.mockRejectedValue(Object.assign(
+      new Error('A bowler with a confirmed rotating date must remain eligible until that date is corrected or settled'),
+      { code: 'ROTATING_MEMBER_HAS_OPEN_ASSIGNMENT', status: 409 },
+    ));
+
+    expectErrorLog('[BowlerLeagues] Error:');
+    const res = await patch(`/api/bowler-leagues/${existing.id}`, { active: false });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      success: false,
+      error: { code: 'ROTATING_MEMBER_HAS_OPEN_ASSIGNMENT' },
+    });
+    expect(mockSyncCustomerLeagueAttributes).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1064,6 +1086,27 @@ describe('DELETE /api/bowler-leagues/:id → fires resync against the pre-captur
     expect(bowlerId).toBe(bowler.id);
     expect(attrs.leagueName).toBe('');
     expect(attrs.leagueSeason).toBe('');
+  });
+
+  it('maps an open confirmed rotating assignment fence to a narrow 409', async () => {
+    const league = makeLeague({ id: 151 });
+    const bowler = makeBowler({ id: 5071 });
+    const existing = { id: 9801, bowlerId: bowler.id, leagueId: league.id, teamId: 281, active: true, order: 0 };
+    mockStorage.getBowlerLeague.mockResolvedValue(existing);
+    mockStorage.getTeam.mockResolvedValue({ id: existing.teamId, leagueId: league.id });
+    mockStorage.deleteBowlerLeague.mockRejectedValue(Object.assign(
+      new Error('A bowler with a confirmed rotating date must remain eligible until that date is corrected or settled'),
+      { code: 'ROTATING_MEMBER_HAS_OPEN_ASSIGNMENT', status: 409 },
+    ));
+
+    expectErrorLog('[BowlerLeagues] Error:');
+    const res = await del(`/api/bowler-leagues/${existing.id}`);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      success: false,
+      error: { code: 'ROTATING_MEMBER_HAS_OPEN_ASSIGNMENT' },
+    });
+    expect(mockSyncCustomerLeagueAttributes).not.toHaveBeenCalled();
   });
 });
 

@@ -5,10 +5,13 @@ import {
   isConfirmedNoRefundCreditOutcome,
   isProviderRefundRetryBlocked,
   isRotatingCreditProviderRefundAvailable,
+  isRotatingCreditRefundUnresolvedForReversal,
   isSquareCreditRefundDeclined,
   isRotatingCreditRefundHeldStatus,
+  previewRotatingCreditApplications,
   spendableRotatingCreditObligationPrefix,
 } from "../../server/services/rotating-credit-applications.js";
+import { isConfirmedNoChargeDecline } from "@shared/rotating-credit-contract";
 
 const applicationSource = readFileSync(new URL("../../server/services/rotating-credit-applications.ts", import.meta.url), "utf8");
 const creditSource = readFileSync(new URL("../../server/services/rotating-credit.ts", import.meta.url), "utf8");
@@ -45,6 +48,39 @@ describe("rotating credit ledger safety guards", () => {
       .toEqual([firstDate]);
     expect(spendableRotatingCreditObligationPrefix([disputedSecondDate, laterDate]))
       .toEqual([]);
+  });
+
+  it("stops quote previews at the same review boundary as credit application", () => {
+    const candidates = [
+      { obligationId: "a", occurrenceId: "occ-a", occurrenceLocalDate: "2038-02-01", teamId: 1, slotIndex: 0, outstandingMinor: 400, reviewRequired: false },
+      { obligationId: "b", occurrenceId: "occ-b", occurrenceLocalDate: "2038-02-08", teamId: 1, slotIndex: 0, outstandingMinor: 600, reviewRequired: false },
+      { obligationId: "c", occurrenceId: "occ-c", occurrenceLocalDate: "2038-02-15", teamId: 1, slotIndex: 0, outstandingMinor: 500, reviewRequired: true },
+      { obligationId: "d", occurrenceId: "occ-d", occurrenceLocalDate: "2038-02-22", teamId: 1, slotIndex: 0, outstandingMinor: 300, reviewRequired: false },
+    ];
+
+    const preview = previewRotatingCreditApplications(candidates, 700);
+    expect(preview).toEqual([
+      { obligationId: "a", occurrenceId: "occ-a", occurrenceLocalDate: "2038-02-01", teamId: 1, slotIndex: 0, amountMinor: 400 },
+      { obligationId: "b", occurrenceId: "occ-b", occurrenceLocalDate: "2038-02-08", teamId: 1, slotIndex: 0, amountMinor: 300 },
+    ]);
+    expect(preview.some((row) => row.obligationId === "d")).toBe(false);
+    expect(preview.reduce((sum, row) => sum + row.amountMinor, 0)).toBe(700);
+  });
+
+  it("marks only a hard decline with no provider object or linked payment as no charge", () => {
+    const evidence = {
+      status: "action_required" as const,
+      errorClassification: "hard_decline",
+      providerObjectId: null,
+      paymentId: null,
+    };
+    expect(isConfirmedNoChargeDecline(evidence)).toBe(true);
+    expect(isConfirmedNoChargeDecline({ ...evidence, status: "provider_unknown" })).toBe(false);
+    expect(isConfirmedNoChargeDecline({ ...evidence, providerObjectId: "sq-payment" })).toBe(false);
+    expect(isConfirmedNoChargeDecline({ ...evidence, paymentId: 23 })).toBe(false);
+    expect(isConfirmedNoChargeDecline({ ...evidence, errorClassification: "provider_unknown" })).toBe(false);
+    expect(creditSource).toContain("confirmedNoChargeDecline: classifyNoChargeDecline({");
+    expect(creditSource).toContain("paymentId: payment?.id ?? null");
   });
 
   it("reapplies released credit to a previously confirmed bowler after assignment correction", () => {
@@ -132,6 +168,29 @@ describe("rotating credit ledger safety guards", () => {
       errorClassification: "hard_decline",
       errorCode: "CARD_DECLINED",
     })).toBe(false);
+  });
+
+  it("allows reversal after a confirmed refund decline but holds ambiguous action-required outcomes", () => {
+    const confirmedDecline = {
+      status: "action_required",
+      providerObjectId: null,
+      errorClassification: "hard_decline",
+      errorCode: "REFUND_DECLINED",
+    };
+    const ambiguousActionRequired = {
+      status: "action_required",
+      providerObjectId: null,
+      errorClassification: "hard_decline",
+      errorCode: "CARD_DECLINED",
+    };
+    const reversalStart = applicationSource.indexOf("export async function reverseRotatingCreditApplicationsForAssignmentChangeInTransaction");
+    const reversalSource = applicationSource.slice(reversalStart);
+
+    expect(isConfirmedNoRefundCreditOutcome(confirmedDecline)).toBe(true);
+    expect(isRotatingCreditRefundUnresolvedForReversal(confirmedDecline)).toBe(false);
+    expect(isConfirmedNoRefundCreditOutcome(ambiguousActionRequired)).toBe(false);
+    expect(isRotatingCreditRefundUnresolvedForReversal(ambiguousActionRequired)).toBe(true);
+    expect(reversalSource).toContain("isRotatingCreditRefundUnresolvedForReversal(row.operation)");
   });
 
   it("offers provider refunds only for verified Square card tenders with no terminal retry block", () => {
