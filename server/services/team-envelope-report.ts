@@ -30,9 +30,11 @@ export interface TeamEnvelopeReportRow {
   bowlerName: string;
   ownerKind?: "bowler" | "team";
   slotIndex?: number;
-  weeklyBowlingFeesMinor: number;
+  weeklyDueMinor: number;
   ytdDueMinor: number;
   ytdPaidMinor: number;
+  remainingCreditMinor: number;
+  pastDueMinor: number;
   dueTodayMinor: number;
   finalWeekPaid: boolean;
 }
@@ -96,11 +98,16 @@ function billedOccurrences(schedule: LeagueOccurrenceScheduleReadContract): Leag
   return schedule.occurrences.filter((occurrence) => occurrence.billing?.obligationPolicy === "eligible_bowlers");
 }
 
-function finalDoublePayLocalDate(
+interface FinalDoublePayEvidence {
+  triggerOccurrenceId: string;
+  triggerLocalDate: string;
+}
+
+function finalDoublePayEvidence(
   schedule: LeagueOccurrenceScheduleReadContract,
   finalOccurrence: LeagueOccurrenceScheduleOccurrence,
-): string | null {
-  const candidates = schedule.occurrences.flatMap((occurrence) => (
+): FinalDoublePayEvidence | null {
+  const triggerCandidates = schedule.occurrences.flatMap((occurrence) => (
     (occurrence.collectionGroups ?? [])
       .filter((group) => (
         group.kind === "double_pay"
@@ -110,35 +117,72 @@ function finalDoublePayLocalDate(
       ))
       .map((group) => ({ occurrence, group }))
   ));
-  if (candidates.length > 1) {
+  const pairedCandidates = (finalOccurrence.collectionGroups ?? [])
+    .filter((group) => (
+      group.kind === "double_pay"
+      && group.role === "paired"
+      && group.state === "published"
+    ));
+  if (triggerCandidates.length > 1 || pairedCandidates.length > 1) {
     throw new TeamEnvelopeReportError(
       "FINAL_WEEK_DOUBLE_PAY_INVALID",
       "Canonical schedule evidence contains multiple double-pay weeks for the final bowling week",
       503,
     );
   }
-  const candidate = candidates[0];
-  if (!candidate) return null;
-  if (candidate.group.pairedLocalDate !== finalOccurrence.authoritativeLocalDate) {
+  const triggerCandidate = triggerCandidates[0];
+  const pairedCandidate = pairedCandidates[0];
+  let evidence: FinalDoublePayEvidence | null = triggerCandidate
+    ? {
+      triggerOccurrenceId: triggerCandidate.occurrence.occurrenceId,
+      triggerLocalDate: triggerCandidate.occurrence.authoritativeLocalDate,
+    }
+    : null;
+  if (triggerCandidate && triggerCandidate.group.pairedLocalDate !== finalOccurrence.authoritativeLocalDate) {
     throw new TeamEnvelopeReportError(
       "FINAL_WEEK_DOUBLE_PAY_INVALID",
       "Canonical final-week double-pay evidence has an inconsistent paired date",
       503,
     );
   }
-  return candidate.occurrence.authoritativeLocalDate;
+  if (pairedCandidate) {
+    const triggerOccurrence = schedule.occurrences.find((occurrence) => occurrence.occurrenceId === pairedCandidate.pairedOccurrenceId);
+    if (!triggerOccurrence || pairedCandidate.pairedLocalDate !== triggerOccurrence.authoritativeLocalDate) {
+      throw new TeamEnvelopeReportError(
+        "FINAL_WEEK_DOUBLE_PAY_INVALID",
+        "Canonical final-week double-pay evidence has an inconsistent paired date",
+        503,
+      );
+    }
+    if (evidence && evidence.triggerOccurrenceId !== triggerOccurrence.occurrenceId) {
+      throw new TeamEnvelopeReportError(
+        "FINAL_WEEK_DOUBLE_PAY_INVALID",
+        "Canonical schedule evidence contains inconsistent double-pay pairing for the final bowling week",
+        503,
+      );
+    }
+    evidence = {
+      triggerOccurrenceId: triggerOccurrence.occurrenceId,
+      triggerLocalDate: triggerOccurrence.authoritativeLocalDate,
+    };
+  }
+  return evidence;
+}
+
+function publishedPairedOccurrenceIds(schedule: LeagueOccurrenceScheduleReadContract): Set<string> {
+  const pairedOccurrenceIds = new Set<string>();
+  for (const occurrence of schedule.occurrences) {
+    for (const group of occurrence.collectionGroups ?? []) {
+      if (group.kind !== "double_pay" || group.state !== "published") continue;
+      if (group.role === "trigger") pairedOccurrenceIds.add(group.pairedOccurrenceId);
+      if (group.role === "paired") pairedOccurrenceIds.add(occurrence.occurrenceId);
+    }
+  }
+  return pairedOccurrenceIds;
 }
 
 function effectiveAmountMinor(row: FinancialReportRow): number {
   return row.state === "voided" ? 0 : Math.max(0, row.amountMinor - row.waivedMinor);
-}
-
-function cutoffForOccurrence(occurrence: LeagueOccurrenceScheduleOccurrence, rows: FinancialReportRow[]): number {
-  const dueTimes = rows
-    .filter((row) => row.occurrenceId === occurrence.occurrenceId && row.state !== "voided")
-    .map((row) => new Date(row.dueAt).getTime())
-    .filter(Number.isFinite);
-  return dueTimes.length > 0 ? Math.max(...dueTimes) : new Date(occurrence.startAt).getTime();
 }
 
 function effectiveBowlerOwnerId(row: FinancialReportRow): number | null {
@@ -153,6 +197,41 @@ function teamOwnedSlotRows(rows: FinancialReportRow[], teamId: number, slotIndex
     && row.owner.teamId === teamId
     && row.slotIndex === slotIndex
   ));
+}
+
+function envelopeAmounts(
+  obligations: FinancialReportRow[],
+  occurrencePosition: ReadonlyMap<string, number>,
+  selectedOccurrenceId: string,
+  selectedPosition: number,
+  futurePairedOccurrenceIds: ReadonlySet<string>,
+): Pick<TeamEnvelopeReportRow, "weeklyDueMinor" | "ytdDueMinor" | "ytdPaidMinor" | "remainingCreditMinor" | "pastDueMinor" | "dueTodayMinor"> {
+  // Canonical occurrence order is authoritative here. Due timestamps can be
+  // shared by upfront obligations and do not express the league's week order.
+  const selectedRows = obligations.filter((row) => row.occurrenceId === selectedOccurrenceId);
+  const priorRows = obligations.filter((row) => {
+    const position = occurrencePosition.get(row.occurrenceId);
+    return position !== undefined && position < selectedPosition;
+  });
+  const weeklyDueMinor = selectedRows.reduce((sum, row) => sum + effectiveAmountMinor(row), 0);
+  const ytdDueMinor = priorRows.reduce((sum, row) => sum + effectiveAmountMinor(row), 0);
+  const ytdPaidMinor = obligations.reduce((sum, row) => sum + Math.max(0, row.allocatedMinor), 0);
+  // Allocations applied to a future published paired week stay earmarked for
+  // that week. Current and past paired weeks are available in the balance.
+  const futurePairedReservedMinor = obligations
+    .filter((row) => futurePairedOccurrenceIds.has(row.occurrenceId))
+    .reduce((sum, row) => sum + Math.max(0, row.allocatedMinor), 0);
+  const remainingCreditMinor = Math.max(0, ytdPaidMinor - futurePairedReservedMinor - ytdDueMinor);
+  const pastDueMinor = priorRows.reduce((sum, row) => sum + Math.max(0, row.outstandingMinor), 0);
+  const dueTodayMinor = pastDueMinor + selectedRows.reduce((sum, row) => sum + Math.max(0, row.outstandingMinor), 0);
+  return {
+    weeklyDueMinor,
+    ytdDueMinor,
+    ytdPaidMinor,
+    remainingCreditMinor,
+    pastDueMinor,
+    dueTodayMinor,
+  };
 }
 
 export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnvelopeReport {
@@ -184,11 +263,19 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
   const selectedOccurrence = occurrences.find((occurrence) => occurrence.authoritativeLocalDate >= reportLocalDate)
     ?? occurrences[occurrences.length - 1];
   const finalOccurrence = occurrences[occurrences.length - 1];
-  const finalWeekFeesDueLocalDate = finalDoublePayLocalDate(schedule, finalOccurrence);
-  const selectedCutoff = cutoffForOccurrence(selectedOccurrence, financial.rows);
-  if (!Number.isFinite(selectedCutoff)) {
-    throw new TeamEnvelopeReportError("REPORT_DATE_INVALID", "The selected bowling week has an invalid due date", 503);
+  const finalDoublePay = finalDoublePayEvidence(schedule, finalOccurrence);
+  const finalWeekFeesDueLocalDate = finalDoublePay?.triggerLocalDate ?? null;
+  const occurrencePosition = new Map(occurrences.map((occurrence, index) => [occurrence.occurrenceId, index]));
+  const selectedPosition = occurrencePosition.get(selectedOccurrence.occurrenceId);
+  if (selectedPosition === undefined || occurrencePosition.get(finalOccurrence.occurrenceId) === undefined) {
+    throw new TeamEnvelopeReportError("REPORT_DATE_INVALID", "The selected bowling week has invalid canonical order evidence", 503);
   }
+  const futurePairedOccurrenceIds = new Set(
+    [...publishedPairedOccurrenceIds(schedule)].filter((occurrenceId) => {
+      const position = occurrencePosition.get(occurrenceId);
+      return position !== undefined && position > selectedPosition;
+    }),
+  );
 
   const bowlerNames = new Map(roster.substituteBowlerOptions.map((bowler) => [bowler.id, bowler.name]));
   const mainBowlerIds = new Set(
@@ -222,19 +309,18 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
           throw new TeamEnvelopeReportError("ROSTER_IDENTITY_MISSING", "An active lineup member is missing a bowler identity", 503);
         }
         const obligations = financial.rows.filter((row) => effectiveBowlerOwnerId(row) === slot.mainBowlerId && row.state !== "voided");
-        const selectedRows = obligations.filter((row) => row.occurrenceId === selectedOccurrence.occurrenceId);
         const finalRows = obligations.filter((row) => row.occurrenceId === finalOccurrence.occurrenceId);
+        const amounts = envelopeAmounts(
+          obligations,
+          occurrencePosition,
+          selectedOccurrence.occurrenceId,
+          selectedPosition,
+          futurePairedOccurrenceIds,
+        );
         return [{
           bowlerId: slot.mainBowlerId,
           bowlerName,
-          weeklyBowlingFeesMinor: selectedRows.reduce((sum, row) => sum + effectiveAmountMinor(row), 0),
-          ytdDueMinor: obligations
-            .filter((row) => new Date(row.dueAt).getTime() < selectedCutoff)
-            .reduce((sum, row) => sum + effectiveAmountMinor(row), 0),
-          ytdPaidMinor: obligations.reduce((sum, row) => sum + row.allocatedMinor, 0),
-          dueTodayMinor: obligations
-            .filter((row) => new Date(row.dueAt).getTime() <= selectedCutoff)
-            .reduce((sum, row) => sum + row.outstandingMinor, 0),
+          ...amounts,
           finalWeekPaid: finalRows.every((row) => row.outstandingMinor === 0),
         }];
       }
@@ -242,6 +328,13 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
         const obligations = teamOwnedSlotRows(financial.rows, team.id, slot.slotIndex).filter((row) => row.state !== "voided");
         const selectedRows = obligations.filter((row) => row.occurrenceId === selectedOccurrence.occurrenceId);
         const finalRows = obligations.filter((row) => row.occurrenceId === finalOccurrence.occurrenceId);
+        const amounts = envelopeAmounts(
+          obligations,
+          occurrencePosition,
+          selectedOccurrence.occurrenceId,
+          selectedPosition,
+          futurePairedOccurrenceIds,
+        );
         const actualBowlerId = selectedRows.find((row) => row.actualBowlerId !== null)?.actualBowlerId ?? null;
         const actualBowlerName = actualBowlerId === null ? null : bowlerNames.get(actualBowlerId);
         if (actualBowlerId !== null && !actualBowlerName) {
@@ -252,14 +345,7 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
           bowlerName: actualBowlerName ? `Rotating slot ${slot.slotIndex + 1} · ${actualBowlerName}` : `Rotating slot ${slot.slotIndex + 1}`,
           ownerKind: "team",
           slotIndex: slot.slotIndex,
-          weeklyBowlingFeesMinor: selectedRows.reduce((sum, row) => sum + effectiveAmountMinor(row), 0),
-          ytdDueMinor: obligations
-            .filter((row) => new Date(row.dueAt).getTime() < selectedCutoff)
-            .reduce((sum, row) => sum + effectiveAmountMinor(row), 0),
-          ytdPaidMinor: obligations.reduce((sum, row) => sum + row.allocatedMinor, 0),
-          dueTodayMinor: obligations
-            .filter((row) => new Date(row.dueAt).getTime() <= selectedCutoff)
-            .reduce((sum, row) => sum + row.outstandingMinor, 0),
+          ...amounts,
           finalWeekPaid: finalRows.length > 0 && finalRows.every((row) => row.outstandingMinor === 0),
         }];
       }
@@ -344,18 +430,18 @@ function pdfCreationDate(instant: string): string {
 }
 
 function teamPage(report: TeamEnvelopeReport, team: TeamEnvelopeReportTeam, index: number): string {
-  const finalHeader = team.showFinalWeekPaid ? "<th><span class=\"heading-label\">Final Week&#39;s Paid</span></th>" : "";
   const body = team.rows.length > 0
     ? team.rows.map((row) => `<tr>
         <td class="bowler">${escapeHtml(row.bowlerName)}</td>
-        <td>${money(row.weeklyBowlingFeesMinor)}</td>
         <td>${money(row.ytdDueMinor)}</td>
         <td>${money(row.ytdPaidMinor)}</td>
+        <td>${money(row.remainingCreditMinor)}</td>
+        <td>${money(row.weeklyDueMinor)}</td>
+        <td>${money(row.pastDueMinor)}</td>
         <td class="due">${money(row.dueTodayMinor)}</td>
-        ${team.showFinalWeekPaid ? `<td class="yn">${row.finalWeekPaid ? "Y" : "N"}</td>` : ""}
         <td class="paid-today"><span class="write-line">&nbsp;</span></td>
       </tr>`).join("")
-    : `<tr><td class="empty" colspan="${team.showFinalWeekPaid ? 7 : 6}">No assigned bowlers</td></tr>`;
+    : `<tr><td class="empty" colspan="8">No assigned bowlers</td></tr>`;
   const finalNote = team.showFinalWeekPaid && report.finalWeekFeesDueLocalDate
     ? `<p class="note">Final Week&#39;s Fees due by ${escapeHtml(displayDate(report.finalWeekFeesDueLocalDate))}</p>`
     : "";
@@ -374,11 +460,12 @@ function teamPage(report: TeamEnvelopeReport, team: TeamEnvelopeReportTeam, inde
       <table>
         <thead><tr>
           <th class="bowler"></th>
-          <th><span class="heading-label">Weekly Bowling Fees</span></th>
           <th><span class="heading-label">YTD Due</span></th>
           <th><span class="heading-label">YTD Paid</span></th>
+          <th><span class="heading-label">Remaining Credit</span></th>
+          <th><span class="heading-label">Weekly Due</span></th>
+          <th><span class="heading-label">Past Due</span></th>
           <th><span class="heading-label">Due Today</span></th>
-          ${finalHeader}
           <th><span class="heading-label">Paid Today</span></th>
         </tr></thead>
         <tbody>${body}</tbody>
@@ -408,7 +495,6 @@ const pdfCss = `
   .bowler { text-align: left; }
   td.bowler { font-weight: 400; }
   .due { font-weight: 400; }
-  .yn { font-size: 16px; font-weight: 700; }
   .write-line { display: block; width: 82%; height: 15px; margin: 0 auto; border-bottom: 1px solid #000; }
   .empty { height: 52px; color: #4b5563; font-style: italic; }
   .note { margin: 12px 0 0; font-size: 10px; color: #4b5563; }

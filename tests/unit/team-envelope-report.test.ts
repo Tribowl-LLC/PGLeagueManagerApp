@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { FinancialReadRowContract } from "../../shared/financial-contract";
+import type { FinancialReadRowContract, FinancialReadRowContractV3 } from "../../shared/financial-contract";
 import type { LeagueOccurrenceScheduleOccurrence } from "../../shared/league-occurrence-schedule";
 
 vi.mock("../../server/storage/index.js", () => ({ storage: {} }));
@@ -55,8 +55,9 @@ function financialRow(
   dueAt: string,
   allocatedMinor: number,
   teamId: number,
+  amountMinor = 2_000,
 ): FinancialReadRowContract {
-  const outstandingMinor = 2_000 - allocatedMinor;
+  const outstandingMinor = amountMinor - allocatedMinor;
   return {
     id: `obligation-${bowlerId}-${occurrenceId}`,
     organizationId: 11,
@@ -66,7 +67,7 @@ function financialRow(
     teamId,
     component: "full",
     payerBowlerId: bowlerId,
-    amountMinor: 2_000,
+    amountMinor,
     currency: "USD",
     dueAt,
     pastDueAt: dueAt,
@@ -80,6 +81,97 @@ function financialRow(
     classification: outstandingMinor === 0 ? "settled" : "due",
     reviewRequired: false,
   };
+}
+
+function weekThreeFourSeventyDollarInput(): BuildInput {
+  const input = reportInput();
+  const occurrences = [
+    occurrence("week-1", "2026-09-09", 1),
+    occurrence("week-2", "2026-09-16", 2),
+    occurrence("week-3", "2026-09-23", 3),
+    occurrence("week-4", "2026-09-30", 4),
+    occurrence("week-5", "2026-10-07", 5),
+  ];
+  occurrences[3].collectionGroups = [{
+    groupId: "double-pay-4",
+    groupOrdinal: 1,
+    kind: "double_pay",
+    role: "trigger",
+    pairedOccurrenceId: "week-5",
+    pairedLocalDate: "2026-10-07",
+    state: "published",
+    currentRevision: 1,
+  }];
+  occurrences[4].collectionGroups = [{
+    groupId: "double-pay-4",
+    groupOrdinal: 1,
+    kind: "double_pay",
+    role: "paired",
+    pairedOccurrenceId: "week-4",
+    pairedLocalDate: "2026-09-30",
+    state: "published",
+    currentRevision: 1,
+  }];
+  const dueAt = occurrences.map((item) => `${item.authoritativeLocalDate}T22:30:00.000Z`);
+  const allocations = [2_000, 2_000, 2_000, 1_000, 0];
+  const rows = occurrences.map((item, index) => financialRow(101, item.occurrenceId, dueAt[index], allocations[index], 10, 2_000));
+  input.schedule.occurrences = occurrences;
+  input.roster.occurrences = occurrences.map((item) => ({ id: item.occurrenceId, startAt: item.startAt, status: item.status }));
+  input.financial.asOf = "2026-09-23T16:00:00.000Z";
+  input.financial.rows = rows;
+  input.financial.totals = {
+    amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+    allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+    outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+    collectiblePastDueMinor: 0,
+    reviewCount: 0,
+    settledCount: rows.filter((row) => row.state === "settled").length,
+    voidedCount: 0,
+  };
+  return input;
+}
+
+function fiveWeekFinalPartialPaymentInput(): BuildInput {
+  const input = reportInput();
+  const localDates = ["2026-09-09", "2026-09-16", "2026-09-23", "2026-09-30", "2026-10-07", "2026-10-14"];
+  const occurrences = localDates.map((localDate, index) => occurrence(`week-${index + 1}`, localDate, index + 1));
+  occurrences[4].collectionGroups = [{
+    groupId: "double-pay-5",
+    groupOrdinal: 1,
+    kind: "double_pay",
+    role: "trigger",
+    pairedOccurrenceId: "week-6",
+    pairedLocalDate: occurrences[5].authoritativeLocalDate,
+    state: "published",
+    currentRevision: 1,
+  }];
+  occurrences[5].collectionGroups = [{
+    groupId: "double-pay-5",
+    groupOrdinal: 1,
+    kind: "double_pay",
+    role: "paired",
+    pairedOccurrenceId: "week-5",
+    pairedLocalDate: occurrences[4].authoritativeLocalDate,
+    state: "published",
+    currentRevision: 1,
+  }];
+  const dueAt = occurrences.map((item) => `${item.authoritativeLocalDate}T22:30:00.000Z`);
+  const allocations = [2_000, 2_000, 2_000, 2_000, 0, 2_000];
+  const rows = occurrences.map((item, index) => financialRow(101, item.occurrenceId, dueAt[index], allocations[index], 10, 2_000));
+  input.schedule.occurrences = occurrences;
+  input.roster.occurrences = occurrences.map((item) => ({ id: item.occurrenceId, startAt: item.startAt, status: item.status }));
+  input.financial.asOf = "2026-10-02T16:00:00.000Z";
+  input.financial.rows = rows;
+  input.financial.totals = {
+    amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+    allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+    outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+    collectiblePastDueMinor: 0,
+    reviewCount: 0,
+    settledCount: rows.filter((row) => row.state === "settled").length,
+    voidedCount: 0,
+  };
+  return input;
 }
 
 function reportInput(): BuildInput {
@@ -202,19 +294,112 @@ describe("team envelope report", () => {
     expect(report.teams[0]).toMatchObject({ teamNumber: 1, showFinalWeekPaid: true });
     expect(report.teams[0].rows[0]).toMatchObject({
       bowlerName: "Jillian Example",
-      weeklyBowlingFeesMinor: 2_000,
+      weeklyDueMinor: 2_000,
       ytdDueMinor: 2_000,
       ytdPaidMinor: 0,
+      remainingCreditMinor: 0,
+      pastDueMinor: 2_000,
       dueTodayMinor: 4_000,
       finalWeekPaid: false,
     });
     expect(report.teams[0].rows[1]).toMatchObject({
       ytdDueMinor: 2_000,
       ytdPaidMinor: 6_000,
+      remainingCreditMinor: 2_000,
+      pastDueMinor: 0,
       dueTodayMinor: 0,
       finalWeekPaid: true,
     });
     expect(report.teams[1]).toMatchObject({ teamNumber: 2, showFinalWeekPaid: false });
+  });
+
+  it("uses canonical week order for week 3/week 4 $70 payments", () => {
+    const input = weekThreeFourSeventyDollarInput();
+    const week3 = buildTeamEnvelopeReport(input).teams[0].rows[0];
+
+    expect(week3).toMatchObject({
+      weeklyDueMinor: 2_000,
+      ytdDueMinor: 4_000,
+      ytdPaidMinor: 7_000,
+      remainingCreditMinor: 3_000,
+      pastDueMinor: 0,
+      dueTodayMinor: 0,
+    });
+
+    input.financial.asOf = "2026-09-30T16:00:00.000Z";
+    const week4 = buildTeamEnvelopeReport(input).teams[0].rows[0];
+    expect(week4).toMatchObject({
+      weeklyDueMinor: 2_000,
+      ytdDueMinor: 6_000,
+      ytdPaidMinor: 7_000,
+      remainingCreditMinor: 1_000,
+      pastDueMinor: 0,
+      dueTodayMinor: 1_000,
+    });
+  });
+
+  it("reports prior outstanding obligations separately", () => {
+    const input = weekThreeFourSeventyDollarInput();
+    const firstWeek = input.financial.rows.find((row) => row.occurrenceId === "week-1");
+    if (!firstWeek) throw new Error("missing week 1 fixture");
+    firstWeek.allocatedMinor = 0;
+    firstWeek.grossAllocatedMinor = 0;
+    firstWeek.outstandingMinor = 2_000;
+    firstWeek.stillOwed = true;
+    firstWeek.state = "open";
+    firstWeek.classification = "past_due";
+
+    const row = buildTeamEnvelopeReport(input).teams[0].rows[0];
+    expect(row).toMatchObject({ pastDueMinor: 2_000, dueTodayMinor: 2_000 });
+  });
+
+  it("applies the same envelope amounts to an owner-aware rotating slot", () => {
+    const input = weekThreeFourSeventyDollarInput();
+    const team = input.roster.teams.find((candidate) => candidate.id === 20);
+    if (!team) throw new Error("missing rotating team fixture");
+    team.slots[0] = { teamId: 20, slotIndex: 0, occupant: "rotating", mainBowlerId: null };
+    Object.assign(team, { eligibleRotatingBowlerIds: [201] });
+    const rows: FinancialReadRowContractV3[] = input.financial.rows.map((row, index) => ({
+      ...row,
+      teamId: 20,
+      payerBowlerId: null,
+      owner: { kind: "team", teamId: 20 },
+      slotIndex: 0,
+      actualBowlerId: 201,
+      occurrenceLocalDate: input.schedule.occurrences[index].authoritativeLocalDate,
+      plannedOrdinal: index + 1,
+      billingOrdinal: index + 1,
+    }));
+    input.financial = {
+      ...input.financial,
+      contractVersion: "canonical-due-past-due/3",
+      orderVersion: "due-at,owner,occurrence,obligation/3",
+      rows,
+    };
+
+    const row = buildTeamEnvelopeReport(input).teams.find((candidate) => candidate.teamId === 20)?.rows[0];
+    expect(row).toMatchObject({
+      bowlerName: "Rotating slot 1 · Morgan Example",
+      weeklyDueMinor: 2_000,
+      ytdDueMinor: 4_000,
+      ytdPaidMinor: 7_000,
+      remainingCreditMinor: 3_000,
+      dueTodayMinor: 0,
+    });
+  });
+
+  it("shows a partial payment toward a future final week as reserved credit", () => {
+    const input = fiveWeekFinalPartialPaymentInput();
+    const row = buildTeamEnvelopeReport(input).teams[0].rows[0];
+
+    expect(row).toMatchObject({
+      weeklyDueMinor: 2_000,
+      ytdDueMinor: 8_000,
+      ytdPaidMinor: 10_000,
+      remainingCreditMinor: 0,
+      pastDueMinor: 0,
+      dueTodayMinor: 2_000,
+    });
   });
 
   it("fails closed when an active lineup member has unresolved financial review", () => {
