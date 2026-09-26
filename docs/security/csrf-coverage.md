@@ -81,7 +81,7 @@ appears in `EXEMPT_PATHS`.
 | Mount | Covered by global? | Notes |
 |-------|--------------------|-------|
 | `app.post('/api/logout', ...)` (legacy alias) | Yes | Defined in `server/routes/index.ts`. |
-| `/api/auth/*` | Yes | EXEMPT entries listed above. `POST /auth/logout` and `POST /auth/claim-bowler` additionally apply `csrfProtection` directly (defense-in-depth — harmless redundancy). |
+| `/api/auth/*` | Yes | EXEMPT entries listed above. `POST /auth/logout` additionally applies `csrfProtection` directly (defense-in-depth — harmless redundancy). |
 | `/api/account/*` | Yes | Two EXEMPT entries (`request-deletion`, `confirm-email-change`); all other PATCH/POST/DELETE — including the audit-flagged `PATCH /profile/:id` and `POST /change-password` — go through the global mount. |
 | `/api/setup/*` | Yes (with EXEMPT entries) | Both bootstrap endpoints are exempt; setup-secret header is the auth factor. |
 | `/api/leagues`, `/api/teams`, `/api/bowlers`, `/api/payments`, `/api/scores`, `/api/games`, `/api/payments-provider`, `/api/admin`, `/api/organizations`, `/api/org-admin`, `/api/user-bowlers`, `/api/system-admin`, `/api/user`, `/api/locations`, `/api/payment-schedules`, `/api/search` | Yes | All mounted under `/api`. None are in `EXEMPT_PATHS`. |

@@ -22,7 +22,6 @@ import { cacheInvalidate } from "../utils/cache.js";
 import { createSharedRateLimitStore } from "../utils/rate-limit-store";
 import {
   linkUserToBowler as linkIdentityUserToBowler,
-  isIdentityLinkError,
 } from "../services/identity-link.js";
 import { notifyPaymentSyncRetryChanged } from "../services/payment-sync-retry-scheduler";
 import {
@@ -666,18 +665,6 @@ const forgotPasswordLimiter = rateLimit({
   message: {
     success: false,
     error: { message: "Too many password reset requests, please try again later", code: "RATE_LIMITED" },
-  },
-});
-
-const claimLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  store: createSharedRateLimitStore('claim'),
-  message: {
-    success: false,
-    error: { message: "Too many requests, please try again later", code: "RATE_LIMITED" },
   },
 });
 
@@ -1660,90 +1647,6 @@ export function registerAuthRoutes(app: Express): void {
     } catch (error) {
       log.error('Forgot password request failed', { errorType: error instanceof Error ? error.name : 'unknown' });
       sendError(res, "Something went wrong", 500, "SERVER_ERROR");
-    }
-  });
-
-  authRouter.post("/claim-bowler", claimLimiter, csrfProtection, async (req, res) => {
-    try {
-      if (!req.isAuthenticated() || !req.user) {
-        return sendError(res, "Not authenticated", 401, "AUTH_REQUIRED");
-      }
-
-      const user = req.user as SelectUser;
-
-      if (await hasActiveIdentitySecurityHold(user.id)) {
-        return sendError(res, "This account is temporarily restricted while a profile-security report is reviewed.", 423, "IDENTITY_SECURITY_HOLD");
-      }
-
-      if (user.bowlerId) {
-        return sendError(res, "You are already linked to a bowler", 400, "ALREADY_LINKED");
-      }
-
-      const { bowlerId } = req.body;
-      if (!bowlerId || typeof bowlerId !== 'number') {
-        return sendError(res, "Valid bowler ID is required", 400, "VALIDATION_ERROR");
-      }
-
-      const bowler = await storage.getBowler(bowlerId);
-      if (!bowler) {
-        return sendError(res, "Bowler not found", 404, "NOT_FOUND");
-      }
-
-      // Org membership gate.
-      if (!user.organizationId || bowler.organizationId !== user.organizationId) {
-        return sendError(res, "You don't have access to this bowler", 403, "FORBIDDEN");
-      }
-
-      // Email ownership proof — required for all targets, including blank-email
-      // bowlers. Without an email match, there is no shared secret to verify
-      // the caller owns this profile. An admin must set the bowler's email first.
-      if (!bowler.email || bowler.email.trim() === '') {
-        return sendError(res, "This bowler profile has no email address on record. Please contact your league administrator to link your account.", 403, "FORBIDDEN");
-      }
-      if (bowler.email.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
-        return sendError(res, "You can only claim a bowler profile that matches your email address", 403, "FORBIDDEN");
-      }
-
-      const alreadyLinked = await storage.isBowlerLinked(bowlerId);
-      if (alreadyLinked) {
-        return sendError(res, "This bowler is already linked to another account", 400, "ALREADY_LINKED");
-      }
-
-      try {
-        await linkIdentityUserToBowler({
-          organizationId: user.organizationId,
-          userId: user.id,
-          bowlerId,
-          actorUserId: user.id,
-          source: "auth.claim-bowler",
-          reason: "email_ownership_claim",
-          eventType: "link",
-          requireEmailMatch: true,
-        });
-      } catch (linkError) {
-        if (isIdentityLinkError(linkError)) {
-          if (linkError.code === "BOWLER_TAKEN" || linkError.code === "ALREADY_LINKED") {
-            return sendError(res, "This bowler is already linked to another account", 400, "ALREADY_LINKED");
-          }
-          if (linkError.code === "CROSS_ORG_DENIED" || linkError.code === "ORG_REQUIRED" || linkError.code === "ELEVATED_ROLE_DENIED" || linkError.code === "EMAIL_MISMATCH") {
-            return sendError(res, "You don't have access to this bowler", 403, "FORBIDDEN");
-          }
-          if (linkError.code === "BOWLER_NOT_FOUND") {
-            return sendError(res, "Bowler not found", 404, "NOT_FOUND");
-          }
-          if (linkError.code === "SECURITY_HOLD") {
-            return sendError(res, "This account is temporarily restricted while a profile-security report is reviewed.", 423, "IDENTITY_SECURITY_HOLD");
-          }
-        }
-        throw linkError;
-      }
-      // Contact transfer is committed by the identity-link transaction above.
-
-      const updatedUser = await storage.getUser(user.id);
-      sendSuccess(res, sanitizeUser(updatedUser!));
-    } catch (error) {
-      log.error('Claim bowler error:', error);
-      sendError(res, "Failed to claim bowler", 500, "SERVER_ERROR");
     }
   });
 

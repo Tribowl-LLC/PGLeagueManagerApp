@@ -29,7 +29,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 // are the ones in the small allowlist below:
 //
 //   * /api/auth/*           login, logout, user, set-password, forgot-
-//                           password, change-email-confirm, claim-bowler.
+//                           password, change-email-confirm.
 //                           These are the user's auth-management surface
 //                           — they must remain reachable so the user can
 //                           sign out, refetch their flag, or recover via

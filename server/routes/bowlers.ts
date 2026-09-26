@@ -59,6 +59,10 @@ const ADMIN_EDITABLE_BOWLER_FIELDS = [...SELF_EDITABLE_BOWLER_FIELDS, 'active', 
 
 router.get("/unlinked", async (req, res) => {
   try {
+    if (req.user?.role === 'user') {
+      return sendError(res, "Ordinary accounts cannot list unlinked roster profiles", 403, 'FORBIDDEN');
+    }
+
     // task #421: replace the loose `parseInt + isNaN` pattern with
     // the strict shared helper so partially-numeric input like
     // `?organizationId=1abc` is rejected too (not silently coerced
@@ -112,33 +116,10 @@ router.get("/unlinked", async (req, res) => {
       // still an allowlisted id/name projection and never exposes email,
       // phone, or payment-provider fields.
       unlinkedBowlers = unlinkedProfiles;
-    } else if (req.user?.role === 'user') {
-      // A self-service candidate list is an email-ownership proof surface,
-      // not a name search. Require one and only one normalized match; a
-      // duplicate/family address remains pending for an administrator rather
-      // than exposing ambiguous claim choices.
-      const normalizedUserEmail = req.user.email.trim().toLowerCase();
-      if (!normalizedUserEmail) {
-        unlinkedBowlers = [];
-      } else {
-        // Match-count must include linked profiles too. If an address is
-        // shared by one linked and one unlinked roster row, the registration
-        // lookup is ambiguous even though only one candidate remains
-        // available for claiming.
-        const allEmailMatches = scopedBowlers.filter(
-          (b) => b.email?.trim().toLowerCase() === normalizedUserEmail,
-        );
-        const unlinkedMatches = unlinkedProfiles.filter(
-          (b) => b.email?.trim().toLowerCase() === normalizedUserEmail,
-        );
-        unlinkedBowlers = allEmailMatches.length === 1 && unlinkedMatches.length === 1
-          ? unlinkedMatches
-          : [];
-      }
     } else {
-      // Payment managers retain their existing scoped, blank-email view, but
-      // are not ordinary accounts and cannot use this list to claim a
-      // profile. Their role-specific access filtering above remains intact.
+      // Payment managers retain their existing scoped, blank-email view for
+      // payment-management workflows. Their role-specific access filtering
+      // above remains intact.
       unlinkedBowlers = unlinkedProfiles.filter(
         (b) => !b.email || b.email.trim() === '',
       );

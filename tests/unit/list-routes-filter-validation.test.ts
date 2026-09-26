@@ -444,53 +444,19 @@ describe('GET /api/bowlers/unlinked — organizationId filter', () => {
     expect(res.status).toBe(400);
   });
 
-  it('shows an ordinary user only one unique normalized-email candidate, without email PII', async () => {
-    mockStorage.getBowlers.mockResolvedValue([
-      { id: 101, name: 'Exact Match', email: '  USER@example.com ', organizationId: 1 },
-      { id: 102, name: 'No Email', email: '', organizationId: 1 },
-      { id: 103, name: 'Different Email', email: 'other@example.com', organizationId: 1 },
-    ]);
-    mockStorage.getLinkedBowlerIds.mockResolvedValue([103]);
-    mockStorage.getBowlerLeaguesByBowlerIds.mockResolvedValue([
-      { bowlerId: 101, leagueId: 11, teamId: 21 },
-      { bowlerId: 102, leagueId: 11, teamId: 21 },
-    ]);
-    mockStorage.getLeaguesByIds.mockResolvedValue([{ id: 11, name: 'League', organizationId: 1 }]);
-    mockStorage.getTeamsByIds.mockResolvedValue([{ id: 21, name: 'Team', number: 1 }]);
-
+  it('forbids ordinary users before reading roster data', async () => {
     const res = await get('/api/bowlers/unlinked', {
-      id: 7,
+      id: 8,
       role: 'user',
       organizationId: 1,
-      email: 'user@example.COM',
+      email: 'user@example.com',
     });
-    expect(res.status).toBe(200);
-    const payload = await res.json() as { data: Array<{ teams: Array<{ bowlers: Array<{ id: number; name: string; email?: string }> }> }> };
-    const candidates = payload.data.flatMap((group) => group.teams.flatMap((team) => team.bowlers));
-    expect(candidates).toEqual([{ id: 101, name: 'Exact Match' }]);
-    expect(JSON.stringify(payload)).not.toContain('@example.com');
-  });
-
-  it('keeps an ordinary user pending when the normalized email is ambiguous', async () => {
-    mockStorage.getBowlers.mockResolvedValue([
-      { id: 111, name: 'Shared One', email: 'shared@example.com', organizationId: 1 },
-      { id: 112, name: 'Shared Two', email: ' SHARED@example.com ', organizationId: 1 },
-    ]);
-    mockStorage.getBowlerLeaguesByBowlerIds.mockResolvedValue([
-      { bowlerId: 111, leagueId: 11, teamId: 21 },
-      { bowlerId: 112, leagueId: 11, teamId: 21 },
-    ]);
-    mockStorage.getLeaguesByIds.mockResolvedValue([{ id: 11, name: 'League', organizationId: 1 }]);
-    mockStorage.getTeamsByIds.mockResolvedValue([{ id: 21, name: 'Team', number: 1 }]);
-
-    const res = await get('/api/bowlers/unlinked', {
-      id: 7,
-      role: 'user',
-      organizationId: 1,
-      email: 'shared@example.com',
-    });
-    expect(res.status).toBe(200);
-    expect((await res.json()).data).toEqual([]);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe('FORBIDDEN');
+    expect(mockStorage.getBowlers).not.toHaveBeenCalled();
+    expect(mockStorage.getAllBowlersSystemAdmin).not.toHaveBeenCalled();
+    expect(mockStorage.getLinkedBowlerIds).not.toHaveBeenCalled();
+    expect(mockStorage.getBowlerLeaguesByBowlerIds).not.toHaveBeenCalled();
   });
 
   it('allows organization admins to see unlinked profiles with nonblank email for manual matching', async () => {

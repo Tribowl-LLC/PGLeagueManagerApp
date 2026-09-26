@@ -369,24 +369,12 @@ async function waitForSetupUrl(email: string): Promise<URL> {
   return setupUrl;
 }
 
-function watchForbiddenProfileRequests(page: Page): string[] {
-  const forbidden: string[] = [];
-  page.on('request', (request) => {
-    const path = new URL(request.url()).pathname;
-    if (path.includes('/claim-bowler') || path.includes('/api/bowlers/unlinked')) {
-      forbidden.push(path);
-    }
-  });
-  return forbidden;
-}
-
 async function startRegistration(
   context: BrowserContext,
   input: { email: string; name: string; host?: string },
   isolationDiagnostics?: BrowserOrganizationIsolationDiagnostics,
-): Promise<{ page: Page; forbiddenRequests: string[]; user: typeof users.$inferSelect }> {
+): Promise<{ page: Page; user: typeof users.$inferSelect }> {
   const page = await context.newPage();
-  const forbiddenRequests = watchForbiddenProfileRequests(page);
   const browserDiagnostics = installRegistrationDiagnostics(page);
   const host = input.host ?? EXPECTED_HOST;
   let phase = 'load-and-fill';
@@ -461,7 +449,7 @@ async function startRegistration(
     expect(user.password).toEqual(expect.any(String));
     expect(user.bowlerId).toBeNull();
     expect(user.phone).toBe(SIGNUP_PHONE);
-    return { page, forbiddenRequests, user };
+    return { page, user };
   } catch (error) {
     const diagnostics = await collectRegistrationDiagnostics(page, browserDiagnostics.diagnostics, {
       phase,
@@ -638,7 +626,7 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
     const context = await createBrowserContext();
     try {
       await withOnlyBrowserOrganization(async () => {
-        const { page, forbiddenRequests, user } = await startRegistration(context, {
+        const { page, user } = await startRegistration(context, {
           email: MATCH_EMAIL,
           name: 'Matched Browser User',
         });
@@ -660,8 +648,6 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
           .from(bowlers).where(eq(bowlers.id, matchedBowlerId));
         // Registration deliberately does not overwrite the roster phone.
         expect(bowler?.phone).toBe(MATCH_BOWLER_PHONE);
-        expect(forbiddenRequests).toEqual([]);
-        expect(page.url()).not.toContain('/claim-bowler');
       });
     } finally {
       phase = `drain browser routes after ${phase}`;
@@ -675,7 +661,7 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
     const context = await createBrowserContext();
     try {
       await withOnlyBrowserOrganization(async () => {
-        const { page, forbiddenRequests, user } = await startRegistration(context, {
+        const { page, user } = await startRegistration(context, {
           email: NO_MATCH_EMAIL,
           name: 'Waiting Browser User',
         });
@@ -688,8 +674,6 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
         const [updated] = await db.select({ bowlerId: users.bowlerId })
           .from(users).where(eq(users.id, user.id));
         expect(updated?.bowlerId).toBeNull();
-        expect(forbiddenRequests).toEqual([]);
-        expect(page.url()).not.toContain('/claim-bowler');
       });
     } finally {
       await closeContextAfterRoutesDrain(context);
