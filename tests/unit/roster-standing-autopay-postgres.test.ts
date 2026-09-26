@@ -820,7 +820,7 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
   it("blocks pre-consent arrears until one-time FIFO settlement, then advances a cutoff", async () => {
     const beforeConsent = await publishOccurrence("2039-01-01T19:00:00.000Z");
     const afterConsent = await publishOccurrence("2039-01-08T19:00:00.000Z");
-    const consent = await insertConsent({ version: 1, activatedAt: "2039-01-02T00:00:00.000Z" });
+    const consent = await insertConsent({ version: 101, activatedAt: "2039-01-02T00:00:00.000Z" });
     const { prepareStandingAutopayCutoff, quoteStandingAutopay } = await import("../../server/services/roster-standing-autopay");
 
     const preConsentResult = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: beforeConsent.occurrence.startAt });
@@ -864,14 +864,14 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     const replay = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: afterConsent.occurrence.startAt });
     expect(replay?.id).toBe(operation?.id);
     const [binding] = await db.select().from(paymentOperationStandingAutopayBindings).where(eq(paymentOperationStandingAutopayBindings.operationId, operation!.id));
-    expect(binding).toMatchObject({ providerName: "square", providerLocationId: "square-location-fixture", triggerOccurrenceId: afterConsent.occurrence.id, collectionMode: "weekly", consentId: consent.id, consentVersion: 1 });
+    expect(binding).toMatchObject({ providerName: "square", providerLocationId: "square-location-fixture", triggerOccurrenceId: afterConsent.occurrence.id, collectionMode: "weekly", consentId: consent.id, consentVersion: 101 });
     const [snapshot] = await db.select().from(paymentOperationRosterSnapshots).where(eq(paymentOperationRosterSnapshots.operationId, operation!.id));
     expect(snapshot).toMatchObject({ snapshotKind: "standing_autopay", amountMinor: operation!.amountMinor, cutoffAt: afterConsent.occurrence.startAt });
     const items = await db.select().from(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.operationId, operation!.id));
     expect(items).toHaveLength(1);
     expect(items[0].state).toBe("reserved");
     const participants = await db.select().from(paymentOperationStandingAutopayParticipants).where(eq(paymentOperationStandingAutopayParticipants.operationId, operation!.id));
-    expect(participants).toMatchObject([{ obligationId: afterConsent.obligation.id, bowlerId: payerBowlerId, role: "payer", consentVersion: 1 }]);
+    expect(participants).toMatchObject([{ obligationId: afterConsent.obligation.id, bowlerId: payerBowlerId, role: "payer", consentVersion: 101 }]);
   });
 
   it("preserves standing consent for a no-rotation league member without a fixed Main slot", async () => {
@@ -1087,7 +1087,7 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     const trigger = await publishOccurrence("2039-01-15T19:00:00.000Z");
     const paired = await publishOccurrence("2039-01-22T19:00:00.000Z");
     await createDoublePayGroup(trigger, paired);
-    const consent = await insertConsent({ version: 2, activatedAt: "2039-01-02T00:00:00.000Z" });
+    const consent = await insertConsent({ version: 102, activatedAt: "2039-01-02T00:00:00.000Z" });
     const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
     const operation = await prepareStandingAutopayCutoff({ organizationId, leagueId, consentId: consent.id, cutoffAt: trigger.occurrence.startAt });
     expect(operation).toMatchObject({ operationType: "standing_autopay_charge", amountMinor: 4_000 });
@@ -1201,7 +1201,7 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     const replacementWire = await activateStandingAutopayConsent({ organizationId, leagueId, payerBowlerId, actorUserId, request: { commandKey: `standing-consent-replace-${randomUUID()}`, sourceId: "replacement-source", partnerBowlerIds: [] } });
     standingProviderMock.mockReset();
     const [replacement] = await db.select().from(autopayConsents).where(and(eq(autopayConsents.organizationId, organizationId), eq(autopayConsents.leagueId, leagueId), eq(autopayConsents.payerBowlerId, payerBowlerId), eq(autopayConsents.state, "active")));
-    expect(replacementWire).toMatchObject({ state: "active", consentVersion: 81 });
+    expect(replacementWire).toMatchObject({ state: "active", consentVersion: 103 });
     const [canceledFirst] = await db.select().from(paymentOperations).where(eq(paymentOperations.id, firstOperation!.id));
     const [releasedFirst] = await db.select().from(paymentOperationRosterSnapshotItems).where(eq(paymentOperationRosterSnapshotItems.operationId, firstOperation!.id));
     expect(canceledFirst.status).toBe("canceled");
