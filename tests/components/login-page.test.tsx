@@ -84,6 +84,32 @@ afterEach(() => {
 });
 
 describe('LoginPage throttle UX', () => {
+  it('takes a successful sign-in straight to the authenticated root', async () => {
+    window.history.pushState(null, '', '/login');
+    loginHandler = () => new Response(JSON.stringify({ success: true, data: { id: 12, role: 'user', bowlerId: 7 } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await fillAndSubmit(user);
+
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+  });
+
+  it('lets a bowler reveal and conceal the password they entered', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const password = screen.getByLabelText(/^password$/i);
+
+    expect(password).toHaveAttribute('type', 'password');
+    await user.click(screen.getByRole('button', { name: 'Show password' }));
+    expect(password).toHaveAttribute('type', 'text');
+    await user.click(screen.getByRole('button', { name: 'Hide password' }));
+    expect(password).toHaveAttribute('type', 'password');
+  });
+
   it('shows the explicit expired-session banner only for the session-expired reason', async () => {
     window.history.pushState(null, '', '/login?reason=session-expired');
     renderPage();

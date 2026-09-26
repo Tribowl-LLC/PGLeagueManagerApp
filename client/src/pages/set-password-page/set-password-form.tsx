@@ -1,9 +1,5 @@
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { formatCountdown } from '@/hooks/use-throttle-countdown';
-import { AlertTriangle, Loader2, Check, X, Eye, EyeOff } from 'lucide-react';
+import { AlertTriangle, Loader2, Check, Eye, EyeOff } from 'lucide-react';
 
 interface PasswordRequirement {
   label: string;
@@ -44,64 +40,61 @@ export function SetPasswordForm({
   handleSubmit,
 }: SetPasswordFormProps) {
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-5">
       <div className="space-y-2">
-        <Label htmlFor="password">Password</Label>
+        <label htmlFor="password" className="block">New password</label>
         <div className="relative">
-          <Input
+          <input
             id="password"
+            aria-label="Password"
             type={showPassword ? 'text' : 'password'}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Enter your password"
+            autoComplete="new-password"
+            className="w-full pr-12"
           />
-          <Button
+          <button
             type="button"
-            variant="ghost"
-            size="icon"
-            padding="input" className="absolute right-0 top-0 h-full"
+            aria-label={showPassword ? 'Hide password' : 'Show password'}
+            className="absolute right-0 top-0 grid h-full w-12 place-items-center text-navigation-600"
             onClick={() => setShowPassword(!showPassword)}
           >
             {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-          </Button>
+          </button>
         </div>
       </div>
 
+      <ul className="space-y-1.5 text-xs text-navigation-600" aria-label="Password requirements">
+        {requirements.map((req) => (
+          <li key={req.label} className={`flex items-center gap-2 ${req.met ? 'text-positive-800' : ''}`}>
+            <Check className="size-3.5 shrink-0" />
+            <span>{req.label}</span>
+            <span className="sr-only">{req.met ? ' — met' : ' — not met'}</span>
+          </li>
+        ))}
+      </ul>
+
       <div className="space-y-2">
-        <Label htmlFor="confirmPassword">Confirm Password</Label>
-        <Input
+        <label htmlFor="confirmPassword" className="block">Confirm password</label>
+        <input
           id="confirmPassword"
+          aria-label="Confirm Password"
           type={showPassword ? 'text' : 'password'}
           value={confirmPassword}
           onChange={(e) => setConfirmPassword(e.target.value)}
           placeholder="Confirm your password"
+          autoComplete="new-password"
+          className="w-full"
         />
         {confirmPassword && !passwordsMatch && (
-          <p className="text-sm text-destructive">Passwords do not match</p>
+          <p className="text-sm text-attention-800">Passwords do not match</p>
         )}
       </div>
 
-      {password.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-sm font-medium text-muted-foreground">Password requirements:</p>
-          {requirements.map((req) => (
-            <div key={req.label} className="flex items-center gap-2 text-sm">
-              {req.met ? (
-                <Check className="size-3.5 text-success-600" />
-              ) : (
-                <X className="size-3.5 text-muted-foreground" />
-              )}
-              <span className={req.met ? 'text-success-600' : 'text-muted-foreground'}>{req.label}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
       {isThrottled && (
-        <Alert variant="destructive" data-testid="alert-set-password-throttled">
-          <AlertTriangle className="size-4" />
-          <AlertTitle>Too many attempts</AlertTitle>
-          <AlertDescription>
+        <div className="public-flow-inset public-flow-inset-danger" role="alert" data-testid="alert-set-password-throttled">
+          <strong><AlertTriangle className="mr-2 inline-block size-4 align-middle" />Too many attempts</strong>
             To protect your account, we've paused password submissions
             from this device for about{" "}
             <span data-testid="text-set-password-retry-in">
@@ -109,13 +102,12 @@ export function SetPasswordForm({
             </span>
             . Please try again then; your {action === 'password_reset' ? 'reset' : 'invitation'} link may still be valid,
             so you don't need to request a new one.
-          </AlertDescription>
-        </Alert>
+        </div>
       )}
 
-      <Button
+      <button
         type="submit"
-        className="w-full"
+        className="public-flow-primary disabled:cursor-not-allowed disabled:opacity-60"
         disabled={!allMet || !passwordsMatch || submitting || isThrottled}
         data-testid="button-set-password-submit"
       >
@@ -127,9 +119,9 @@ export function SetPasswordForm({
         ) : isThrottled ? (
           `Try again in ${formatCountdown(remainingSeconds)}`
         ) : (
-          action === 'password_reset' ? 'Reset Password' : 'Set Password & Sign In'
+          action === 'password_reset' ? <>Reset password <span aria-hidden="true">→</span></> : action === 'account_registration' ? <>Create account <span aria-hidden="true">→</span></> : <>Set Password &amp; Sign In <span aria-hidden="true">→</span></>
         )}
-      </Button>
+      </button>
     </form>
   );
 }

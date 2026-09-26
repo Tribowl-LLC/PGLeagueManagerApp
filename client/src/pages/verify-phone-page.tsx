@@ -5,10 +5,8 @@ import { apiRequest, makeApiError, parseRetryAfterSeconds } from "@/lib/queryCli
 import { isAbortError, isExpectedApiError } from "@/lib/api-error";
 import { logger } from "@/lib/logger";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2, RefreshCw } from "lucide-react";
+import { PublicPageLayout, PublicProgress } from "@/components/public-page-layout";
+import { ArrowLeft, ArrowRight, Loader2, MessageSquare, RefreshCw } from "lucide-react";
 
 declare global {
   interface CredentialRequestOptions {
@@ -78,7 +76,7 @@ export default function VerifyPhonePage() {
       signal,
     });
     if (response.status === 401 || response.status === 404) {
-      setLocation("/sign-up");
+      setLocation("/register");
       return null;
     }
     if (!response.ok) throw new Error("We could not restore your registration. Please try again.");
@@ -220,72 +218,68 @@ export default function VerifyPhonePage() {
       // Navigation still returns the user to the public form; the server will
       // supersede any stale capability when the corrected form is submitted.
     }
-    setLocation("/sign-up");
+    setLocation("/register");
   };
 
   return (
     <ErrorBoundary level="section">
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <Card className="w-full max-w-md">
-          <CardHeader className="text-center">
-            <CardTitle size="2xl">{isEmailBranch ? "Check your email" : "Verify your phone"}</CardTitle>
-            <CardDescription>
-              {isEmailBranch
-                ? "This email already has a LeagueVault account. Follow the password-reset instructions we sent to continue."
-                : <>Enter the six-digit code sent to {formatPhone(status)}.</>}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-            {notice && <Alert><AlertTitle>Message sent</AlertTitle><AlertDescription>{notice}</AlertDescription></Alert>}
-            {error && <Alert variant="destructive"><AlertTitle>Registration could not continue</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
-            {loading ? (
-              <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Restoring registration…</div>
-            ) : isEmailBranch ? (
-              <div className="space-y-3">
-                <Button className="w-full" onClick={() => setLocation("/login")}>Go to login</Button>
-                <Button variant="outline" className="w-full" onClick={() => setLocation("/sign-up")}>Use a different email</Button>
-              </div>
-            ) : (
-              <>
-                <div className="relative" onClick={() => inputRef.current?.focus()}>
-                  <div className="grid grid-cols-6 gap-2" aria-hidden="true">
-                    {displayCode.map((digit, index) => (
-                      <div key={index} className="flex h-12 items-center justify-center rounded-md border bg-background text-xl font-semibold">{digit.trim()}</div>
-                    ))}
-                  </div>
-                  <input
-                    ref={inputRef}
-                    value={code}
-                    onChange={(event) => {
-                      const value = event.target.value.replace(/\D/g, "").slice(0, 6);
-                      setCode(value);
-                      submittedCodeRef.current = null;
-                      if (value.length === 6) void verifyCode(value);
-                    }}
-                    aria-label="Six-digit verification code"
-                    autoComplete="one-time-code"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    maxLength={6}
-                    className="absolute inset-0 h-12 w-full cursor-text bg-transparent text-transparent caret-transparent outline-none"
-                  />
-                </div>
-                <Button className="w-full" disabled={code.length !== 6 || verifying} onClick={() => void verifyCode()}>
-                  {verifying ? <><Loader2 className="mr-2 size-4 animate-spin" /> Verifying…</> : "Verify code"}
-                </Button>
-                <div className="flex items-center justify-between gap-3 text-sm">
-                  <Button variant="ghost" onClick={() => void changeDetails()}>Change details</Button>
-                  <Button variant="ghost" disabled={sending || resendIn > 0} onClick={() => void sendCode()}>
-                    <RefreshCw className="mr-2 size-4" /> {resendIn > 0 ? `Resend in ${resendIn}s` : "Resend code"}
-                  </Button>
-                </div>
-              </>
-            )}
+      <PublicPageLayout>
+        <section className="public-flow-card" data-testid="verify-phone-card">
+          {!isEmailBranch && <PublicProgress step={2} />}
+          <div className="public-flow-icon"><MessageSquare size={23} strokeWidth={1.8} /></div>
+          <h1 className="public-flow-title">{isEmailBranch ? "Check your email." : "Check your texts."}</h1>
+          <p className="public-flow-description">
+            {isEmailBranch
+              ? "This email already has a LeagueVault account. Follow the password-reset instructions we sent to continue."
+              : <>Enter the six-digit code sent to <strong>{formatPhone(status)}</strong>.</>}
+          </p>
+          {notice && <div className="public-flow-inset" role="status"><strong>Message sent</strong>{notice}</div>}
+          {error && <div className="public-flow-inset public-flow-inset-danger" role="alert"><strong>Registration could not continue</strong>{error}</div>}
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 py-8 text-sm text-navigation-600"><Loader2 className="size-4 animate-spin" /> Restoring registration…</div>
+          ) : isEmailBranch ? (
+            <div className="grid gap-3">
+              <button type="button" className="public-flow-primary" onClick={() => setLocation("/login")}>Go to login <ArrowRight size={18} /></button>
+              <button type="button" className="public-flow-secondary" onClick={() => setLocation("/register")}>Use a different email</button>
             </div>
-          </CardContent>
-        </Card>
-      </div>
+          ) : (
+            <>
+              <div className="relative" onClick={() => inputRef.current?.focus()}>
+                <div className="grid grid-cols-6 gap-2" aria-hidden="true">
+                  {displayCode.map((digit, index) => (
+                    <div key={index} className="flex h-12 items-center justify-center rounded-md border border-navigation-300 bg-white text-xl font-semibold text-navigation-800">{digit.trim()}</div>
+                  ))}
+                </div>
+                <input
+                  ref={inputRef}
+                  value={code}
+                  onChange={(event) => {
+                    const value = event.target.value.replace(/\D/g, "").slice(0, 6);
+                    setCode(value);
+                    submittedCodeRef.current = null;
+                    if (value.length === 6) void verifyCode(value);
+                  }}
+                  aria-label="Six-digit verification code"
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  className="absolute inset-0 h-12 w-full cursor-text bg-transparent text-transparent caret-transparent outline-none"
+                />
+              </div>
+              <button type="button" className="public-flow-primary mt-6 disabled:cursor-not-allowed disabled:opacity-60" disabled={code.length !== 6 || verifying} onClick={() => void verifyCode()}>
+                {verifying ? <><Loader2 className="size-4 animate-spin" /> Verifying…</> : <>Verify code <ArrowRight size={18} /></>}
+              </button>
+              <div className="public-flow-verify-actions mt-1 flex items-center justify-between gap-3">
+                <button type="button" className="public-flow-link" onClick={() => void changeDetails()}><ArrowLeft size={16} /> Change phone number</button>
+                <button type="button" className="public-flow-link" disabled={sending || resendIn > 0} onClick={() => void sendCode()}>
+                  <RefreshCw className="size-3.5" /> {resendIn > 0 ? `Resend in ${resendIn}s` : "Resend code"}
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+      </PublicPageLayout>
     </ErrorBoundary>
   );
 }

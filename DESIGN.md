@@ -36,6 +36,23 @@ colors:
   warning-600: "oklch(66.6% 0.179 58.318)"
   caution-400: "oklch(85.2% 0.199 91.936)"
   info-500: "oklch(62.3% 0.214 259.815)"
+  public-white: "#fff"
+  public-focus: "#4d7db6"
+  public-story-copy: "#d6e1ef"
+  public-eyebrow: "#476889"
+  public-success-surface: "#e5f4eb"
+  public-success-text: "#166641"
+  public-danger-surface: "#f9eae7"
+  public-danger-border: "#ebd5d1"
+  public-danger-copy: "#6e4c48"
+  public-danger-strong: "#8e392f"
+  public-danger-action: "#9b3d31"
+  public-danger-action-hover: "#873329"
+  public-danger-shadow: "rgb(155 61 49 / .16)"
+  public-secondary-border: "#aebed0"
+  public-link: "#204c7e"
+  public-input-border: "#b9c7d6"
+  public-placeholder: "#7c8ba0"
 typography:
   body:
     fontFamily: "ui-sans-serif, system-ui, sans-serif"
@@ -64,6 +81,33 @@ typography:
     fontSize: "0.75rem"
     fontWeight: 400
     lineHeight: 1.5
+  public-wordmark:
+    fontFamily: "Instrument Sans"
+    fontSize: "27px"
+  public-wordmark-mobile:
+    fontFamily: "Instrument Sans"
+    fontSize: "25px"
+  public-story-min:
+    fontFamily: "Instrument Sans"
+    fontSize: "34px"
+  public-story-max:
+    fontFamily: "Instrument Sans"
+    fontSize: "40px"
+  public-title-min:
+    fontFamily: "Instrument Sans"
+    fontSize: "28px"
+  public-title-max:
+    fontFamily: "Instrument Sans"
+    fontSize: "31px"
+  public-body:
+    fontFamily: "Instrument Sans"
+    fontSize: "15px"
+  public-label:
+    fontFamily: "Instrument Sans"
+    fontSize: "13px"
+  public-eyebrow:
+    fontFamily: "Instrument Sans"
+    fontSize: "11px"
 rounded:
   sm: "calc(var(--radius) - 4px)"
   md: "calc(var(--radius) - 2px)"
@@ -71,6 +115,11 @@ rounded:
   xl: "0.75rem"
   2xl: "1rem"
   full: "9999px"
+  public-shell: "14px"
+  public-button: "8px"
+  public-field: "7px"
+  public-inset: "9px"
+  public-progress: "4px"
 spacing:
   space-1: "0.25rem"
   space-2: "0.5rem"
@@ -121,11 +170,9 @@ components:
 
 # Design System: LeagueVault
 
-This document records the current visual system extracted from the committed
-client implementation. It is an incumbent baseline for review, not approval
-of the future redesign direction. A future redesign should preserve the
-product and accessibility constraints in [`PRODUCT.md`](PRODUCT.md), then
-replace this baseline after a new visual world is explicitly approved.
+This document records the incumbent authenticated app system and the approved
+Familiar A extension for public account pages. Future changes should preserve
+the product and accessibility constraints in [`PRODUCT.md`](PRODUCT.md).
 
 ## Overview
 
@@ -141,9 +188,8 @@ separation rather than decorative imagery or expressive typography.
 The desktop experience is an admin console with a persistent dark sidebar,
 sticky light header, responsive content area, tables, cards, forms, and dialogs.
 The bowler experience is more phone-oriented: a compact white header, centered
-content, and a four-item bottom navigation. Public account flows use a
-centered white card on a plain background and can adopt organization-provided
-logos.
+content, and a four-item bottom navigation. Public account flows use the
+approved Familiar A layout described below.
 
 The LeagueVault logo asset itself is a high-contrast, engraved bowling emblem
 in slate, navy, and off-white. The application shell currently uses a related
@@ -402,6 +448,31 @@ rounding, while badges and compact status indicators are pill-shaped.
   background. Cell tones support muted, destructive, success, and subtle
   variants.
 
+## Approved public account flows: Familiar A
+
+The public welcome, registration, verification, sign-in, password recovery,
+privacy, account-deletion, email-change, profile-report, and payment-partner
+response screens share this system. Authenticated admin and bowler pages retain
+the incumbent system above.
+
+- **Layout:** On desktop, a 40/60 split pairs a deep-navy story panel with a
+  cool-slate form canvas. On mobile, the story collapses to a 76px navy bar;
+  the welcome bar centers “League Manager,” while other public pages center
+  the official Perfect Game dark-background logo.
+- **Brand and type:** The desktop story says “League Manager” and “League
+  payments, simplified.” Instrument Sans is scoped to public pages. The
+  official Perfect Game assets remain the logo source.
+- **Color and surfaces:** Navy `#0f172a` carries primary actions and chrome,
+  `#f8fafc` carries the canvas, and white cards have restrained borders and
+  shadows. Red and green are reserved for destructive and successful states.
+- **Controls:** Inputs are at least 48px high, buttons at least 50px high,
+  focus remains visible, and phone inputs use 16px text to avoid mobile zoom.
+  The public page styles live in `client/src/components/public-page-layout.css`
+  and are registered as scoped utilities in `client/src/index.css`.
+- **Motion:** Cards enter with a short decelerating rise; reduced-motion
+  preferences remove the animation. Status and error copy remain legible
+  without motion.
+
 ## Do's and Don'ts
 
 ### Do:
@@ -421,9 +492,9 @@ rounding, while badges and compact status indicators are pill-shaped.
 
 ### Don't:
 
-- **Don't** treat this incumbent palette or layout as the approved future
-  visual world; replace it only after an explicit redesign direction is
-  chosen.
+- **Don't** carry the incumbent authenticated-page styling into approved
+  Familiar A public pages or apply Familiar A to authenticated pages without
+  a separate design decision.
 - **Don't** introduce a new font family, decorative display treatment, or
   marketing-style visual language into routine operations without updating the
   design direction first.

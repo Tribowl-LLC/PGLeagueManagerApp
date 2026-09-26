@@ -10,17 +10,8 @@ import {
   useThrottleCountdown,
 } from "@/hooks/use-throttle-countdown";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { PublicPageLayout, PublicProgress } from "@/components/public-page-layout";
 import { PageLoadingState } from "@/components/page-states";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { AlertCircle, ArrowLeft, CheckCircle2, Loader2, Mail, RefreshCw } from "lucide-react";
 
 const registrationStatusSchema = z.object({
@@ -274,10 +265,10 @@ const RegistrationEmailPage: FC = () => {
   const abandonMutation = useMutation({
     mutationFn: async () => apiRequest<unknown>("/api/auth/registration/abandon", "POST", {}),
     onMutate: () => setActionError(null),
-    onSuccess: () => setLocation("/sign-up"),
+    onSuccess: () => setLocation("/register"),
     onError: (error: unknown) => {
       if (isMissingRegistration(error)) {
-        setLocation("/sign-up");
+        setLocation("/register");
         return;
       }
       setActionError("We couldn't discard this sign-up session. Please try again.");
@@ -288,55 +279,52 @@ const RegistrationEmailPage: FC = () => {
   const status = statusQuery.data?.kind === 'status' ? statusQuery.data.registration : undefined;
   const expiry = expiryLabel(status?.expiresAt);
 
-  const shell = (content: ReactNode) => (
+  const shell = (content: ReactNode, topAligned = false) => (
     <ErrorBoundary level="section">
-      <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
-        <Card className="w-full max-w-md mt-4 sm:mt-0">
-          {content}
-        </Card>
-      </div>
+      <PublicPageLayout topAligned={topAligned}>{content}</PublicPageLayout>
     </ErrorBoundary>
   );
 
   if ((statusQuery.isLoading && !status) || statusQuery.data?.kind === 'signed-in') {
-    return shell(<CardContent><PageLoadingState message="Checking your registration…" fullPage={false} /></CardContent>);
+    return shell(
+      <section className="public-flow-card">
+        <PageLoadingState message="Checking your registration…" fullPage={false} />
+      </section>,
+    );
   }
 
   if (missing) {
     return shell(
-      <>
-        <CardHeader spacing="relaxed" className="text-center">
-          <CardTitle>Check your email</CardTitle>
-          <CardDescription>If you recently requested registration help, check your email for next steps. If you already have an account, sign in or reset your password. Otherwise, start registration again with the same email address.</CardDescription>
-        </CardHeader>
-        <CardFooter spacing="normal" className="flex flex-col">
-          <Button asChild className="w-full" data-testid="link-registration-continue"><Link href="/sign-up">Continue sign-up</Link></Button>
-          <Button asChild variant="outline" className="w-full" data-testid="link-registration-sign-in"><Link href="/login">Sign in</Link></Button>
-          <Button asChild variant="ghost" className="w-full" data-testid="link-registration-forgot-password"><Link href="/forgot-password">Forgot password?</Link></Button>
-        </CardFooter>
-      </>,
+      <section className="public-flow-card">
+        <h1 className="public-flow-title">Check your email</h1>
+        <p className="public-flow-description">If you recently requested registration help, check your email for next steps. If you already have an account, sign in or reset your password. Otherwise, start registration again with the same email address.</p>
+        <div className="grid gap-3">
+          <Link href="/register" className="public-flow-primary" data-testid="link-registration-continue">Continue sign-up</Link>
+          <Link href="/login" className="public-flow-secondary" data-testid="link-registration-sign-in">Sign in</Link>
+          <Link href="/forgot-password" className="public-flow-link justify-center" data-testid="link-registration-forgot-password">Forgot password?</Link>
+        </div>
+      </section>,
     );
   }
 
   if ((statusQuery.isError && !status) || !status || status.status !== "pending") {
     return shell(
-      <>
-        <CardHeader spacing="relaxed" className="text-center">
-          <CardTitle>Continue registration</CardTitle>
-          <CardDescription>{classifyApiError(statusQuery.error) === 'transport'
+      <section className="public-flow-card">
+        <h1 className="public-flow-title">Continue registration</h1>
+        <p className="public-flow-description">{classifyApiError(statusQuery.error) === 'transport'
             ? "We couldn't connect to check your registration. Check your internet connection and try again."
-            : "We couldn't verify this sign-up session right now. Try again, sign in, or reset your password. Otherwise, start registration again with the same email address."}</CardDescription>
-        </CardHeader>
-        <CardContent spacing="tight">
-          <Alert variant="destructive"><AlertCircle className="size-4" /><AlertTitle>We couldn't verify your registration</AlertTitle><AlertDescription>Please try again or start a new sign-up.</AlertDescription></Alert>
-          <Button className="w-full" disabled={statusQuery.isFetching} onClick={() => void statusQuery.refetch()} data-testid="button-registration-status-retry">{statusQuery.isFetching ? 'Checking…' : 'Try again'}</Button>
-        </CardContent>
-        <CardFooter spacing="normal" className="flex flex-col">
-          <Button asChild variant="outline" className="w-full" data-testid="link-registration-sign-in"><Link href="/login">Sign in</Link></Button>
-          <Button asChild variant="ghost" className="w-full" data-testid="link-registration-forgot-password"><Link href="/forgot-password">Forgot password?</Link></Button>
-          <Button asChild variant="ghost" className="w-full" data-testid="link-registration-continue"><Link href="/sign-up">Continue sign-up</Link></Button>
-        </CardFooter>
-      </>,
+            : "We couldn't verify this sign-up session right now. Try again, sign in, or reset your password. Otherwise, start registration again with the same email address."}</p>
+        <div className="public-flow-inset public-flow-inset-danger mb-4" role="alert">
+          <strong><AlertCircle className="mr-2 inline-block size-4 align-middle" />We couldn't verify your registration</strong>
+          Please try again or start a new sign-up.
+        </div>
+        <button type="button" className="public-flow-primary disabled:cursor-not-allowed disabled:opacity-60" disabled={statusQuery.isFetching} onClick={() => void statusQuery.refetch()} data-testid="button-registration-status-retry">{statusQuery.isFetching ? 'Checking…' : 'Try again'}</button>
+        <div className="mt-5 grid gap-3">
+          <Link href="/login" className="public-flow-secondary" data-testid="link-registration-sign-in">Sign in</Link>
+          <Link href="/forgot-password" className="public-flow-link justify-center" data-testid="link-registration-forgot-password">Forgot password?</Link>
+          <Link href="/register" className="public-flow-link justify-center" data-testid="link-registration-continue">Continue sign-up</Link>
+        </div>
+      </section>,
     );
   }
 
@@ -352,46 +340,40 @@ const RegistrationEmailPage: FC = () => {
     ? "Check your inbox and spam folder, or use a different email to try again."
     : "Use the link in that email to set your password and finish creating your account.";
   return shell(
-    <>
-      <CardHeader spacing="relaxed" className="text-center">
-        <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10">
-          <Mail className="size-6 text-primary" />
-        </div>
-        <CardTitle size="2xl" weight="bold">Check your email</CardTitle>
-        <CardDescription>
-          {setupDescription} <strong>{status.email || "your email address"}</strong>. {setupGuidance}
-        </CardDescription>
-      </CardHeader>
-      <CardContent spacing="normal">
-        <Alert variant={delivery.tone === "destructive" ? "destructive" : "default"} data-testid="registration-delivery-status" aria-live="polite">
-          {delivery.tone === "destructive" ? <AlertCircle className="size-4" /> : <CheckCircle2 className="size-4" />}
-          <AlertTitle>{delivery.label}</AlertTitle>
-          <AlertDescription>{delivery.message}</AlertDescription>
-        </Alert>
-        {expiry && <p className="text-center text-xs text-muted-foreground">{expiry}</p>}
-        {statusQuery.isError && <p className="text-sm text-destructive" role="alert">We couldn't refresh delivery status. The last known status is still shown.</p>}
-        {resendNotice && <p className="text-sm text-muted-foreground" role="status">{resendNotice}</p>}
-        {actionError && <p className="text-sm text-destructive" role="alert">{actionError}</p>}
-        {isThrottled && (
-          <p className="text-sm text-muted-foreground" data-testid="text-registration-retry-in">
-            You can request another email in {formatCountdown(remainingSeconds)}.
-          </p>
-        )}
-        <Button className="w-full" onClick={() => resendMutation.mutate()} disabled={resendMutation.isPending || isThrottled} data-testid="button-registration-resend">
-          {resendMutation.isPending ? <><Loader2 className="mr-2 size-4 animate-spin" />Requesting…</> : <><RefreshCw className="mr-2 size-4" />Resend setup email</>}
-        </Button>
-      </CardContent>
-      <CardFooter spacing="normal" className="flex flex-col">
-        <Button variant="ghost" className="w-full" onClick={() => abandonMutation.mutate()} disabled={abandonMutation.isPending} data-testid="button-registration-correct-email">
-          {abandonMutation.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
+    <section className="public-flow-card">
+      <PublicProgress step={2} />
+      <div className="public-flow-icon"><Mail size={23} strokeWidth={1.8} /></div>
+      <h1 className="public-flow-title">Check your email.</h1>
+      <p className="public-flow-description">
+        {setupDescription} <strong>{status.email || "your email address"}</strong>. {setupGuidance}
+      </p>
+      <div className={`public-flow-inset${delivery.tone === "destructive" ? " public-flow-inset-danger" : ""}`} data-testid="registration-delivery-status" aria-live="polite">
+        <strong>{delivery.tone === "destructive" ? <AlertCircle className="mr-2 inline-block size-4 align-middle" /> : <CheckCircle2 className="mr-2 inline-block size-4 align-middle" />}{delivery.label}</strong>
+        {delivery.message}
+      </div>
+      {expiry && <p className="public-flow-date mt-3 text-center">{expiry}</p>}
+      {statusQuery.isError && <p className="mt-3 text-sm text-attention-800" role="alert">We couldn't refresh delivery status. The last known status is still shown.</p>}
+      {resendNotice && <p className="mt-3 text-sm text-navigation-600" role="status">{resendNotice}</p>}
+      {actionError && <p className="mt-3 text-sm text-attention-800" role="alert">{actionError}</p>}
+      {isThrottled && (
+        <p className="mt-3 text-sm text-navigation-600" data-testid="text-registration-retry-in">
+          You can request another email in {formatCountdown(remainingSeconds)}.
+        </p>
+      )}
+      <button type="button" className="public-flow-primary mt-5 disabled:cursor-not-allowed disabled:opacity-60" onClick={() => resendMutation.mutate()} disabled={resendMutation.isPending || isThrottled} data-testid="button-registration-resend">
+        {resendMutation.isPending ? <><Loader2 className="size-4 animate-spin" />Requesting…</> : <><RefreshCw className="size-4" />Resend setup email</>}
+      </button>
+      <div className="mt-4 grid gap-2 text-center">
+        <button type="button" className="public-flow-link justify-center" onClick={() => abandonMutation.mutate()} disabled={abandonMutation.isPending} data-testid="button-registration-correct-email">
+          {abandonMutation.isPending && <Loader2 className="size-3.5 animate-spin" />}
           Use a different email
-        </Button>
-        <Link href="/login" className="inline-flex items-center gap-1 text-sm text-primary hover:underline" data-testid="link-registration-sign-in">
+        </button>
+        <Link href="/login" className="public-flow-link justify-center" data-testid="link-registration-sign-in">
           <ArrowLeft className="size-3.5" />
           Already have an account? Sign in
         </Link>
-      </CardFooter>
-    </>,
+      </div>
+    </section>,
   );
 };
 

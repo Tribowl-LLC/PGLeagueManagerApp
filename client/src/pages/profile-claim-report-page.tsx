@@ -1,9 +1,7 @@
 import { useEffect, useState } from "react";
-import { useSearch } from "wouter";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2, ShieldAlert } from "lucide-react";
+import { Link, useSearch } from "wouter";
+import { ArrowLeft, ArrowRight, CheckCircle2, Loader2, ShieldAlert, XCircle } from "lucide-react";
+import { PublicPageLayout } from "@/components/public-page-layout";
 
 type State =
   | { kind: "loading" }
@@ -67,34 +65,70 @@ export default function ProfileClaimReportPage() {
     }
   };
 
+  const isReported = state.kind === "reported";
+  const isError = state.kind === "error";
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader className="text-center">
-          <ShieldAlert className="mx-auto size-8 text-destructive" />
-          <CardTitle size="2xl">Profile assignment report</CardTitle>
-          <CardDescription>
-            {state.kind === "ready" && state.profileName
-              ? `An account was connected to ${state.profileName}.`
-              : "Review this profile assignment before reporting it."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-          {state.kind === "loading" && <div className="flex justify-center"><Loader2 className="animate-spin" /></div>}
-          {state.kind === "error" && <Alert variant="destructive"><AlertTitle>Unable to continue</AlertTitle><AlertDescription>{state.message}</AlertDescription></Alert>}
-          {state.kind === "ready" && (
-            <>
-              <Alert><AlertTitle>Only report this if unexpected</AlertTitle><AlertDescription>Reporting places the linked account on a security hold for administrator review. It does not transfer profile ownership.</AlertDescription></Alert>
-              <Button className="w-full" variant="destructive" disabled={submitting} onClick={() => void report()}>
-                {submitting ? <><Loader2 className="mr-2 size-4 animate-spin" />Submitting…</> : "This wasn’t me"}
-              </Button>
-            </>
+    <PublicPageLayout>
+      <article className="public-flow-card">
+        <div className={`public-flow-icon ${isReported ? "public-flow-icon-success" : isError || state.kind === "ready" ? "public-flow-icon-danger" : ""}`}>
+          {state.kind === "loading" ? (
+            <Loader2 className="size-6 animate-spin" />
+          ) : isReported ? (
+            <CheckCircle2 className="size-6" />
+          ) : isError ? (
+            <XCircle className="size-6" />
+          ) : (
+            <ShieldAlert className="size-6" />
           )}
-          {state.kind === "reported" && <Alert><AlertTitle>Report received</AlertTitle><AlertDescription>The account has been placed on a security hold. An administrator will review the assignment.</AlertDescription></Alert>}
+        </div>
+
+        <p className="public-flow-eyebrow">Profile security</p>
+        <h1 className="public-flow-title">Profile assignment report.</h1>
+        <p className="public-flow-description">
+          {state.kind === "ready" && state.profileName
+            ? `An account was connected to ${state.profileName}.`
+            : "Review this profile assignment before reporting it."}
+        </p>
+
+        {state.kind === "loading" && (
+          <div className="flex justify-center py-4" role="status" aria-label="Loading report">
+            <Loader2 className="size-5 animate-spin text-navigation-700" />
           </div>
-        </CardContent>
-      </Card>
-    </div>
+        )}
+
+        {state.kind === "error" && (
+          <div className="public-flow-inset public-flow-inset-danger">
+            <strong>Unable to continue</strong>
+            {state.message}
+          </div>
+        )}
+
+        {state.kind === "ready" && (
+          <>
+            <div className="public-flow-inset mb-5">
+              <strong>Only report this if unexpected</strong>
+              Reporting places the linked account on a security hold for administrator review. It does not transfer profile ownership.
+            </div>
+            <button type="button" className="public-flow-primary public-flow-primary-danger" disabled={submitting} onClick={() => void report()}>
+              {submitting ? <Loader2 className="size-4 animate-spin" /> : "This wasn’t me"}
+              {!submitting && <ArrowRight className="size-4" />}
+            </button>
+          </>
+        )}
+
+        {state.kind === "reported" && (
+          <div className="public-flow-inset public-flow-inset-danger">
+            <strong>Report received</strong>
+            The account has been placed on a security hold. An administrator will review the assignment.
+          </div>
+        )}
+
+        <Link href="/login" className="public-flow-link mt-7">
+          <ArrowLeft className="size-3.5" />
+          Back to sign in
+        </Link>
+      </article>
+    </PublicPageLayout>
   );
 }

@@ -3,37 +3,10 @@ import { storage } from "../storage";
 import * as links from "../storage/bowler-payment-links";
 import { verifyLinkActionToken } from "../utils/bowler-link-tokens";
 import { createLogger } from "../logger";
+import { renderPage } from "./bowler-link-response-page";
 
 const log = createLogger("BowlerLinkRespond");
 const router = Router();
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function renderPage(opts: {
-  status: number;
-  title: string;
-  heading: string;
-  message: string;
-  appUrl?: string | null;
-}): { status: number; html: string } {
-  const safeTitle = escapeHtml(opts.title);
-  const safeHeading = escapeHtml(opts.heading);
-  const safeMessage = escapeHtml(opts.message);
-  const cta = opts.appUrl
-    ? `<p style="margin-top:24px;"><a href="${escapeHtml(
-        opts.appUrl,
-      )}" style="display:inline-block;background:#1a1a2e;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;">Open in app</a></p>`
-    : "";
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${safeTitle}</title></head><body style="font-family:Arial,sans-serif;background:#f6f6f9;margin:0;padding:40px 16px;"><div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 1px 3px rgba(0,0,0,0.06);"><h1 style="color:#1a1a2e;margin:0 0 16px 0;font-size:22px;">${safeHeading}</h1><p style="color:#333;font-size:16px;line-height:1.5;margin:0;">${safeMessage}</p>${cta}<p style="margin-top:32px;font-size:12px;color:#999;text-align:center;">Powered by LeagueVault</p></div></body></html>`;
-  return { status: opts.status, html };
-}
 
 async function appUrlForLink(linkOrgId: number | null): Promise<string> {
   if (linkOrgId == null) return "/bowler-dashboard";
@@ -173,6 +146,7 @@ router.get("/decline", async (req, res) => {
         title: "Invite declined",
         heading: "Invite declined",
         message: "This invite has already been removed. No further action is needed.",
+        tone: "declined",
       });
       return res.status(page.status).type("html").send(page.html);
     }
@@ -202,6 +176,7 @@ router.get("/decline", async (req, res) => {
       title: "Invite declined",
       heading: "Invite declined",
       message: "We've let your partner know. No further action is needed.",
+      tone: "declined",
     });
     return res.status(page.status).type("html").send(page.html);
   } catch (err) {

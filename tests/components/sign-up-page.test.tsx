@@ -46,7 +46,7 @@ async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
   await user.type(await screen.findByLabelText(/email address/i), "jane@example.com");
   await user.type(await screen.findByLabelText(/phone number/i), "5551234567");
   await waitFor(() => expect(screen.getByTestId("button-signup-submit")).toBeEnabled());
-  await user.click(screen.getByRole("button", { name: /create account/i }));
+  await user.click(screen.getByTestId("button-signup-submit"));
 }
 
 function response(body: unknown, status: number, headers: Record<string, string> = {}) {

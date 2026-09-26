@@ -26,6 +26,10 @@ import { memoryLocation } from 'wouter/memory-location';
 
 import SetPasswordPage from '@/pages/set-password-page';
 
+vi.mock('@/hooks/use-business-context', () => ({
+  useBusinessContext: () => ({ business: null, isLoading: false }),
+}));
+
 type FetchHandler = (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>;
 
 const originalFetch = global.fetch;
@@ -197,6 +201,8 @@ describe('SetPasswordPage throttle UX (task #418)', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('alert-set-password-throttled')).not.toBeInTheDocument(),
     );
+    await waitFor(() => expect(window.location.href).toBe('/'));
+    expect(screen.queryByTestId('state-set-password-password-updated')).not.toBeInTheDocument();
   });
 
   it('handles a 429 with no JSON body without crashing (the 429 branch must run BEFORE response.json())', async () => {
@@ -323,7 +329,7 @@ describe('SetPasswordPage English-only onboarding', () => {
 
   it('does not render a preferred-language selector for legacy password setup', async () => {
     renderPage();
-    expect(await screen.findByText(/Set Your Password/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Set your password\./i)).toBeInTheDocument();
     expect(screen.queryByTestId('select-set-password-language')).not.toBeInTheDocument();
   });
 });
@@ -348,18 +354,34 @@ describe('SetPasswordPage validation and reset journey', () => {
     expect(screen.getByTestId('button-set-password-submit')).toHaveTextContent(/Set Password & Sign In/i);
   });
 
-  it('renders reset-specific copy and sends reset users to login after success', async () => {
+  it('renders the password-updated handoff for reset users and waits for sign-in', async () => {
     validateHandler = () => new Response(JSON.stringify({
       success: true,
       data: { email: 'r***@example.com', action: 'password_reset' },
     }), { status: 200, headers: { 'content-type': 'application/json' } });
 
-    const user = userEvent.setup();
-    renderPage();
-    expect(await screen.findByText(/Reset Your Password/i)).toBeInTheDocument();
-    await fillAndSubmit(user);
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { href: 'http://localhost/set-password?token=secret-token&registration=reset' },
+    });
+    const replaceStateSpy = vi.spyOn(window.history, 'replaceState');
+    try {
+      const user = userEvent.setup();
+      renderPage();
+      expect(await screen.findByText(/Choose a new password\./i)).toBeInTheDocument();
+      await fillAndSubmit(user);
 
-    await waitFor(() => expect(testMemoryLocation.history?.at(-1)).toBe('/login'));
+      expect(await screen.findByTestId('state-set-password-password-updated')).toBeInTheDocument();
+      expect(screen.getByText('Password updated.')).toBeInTheDocument();
+      expect(screen.getByText('Your password has been updated. Sign in to continue.')).toBeInTheDocument();
+      expect(replaceStateSpy).toHaveBeenCalledWith(null, '', '/set-password');
+      expect(testMemoryLocation.history?.at(-1)).not.toBe('/login');
+
+      await user.click(screen.getByTestId('button-password-updated-login'));
+      await waitFor(() => expect(testMemoryLocation.history?.at(-1)).toBe('/login'));
+    } finally {
+      replaceStateSpy.mockRestore();
+    }
   });
 
   it('routes registration users to login when password setup succeeds but auto-login fails', async () => {
@@ -374,7 +396,7 @@ describe('SetPasswordPage validation and reset journey', () => {
 
     const user = userEvent.setup();
     renderPage();
-    expect(await screen.findByText(/Finish Your Registration/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Create your password\./i)).toBeInTheDocument();
     await fillAndSubmit(user);
 
     await waitFor(() => expect(testMemoryLocation.history?.at(-1)).toBe('/login'));
@@ -403,13 +425,13 @@ describe('SetPasswordPage validation and reset journey', () => {
       success: true,
       data: { email: 's***@example.com', action: 'password_reset' },
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
-    expect(await screen.findByText(/Reset Your Password/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Choose a new password\./i)).toBeInTheDocument();
 
     resolveFirst(new Response(JSON.stringify({
       success: true,
       data: { email: 'f***@example.com', action: 'account_invite' },
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
-    await waitFor(() => expect(screen.getByText(/s\*\*\*@example\.com/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Choose a new password\./i)).toBeInTheDocument());
     expect(screen.queryByText(/f\*\*\*@example\.com/)).not.toBeInTheDocument();
   });
 
