@@ -103,11 +103,8 @@
     }
   },
   "server/routes/auth.ts": {
-    "@typescript-eslint/no-non-null-assertion": {
-      "count": 1
-    },
     "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 2
+      "count": 1
     }
   },
   "server/routes/bowler-leagues.ts": {
