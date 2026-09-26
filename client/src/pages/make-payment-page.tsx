@@ -52,6 +52,8 @@ type CombinedAutopayConsentRecovery = {
 };
 
 const COMBINED_AUTOPAY_CONSENT_STORAGE_PREFIX = "leaguevault:standing-consent-intent:v1:";
+const COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE = "Payment complete; automatic-payment setup needs confirmation. Check status and retry.";
+const COMBINED_AUTOPAY_REFRESH_RECOVERY_MESSAGE = "Automatic-payment setup is confirmed, but payment balances could not be refreshed. Retry before continuing.";
 
 function combinedAutopayConsentStorageKey(scope: string): string {
   return `${COMBINED_AUTOPAY_CONSENT_STORAGE_PREFIX}${scope}`;
@@ -74,7 +76,7 @@ function readCombinedAutopayConsentRecovery(scope: string): CombinedAutopayConse
       phase: parsed.phase,
       message: parsed.phase === "charging"
         ? "Payment confirmation is in progress. Check the payment status before trying another card."
-        : "Payment complete, automatic payments not enabled; needs confirmation. Check the automatic-payment status and retry consent.",
+        : COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE,
     };
   } catch {
     return null;
@@ -447,7 +449,7 @@ export default function MakePaymentPage() {
       if (prepared.outcome !== "succeeded" || !prepared.response) return;
       const operationId = await extractPaymentOperationId(prepared.response);
       if (!operationId) return;
-      const promoted: CombinedAutopayConsentRecovery = { ...restored, phase: "consent", operationId, message: "Payment complete, automatic payments not enabled; needs confirmation. Check the automatic-payment status and retry consent." };
+      const promoted: CombinedAutopayConsentRecovery = { ...restored, phase: "consent", operationId, message: COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE };
       persistCombinedAutopayConsentRecovery(promoted);
       setCombinedAutopayConsentRecovery(promoted);
     }).catch(() => undefined);
@@ -898,6 +900,8 @@ export default function MakePaymentPage() {
     const recovery = combinedAutopayConsentRecovery;
     if (!recovery || isRetryingCombinedConsent) return;
     setIsRetryingCombinedConsent(true);
+    let currentRecovery = recovery;
+    let consentConfirmed = false;
     try {
       let operationId = recovery.operationId;
       if (!operationId) {
@@ -922,15 +926,17 @@ export default function MakePaymentPage() {
         if (prepared.outcome !== "succeeded" || !prepared.response) throw new Error("Payment confirmation is still pending. Check again before retrying automatic payments.");
         operationId = await extractPaymentOperationId(prepared.response);
         if (!operationId) throw new Error("Payment confirmation is still pending. Check again before retrying automatic payments.");
-        const promoted = { ...recovery, operationId, phase: "consent" as const, message: "Payment complete, automatic payments not enabled; needs confirmation. Check the automatic-payment status and retry consent." };
+        const promoted = { ...recovery, operationId, phase: "consent" as const, message: COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE };
+        currentRecovery = promoted;
         persistCombinedAutopayConsentRecovery(promoted);
         setCombinedAutopayConsentRecovery(promoted);
       }
       const active = await postCombinedAutopayConsent(operationId, recovery.commandKey, true);
       if (!active) throw new Error("Automatic-payment consent is still awaiting confirmation.");
+      consentConfirmed = true;
       const affectedIds = [...new Set([bowlerId ?? 0, ...affectedBowlerIdsRef.current])].filter((id) => id > 0);
       const refreshed = await refreshAfterPayment(affectedIds, { recovery: true });
-      if (!refreshed) throw new Error("Automatic-payment setup is confirmed, but payment balances could not be refreshed. Retry before continuing.");
+      if (!refreshed) throw new Error(COMBINED_AUTOPAY_REFRESH_RECOVERY_MESSAGE);
       setCombinedAutopayMode(false);
       setCombinedAutopayConsentRecovery(null);
       combinedConsentCommandKeyRef.current = null;
@@ -942,7 +948,12 @@ export default function MakePaymentPage() {
       await queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] });
       toast({ title: "Payment complete and automatic payments enabled" });
     } catch (error) {
-      setCombinedAutopayConsentRecovery({ ...recovery, message: "Payment complete, automatic payments not enabled; needs confirmation. Check the automatic-payment status and retry consent." });
+      setCombinedAutopayConsentRecovery({
+        ...currentRecovery,
+        message: consentConfirmed
+          ? COMBINED_AUTOPAY_REFRESH_RECOVERY_MESSAGE
+          : COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE,
+      });
       logger.error("Automatic payments", "Combined consent retry failed", error);
     } finally {
       setIsRetryingCombinedConsent(false);
@@ -1061,7 +1072,7 @@ export default function MakePaymentPage() {
     let combinedMarkerForRecovery: CombinedAutopayConsentRecovery | null = null;
     try {
       if (combinedAutopayConsentRecovery) {
-        throw new Error("Payment complete, automatic payments not enabled; needs confirmation. Retry automatic-payment consent before starting another payment.");
+        throw new Error(COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE);
       }
       setIsSubmitting(true);
       if (!paymentIntentScope) throw new Error("Payment identity is unavailable. Refresh and try again.");
@@ -1075,7 +1086,7 @@ export default function MakePaymentPage() {
             ...exactCombinedRecovery,
             operationId,
             phase: "consent",
-            message: "Payment complete, automatic payments not enabled; needs confirmation. Check the automatic-payment status and retry consent.",
+            message: COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE,
           };
           combinedConsentCommandKeyRef.current = promoted.commandKey;
           persistCombinedAutopayConsentRecovery(promoted);
@@ -1188,7 +1199,7 @@ export default function MakePaymentPage() {
           operationId: operationId as string,
           commandKey: combinedConsentCommandKeyRef.current ?? combinedConsentCommandKey(),
           phase: "consent",
-          message: "Payment complete, automatic payments not enabled; needs confirmation. Check the automatic-payment status and retry consent.",
+          message: COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE,
         };
         combinedConsentCommandKeyRef.current = recovery.commandKey;
         persistCombinedAutopayConsentRecovery(recovery);
@@ -1217,7 +1228,7 @@ export default function MakePaymentPage() {
       recoveryRefreshKeyRef.current = null;
       if (combinedEnrollment) {
         if (combinedConsentFailure) {
-          toast({ title: "Payment complete; automatic payments need confirmation", description: "Your payment was completed, but automatic payments were not enabled. Retry consent without paying again.", variant: "destructive" });
+          toast({ title: "Payment complete; automatic-payment setup needs confirmation", description: "Check status and retry consent without paying again.", variant: "destructive" });
         } else {
           setCombinedAutopayMode(false);
           combinedConsentCommandKeyRef.current = null;

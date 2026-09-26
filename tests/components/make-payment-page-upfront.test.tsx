@@ -601,6 +601,7 @@ describe("MakePaymentPage upfront payment mode", () => {
 
     await act(async () => { await checkoutProps.onSubmit(); });
     await waitFor(() => expect(document.body).toHaveTextContent("Retry automatic payments"));
+    expect(document.body).toHaveTextContent("Payment complete; automatic-payment setup needs confirmation. Check status and retry.");
 
     mocks.setPaidInFull(true);
     view.rerender(<MakePaymentPage />);
@@ -643,6 +644,7 @@ describe("MakePaymentPage upfront payment mode", () => {
 
     expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
     expect(window.localStorage.getItem("leaguevault:standing-consent-intent:v1:stable-scope")).not.toBeNull();
+    expect(document.body).toHaveTextContent("Automatic-payment setup is confirmed, but payment balances could not be refreshed.");
     expect(document.body).toHaveTextContent("Retry automatic payments");
   });
 
