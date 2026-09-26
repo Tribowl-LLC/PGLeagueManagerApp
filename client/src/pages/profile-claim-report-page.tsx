@@ -98,7 +98,7 @@ export default function ProfileClaimReportPage() {
         )}
 
         {state.kind === "error" && (
-          <div className="public-flow-inset public-flow-inset-danger">
+          <div className="public-flow-inset public-flow-inset-danger" role="alert">
             <strong>Unable to continue</strong>
             {state.message}
           </div>
@@ -110,15 +110,30 @@ export default function ProfileClaimReportPage() {
               <strong>Only report this if unexpected</strong>
               Reporting places the linked account on a security hold for administrator review. It does not transfer profile ownership.
             </div>
-            <button type="button" className="public-flow-primary public-flow-primary-danger" disabled={submitting} onClick={() => void report()}>
-              {submitting ? <Loader2 className="size-4 animate-spin" /> : "This wasn’t me"}
-              {!submitting && <ArrowRight className="size-4" />}
+            <button
+              type="button"
+              className="public-flow-primary public-flow-primary-danger"
+              disabled={submitting}
+              aria-busy={submitting}
+              onClick={() => void report()}
+            >
+              {submitting ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  <span>Reporting…</span>
+                </>
+              ) : (
+                <>
+                  <span>This wasn’t me</span>
+                  <ArrowRight className="size-4" aria-hidden="true" />
+                </>
+              )}
             </button>
           </>
         )}
 
         {state.kind === "reported" && (
-          <div className="public-flow-inset public-flow-inset-danger">
+          <div className="public-flow-inset public-flow-inset-danger" role="status">
             <strong>Report received</strong>
             The account has been placed on a security hold. An administrator will review the assignment.
           </div>

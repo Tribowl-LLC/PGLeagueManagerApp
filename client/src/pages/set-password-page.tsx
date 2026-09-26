@@ -136,7 +136,7 @@ export default function SetPasswordPage() {
   const requirements = [
     { label: 'At least 8 characters', met: password.length >= 8 },
     { label: 'Uppercase and lowercase letters', met: /[A-Z]/.test(password) && /[a-z]/.test(password) },
-    { label: 'A number and a symbol', met: /[0-9]/.test(password) && /[!@#$%^&*]/.test(password) },
+    { label: 'A number and one of: ! @ # $ % ^ & *', met: /[0-9]/.test(password) && /[!@#$%^&*]/.test(password) },
   ];
 
   const allMet = requirements.every(r => r.met);

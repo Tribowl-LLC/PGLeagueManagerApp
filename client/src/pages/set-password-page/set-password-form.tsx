@@ -1,5 +1,5 @@
 import { formatCountdown } from '@/hooks/use-throttle-countdown';
-import { AlertTriangle, Loader2, Check, Eye, EyeOff } from 'lucide-react';
+import { AlertTriangle, Loader2, Check, Circle, Eye, EyeOff } from 'lucide-react';
 
 interface PasswordRequirement {
   label: string;
@@ -66,9 +66,18 @@ export function SetPasswordForm({
       </div>
 
       <ul className="space-y-1.5 text-xs text-navigation-600" aria-label="Password requirements">
-        {requirements.map((req) => (
-          <li key={req.label} className={`flex items-center gap-2 ${req.met ? 'text-positive-800' : ''}`}>
-            <Check className="size-3.5 shrink-0" />
+        {requirements.map((req, index) => (
+          <li
+            key={req.label}
+            className={`flex items-center gap-2 ${req.met ? 'text-positive-800' : ''}`}
+            data-testid={`password-requirement-${index}`}
+            data-state={req.met ? 'met' : 'unmet'}
+          >
+            {req.met ? (
+              <Check className="size-3.5 shrink-0" aria-hidden="true" />
+            ) : (
+              <Circle className="size-3.5 shrink-0" aria-hidden="true" />
+            )}
             <span>{req.label}</span>
             <span className="sr-only">{req.met ? ' — met' : ' — not met'}</span>
           </li>

@@ -334,6 +334,25 @@ describe('SetPasswordPage English-only onboarding', () => {
   });
 });
 
+describe('SetPasswordPage password requirement guidance', () => {
+  it('lists the accepted symbols and distinguishes unmet from met requirements', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const passwordInput = await screen.findByLabelText(/^Password$/i);
+    const symbolRequirement = screen.getByTestId('password-requirement-2');
+    expect(screen.getByText('A number and one of: ! @ # $ % ^ & *')).toBeInTheDocument();
+    expect(symbolRequirement).toHaveAttribute('data-state', 'unmet');
+    expect(symbolRequirement.querySelector('circle')).toBeInTheDocument();
+    expect(symbolRequirement.querySelector('path')).not.toBeInTheDocument();
+
+    await user.type(passwordInput, STRONG_PASSWORD);
+    expect(symbolRequirement).toHaveAttribute('data-state', 'met');
+    expect(symbolRequirement.querySelector('path')).toBeInTheDocument();
+    expect(symbolRequirement.querySelector('circle')).not.toBeInTheDocument();
+  });
+});
+
 describe('SetPasswordPage validation and reset journey', () => {
   it('encodes the token and defaults a legacy success response to an invitation', async () => {
     testSearch = 'token=token%26with%20spaces';

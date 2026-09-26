@@ -118,5 +118,33 @@ describe("public support pages", () => {
       confirm: true,
     });
     expect(await screen.findByText("Report received")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/report received/i);
+  });
+
+  it("names the pending report action", async () => {
+    const pendingPost = new Promise<Response>(() => {});
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true,
+        data: { profileName: "Alex Morgan", csrfToken: "csrf-proof" },
+      }), { status: 200 }))
+      .mockReturnValueOnce(pendingPost);
+    global.fetch = fetchMock;
+    renderInRouter(<ProfileClaimReportPage />, "token=report-token");
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /this wasn.t me/i }));
+    expect(screen.getByRole("button", { name: /reporting/i })).toBeDisabled();
+  });
+
+  it("announces report errors", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        success: false,
+        error: { message: "This report link is invalid or expired." },
+      }), { status: 410 }));
+    global.fetch = fetchMock;
+    renderInRouter(<ProfileClaimReportPage />, "token=expired-token");
+    expect(await screen.findByRole("alert")).toHaveTextContent(/unable to continue/i);
   });
 });
