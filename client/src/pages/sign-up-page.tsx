@@ -3,14 +3,6 @@ import { csrfFetch, makeApiError, parseRetryAfterSeconds } from "@/lib/queryClie
 import { isExpectedApiError, isAbortError } from "@/lib/api-error";
 import { logger } from "@/lib/logger";
 import { ErrorBoundary } from "@/components/error-boundary";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  CardFooter,
-} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
@@ -27,14 +19,14 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { useBusinessContext } from "@/hooks/use-business-context";
 import {
   DEFAULT_THROTTLE_FALLBACK_SECONDS,
   formatCountdown,
   useThrottleCountdown,
 } from "@/hooks/use-throttle-countdown";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { AlertCircle, AlertTriangle, Loader2 } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowRight, Loader2 } from "lucide-react";
+import { PublicPageLayout, PublicProgress } from "@/components/public-page-layout";
 
 const signUpSchema = z.object({
   name: z
@@ -75,7 +67,6 @@ const signUpAvailabilityResponseSchema = z.object({
 const SignUpPage: FC = () => {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
-  const { business: orgInfo } = useBusinessContext();
   const registrationAvailability = useQuery({
     queryKey: ["/api/auth/registration/availability"],
     queryFn: async ({ signal }) => {
@@ -182,22 +173,18 @@ const SignUpPage: FC = () => {
 
   return (
     <ErrorBoundary level="section">
-      <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
-        <Card className="w-full max-w-md mt-4 sm:mt-0">
-          <CardHeader spacing="tight" padding="comfortable">
-            {orgInfo?.logo && (
-              <div className="flex justify-center mb-2">
-                <img src={orgInfo.logo} alt={orgInfo.name} className="h-16 w-auto object-contain" />
-              </div>
-            )}
-            <CardTitle size="2xl" weight="bold" className="text-center">
-              {orgInfo ? `Welcome to ${orgInfo.name}` : "Create your LeagueVault account"}
-            </CardTitle>
-            <CardDescription className="text-center">
-              Sign up to manage your league payments
-            </CardDescription>
-          </CardHeader>
-          <CardContent padding="responsive">
+      <PublicPageLayout>
+        <section className="public-flow-card">
+          <header className="public-flow-card-header">
+            <PublicProgress step={1} />
+            <h1 className="public-flow-title">
+              Create your account.
+            </h1>
+            <p className="public-flow-description">
+              Enter your details to create an account. We’ll verify your contact information next.
+            </p>
+          </header>
+          <div className="public-flow-card-content">
             {registrationAvailability.isPending ? (
               <Alert data-testid="alert-signup-availability-loading">
                 <Loader2 className="size-4 animate-spin" />
@@ -229,8 +216,8 @@ const SignUpPage: FC = () => {
                     name="name"
                     render={({ field }) => (
                       <FormItem spacing="responsive">
-                        <FormLabel>Full Name</FormLabel>
-                        <FormControl><Input placeholder="John Doe" {...field} /></FormControl>
+                        <FormLabel>Full name</FormLabel>
+                        <FormControl><Input autoComplete="name" {...field} /></FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -240,9 +227,9 @@ const SignUpPage: FC = () => {
                     name="email"
                     render={({ field }) => (
                       <FormItem spacing="responsive">
-                        <FormLabel>Email Address</FormLabel>
+                        <FormLabel>Email address</FormLabel>
                         <FormControl>
-                          <Input type="email" placeholder="john@example.com" {...field} />
+                          <Input type="email" autoComplete="email" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -253,9 +240,9 @@ const SignUpPage: FC = () => {
                     name="phone"
                     render={({ field }) => (
                       <FormItem spacing="responsive">
-                        <FormLabel>Phone Number</FormLabel>
+                        <FormLabel>Phone number</FormLabel>
                         <FormControl>
-                          <Input type="tel" placeholder="(555) 123-4567" {...field} />
+                          <Input type="tel" autoComplete="tel" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -277,21 +264,21 @@ const SignUpPage: FC = () => {
                       <span>{signupError}</span>
                     </div>
                   )}
-                  <Button type="submit" className="w-full mt-2" disabled={isSubmitting || isThrottled} data-testid="button-signup-submit">
-                    {isSubmitting ? <><Loader2 className="mr-2 size-4 animate-spin" />Creating account…</> : isThrottled ? `Try again in ${formatCountdown(remainingSeconds)}` : "Create Account"}
-                  </Button>
+                  <button type="submit" className="public-flow-primary mt-2" disabled={isSubmitting || isThrottled} data-testid="button-signup-submit">
+                    {isSubmitting ? <><Loader2 className="mr-2 size-4 animate-spin" />Continuing…</> : isThrottled ? `Try again in ${formatCountdown(remainingSeconds)}` : <>Continue <ArrowRight size={18} aria-hidden="true" /></>}
+                  </button>
                 </form>
               </Form>
             )}
-          </CardContent>
-          <CardFooter spacing="tight" className="flex flex-col items-center">
+          </div>
+          <footer className="public-flow-card-footer">
             <p className="text-sm text-muted-foreground">
-              Already have an account? <Link href="/login" className="text-primary hover:underline">Sign in</Link>
+              Already have an account? <Link href="/login" className="public-flow-link">Sign in</Link>
             </p>
-            <Link href="/privacy-policy" className="text-xs text-muted-foreground hover:underline">Privacy Policy</Link>
-          </CardFooter>
-        </Card>
-      </div>
+            <Link href="/privacy-policy" className="public-flow-link">Privacy Policy</Link>
+          </footer>
+        </section>
+      </PublicPageLayout>
     </ErrorBoundary>
   );
 };

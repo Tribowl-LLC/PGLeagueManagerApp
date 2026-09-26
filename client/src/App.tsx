@@ -33,6 +33,7 @@ const ReportsPage = lazy(() => import("@/pages/reports-page"));
 const LeaguePastDuePage = lazy(() => import("@/pages/league-past-due-page"));
 const PastDuePage = lazy(() => import("@/pages/past-due-page"));
 const SignUpPage = lazy(() => import("@/pages/sign-up-page"));
+const WelcomePage = lazy(() => import("@/pages/welcome-page"));
 const BowlerDashboardPage = lazy(() => import("@/pages/bowler-dashboard-page"));
 const OrganizationsPage = lazy(() => import("@/pages/organizations-page"));
 const BusinessSettingsPage = lazy(() => import("@/pages/business-settings-page"));
@@ -165,8 +166,9 @@ function Router() {
     <Suspense fallback={<PageLoader />}>
       <Switch>
         {/* Public routes */}
-        <Route path="/sign-up" component={SignUpPage} />
-        <Route path="/signup" component={SignUpPage} />
+        <Route path="/sign-up" component={WelcomePage} />
+        <Route path="/signup" component={WelcomePage} />
+        <Route path="/register" component={SignUpPage} />
         <Route path="/login" component={LoginPage} />
         <Route path="/set-password" component={SetPasswordPage} />
         <Route path="/forgot-password" component={ForgotPasswordPage} />

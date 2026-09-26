@@ -46,7 +46,7 @@ async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
   await user.type(await screen.findByLabelText(/email address/i), "jane@example.com");
   await user.type(await screen.findByLabelText(/phone number/i), "5551234567");
   await waitFor(() => expect(screen.getByTestId("button-signup-submit")).toBeEnabled());
-  await user.click(screen.getByRole("button", { name: /create account/i }));
+  await user.click(screen.getByTestId("button-signup-submit"));
 }
 
 function response(body: unknown, status: number, headers: Record<string, string> = {}) {
@@ -67,6 +67,14 @@ afterEach(() => {
 });
 
 describe("SignUpPage API outcomes", () => {
+  it("explains that registration creates an account before contact verification", async () => {
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Create your account." })).toBeInTheDocument();
+    expect(screen.getByText("Enter your details to create an account. We’ll verify your contact information next.")).toBeInTheDocument();
+    expect(screen.queryByText(/join your league/i)).not.toBeInTheDocument();
+  });
+
   it("keeps submit disabled while availability is loading", async () => {
     let resolveAvailability: ((value: Response) => void) | undefined;
     availabilityHandler = () => new Promise<Response>((resolve) => {

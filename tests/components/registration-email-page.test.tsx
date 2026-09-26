@@ -12,6 +12,9 @@ vi.mock('@sentry/react', async (importOriginal) => ({
 vi.mock('wouter', async (importOriginal) => ({
   ...await importOriginal<typeof import('wouter')>(), useLocation: () => ['/registration-email', navigateMock],
 }));
+vi.mock("@/hooks/use-business-context", () => ({
+  useBusinessContext: () => ({ business: null, isLoading: false }),
+}));
 vi.mock("@/lib/queryClient", async () => {
   const actual = await vi.importActual<typeof import("@/lib/queryClient")>("@/lib/queryClient");
   return { ...actual, apiRequest: apiRequestMock };
@@ -53,6 +56,7 @@ beforeEach(() => {
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { 'content-type': 'application/json' },
 });
+const orgContext = () => json({ success: true, data: null });
 const missing = () => json({ error: { code: 'NOT_FOUND', message: 'Registration status is unavailable.' } }, 404);
 const anonymous = () => json({ error: { code: 'AUTH_REQUIRED', message: 'Authentication required' } }, 401);
 afterEach(() => {
@@ -78,7 +82,7 @@ describe("RegistrationEmailPage delivery states", () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ success: true, data: statusData() })));
     renderPage();
 
-    expect(await screen.findByText("Check your email", { exact: true })).toBeInTheDocument();
+    expect(await screen.findByText("Check your email.", { exact: true })).toBeInTheDocument();
     expect(screen.getByTestId("registration-delivery-status")).toHaveTextContent("Delivery failed");
     expect(screen.queryByText("Registration status unavailable")).not.toBeInTheDocument();
     expect(screen.getByTestId("button-registration-resend")).toBeEnabled();
@@ -96,7 +100,7 @@ describe("RegistrationEmailPage delivery states", () => {
     })));
     renderPage();
 
-    expect(await screen.findByText("Check your email", { exact: true })).toBeInTheDocument();
+    expect(await screen.findByText("Check your email.", { exact: true })).toBeInTheDocument();
     expect(screen.getByTestId("registration-delivery-status")).toHaveTextContent("Status unknown");
     expect(screen.getByTestId("registration-delivery-status")).not.toHaveTextContent("Delivery failed");
   });
@@ -113,7 +117,7 @@ describe("RegistrationEmailPage delivery states", () => {
     })));
     renderPage();
 
-    expect(await screen.findByText("Check your email", { exact: true })).toBeInTheDocument();
+    expect(await screen.findByText("Check your email.", { exact: true })).toBeInTheDocument();
     expect(screen.getByTestId("registration-delivery-status")).toHaveTextContent("Submitted");
   });
 });
@@ -122,13 +126,15 @@ describe("RegistrationEmailPage delivery states", () => {
 describe('RegistrationEmailPage recovery', () => {
   it('treats only the documented missing-session response as normal and stops polling it', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    const fetchMock = vi.fn(async (url: string) => url === '/api/user' ? anonymous() : missing());
+    const fetchMock = vi.fn(async (url: string) => url === '/api/user'
+      ? anonymous()
+      : url === '/api/auth/registration/status' ? missing() : orgContext());
     vi.stubGlobal('fetch', fetchMock);
     appQueryClient.clear();
     renderPage(appQueryClient);
     await screen.findByText("If you recently requested registration help, check your email for next steps. If you already have an account, sign in or reset your password. Otherwise, start registration again with the same email address.");
     await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === "/api/auth/registration/status")).toHaveLength(1);
     expect(captureException).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalled();
   });
@@ -144,7 +150,7 @@ describe('RegistrationEmailPage recovery', () => {
     client.setQueryData(['/api/user'], { success: true, data: null });
     client.setQueryData(['/api/old-account-data'], { data: ['old account'] });
     renderPage(client);
-    await screen.findByText('Check your email', { exact: true });
+    await screen.findByText('Check your email.', { exact: true });
     completed = true;
     fireEvent(window, new Event('focus'));
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/', { replace: true }));
@@ -154,19 +160,25 @@ describe('RegistrationEmailPage recovery', () => {
   });
 
   it('retries a transient network failure once without reporting a recovered error', async () => {
-    const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch'))
-      .mockImplementation(async () => json({ success: true, data: statusData() }));
+    let attempts = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url === '/api/org-context') return orgContext();
+      attempts += 1;
+      if (attempts === 1) throw new TypeError('Failed to fetch');
+      return json({ success: true, data: statusData() });
+    });
     vi.stubGlobal('fetch', fetchMock);
     appQueryClient.clear();
     renderPage(appQueryClient);
-    await screen.findByText('Check your email', { exact: true }, { timeout: 3000 });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await screen.findByText('Check your email.', { exact: true }, { timeout: 3000 });
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === "/api/auth/registration/status")).toHaveLength(2);
     expect(captureException).not.toHaveBeenCalled();
   });
 
   it('reports an exhausted transport failure once and lets the user retry', async () => {
     let offline = true;
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === '/api/org-context') return orgContext();
       if (offline) throw new TypeError('Failed to fetch');
       return json({ success: true, data: statusData() });
     });
@@ -174,28 +186,31 @@ describe('RegistrationEmailPage recovery', () => {
     appQueryClient.clear();
     renderPage(appQueryClient);
     await screen.findByText(/Check your internet connection/, {}, { timeout: 3000 });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === "/api/auth/registration/status")).toHaveLength(2);
     expect(captureException).toHaveBeenCalledOnce();
     offline = false;
     fireEvent.click(screen.getByTestId('button-registration-status-retry'));
-    await screen.findByText('Check your email', { exact: true });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await screen.findByText('Check your email.', { exact: true });
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === "/api/auth/registration/status")).toHaveLength(3);
   });
 
   it('keeps an unexpected 404 actionable instead of hiding a broken endpoint', async () => {
-    const fetchMock = vi.fn(async () => new Response('Not found', { status: 404 }));
+    const fetchMock = vi.fn(async (url: string) => url === '/api/org-context'
+      ? orgContext()
+      : new Response('Not found', { status: 404 }));
     vi.stubGlobal('fetch', fetchMock);
     appQueryClient.clear();
     renderPage(appQueryClient);
     await screen.findByText("We couldn't verify your registration", { exact: true });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === "/api/auth/registration/status")).toHaveLength(1);
     expect(captureException).toHaveBeenCalledOnce();
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
   it('does not assume successful completion if the follow-up session check fails', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/user'
-      ? json({ error: { code: 'SERVER_ERROR', message: 'Unavailable' } }, 503) : missing()));
+      ? json({ error: { code: 'SERVER_ERROR', message: 'Unavailable' } }, 503)
+      : url === '/api/auth/registration/status' ? missing() : orgContext()));
     renderPage();
     await screen.findByText("We couldn't verify your registration", { exact: true }, { timeout: 3000 });
     expect(navigateMock).not.toHaveBeenCalled();

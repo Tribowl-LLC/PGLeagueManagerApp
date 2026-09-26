@@ -8,6 +8,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
 
@@ -57,10 +58,15 @@ afterEach(() => {
 
 describe('ConfirmEmailChangePage session-refresh failure', () => {
   it('shows the completed email change and routes through fresh login', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     render(
-      <Router hook={memoryHook} searchHook={useTestSearch}>
-        <ConfirmEmailChangePage />
-      </Router>,
+      <QueryClientProvider client={queryClient}>
+        <Router hook={memoryHook} searchHook={useTestSearch}>
+          <ConfirmEmailChangePage />
+        </Router>
+      </QueryClientProvider>,
     );
 
     const user = userEvent.setup();

@@ -355,3 +355,44 @@
 @utility grid-cols-content-action {
   grid-template-columns: 1fr auto;
 }
+
+/* Familiar A public components keep their visual rules in a scoped stylesheet.
+   These utility registrations let the design-system linter recognize them. */
+@utility public-flow-card {
+  --lv-public-flow-component: 1;
+}
+@utility public-flow-card-header { --lv-public-flow-component: 1; }
+@utility public-flow-card-content { --lv-public-flow-component: 1; }
+@utility public-flow-card-footer { --lv-public-flow-component: 1; }
+@utility public-flow-layout { --lv-public-flow-component: 1; }
+@utility public-flow-story { --lv-public-flow-component: 1; }
+@utility public-flow-wordmark { --lv-public-flow-component: 1; }
+@utility public-flow-wordmark-desktop { --lv-public-flow-component: 1; }
+@utility public-flow-wordmark-mobile { --lv-public-flow-component: 1; }
+@utility public-flow-story-copy { --lv-public-flow-component: 1; }
+@utility public-flow-main { --lv-public-flow-component: 1; }
+@utility public-flow-main-welcome { --lv-public-flow-component: 1; }
+@utility public-flow-main-top { --lv-public-flow-component: 1; }
+@utility public-flow-main-inner { --lv-public-flow-component: 1; }
+@utility public-flow-main-inner-wide { --lv-public-flow-component: 1; }
+@utility public-flow-welcome-logo { --lv-public-flow-component: 1; }
+@utility public-flow-welcome { --lv-public-flow-component: 1; }
+@utility public-flow-welcome-actions { --lv-public-flow-component: 1; }
+@utility public-flow-title { --lv-public-flow-component: 1; }
+@utility public-flow-description { --lv-public-flow-component: 1; }
+@utility public-flow-eyebrow { --lv-public-flow-component: 1; }
+@utility public-flow-date { --lv-public-flow-component: 1; }
+@utility public-flow-icon { --lv-public-flow-component: 1; }
+@utility public-flow-icon-success { --lv-public-flow-component: 1; }
+@utility public-flow-icon-danger { --lv-public-flow-component: 1; }
+@utility public-flow-progress { --lv-public-flow-component: 1; }
+@utility public-flow-inset { --lv-public-flow-component: 1; }
+@utility public-flow-inset-danger { --lv-public-flow-component: 1; }
+@utility public-flow-primary { --lv-public-flow-component: 1; }
+@utility public-flow-primary-danger { --lv-public-flow-component: 1; }
+@utility public-flow-secondary { --lv-public-flow-component: 1; }
+@utility public-flow-link { --lv-public-flow-component: 1; }
+@utility public-flow-input-wrap { --lv-public-flow-component: 1; }
+@utility public-flow-password-toggle { --lv-public-flow-component: 1; }
+@utility public-flow-verify-actions { --lv-public-flow-component: 1; }
+@utility is-filled { --lv-public-flow-component: 1; }

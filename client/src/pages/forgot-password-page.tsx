@@ -1,29 +1,19 @@
 import { FC, useState } from "react";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { parseRetryAfterSeconds } from "@/lib/queryClient";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  CardFooter,
-} from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Link } from "wouter";
-import { useBusinessContext } from "@/hooks/use-business-context";
 import {
   DEFAULT_THROTTLE_FALLBACK_SECONDS,
   formatCountdown,
   useThrottleCountdown,
 } from "@/hooks/use-throttle-countdown";
 import { AlertCircle, AlertTriangle, ArrowLeft, Loader2, Mail } from "lucide-react";
+import { PublicPageLayout } from "@/components/public-page-layout";
 
 const ForgotPasswordPage: FC = () => {
-  const { business } = useBusinessContext();
   const [email, setEmail] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,54 +64,45 @@ const ForgotPasswordPage: FC = () => {
   if (sent) {
     return (
       <ErrorBoundary level="section">
-        <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
-          <Card className="w-full max-w-md mt-4 sm:mt-0">
-            <CardHeader spacing="tight" padding="comfortable" className="text-center">
-              <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10">
-                <Mail className="size-6 text-primary" />
+        <PublicPageLayout>
+          <section className="public-flow-card">
+            <header className="public-flow-card-header">
+              <div className="public-flow-icon">
+                <Mail className="size-6" aria-hidden="true" />
               </div>
-              <CardTitle size="2xl" weight="bold">Check your email</CardTitle>
-              <CardDescription>
-                We've sent an email with next steps for <strong>{email}</strong>, when this address can be used with LeagueVault. Please check your inbox and spam folder.
-              </CardDescription>
-            </CardHeader>
-            <CardFooter spacing="tight" className="flex flex-col items-center">
-              <Link href="/login" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">
+              <h1 className="public-flow-title">Check your email.</h1>
+              <p className="public-flow-description">
+                If an account matches <strong>{email}</strong>, a reset link will arrive there. Check your inbox and spam folder.
+              </p>
+            </header>
+            <footer className="public-flow-card-footer">
+              <Link href="/login" className="public-flow-link">
                 <ArrowLeft className="size-3.5" />
-                Back to login
+                Back to sign in
               </Link>
-            </CardFooter>
-          </Card>
-        </div>
+            </footer>
+          </section>
+        </PublicPageLayout>
       </ErrorBoundary>
     );
   }
 
   return (
     <ErrorBoundary level="section">
-      <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
-        <Card className="w-full max-w-md mt-4 sm:mt-0">
-          <CardHeader spacing="tight" padding="comfortable">
-            {business?.logo && (
-              <div className="flex justify-center mb-4">
-                <img
-                src={business.logo}
-                alt={business.name}
-                  className="h-14 w-auto max-w-50 object-contain"
-                />
-              </div>
-            )}
-            <CardTitle size="2xl" weight="bold" className="text-center">
-              Reset your password
-            </CardTitle>
-            <CardDescription className="text-center">
-              Enter your email address and we'll send you a link to reset your password.
-            </CardDescription>
-          </CardHeader>
-          <CardContent padding="responsive">
+      <PublicPageLayout>
+        <section className="public-flow-card">
+          <header className="public-flow-card-header">
+            <h1 className="public-flow-title">
+              Reset your password.
+            </h1>
+            <p className="public-flow-description">
+              Enter your email and we’ll help you get back in.
+            </p>
+          </header>
+          <div className="public-flow-card-content">
             <form onSubmit={handleSubmit} className="space-y-3 sm:space-y-4">
               <div className="space-y-1 sm:space-y-2">
-                <Label htmlFor="email">Email Address</Label>
+                <Label htmlFor="email">Email address</Label>
                 <Input
                   id="email"
                   type="email"
@@ -153,9 +134,9 @@ const ForgotPasswordPage: FC = () => {
                   <span>{error}</span>
                 </div>
               )}
-              <Button
+              <button
                 type="submit"
-                className="w-full mt-2"
+                className="public-flow-primary mt-2"
                 disabled={isSubmitting || isThrottled}
                 data-testid="button-forgot-submit"
               >
@@ -169,17 +150,17 @@ const ForgotPasswordPage: FC = () => {
                 ) : (
                   "Send reset link"
                 )}
-              </Button>
+              </button>
             </form>
-          </CardContent>
-          <CardFooter spacing="tight" className="flex flex-col items-center">
-            <Link href="/login" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">
+          </div>
+          <footer className="public-flow-card-footer">
+            <Link href="/login" className="public-flow-link">
               <ArrowLeft className="size-3.5" />
-              Back to login
+              Back to sign in
             </Link>
-          </CardFooter>
-        </Card>
-      </div>
+          </footer>
+        </section>
+      </PublicPageLayout>
     </ErrorBoundary>
   );
 };

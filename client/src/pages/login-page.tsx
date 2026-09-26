@@ -1,16 +1,7 @@
 import { FC, useState } from "react";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { parseRetryAfterSeconds, queryClient, resetSessionExpiryRedirect } from "@/lib/queryClient";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  CardFooter,
-} from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -24,13 +15,13 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Link, useLocation, useSearch } from "wouter";
-import { useBusinessContext } from "@/hooks/use-business-context";
 import {
   DEFAULT_THROTTLE_FALLBACK_SECONDS,
   formatCountdown,
   useThrottleCountdown,
 } from "@/hooks/use-throttle-countdown";
-import { AlertCircle, AlertTriangle, Loader2 } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowRight, Eye, EyeOff, Loader2 } from "lucide-react";
+import { PublicPageLayout } from "@/components/public-page-layout";
 
 const loginSchema = z.object({
   email: z
@@ -46,12 +37,12 @@ type LoginFormData = z.infer<typeof loginSchema>;
 const LoginPage: FC = () => {
   const [, setLocation] = useLocation();
   const search = useSearch();
-  const { business } = useBusinessContext();
   const loginReason = new URLSearchParams(search).get("reason");
   const sessionExpired = loginReason === "session-expired";
   const credentialChanged = loginReason === "credential-changed";
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const { isThrottled, remainingSeconds, throttle, clear: clearThrottle } =
     useThrottleCountdown();
 
@@ -113,28 +104,17 @@ const LoginPage: FC = () => {
 
   return (
     <ErrorBoundary level="section">
-    <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
-      <Card className="w-full max-w-md mt-4 sm:mt-0">
-        <CardHeader spacing="tight" padding="comfortable">
-          {business?.logo && (
-            <div className="flex justify-center mb-4">
-              <img
-                src={business.logo}
-                alt={business.name}
-                className="h-14 w-auto max-w-50 object-contain"
-              />
-            </div>
-          )}
-          <CardTitle size="2xl" weight="bold" className="text-center">
-            Welcome Back
-          </CardTitle>
-          <CardDescription className="text-center">
-            {business
-              ? `Sign in to ${business.name}`
-              : "Sign in to your bowling league account"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent padding="responsive">
+    <PublicPageLayout>
+      <section className="public-flow-card">
+        <header className="public-flow-card-header">
+          <h1 className="public-flow-title">
+            Welcome back.
+          </h1>
+          <p className="public-flow-description">
+            Sign in to see your league, payments, and next bowling night.
+          </p>
+        </header>
+        <div className="public-flow-card-content">
           {sessionExpired && (
             <Alert className="mb-4" data-testid="alert-session-expired">
               <AlertTitle>Session expired</AlertTitle>
@@ -156,10 +136,11 @@ const LoginPage: FC = () => {
                 name="email"
                 render={({ field }) => (
                   <FormItem spacing="responsive">
-                    <FormLabel>Email Address</FormLabel>
+                    <FormLabel>Email address</FormLabel>
                     <FormControl>
                       <Input
                         type="email"
+                        autoComplete="email"
                         placeholder="john@example.com"
                         {...field}
                       />
@@ -174,17 +155,31 @@ const LoginPage: FC = () => {
                 render={({ field }) => (
                   <FormItem spacing="responsive">
                     <FormLabel>Password</FormLabel>
-                    <FormControl>
-                      <Input
-                        type="password"
-                        placeholder="••••••••"
-                        {...field}
-                      />
-                    </FormControl>
+                    <div className="public-flow-input-wrap">
+                      <FormControl>
+                        <Input
+                          type={showPassword ? "text" : "password"}
+                          autoComplete="current-password"
+                          {...field}
+                        />
+                      </FormControl>
+                      <button
+                        type="button"
+                        className="public-flow-password-toggle"
+                        aria-label={showPassword ? "Hide password" : "Show password"}
+                        aria-pressed={showPassword}
+                        onClick={() => setShowPassword((shown) => !shown)}
+                      >
+                        {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+                      </button>
+                    </div>
                     <FormMessage />
                   </FormItem>
                 )}
               />
+              <div className="flex justify-end">
+                <Link href="/forgot-password" className="public-flow-link">Forgot your password?</Link>
+              </div>
               {isThrottled && (
                 <Alert variant="destructive" data-testid="alert-login-throttled">
                   <AlertTriangle className="size-4" />
@@ -218,9 +213,9 @@ const LoginPage: FC = () => {
                   <span>{loginError}</span>
                 </div>
               )}
-              <Button
+              <button
                 type="submit"
-                className="w-full mt-2"
+                className="public-flow-primary mt-2"
                 disabled={isSubmitting || isThrottled}
                 data-testid="button-login-submit"
               >
@@ -232,34 +227,31 @@ const LoginPage: FC = () => {
                 ) : isThrottled ? (
                   `Try again in ${formatCountdown(remainingSeconds)}`
                 ) : (
-                  "Sign In"
+                  <>Sign in <ArrowRight size={18} aria-hidden="true" /></>
                 )}
-              </Button>
+              </button>
             </form>
           </Form>
-        </CardContent>
-        <CardFooter spacing="tight" className="flex flex-col items-center">
-          <Link href="/forgot-password" className="text-sm text-primary hover:underline">
-            Forgot your password?
-          </Link>
+        </div>
+        <footer className="public-flow-card-footer">
           <p className="text-sm text-muted-foreground">
-            Don't have an account?{" "}
-            <Link href="/sign-up" className="text-primary hover:underline">
-              Sign up
+            New to LeagueVault?{" "}
+            <Link href="/register" className="public-flow-link">
+              Register
             </Link>
           </p>
           <div className="flex gap-3">
-            <Link href="/privacy-policy" className="text-xs text-muted-foreground hover:underline">
+            <Link href="/privacy-policy" className="public-flow-link">
               Privacy Policy
             </Link>
             <span className="text-xs text-muted-foreground">·</span>
-            <Link href="/delete-account" className="text-xs text-muted-foreground hover:underline">
+            <Link href="/delete-account" className="public-flow-link">
               Delete Account
             </Link>
           </div>
-        </CardFooter>
-      </Card>
-    </div>
+        </footer>
+      </section>
+    </PublicPageLayout>
     </ErrorBoundary>
   );
 };

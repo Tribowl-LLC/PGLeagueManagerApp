@@ -498,6 +498,10 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
       expect(acceptRes.status).toBe(200);
       const html = await acceptRes.text();
       expect(html.toLowerCase()).toContain('accept');
+      expect(html).toContain('Instrument Sans');
+      expect(html).toContain('/perfect-game-dark-logo.png');
+      expect(html).toContain('result-state-success');
+      expect(html).toContain('result-story-copy');
       const afterAccept = await db
         .select({ status: bowlerPaymentLinks.status })
         .from(bowlerPaymentLinks)
@@ -518,6 +522,7 @@ describe('Bowler payment links — lifecycle + cross-org denial', () => {
         `${BASE_URL}/api/bowler-link-respond/decline?token=${encodeURIComponent(declineToken)}`,
       );
       expect(replay.status).toBe(409);
+      expect(await replay.text()).toContain('result-state-error');
       const stillThere = await db
         .select({ status: bowlerPaymentLinks.status })
         .from(bowlerPaymentLinks)

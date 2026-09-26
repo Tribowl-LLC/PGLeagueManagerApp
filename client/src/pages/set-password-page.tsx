@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ErrorBoundary } from "@/components/error-boundary";
+import { PublicPageLayout, PublicProgress } from "@/components/public-page-layout";
 import { useLocation, useSearch } from 'wouter';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest, isAbortError, parseRetryAfterSeconds } from '@/lib/queryClient';
 import { getApiErrorCode } from '@/lib/api-error';
@@ -13,7 +11,7 @@ import {
   useThrottleCountdown,
 } from '@/hooks/use-throttle-countdown';
 import { PageLoadingState } from "@/components/page-states";
-import { AlertCircle } from 'lucide-react';
+import { ArrowRight, Check, Loader2, AlertCircle } from 'lucide-react';
 import { SetPasswordForm } from './set-password-page/set-password-form';
 
 type PasswordAction = 'account_invite' | 'password_reset' | 'account_registration';
@@ -26,6 +24,7 @@ type PageState =
   | { kind: 'superseded'; message: string }
   | { kind: 'revoked'; message: string }
   | { kind: 'invalid'; message: string }
+  | { kind: 'password-updated' }
   | { kind: 'temporary'; message: string; source: 'validation' | 'submission' }
   | { kind: 'throttled'; message: string; source: 'validation' | 'submission' };
 
@@ -43,7 +42,7 @@ type ApiResponse = {
   };
 };
 
-const TERMINAL_MESSAGES: Record<Exclude<PageState['kind'], 'loading' | 'ready' | 'temporary' | 'throttled'>, string> = {
+const TERMINAL_MESSAGES: Record<Exclude<PageState['kind'], 'loading' | 'ready' | 'password-updated' | 'temporary' | 'throttled'>, string> = {
   expired: 'This link has expired. Please request a new password reset link or ask your league administrator to resend the invitation.',
   used: 'This link has already been used. If you still need access, request a new password reset link.',
   superseded: 'This link was superseded by a newer request. Please use the latest link in your email.',
@@ -131,14 +130,14 @@ export default function SetPasswordPage() {
   const requestIdRef = useRef(0);
   const validationControllerRef = useRef<AbortController | null>(null);
   const submitControllerRef = useRef<AbortController | null>(null);
+  const completedResetTokenRef = useRef<string | null>(null);
+  const passwordUpdatedHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const { isThrottled, remainingSeconds, throttle, clear: clearThrottle } = useThrottleCountdown();
 
   const requirements = [
     { label: 'At least 8 characters', met: password.length >= 8 },
-    { label: 'One uppercase letter', met: /[A-Z]/.test(password) },
-    { label: 'One lowercase letter', met: /[a-z]/.test(password) },
-    { label: 'One number', met: /[0-9]/.test(password) },
-    { label: 'One special character (!@#$%^&*)', met: /[!@#$%^&*]/.test(password) },
+    { label: 'Uppercase and lowercase letters', met: /[A-Z]/.test(password) && /[a-z]/.test(password) },
+    { label: 'A number and one of: ! @ # $ % ^ & *', met: /[0-9]/.test(password) && /[!@#$%^&*]/.test(password) },
   ];
 
   const allMet = requirements.every(r => r.met);
@@ -150,6 +149,19 @@ export default function SetPasswordPage() {
     submitControllerRef.current?.abort();
 
     const params = new URLSearchParams(search);
+    const requestedToken = params.get('token') ?? '';
+    const registrationMode = params.get('registration');
+    // replaceState does not emit a popstate event, but a router may still
+    // re-render after the URL is scrubbed. Keep the reset completion screen
+    // stable if that happens; a genuinely new token starts a new validation.
+    if (completedResetTokenRef.current
+      && registrationMode !== 'sms'
+      && (!requestedToken || requestedToken === completedResetTokenRef.current)) {
+      return;
+    }
+    if (completedResetTokenRef.current && requestedToken !== completedResetTokenRef.current) {
+      completedResetTokenRef.current = null;
+    }
     const controller = new AbortController();
     validationControllerRef.current = controller;
     if (params.get('registration') === 'sms') {
@@ -199,7 +211,7 @@ export default function SetPasswordPage() {
         if (validationControllerRef.current === controller) validationControllerRef.current = null;
       };
     }
-    const nextToken = params.get('token') ?? '';
+    const nextToken = requestedToken;
     // A URL change starts a completely new flow. Clear form data as well as
     // server-derived data so a prior token cannot be submitted accidentally.
     setToken(nextToken);
@@ -292,6 +304,12 @@ export default function SetPasswordPage() {
     };
   }, [search, validationAttempt, clearThrottle, throttle, setLocation]);
 
+  useEffect(() => {
+    if (state.kind === 'password-updated') {
+      passwordUpdatedHeadingRef.current?.focus();
+    }
+  }, [state.kind]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!valid || !allMet || !passwordsMatch || isThrottled || submitting) return;
@@ -368,23 +386,38 @@ export default function SetPasswordPage() {
       if (response.ok && data.success === true) {
         const registrationLoginFailed = action === 'account_registration'
           && data.data?.loginFailed === true;
-        toast({
-          title: action === 'password_reset' ? 'Password reset successfully' : 'Password set successfully',
-          description: action === 'password_reset'
-            ? 'You can now log in with your new password.'
-            : action === 'account_registration'
+        if (action === 'password_reset') {
+          // Reset tokens do not create a session. Keep the completion state on
+          // this route so the user gets a clear handoff to the normal login
+          // flow, while removing the bearer token from the address bar.
+          completedResetTokenRef.current = token;
+          setToken('');
+          setPassword('');
+          setConfirmPassword('');
+          if (typeof window !== 'undefined') {
+            const cleanUrl = new URL(window.location.href);
+            cleanUrl.searchParams.delete('token');
+            cleanUrl.searchParams.delete('registration');
+            window.history.replaceState(null, '', `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+          }
+          setState({ kind: 'password-updated' });
+        } else {
+          toast({
+            title: 'Password set successfully',
+            description: action === 'account_registration'
               ? registrationLoginFailed
                 ? 'Your account is ready. Please log in.'
                 : 'Your account is ready. You are now signed in.'
               : 'You can now use your new password to sign in.',
-        });
-        if (action === 'password_reset' || registrationLoginFailed) {
+          });
+        }
+        if (registrationLoginFailed) {
           // Reset tokens do not create a session. Send the user through the
           // normal login flow after the server rotates the password. A
           // registration action can take the same path when session creation
           // fails after its atomic password/link transaction committed.
           setLocation('/login');
-        } else {
+        } else if (action !== 'password_reset') {
           // Preserve the invitation flow's existing post-success landing.
           window.location.href = '/';
         }
@@ -431,20 +464,55 @@ export default function SetPasswordPage() {
   };
 
   const retryButton = (
-    <Button
+    <button
+      type="button"
+      className="public-flow-primary disabled:cursor-not-allowed disabled:opacity-60"
       onClick={retryValidation}
       disabled={isThrottled}
       data-testid="button-set-password-validation-retry"
     >
       {isThrottled ? `Try again in ${formatCountdown(remainingSeconds)}` : 'Try again'}
-    </Button>
+    </button>
   );
 
   if (state.kind === 'loading') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background" data-testid="state-set-password-loading">
-        <PageLoadingState message="Validating your password link…" />
-      </div>
+      <PublicPageLayout>
+        <section className="public-flow-card" data-testid="state-set-password-loading">
+          <PageLoadingState message="Validating your password link…" />
+        </section>
+      </PublicPageLayout>
+    );
+  }
+
+  if (state.kind === 'password-updated') {
+    return (
+      <ErrorBoundary level="section">
+        <PublicPageLayout>
+          <section className="public-flow-card" data-testid="state-set-password-password-updated">
+            <div className="public-flow-icon public-flow-icon-success">
+              <Check className="size-6" aria-hidden="true" />
+            </div>
+            <h1
+              ref={passwordUpdatedHeadingRef}
+              tabIndex={-1}
+              aria-live="polite"
+              className="public-flow-title"
+            >
+              Password updated.
+            </h1>
+            <p className="public-flow-description">Your password has been updated. Sign in to continue.</p>
+            <button
+              type="button"
+              className="public-flow-primary"
+              data-testid="button-password-updated-login"
+              onClick={() => setLocation('/login')}
+            >
+              Back to sign in <ArrowRight className="size-4" aria-hidden="true" />
+            </button>
+          </section>
+        </PublicPageLayout>
+      </ErrorBoundary>
     );
   }
 
@@ -454,25 +522,24 @@ export default function SetPasswordPage() {
     const isTerminal = !isTemporary && !isThrottledValidation && state.kind !== 'ready';
     const stateMessage = state.kind === 'ready' ? '' : state.message;
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4" data-testid={`state-set-password-${state.kind}`}>
-        <Card className="w-full max-w-md">
-          <CardHeader className="text-center">
-            <CardTitle size="2xl">
+      <PublicPageLayout>
+        <section className="public-flow-card" data-testid={`state-set-password-${state.kind}`}>
+            <div className="public-flow-icon public-flow-icon-danger">
+              <AlertCircle className="size-6" aria-hidden="true" />
+            </div>
+            <h1 className="public-flow-title">
               {isTemporary ? 'Temporarily unavailable' : isThrottledValidation ? 'Too many attempts' : isTerminal ? (state.kind === 'used' ? 'Link already used' : 'This link is no longer available') : 'Password link'}
-            </CardTitle>
-            <CardDescription>{stateMessage}</CardDescription>
-          </CardHeader>
-          <CardContent gap="3" className="flex flex-col items-center">
+            </h1>
+            <p className="public-flow-description">{stateMessage}</p>
             {(isTemporary || isThrottledValidation) && retryButton}
             {!isTemporary && !isThrottledValidation && (
-              <Button onClick={() => setLocation('/login')}>Go to Login</Button>
+              <button type="button" className="public-flow-primary" onClick={() => setLocation('/login')}>Go to Login</button>
             )}
-            <a href="/forgot-password" className="text-sm text-primary hover:underline">
+            <a href="/forgot-password" className="public-flow-link mt-4">
               Request a new password reset link
             </a>
-          </CardContent>
-        </Card>
-      </div>
+        </section>
+      </PublicPageLayout>
     );
   }
 
@@ -483,31 +550,28 @@ export default function SetPasswordPage() {
 
   return (
     <ErrorBoundary level="section">
-      <div className="min-h-screen flex items-center justify-center bg-background p-4" data-testid={`state-set-password-${formStateKind}`}>
-        <Card className="w-full max-w-md">
-          <CardHeader className="text-center">
-            <CardTitle size="2xl">
+      <PublicPageLayout>
+        <section className="public-flow-card" data-testid={`state-set-password-${formStateKind}`}>
+          {action === 'account_registration' && <PublicProgress step={3} />}
+          <h1 className="public-flow-title">
               {action === 'password_reset'
-                ? 'Reset Your Password'
+                ? 'Choose a new password.'
                 : action === 'account_registration'
-                  ? 'Finish Your Registration'
-                  : 'Set Your Password'}
-            </CardTitle>
-            <CardDescription>
+                  ? 'Create your password.'
+                  : 'Set your password.'}
+          </h1>
+          <p className="public-flow-description">
               {action === 'password_reset'
-                ? <>Choose a new password for your LeagueVault account ({userEmail}).</>
+                ? <>Set a new password to get back into your account.</>
                 : action === 'account_registration'
                   ? <>Create a password to finish setting up your LeagueVault account ({userEmail}).</>
-                : <>Create a password to finish setting up your LeagueVault account ({userEmail}).</>}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+                  : <>Create a password to finish setting up your LeagueVault account ({userEmail}).</>}
+          </p>
             {temporarySubmission && (
-              <Alert variant="destructive" className="mb-4" data-testid="alert-set-password-temporary">
-                <AlertCircle className="size-4" />
-                <AlertTitle>Unable to save your password</AlertTitle>
-                <AlertDescription>{state.message} You can try submitting again.</AlertDescription>
-              </Alert>
+              <div className="public-flow-inset public-flow-inset-danger mb-4" role="alert" data-testid="alert-set-password-temporary">
+                <strong><AlertCircle className="mr-2 inline-block size-4 align-middle" />Unable to save your password</strong>
+                <span>{state.message} You can try submitting again.</span>
+              </div>
             )}
             <SetPasswordForm
               password={password}
@@ -525,9 +589,8 @@ export default function SetPasswordPage() {
               action={action}
               handleSubmit={handleSubmit}
             />
-          </CardContent>
-        </Card>
-      </div>
+        </section>
+      </PublicPageLayout>
     </ErrorBoundary>
   );
 }
