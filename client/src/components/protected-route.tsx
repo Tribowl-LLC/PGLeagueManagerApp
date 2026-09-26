@@ -9,7 +9,7 @@ import type { ApiResponse, User } from '@shared/schema';
 
 export type RouteRequirement =
   | 'auth'
-  | 'org'
+  | 'staff'
   | 'orgAdmin'
   | 'paymentManager'
   | 'systemAdmin';
@@ -25,9 +25,9 @@ const DENY_MESSAGES: Record<RouteRequirement, { title: string; description: stri
     description: 'Please login to access this page.',
     redirectTo: '/login',
   },
-  org: {
+  staff: {
     title: 'Access Denied',
-    description: 'You need to be part of an organization to access this page.',
+    description: 'You need a staff account to access this page.',
     redirectTo: '/',
   },
   orgAdmin: {
@@ -52,15 +52,17 @@ function userMeetsRequirement(user: User | undefined | null, requirement: RouteR
   switch (requirement) {
     case 'auth':
       return true;
-    case 'org':
-      return user.organizationId !== null;
+    case 'staff':
+      return user.organizationId != null
+        && (user.role === 'system_admin' || user.role === 'org_admin'
+          || (user.role === 'payment_manager' && user.locationId != null));
     case 'orgAdmin':
       return user.role === 'system_admin' || user.role === 'org_admin';
     case 'paymentManager':
       return (user.role === 'system_admin' || user.role === 'org_admin')
         || (String(user.role) === 'payment_manager'
-          && user.organizationId !== null
-          && user.locationId !== null);
+          && user.organizationId != null
+          && user.locationId != null);
     case 'systemAdmin':
       return user.role === 'system_admin';
   }
@@ -138,7 +140,7 @@ export const ProtectedRoute: FC<ProtectedRouteProps> = ({ requirement, children 
     ) {
       const { title, description, redirectTo } = DENY_MESSAGES[requirement];
       toast({ title, description, variant: 'destructive' });
-      navigate(redirectTo);
+      navigate(user?.role === 'user' && user.bowlerId !== null ? '/bowler-dashboard' : redirectTo);
     }
   }, [
     allowed,
@@ -151,7 +153,9 @@ export const ProtectedRoute: FC<ProtectedRouteProps> = ({ requirement, children 
     onPendingRegistrationExemptPath,
     requirement,
     toast,
+    user?.bowlerId,
     user?.id,
+    user?.role,
   ]);
 
   useEffect(() => {
