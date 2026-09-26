@@ -75,11 +75,8 @@ const FORCE_PASSWORD_CHANGE_PATH = '/change-password-required';
 
 // These are the authenticated surfaces an unlinked self-registered user can
 // use while waiting for an administrator. All league/app routes remain
-// blocked until `bowlerId` is present. Claim stays available because an
-// ordinary candidate list is filtered by the server to safely claimable
-// profiles for the current user.
+// blocked until `bowlerId` is present.
 const PENDING_REGISTRATION_EXEMPT_PATHS = new Set([
-  '/claim-bowler',
   '/profile',
   '/registration-complete',
   FORCE_PASSWORD_CHANGE_PATH,
@@ -116,9 +113,9 @@ export const ProtectedRoute: FC<ProtectedRouteProps> = ({ requirement, children 
   const isPendingRegistration = user?.role === 'user' && !user.bowlerId;
   const onPendingRegistrationExemptPath = PENDING_REGISTRATION_EXEMPT_PATHS.has(pathWithoutQuery);
   // A transient /api/user failure while the cached user is still an ordinary
-  // pending registration should leave the waiting/claim/profile surface
-  // mounted so its own retry UI remains usable. Authentication failures are
-  // still handled by the normal logout path below.
+  // pending registration should leave the waiting/profile surface mounted so
+  // its own retry UI remains usable. Authentication failures are still handled
+  // by the normal logout path below.
   const preservePendingRouteOnError = Boolean(
     error
     && user?.id
@@ -217,7 +214,7 @@ export const ProtectedRoute: FC<ProtectedRouteProps> = ({ requirement, children 
   if (allowed && mustChangePassword && !onForcePage) return null;
 
   // Keep ordinary pending registrations from mounting league/admin surfaces
-  // while their redirect effect settles. The waiting, claim, profile, and
+  // while their redirect effect settles. The waiting, profile, and
   // forced-password routes are explicit exemptions and remain mounted.
   if (isPendingRegistration && !onPendingRegistrationExemptPath) return null;
 

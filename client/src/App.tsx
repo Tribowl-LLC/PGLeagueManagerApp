@@ -47,7 +47,6 @@ const ProfileClaimReportPage = lazy(() => import("@/pages/profile-claim-report-p
 const ConfirmEmailChangePage = lazy(() => import("@/pages/confirm-email-change-page"));
 const ChangePasswordRequiredPage = lazy(() => import("@/pages/change-password-required-page"));
 const ProfileSettingsPage = lazy(() => import("@/pages/profile-settings-page"));
-const ClaimBowlerPage = lazy(() => import("@/pages/claim-bowler-page"));
 const RegistrationCompletePage = lazy(() => import("@/pages/registration-complete-page"));
 const AdminUnclaimedUsersPage = lazy(() => import("@/pages/admin-unclaimed-users-page"));
 const EmailTemplatesPage = lazy(() => import("@/pages/email-templates-page"));
@@ -179,7 +178,6 @@ function Router() {
         <Route path="/confirm-email-change" component={ConfirmEmailChangePage} />
         <Route path="/privacy-policy" component={PrivacyPolicyPage} />
         <Route path="/delete-account" component={DeleteAccountPage} />
-        <Route path="/claim-bowler">{guard('auth', <ClaimBowlerPage />)}</Route>
         <Route path="/registration-complete">{guard('auth', <RegistrationCompletePage />)}</Route>
         <Route path="/not-found" component={NotFound} />
         {/* Root route with redirect handler */}

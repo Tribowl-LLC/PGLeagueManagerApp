@@ -1,26 +1,34 @@
 # Identity integrity and account roles
 
-An account and a bowler are separate concepts. A `user` account may claim one
-bowler in its organization. Staff accounts (`org_admin`, `payment_manager`,
-and `system_admin`) cannot be linked to a bowler. A payment manager must also
-have one organization and one location; its operational access is limited to
-reading leagues, teams, and bowlers plus recording cash/check payments at that
-location. Roster and team mutations remain administrator-only.
+An account and a bowler are separate concepts. Ordinary `user` accounts are
+linked by registration and roster synchronization when there is one unique,
+same-organization email match. Email-link registration proves email ownership
+before setup completes. SMS registration verifies the phone, records
+`emailStatus` as `unknown`, and then applies the same unique email-match rule.
+Staff accounts (`org_admin`, `payment_manager`, and `system_admin`) cannot be
+linked to a bowler. A payment manager must also have one organization and one
+location; its operational access is limited to reading leagues, teams, and
+bowlers plus recording cash/check payments at that location. Roster and team
+mutations remain administrator-only.
 
 `server/services/identity-link.ts` is the transactional owner for every
 account-to-bowler mutation. It locks the user and target bowler rows, requires
 an ordinary account in the requested organization, rejects an already claimed
 target, updates `users.bowler_id`, and appends an `identity_link_events` row in
-the same transaction. Registration, self-service claims, admin assignment,
-replacement, and unlinking all use this service. Callers that
-already own a transaction pass its executor so user creation, roster changes,
-the claim, and the audit event commit together.
+the same transaction. Registration auto-linking, administrator assignment,
+replacement, and unlinking all use this service. Automatic links cover
+registration completion, invitation setup, and roster email synchronization.
+Administrators can create or select an unlinked roster profile for a pending
+account when automatic matching cannot safely decide. Callers that already own
+a transaction pass its executor so user creation, roster changes, the link,
+and the audit event commit together.
 
-Self-service claims prove that the locked user and bowler rows have the same
+Automatic email links prove that the locked user and bowler rows have the same
 normalized email inside the identity-link transaction. Route-level checks can
 still fail fast, but they are not the security boundary. Email matching is
 organization-scoped and only auto-links when exactly one bowler matches; a
-shared or duplicate email requires an explicit administrator decision.
+shared or duplicate email requires an explicit administrator decision. Ordinary
+users have no roster candidate list or self-claim endpoint.
 
 Events store allowlisted bowler snapshots only (`id`, `name`, organization,
 and active state); raw email, phone, account-action tokens, passwords, and
