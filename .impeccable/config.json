@@ -8,12 +8,6 @@
         "value": "instrument sans",
         "createdAt": "2026-09-26T00:49:55.963Z",
         "reason": "User approved the Instrument Sans Familiar A direction in this conversation; retaining the accepted public-page typography."
-      },
-      {
-        "rule": "design-system-font",
-        "value": "sf pro display",
-        "createdAt": "2026-09-26T20:26:10.992Z",
-        "reason": "Agent: existing provider wallet button label font in client/src/index.css; DESIGN.md explicitly preserves provider wallet styling"
       }
     ]
   }

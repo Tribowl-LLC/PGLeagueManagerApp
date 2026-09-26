@@ -290,6 +290,7 @@
 
 .wallet-label {
   color: #fff;
+  /* impeccable-disable-next-line design-system-font -- Existing provider wallet label font. */
   font-family: -apple-system, "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
   font-weight: 400;
   letter-spacing: 0.4px;
