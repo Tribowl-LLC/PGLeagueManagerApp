@@ -131,6 +131,7 @@ export default function SetPasswordPage() {
   const validationControllerRef = useRef<AbortController | null>(null);
   const submitControllerRef = useRef<AbortController | null>(null);
   const completedResetTokenRef = useRef<string | null>(null);
+  const passwordUpdatedHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const { isThrottled, remainingSeconds, throttle, clear: clearThrottle } = useThrottleCountdown();
 
   const requirements = [
@@ -302,6 +303,12 @@ export default function SetPasswordPage() {
       if (validationControllerRef.current === controller) validationControllerRef.current = null;
     };
   }, [search, validationAttempt, clearThrottle, throttle, setLocation]);
+
+  useEffect(() => {
+    if (state.kind === 'password-updated') {
+      passwordUpdatedHeadingRef.current?.focus();
+    }
+  }, [state.kind]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -486,7 +493,14 @@ export default function SetPasswordPage() {
             <div className="public-flow-icon public-flow-icon-success">
               <Check className="size-6" aria-hidden="true" />
             </div>
-            <h1 className="public-flow-title">Password updated.</h1>
+            <h1
+              ref={passwordUpdatedHeadingRef}
+              tabIndex={-1}
+              aria-live="polite"
+              className="public-flow-title"
+            >
+              Password updated.
+            </h1>
             <p className="public-flow-description">Your password has been updated. Sign in to continue.</p>
             <button
               type="button"

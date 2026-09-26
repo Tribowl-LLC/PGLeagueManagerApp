@@ -373,7 +373,7 @@ describe('SetPasswordPage validation and reset journey', () => {
     expect(screen.getByTestId('button-set-password-submit')).toHaveTextContent(/Set Password & Sign In/i);
   });
 
-  it('renders the password-updated handoff for reset users and waits for sign-in', async () => {
+  it('announces and focuses the password-updated handoff before sign-in', async () => {
     validateHandler = () => new Response(JSON.stringify({
       success: true,
       data: { email: 'r***@example.com', action: 'password_reset' },
@@ -391,7 +391,11 @@ describe('SetPasswordPage validation and reset journey', () => {
       await fillAndSubmit(user);
 
       expect(await screen.findByTestId('state-set-password-password-updated')).toBeInTheDocument();
-      expect(screen.getByText('Password updated.')).toBeInTheDocument();
+      const completionHeading = screen.getByRole('heading', { name: 'Password updated.' });
+      expect(completionHeading).toBeInTheDocument();
+      expect(completionHeading).toHaveAttribute('aria-live', 'polite');
+      expect(completionHeading).toHaveAttribute('tabindex', '-1');
+      expect(completionHeading).toHaveFocus();
       expect(screen.getByText('Your password has been updated. Sign in to continue.')).toBeInTheDocument();
       expect(replaceStateSpy).toHaveBeenCalledWith(null, '', '/set-password');
       expect(testMemoryLocation.history?.at(-1)).not.toBe('/login');

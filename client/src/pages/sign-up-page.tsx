@@ -181,7 +181,7 @@ const SignUpPage: FC = () => {
               Create your account.
             </h1>
             <p className="public-flow-description">
-              Enter your details to join your league. We’ll verify your contact information next.
+              Enter your details to create an account. We’ll verify your contact information next.
             </p>
           </header>
           <div className="public-flow-card-content">

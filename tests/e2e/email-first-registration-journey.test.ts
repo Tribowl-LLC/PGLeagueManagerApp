@@ -389,16 +389,18 @@ async function startRegistration(
   const forbiddenRequests = watchForbiddenProfileRequests(page);
   const browserDiagnostics = installRegistrationDiagnostics(page);
   const host = input.host ?? EXPECTED_HOST;
-  const signupPath = '/signup';
   let phase = 'load-and-fill';
   let registrationFailureResponse: { status: number; body: string } | undefined;
   let activeOrganizationsBeforePost: unknown;
   let activeOrganizationsAfterPost: unknown;
   try {
-    await page.goto(`https://${host}${signupPath}`);
-    await page.getByLabel('Full Name', { exact: true }).fill(input.name);
-    await page.getByLabel('Email Address', { exact: true }).fill(input.email);
-    await page.getByLabel('Phone Number', { exact: true }).fill(SIGNUP_PHONE);
+    await page.goto(`https://${host}/signup`);
+    await page.getByRole('link', { name: 'I Need to Register', exact: true }).click();
+    await expect.poll(() => new URL(page.url()).pathname).toBe('/register');
+    await page.getByRole('heading', { name: 'Create your account.', exact: true }).waitFor();
+    await page.getByLabel('Full name', { exact: true }).fill(input.name);
+    await page.getByLabel('Email address', { exact: true }).fill(input.email);
+    await page.getByLabel('Phone number', { exact: true }).fill(SIGNUP_PHONE);
     phase = 'submit-registration';
     activeOrganizationsBeforePost = await activeOrganizationRows();
     const requestPromise = page.waitForRequest((request) => {
@@ -409,7 +411,7 @@ async function startRegistration(
       const url = new URL(response.url());
       return response.request().method() === 'POST' && url.pathname === '/api/auth/register';
     });
-    await page.getByRole('button', { name: /create account/i }).click();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
     const [request, response] = await Promise.all([requestPromise, responsePromise]);
     let registrationResponseBody = '';
     if (response.status() !== 202) {
@@ -434,14 +436,14 @@ async function startRegistration(
     // The response is a check-email success state, not an authenticated app
     // session. The anonymous session itself is the capability for status/resend.
     phase = 'wait-for-registration-email';
-    await page.getByText('Check your email', { exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Check your email.', exact: true }).waitFor();
     // Exercise a fresh document/query cache on the waiting URL for both the
     // organization and canonical-root hosts. The background /api/user request
     // is naturally unauthenticated and must not redirect this public page.
     await page.goto(`https://${host}/registration-email`);
-    await page.getByText('Check your email', { exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Check your email.', exact: true }).waitFor();
     await page.reload();
-    await page.getByText('Check your email', { exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Check your email.', exact: true }).waitFor();
     const cookies = await context.cookies();
     expect(cookies.some((cookie) => cookie.name === 'connect.sid')).toBe(true);
     const authBeforeSetup = await page.evaluate(async () => (
@@ -708,9 +710,9 @@ describe('Email-first registration — real browser, outbox, and setup link', ()
         }, isolationDiagnostics);
         const directPage = await context.newPage();
         await directPage.goto(`https://${ROOT_HOST}/registration-email`);
-        await directPage.getByText('Check your email', { exact: true }).waitFor();
+        await directPage.getByRole('heading', { name: 'Check your email.', exact: true }).waitFor();
         await directPage.reload();
-        await directPage.getByText('Check your email', { exact: true }).waitFor();
+        await directPage.getByRole('heading', { name: 'Check your email.', exact: true }).waitFor();
         expect(new URL(directPage.url()).pathname).toBe('/registration-email');
         const status = await directPage.evaluate(async () => {
           const response = await fetch('/api/auth/registration/status', { credentials: 'include' });

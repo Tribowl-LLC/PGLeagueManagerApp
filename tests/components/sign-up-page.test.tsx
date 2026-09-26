@@ -67,6 +67,14 @@ afterEach(() => {
 });
 
 describe("SignUpPage API outcomes", () => {
+  it("explains that registration creates an account before contact verification", async () => {
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Create your account." })).toBeInTheDocument();
+    expect(screen.getByText("Enter your details to create an account. We’ll verify your contact information next.")).toBeInTheDocument();
+    expect(screen.queryByText(/join your league/i)).not.toBeInTheDocument();
+  });
+
   it("keeps submit disabled while availability is loading", async () => {
     let resolveAvailability: ((value: Response) => void) | undefined;
     availabilityHandler = () => new Promise<Response>((resolve) => {

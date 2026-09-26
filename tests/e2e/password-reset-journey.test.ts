@@ -82,9 +82,9 @@ describe('Password recovery from the rendered email — real browser and API', (
         try {
           const page = await context.newPage();
           await page.goto(`https://${expectedHost}/forgot-password`);
-          await page.getByLabel('Email Address', { exact: true }).fill(email);
+          await page.getByLabel('Email address', { exact: true }).fill(email);
           await page.getByTestId('button-forgot-submit').click();
-          await page.getByText('Check your email', { exact: true }).waitFor();
+          await page.getByText('Check your email.', { exact: true }).waitFor();
           await expect.poll(() => getCapturedEmails().length).toBeGreaterThan(0);
           const html = getCapturedEmails()[0]?.msg.html;
           if (typeof html !== 'string') throw new Error('Reset email HTML was not captured');
@@ -105,10 +105,15 @@ describe('Password recovery from the rendered email — real browser and API', (
           await page.getByLabel('Password', { exact: true }).fill(newPassword);
           await page.getByLabel('Confirm Password', { exact: true }).fill(newPassword);
           await page.getByTestId('button-set-password-submit').click();
+          await page.getByTestId('state-set-password-password-updated').waitFor();
+          const completionHeading = page.getByRole('heading', { name: 'Password updated.' });
+          await expect.poll(() => completionHeading.evaluate((heading) => document.activeElement === heading)).toBe(true);
+          await expect.poll(() => page.url()).toBe(`https://${expectedHost}/set-password`);
+          await page.getByTestId('button-password-updated-login').click();
           await page.waitForURL(`https://${expectedHost}/login`);
           const authBeforeLogin = await page.evaluate(async () => (await fetch('/api/auth/user')).status);
           expect(authBeforeLogin).toBe(401);
-          await page.getByLabel('Email Address', { exact: true }).fill(email);
+          await page.getByLabel('Email address', { exact: true }).fill(email);
           await page.getByLabel('Password', { exact: true }).fill(newPassword);
           await page.getByTestId('button-login-submit').click();
           await expect.poll(async () => page.evaluate(async () => (await fetch('/api/auth/user')).status)).toBe(200);
