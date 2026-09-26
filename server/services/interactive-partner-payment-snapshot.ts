@@ -32,12 +32,17 @@ export const partnerEvidenceSchema = z.object({
   linkFingerprint: z.string().regex(/^lvpartnerlink:v1:[0-9a-f]{64}$/).nullable(),
   selectedWeeks: z.number().int().positive().max(1000),
   fullBalance: z.boolean(),
+  /** Present only when the self payer used the exact due-now flow. */
+  dueNow: z.boolean().optional(),
 }).strict().superRefine((row, ctx) => {
   if (row.role === "self" && (row.paymentLinkId !== null || row.linkFingerprint !== null)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["paymentLinkId"], message: "self evidence cannot contain a payment link" });
   }
   if (row.role === "partner" && (row.paymentLinkId === null || row.linkFingerprint === null)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["paymentLinkId"], message: "partner evidence requires a payment link" });
+  }
+  if (row.dueNow === true && row.role !== "self") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["dueNow"], message: "due-now evidence is only valid for the payer" });
   }
 });
 

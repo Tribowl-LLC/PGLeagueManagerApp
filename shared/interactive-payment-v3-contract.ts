@@ -15,6 +15,8 @@ const recipientSelectionSchema = z.object({
   weeks: z.number().int().positive().max(1000),
   /** Upfront leagues require the complete remaining balance for this row. */
   fullBalance: z.boolean().default(false),
+  /** Collect the exact canonical due-now balance for the payer. */
+  dueNow: z.boolean().optional(),
 }).strict();
 
 const recipientsSchema = z.array(recipientSelectionSchema).min(1).max(200).superRefine((rows, ctx) => {
@@ -33,6 +35,9 @@ export const interactivePaymentParticipantsResponseSchema = z.object({
     role: z.enum(["self", "partner"]),
     remainingMinor: z.number().int().nonnegative(),
     pastDueMinor: z.number().int().nonnegative(),
+    dueNowMinor: z.number().int().nonnegative(),
+    catchUpWeeks: z.number().int().positive().nullable(),
+    catchUpAmountMinor: z.number().int().nonnegative(),
     weeklyOptions: z.array(z.object({ weeks: z.number().int().positive(), amountMinor: z.number().int().positive() }).strict()),
     eligible: z.boolean(),
     reason: z.string().nullable(),

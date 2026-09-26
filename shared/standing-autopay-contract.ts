@@ -10,9 +10,14 @@ const commandKey = z.string().trim().min(16).max(109).regex(/^[A-Za-z0-9_-]+$/);
 /** A standing consent only binds a saved, tenant-owned provider card. */
 export const standingAutopayConsentRequestSchema = z.object({
   commandKey,
-  sourceId: z.string().trim().min(1).max(255),
+  sourceId: z.string().trim().min(1).max(255).optional(),
+  paymentOperationId: z.string().trim().min(1).max(255).optional(),
   partnerBowlerIds: z.array(z.number().int().positive()).max(32).default([]),
-}).strict();
+}).strict().superRefine((request, ctx) => {
+  if ((request.sourceId === undefined) === (request.paymentOperationId === undefined)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [], message: "Provide exactly one sourceId or paymentOperationId" });
+  }
+});
 
 export const standingAutopayRevokeRequestSchema = z.object({ commandKey }).strict();
 export const standingAutopayQuoteRequestSchema = z.object({ commandKey: commandKey.optional() }).strict();

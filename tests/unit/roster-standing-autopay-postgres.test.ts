@@ -38,7 +38,7 @@ import { getTestDb } from "../setup/test-db";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
 import { deleteLink } from "../../server/storage/bowler-payment-links";
-import { encrypt } from "../../server/utils/crypto";
+import { decrypt, encrypt } from "../../server/utils/crypto";
 import { PaymentProviderError } from "../../server/services/payment-errors";
 import { buildCanonicalScheduleCommandFingerprint, cancelOccurrence, restoreCancelledOccurrence } from "../../server/services/canonical-occurrence-transactions";
 import { readCanonicalPaymentReport } from "../../server/services/roster-payment-archive-report";
@@ -49,6 +49,7 @@ import { prepareRefundPaymentOperation } from "../../server/services/refund-paym
 import { RefundPaymentOperationExecutor } from "../../server/services/refund-payment-operation-executor";
 import { fifoCandidatesInTransaction, quoteInteractiveObligations, recordCanonicalManualPayment } from "../../server/services/roster-payment-core";
 import { quoteInteractivePartnerPayments, readInteractivePaymentParticipants } from "../../server/services/interactive-partner-payment";
+import { prepareInteractivePartnerPaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
 
 // This suite deliberately enables only the standing runtime in the isolated
 // test process. It never supplies provider credentials and never calls a
@@ -435,6 +436,163 @@ it("keeps unequal published pair amounts aligned between participant choices and
     expect.objectContaining({ obligationId: paired.obligation.id, amountMinor: 3_000 }),
   ]);
   expect(v3Quote.allocations.map((allocation) => allocation.obligationId)).not.toContain(ordinary.obligation.id);
+});
+
+it("charges the minimal effective FIFO prefix through the last due obligation", async () => {
+  const now = Date.now();
+  const trigger = await publishOccurrence(new Date(now - 3 * 24 * 60 * 60 * 1000).toISOString());
+  const paired = await publishOccurrence(new Date(now + 3 * 24 * 60 * 60 * 1000).toISOString());
+  const ordinary = await publishOccurrence(new Date(now - 24 * 60 * 60 * 1000).toISOString());
+  await createDoublePayGroup(trigger, paired);
+
+  const participants = await readInteractivePaymentParticipants({ organizationId, leagueId, payerBowlerId });
+  const self = participants.participants.find((row) => row.bowlerId === payerBowlerId);
+  expect(self).toMatchObject({ dueNowMinor: 6_000, catchUpWeeks: 3, catchUpAmountMinor: 6_000 });
+  const quote = await quoteInteractivePartnerPayments({
+    organizationId,
+    leagueId,
+    payerBowlerId,
+    recipients: [{ bowlerId: payerBowlerId, weeks: self?.catchUpWeeks ?? 0, fullBalance: false, dueNow: true }],
+  });
+  expect(quote.amountMinor).toBe(6_000);
+  expect(quote.allocations).toEqual([
+    expect.objectContaining({ obligationId: trigger.obligation.id, amountMinor: 2_000 }),
+    expect.objectContaining({ obligationId: paired.obligation.id, amountMinor: 2_000 }),
+    expect.objectContaining({ obligationId: ordinary.obligation.id, amountMinor: 2_000 }),
+  ]);
+});
+
+it("activates consent only from a finalized self-only due-now v3 operation", async () => {
+  const now = Date.now();
+  const first = await publishOccurrence(new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString());
+  const quote = await quoteInteractivePartnerPayments({
+    organizationId,
+    leagueId,
+    payerBowlerId,
+    recipients: [{ bowlerId: payerBowlerId, weeks: 1, fullBalance: false, dueNow: true }],
+  });
+  const operation = await prepareInteractivePartnerPaymentOperation({
+    organizationId,
+    authorizingUserId: actorUserId,
+    requestKey: `standing-proof-${randomUUID()}`,
+    amountMinor: quote.amountMinor,
+    currency: quote.currency,
+    providerName: "square",
+    leagueId,
+    locationId,
+    providerLocationId: null,
+    payerBowlerId,
+    sourceId: "ccof:standing-proof",
+    customerId: "customer-fixture",
+    buyerEmail: "standing-proof@example.test",
+    storeCard: false,
+    sourceKind: "saved_card",
+    allocations: quote.allocations.map((row) => ({ ...row, paidByUserId: actorUserId })),
+    partnerEvidence: quote.partnerEvidence,
+    quoteFingerprint: quote.fingerprint,
+  });
+  const completedAt = new Date().toISOString();
+  await db.transaction(async (tx) => {
+    await tx.update(paymentOperations).set({ status: "succeeded", providerObjectId: "sq-standing-proof", nextAttemptAt: null, completedAt, updatedAt: completedAt }).where(eq(paymentOperations.id, operation.id));
+    const [payment] = await tx.insert(payments).values({
+      organizationId, bowlerId: payerBowlerId, leagueId, amount: quote.amountMinor, status: "paid", type: "square",
+      providerPaymentId: "sq-standing-proof", paymentOperationId: operation.id, idempotencyKey: `standing-proof-payment-${randomUUID()}`, paidByUserId: actorUserId,
+    }).returning();
+    await tx.insert(paymentAllocations).values(quote.allocations.map((row) => ({ organizationId, leagueId, paymentId: payment.id, obligationId: row.obligationId, amountMinor: row.amountMinor, currency: "USD", recordedByUserId: actorUserId })));
+    await tx.update(paymentObligations).set({ state: "settled" }).where(and(eq(paymentObligations.organizationId, organizationId), eq(paymentObligations.leagueId, leagueId), inArray(paymentObligations.id, quote.allocations.map((row) => row.obligationId))));
+  });
+  await db.update(autopayConsents).set({ state: "revoked", revokedAt: completedAt }).where(and(eq(autopayConsents.organizationId, organizationId), eq(autopayConsents.leagueId, leagueId), eq(autopayConsents.payerBowlerId, payerBowlerId), eq(autopayConsents.state, "active")));
+  const hasCardOnFile = vi.fn().mockResolvedValue(true);
+  standingProviderMock.mockResolvedValue({
+    providerName: "square",
+    locationId,
+    getProviderLocationId: vi.fn().mockResolvedValue("square-location-fixture"),
+    validateCardId: vi.fn((sourceId: string) => sourceId.startsWith("ccof:")),
+    hasCardOnFile,
+  });
+  const consentRequest = { commandKey: `standing-proof-consent-${randomUUID()}`, paymentOperationId: operation.id, partnerBowlerIds: [] };
+  try {
+    const { activateStandingAutopayConsent } = await import("../../server/services/roster-standing-autopay");
+    const consent = await activateStandingAutopayConsent({
+      organizationId,
+      leagueId,
+      payerBowlerId,
+      actorUserId,
+      request: consentRequest,
+    });
+    expect(consent).toMatchObject({ state: "active", payerBowlerId });
+    const [stored] = await db.select().from(autopayConsents).where(eq(autopayConsents.id, consent.consentId!));
+    expect(stored && decrypt(stored.encryptedSourceId!)).toBe("ccof:standing-proof");
+    hasCardOnFile.mockRejectedValue(new Error("provider unavailable after response loss"));
+    await expect(activateStandingAutopayConsent({ organizationId, leagueId, payerBowlerId, actorUserId, request: consentRequest })).rejects.toMatchObject({ code: "IDEMPOTENCY_REPLAY" });
+    expect(hasCardOnFile).toHaveBeenCalledTimes(1);
+    await expect(activateStandingAutopayConsent({ organizationId, leagueId, payerBowlerId, actorUserId: actorUserId + 1, request: { ...consentRequest, commandKey: `${consentRequest.commandKey}-foreign-actor` } })).rejects.toMatchObject({ code: "PAYMENT_OPERATION_INVALID" });
+    await expect(activateStandingAutopayConsent({ organizationId, leagueId, payerBowlerId: partnerBowlerId, actorUserId, request: { ...consentRequest, commandKey: `${consentRequest.commandKey}-foreign-payer` } })).rejects.toMatchObject({ code: "PAYMENT_OPERATION_INVALID" });
+    const [foreignLeague] = await db.insert(leagues).values({
+      name: `Standing Foreign League ${randomUUID()}`,
+      organizationId,
+      locationId,
+      payingLineupSize: 3,
+      substituteAccess: "team_only",
+      substitutePaymentRegime: "team_choice",
+      weeklyFee: 2_000,
+      lineageFee: null,
+      prizeFundFee: null,
+      paymentMode: "weekly",
+      seasonStart: "2039-01-01T00:00:00.000Z",
+      seasonEnd: "2039-12-31T23:59:59.000Z",
+      weekDay: "Monday",
+      timezone: "UTC",
+    }).returning({ id: leagues.id });
+    await expect(activateStandingAutopayConsent({ organizationId, leagueId: foreignLeague.id, payerBowlerId, actorUserId, request: { ...consentRequest, commandKey: `${consentRequest.commandKey}-foreign-league` } })).rejects.toMatchObject({ code: "PAYMENT_OPERATION_INVALID" });
+    const unfinished = await prepareInteractivePartnerPaymentOperation({
+      organizationId,
+      authorizingUserId: actorUserId,
+      requestKey: `standing-proof-unfinished-${randomUUID()}`,
+      amountMinor: quote.amountMinor,
+      currency: quote.currency,
+      providerName: "square",
+      leagueId,
+      locationId,
+      providerLocationId: null,
+      payerBowlerId,
+      sourceId: "ccof:unfinished",
+      customerId: "customer-fixture",
+      buyerEmail: "standing-proof@example.test",
+      storeCard: false,
+      sourceKind: "saved_card",
+      allocations: quote.allocations.map((row) => ({ ...row, paidByUserId: actorUserId })),
+      partnerEvidence: quote.partnerEvidence,
+      quoteFingerprint: quote.fingerprint,
+    });
+    await expect(activateStandingAutopayConsent({ organizationId, leagueId, payerBowlerId, actorUserId, request: { commandKey: `${consentRequest.commandKey}-unfinished`, paymentOperationId: unfinished.id, partnerBowlerIds: [] } })).rejects.toMatchObject({ code: "PAYMENT_OPERATION_INVALID" });
+    const unsaved = await prepareInteractivePartnerPaymentOperation({
+      organizationId,
+      authorizingUserId: actorUserId,
+      requestKey: `standing-proof-unsaved-${randomUUID()}`,
+      amountMinor: quote.amountMinor,
+      currency: quote.currency,
+      providerName: "square",
+      leagueId,
+      locationId,
+      providerLocationId: null,
+      payerBowlerId,
+      sourceId: "cnonce:unsaved",
+      customerId: "customer-fixture",
+      buyerEmail: "standing-proof@example.test",
+      storeCard: true,
+      sourceKind: "new_card",
+      allocations: quote.allocations.map((row) => ({ ...row, paidByUserId: actorUserId })),
+      partnerEvidence: quote.partnerEvidence,
+      quoteFingerprint: quote.fingerprint,
+    });
+    const unsavedAt = new Date().toISOString();
+    await db.update(paymentOperations).set({ status: "succeeded", providerObjectId: "sq-standing-unsaved", nextAttemptAt: null, completedAt: unsavedAt, updatedAt: unsavedAt }).where(eq(paymentOperations.id, unsaved.id));
+    await expect(activateStandingAutopayConsent({ organizationId, leagueId, payerBowlerId, actorUserId, request: { commandKey: `${consentRequest.commandKey}-unsaved`, paymentOperationId: unsaved.id, partnerBowlerIds: [] } })).rejects.toMatchObject({ code: "PAYMENT_OPERATION_INVALID" });
+  } finally {
+    standingProviderMock.mockReset();
+  }
+  expect(first.obligation.id).toBeTruthy();
 });
 
 async function createRefundableCardPayment(obligation: typeof paymentObligations.$inferSelect) {

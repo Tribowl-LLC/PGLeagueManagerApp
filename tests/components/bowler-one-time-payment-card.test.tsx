@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
 import { BowlerOneTimePaymentCard, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
 
-function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[]) {
+function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[], dueNowOnly = false) {
   const applePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const googlePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const onRecipientToggle = vi.fn();
@@ -56,6 +56,8 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     selectionStale={selectionStale}
     onRecipientToggle={onRecipientToggle}
     onRecipientWeeksChange={onRecipientWeeksChange}
+    dueNowOnly={dueNowOnly}
+    onCancelDueNow={vi.fn()}
   />);
   return { onRecipientToggle, onRecipientWeeksChange };
 }
@@ -84,6 +86,16 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByText("Full Season Remaining Balance").parentElement).toHaveTextContent("$87.50");
     expect(screen.getByRole("button", { name: "Pay $87.50" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Save this card for future payments" })).not.toBeChecked();
+  });
+
+  it("locks combined automatic-payment setup to the amount needed to get up to date", () => {
+    renderCard(false, { amountMinor: 4_500, weeks: 2 }, [], [], false, false, undefined, true);
+
+    expect(screen.getByText("Pay the amount needed to get up to date before automatic payments can be enabled.")).toBeInTheDocument();
+    expect(screen.getByText("Amount needed to get up to date").parentElement).toHaveTextContent("$45.00");
+    expect(screen.queryByRole("button", { name: /one more week/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pay and enable automatic payments" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 
   it("automatically selects a solo bowler while keeping independent weekly controls", () => {

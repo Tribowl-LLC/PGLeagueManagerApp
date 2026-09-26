@@ -16,9 +16,9 @@ import {
 } from "@shared/schema";
 import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
-import { fifoCandidatesInTransaction, allocateAutomaticFifoPayment, RosterPaymentError, type RosterPaymentTransaction } from "./roster-payment-core.js";
+import { fifoCandidatesInTransaction, allocateAutomaticFifoPayment, RosterPaymentError, type FifoPaymentCandidate, type RosterPaymentTransaction } from "./roster-payment-core.js";
 import { getPaymentProvider } from "./payment-provider-factory.js";
-import { getProviderCustomerId } from "./payment-utils.js";
+import { ensureProviderCustomer, getProviderCustomerId } from "./payment-utils.js";
 import { prepareInteractivePartnerPaymentOperation } from "./interactive-payment-operation-preparation.js";
 import { interactivePaymentOperationExecutor } from "./interactive-payment-operation-executor.js";
 import { paymentOperationRetryExecutor } from "./payment-operation-retry-executor.js";
@@ -30,6 +30,22 @@ import { buildOneTimePaymentOptions } from "@shared/one-time-payment-options";
 
 type Link = typeof bowlerPaymentLinks.$inferSelect;
 const log = createLogger("InteractivePartnerPayment");
+
+/**
+ * Return the smallest FIFO prefix that settles every obligation whose own
+ * dueAt has arrived. A paired obligation can have an earlier effective FIFO
+ * position than its own dueAt, so it is included when it precedes the last
+ * due row in the canonical effective order.
+ */
+export function dueNowFifoPrefixMinor(candidates: Array<Pick<FifoPaymentCandidate, "outstandingMinor" | "reservedMinor" | "dueAt">>, now: string): number {
+  const asOf = new Date(now).getTime();
+  let lastDueIndex = -1;
+  candidates.forEach((row, index) => {
+    if ((row.outstandingMinor > 0 || row.reservedMinor > 0) && new Date(row.dueAt).getTime() <= asOf) lastDueIndex = index;
+  });
+  if (lastDueIndex < 0) return 0;
+  return candidates.slice(0, lastDueIndex + 1).reduce((sum, row) => sum + row.outstandingMinor, 0);
+}
 
 function partnerLinkFingerprint(link: Pick<Link, "id" | "bowlerAId" | "bowlerBId" | "organizationId" | "status" | "respondedAt">): string {
   return `lvpartnerlink:v1:${createHash("sha256").update(canonicalizePaymentOperationInput({
@@ -92,13 +108,23 @@ async function resolveParticipantsInTransaction(tx: RosterPaymentTransaction, in
     const remainingMinor = payableCandidates.reduce((sum, row) => sum + row.outstandingMinor, 0);
     const payableOccurrenceCount = new Set(payableCandidates.map((row) => row.occurrenceId)).size;
     const pastDueMinor = candidates.filter((row) => new Date(row.pastDueAt).getTime() <= new Date(input.now).getTime()).reduce((sum, row) => sum + row.outstandingMinor, 0);
+    const dueNowMinor = dueNowFifoPrefixMinor(candidates, input.now);
+    const weeklyOptions = league.paymentMode === "upfront"
+      ? (remainingMinor > 0 ? [{ weeks: Math.max(1, payableOccurrenceCount), amountMinor: remainingMinor }] : [])
+      : buildOneTimePaymentOptions(candidates, remainingMinor).map((option) => ({ weeks: option.weekCount, amountMinor: option.amountMinor }));
+    const catchUpOption = dueNowMinor > 0
+      ? weeklyOptions.find((option) => option.amountMinor >= dueNowMinor)
+      : undefined;
     const link = byPartner.get(member.id);
     result.push({
       bowlerId: member.id, name: member.name, role: member.id === input.payerBowlerId ? "self" as const : "partner" as const,
-      remainingMinor, pastDueMinor,
-      weeklyOptions: league.paymentMode === "upfront"
-        ? (remainingMinor > 0 ? [{ weeks: Math.max(1, payableOccurrenceCount), amountMinor: remainingMinor }] : [])
-        : buildOneTimePaymentOptions(candidates, remainingMinor).map((option) => ({ weeks: option.weekCount, amountMinor: option.amountMinor })),
+      remainingMinor, pastDueMinor, dueNowMinor,
+      catchUpWeeks: catchUpOption?.weeks ?? null,
+      // The catch-up card displays the amount this exact due-now flow will
+      // charge. The fixed weekly option remains represented by catchUpWeeks
+      // and weeklyOptions for stale-selection compatibility.
+      catchUpAmountMinor: dueNowMinor,
+      weeklyOptions,
       eligible: remainingMinor > 0,
       reason: remainingMinor > 0 ? null : "No remaining balance",
       candidates,
@@ -125,7 +151,15 @@ export async function readInteractivePaymentParticipants(input: { organizationId
 }
 
 function selectionsMatch(a: InteractivePaymentRecipientSelectionV3[], b: InteractivePaymentRecipientSelectionV3[]): boolean {
-  const normalize = (rows: InteractivePaymentRecipientSelectionV3[]) => [...rows].sort((x, y) => x.bowlerId - y.bowlerId).map((row) => ({ bowlerId: row.bowlerId, weeks: row.weeks, fullBalance: row.fullBalance }));
+  const normalize = (rows: InteractivePaymentRecipientSelectionV3[]) => [...rows].sort((x, y) => x.bowlerId - y.bowlerId).map((row) => ({
+    bowlerId: row.bowlerId,
+    weeks: row.weeks,
+    fullBalance: row.fullBalance,
+    // Keep this field absent for the historical snapshot shape. This lets
+    // existing v3 idempotency rows replay byte-for-byte after the optional
+    // due-now flow was added.
+    ...(row.dueNow === true ? { dueNow: true } : {}),
+  }));
   return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b));
 }
 
@@ -137,6 +171,10 @@ export async function quoteInteractivePartnerPayments(input: { organizationId: n
     const resolved = await resolveParticipantsInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, now });
     const selectedIds = new Set(input.recipients.map((row) => row.bowlerId));
     if (selectedIds.size !== input.recipients.length) throw new RosterPaymentError("INVALID_RECIPIENT_SELECTION", "Each recipient may be selected only once", 422);
+    const dueNowSelections = input.recipients.filter((row) => row.dueNow === true);
+    if (dueNowSelections.length > 0 && (input.recipients.length !== 1 || dueNowSelections[0]?.bowlerId !== input.payerBowlerId)) {
+      throw new RosterPaymentError("DUE_NOW_PAYER_ONLY", "The due-now payment flow applies only to the payer", 422);
+    }
     const responsibilityIds = [...new Set(resolved.participants.flatMap((row) => row.candidates.map((candidate) => candidate.responsibilityId)))];
     const responsibilityRows = responsibilityIds.length === 0 ? [] : await tx.select({ id: occurrencePaymentResponsibilities.id, version: occurrencePaymentResponsibilities.version }).from(occurrencePaymentResponsibilities).where(and(
       eq(occurrencePaymentResponsibilities.organizationId, input.organizationId), eq(occurrencePaymentResponsibilities.leagueId, input.leagueId), eq(occurrencePaymentResponsibilities.state, "active"), inArray(occurrencePaymentResponsibilities.id, responsibilityIds),
@@ -154,9 +192,19 @@ export async function quoteInteractivePartnerPayments(input: { organizationId: n
       if (payableCandidates.length === 0) throw new RosterPaymentError("NO_ELIGIBLE_OBLIGATIONS", "The selected recipient has no remaining payable balance", 422);
       if (resolved.league.paymentMode === "upfront" && !selection.fullBalance) throw new RosterPaymentError("UPFRONT_FULL_BALANCE_REQUIRED", "Upfront checkout must collect each selected recipient's full remaining balance", 422);
       const options = buildOneTimePaymentOptions(participant.candidates, participant.candidates.reduce((sum, row) => sum + row.outstandingMinor, 0));
+      const dueNowMinor = dueNowFifoPrefixMinor(participant.candidates, now);
+      const catchUpOption = dueNowMinor > 0 ? options.find((option) => option.amountMinor >= dueNowMinor) : undefined;
+      if (selection.dueNow === true) {
+        if (participant.bowlerId !== input.payerBowlerId) throw new RosterPaymentError("DUE_NOW_PAYER_ONLY", "Only the payer can use the due-now payment flow", 422);
+        if (selection.fullBalance) throw new RosterPaymentError("DUE_NOW_SELECTION_INVALID", "The due-now payment cannot request full balance", 422);
+        if (dueNowMinor <= 0 || !catchUpOption) throw new RosterPaymentError("NO_DUE_NOW_OBLIGATIONS", "No due-now payment obligations remain", 409);
+        if (selection.weeks !== catchUpOption.weekCount) throw new RosterPaymentError("DUE_NOW_SELECTION_INVALID", "The due-now selection is stale", 409);
+      }
       if (resolved.league.paymentMode === "upfront" && selection.weeks !== payableOccurrenceCount) throw new RosterPaymentError("FULL_BALANCE_SELECTION_INVALID", "The full-balance selection is stale", 409);
       const selectedOption = selection.fullBalance ? undefined : options.find((option) => option.weekCount === selection.weeks);
-      const subtotal = selection.fullBalance ? participant.candidates.reduce((sum, row) => sum + row.outstandingMinor, 0) : selectedOption?.amountMinor ?? 0;
+      const subtotal = selection.dueNow === true
+        ? dueNowMinor
+        : selection.fullBalance ? participant.candidates.reduce((sum, row) => sum + row.outstandingMinor, 0) : selectedOption?.amountMinor ?? 0;
       if (selection.fullBalance && subtotal <= 0) throw new RosterPaymentError("FULL_BALANCE_SELECTION_INVALID", "The full-balance selection is stale", 409);
       if (selection.fullBalance && resolved.league.paymentMode === "weekly" && selection.weeks !== options.at(-1)?.weekCount) throw new RosterPaymentError("FULL_BALANCE_SELECTION_INVALID", "The full-balance selection is stale", 409);
       if (!selection.fullBalance && !selectedOption) throw new RosterPaymentError("WEEKS_SELECTION_INVALID", "The selected weeks exceed the recipient's payable balance", 409);
@@ -171,7 +219,15 @@ export async function quoteInteractivePartnerPayments(input: { organizationId: n
         return { ...allocation, candidate };
       });
       const link = participant.link;
-      evidence.push({ recipientBowlerId: participant.bowlerId, role: participant.role, paymentLinkId: link?.id ?? null, linkFingerprint: link ? partnerLinkFingerprint(link) : null, selectedWeeks: selection.weeks, fullBalance: selection.fullBalance });
+      evidence.push({
+        recipientBowlerId: participant.bowlerId,
+        role: participant.role,
+        paymentLinkId: link?.id ?? null,
+        linkFingerprint: link ? partnerLinkFingerprint(link) : null,
+        selectedWeeks: selection.weeks,
+        fullBalance: selection.fullBalance,
+        ...(selection.dueNow === true ? { dueNow: true } : {}),
+      });
       const projectedAllocations: InteractivePaymentQuoteAllocationV3[] = rows.map((row) => {
         const occurrenceLocalDate = row.candidate.occurrenceLocalDate;
         if (!occurrenceLocalDate) throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "The FIFO allocation is missing its authoritative occurrence date", 503);
@@ -211,6 +267,35 @@ export async function chargeInteractivePartnerPayments(input: {
   const [league] = await db.select({ id: leagues.id, organizationId: leagues.organizationId, locationId: leagues.locationId }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
   if (!league) throw new RosterPaymentError("NOT_FOUND", "League not found", 404);
   const provider = await getPaymentProvider(league.locationId);
+  let ensuredCustomerId: string | undefined;
+  const [existingRequestOperation] = await db.select({ id: paymentOperations.id }).from(paymentOperations).where(and(
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.leagueId, input.leagueId),
+    eq(paymentOperations.operationType, "interactive_charge"),
+    eq(paymentOperations.targetKey, `interactive-charge:${input.request.idempotencyKey}`),
+  )).limit(1);
+  if (!existingRequestOperation && input.request.storeCard === true && input.request.sourceKind === "new_card") {
+    // Customer creation/persistence must happen before the league transaction
+    // takes its payer row lock. The consent proof binds to this durable payer
+    // identity, so a best-effort customer write is rejected before any charge
+    // operation can be prepared.
+    const [payerForCustomer] = await db.select().from(bowlers).where(and(
+      eq(bowlers.id, input.payerBowlerId),
+      eq(bowlers.organizationId, input.organizationId),
+      eq(bowlers.active, true),
+    )).limit(1);
+    if (!payerForCustomer) throw new RosterPaymentError("PAYER_SCOPE_MISMATCH", "The payment payer is unavailable", 403);
+    if (!payerForCustomer.paymentCustomerId) {
+      ensuredCustomerId = await ensureProviderCustomer(provider, payerForCustomer);
+      if (ensuredCustomerId && payerForCustomer.paymentCustomerId !== ensuredCustomerId) {
+        const [persistedPayer] = await db.select({ paymentCustomerId: bowlers.paymentCustomerId }).from(bowlers).where(and(
+          eq(bowlers.id, input.payerBowlerId),
+          eq(bowlers.organizationId, input.organizationId),
+        )).limit(1);
+        if (persistedPayer?.paymentCustomerId !== ensuredCustomerId) throw new RosterPaymentError("CARD_CUSTOMER_PERSISTENCE_FAILED", "The provider customer could not be saved for this payer", 503);
+      }
+    }
+  }
   const prepared = await db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
     const [existing] = await tx.select().from(paymentOperations).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId), eq(paymentOperations.operationType, "interactive_charge"), eq(paymentOperations.targetKey, `interactive-charge:${input.request.idempotencyKey}`))).limit(1).for("update");
@@ -219,7 +304,7 @@ export async function chargeInteractivePartnerPayments(input: {
       const [stored] = await tx.select().from(paymentOperationRosterSnapshots).where(and(eq(paymentOperationRosterSnapshots.operationId, existing.id), eq(paymentOperationRosterSnapshots.organizationId, input.organizationId), eq(paymentOperationRosterSnapshots.leagueId, input.leagueId), eq(paymentOperationRosterSnapshots.snapshotKind, "interactive"))).limit(1).for("share");
       const sourceId = stored?.encryptedSourceId ? decrypt(stored.encryptedSourceId) : null;
       const storedEvidence = Array.isArray(stored?.partnerEvidence) ? stored.partnerEvidence : [];
-      const selections = storedEvidence.flatMap((row) => typeof row === "object" && row !== null && "recipientBowlerId" in row && "selectedWeeks" in row && "fullBalance" in row ? [{ bowlerId: Number(row.recipientBowlerId), weeks: Number(row.selectedWeeks), fullBalance: row.fullBalance === true }] : []);
+      const selections = storedEvidence.flatMap((row) => typeof row === "object" && row !== null && "recipientBowlerId" in row && "selectedWeeks" in row && "fullBalance" in row ? [{ bowlerId: Number(row.recipientBowlerId), weeks: Number(row.selectedWeeks), fullBalance: row.fullBalance === true, ...( "dueNow" in row && row.dueNow === true ? { dueNow: true } : {}) }] : []);
       if (!stored || stored.snapshotVersion !== 3 || stored.payerBowlerId !== input.payerBowlerId || sourceId !== input.request.sourceId || stored.sourceKind !== input.request.sourceKind || stored.storeCard !== (input.request.storeCard === true) || stored.quoteFingerprint !== input.request.requestFingerprint || !selectionsMatch(selections, input.request.recipients)) throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different payment identity or recipient selection", 409);
       return { operation: existing, reused: true };
     }
@@ -227,9 +312,10 @@ export async function chargeInteractivePartnerPayments(input: {
     if (quote.fingerprint !== input.request.requestFingerprint) throw new RosterPaymentError("STALE_QUOTE", "The payment quote is stale; request a new quote", 409);
     const [payer] = await tx.select().from(bowlers).where(and(eq(bowlers.id, input.payerBowlerId), eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true))).limit(1).for("share");
     if (!payer) throw new RosterPaymentError("PAYER_SCOPE_MISMATCH", "The payment payer is unavailable", 403);
+    if (ensuredCustomerId && payer.paymentCustomerId !== ensuredCustomerId) throw new RosterPaymentError("CARD_CUSTOMER_PERSISTENCE_FAILED", "The provider customer could not be saved for this payer", 503);
     const buyerEmail = (payer.email?.trim() || input.request.buyerEmail?.trim() || null);
     if (!buyerEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(buyerEmail)) throw new RosterPaymentError("BUYER_EMAIL_REQUIRED", "A valid buyer email is required for Square payments", 422);
-    const customerId = getProviderCustomerId(payer, provider);
+    const customerId = ensuredCustomerId ?? getProviderCustomerId(payer, provider);
     if (input.request.sourceKind === "saved_card" && !customerId) throw new RosterPaymentError("SAVED_CARD_CUSTOMER_REQUIRED", "The saved payment method is not available for this payer", 422);
     if (input.request.storeCard === true && input.request.sourceKind !== "new_card") throw new RosterPaymentError("INVALID_CARD_SAVE_REQUEST", "Only a new card can be saved", 422);
     if (input.request.storeCard === true && !customerId) throw new RosterPaymentError("CARD_CUSTOMER_REQUIRED", "A provider customer is required to save a card", 422);

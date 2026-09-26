@@ -25,6 +25,16 @@ describe("standing automatic-payment contract", () => {
     expect(() => standingAutopayConsentRequestSchema.parse({ commandKey: consentCommandKey, sourceId: "card", customerId: "other-customer", providerName: "square", providerLocationId: "1", partnerBowlerIds: [] })).toThrow();
   });
 
+  it("accepts exactly one direct source or confirmed payment operation proof", () => {
+    expect(standingAutopayConsentRequestSchema.parse({
+      commandKey: consentCommandKey,
+      paymentOperationId: "operation-proof-1",
+      partnerBowlerIds: [],
+    })).toMatchObject({ paymentOperationId: "operation-proof-1" });
+    expect(() => standingAutopayConsentRequestSchema.parse({ commandKey: consentCommandKey, partnerBowlerIds: [] })).toThrow();
+    expect(() => standingAutopayConsentRequestSchema.parse({ commandKey: consentCommandKey, sourceId: sourceFixture, paymentOperationId: "operation-proof-1", partnerBowlerIds: [] })).toThrow();
+  });
+
   it("keeps quote/revoke requests narrow and strict", () => {
     expect(standingAutopayQuoteRequestSchema.parse({})).toEqual({});
     expect(standingAutopayRevokeRequestSchema.parse({ commandKey: revokeCommandKey }).commandKey).toBe(revokeCommandKey);

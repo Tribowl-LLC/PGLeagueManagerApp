@@ -80,6 +80,7 @@ const mocks = vi.hoisted(() => {
         : [1, 2, 3].map((weeks) => ({ weeks, amountMinor: weeks * 1_000 })),
       eligible: !paidInFull,
       reason: paidInFull ? "No remaining balance" : null,
+      ...(paymentMode === "weekly" ? { dueNowMinor: 1_000, catchUpWeeks: 1, catchUpAmountMinor: 1_000 } : {}),
     }, ...(includePartner ? [{
       bowlerId: 84,
       name: "Partner",
@@ -278,6 +279,7 @@ vi.mock("@/lib/payment-request-identity", () => ({
   paymentRequestHeaders: vi.fn((requestKey: string) => ({ "Idempotency-Key": requestKey })),
   paymentRequestWithRecovery: vi.fn((_key: string, request: () => Promise<Response>) => request()),
   prepareRosterPaymentIntent: mocks.prepareRosterPaymentIntent,
+  rosterPaymentStatusMessage: vi.fn((status: unknown) => status === "pending" ? "Your payment is still being confirmed. Use payment recovery before trying another card." : null),
 }));
 
 import MakePaymentPage from "@/pages/make-payment-page";
@@ -307,6 +309,7 @@ afterEach(() => {
   mocks.clearPaymentIntent.mockReset();
   mocks.invalidatePaymentHistoryFinancials.mockReset().mockResolvedValue(undefined);
   mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "request-key", outcome: "none" });
+  window.localStorage.removeItem("leaguevault:standing-consent-intent:v1:stable-scope");
   mocks.walletOptions.enabled = false;
   mocks.walletOptions.onPaymentStarted = undefined;
   mocks.walletOptions.onTokenReceived = undefined;
@@ -449,6 +452,76 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(mocks.standingAutopayCard.mock.calls.at(-1)?.[0]).toMatchObject({
       league: expect.objectContaining({ paymentMode: "weekly" }),
     });
+  });
+
+  it("keeps a same-page combined payment recovery action for an unresolved charge", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "combined-request", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 202, json: async () => ({ data: { status: "pending" } }) });
+    mocks.tokenizeCard.mockResolvedValue("combined-source");
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.standingAutopayCard).toHaveBeenCalled());
+    const standingProps = mocks.standingAutopayCard.mock.calls.at(-1)?.[0] as { onPayDueNow: () => void };
+    act(() => { standingProps.onPayDueNow(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ dueNowOnly: true }));
+    const checkoutProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+
+    await act(async () => { await checkoutProps.onSubmit(); });
+
+    expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
+    expect(mocks.apiRequest).not.toHaveBeenCalled();
+    expect(document.body).toHaveTextContent("still being confirmed");
+    expect(document.body).toHaveTextContent("Retry automatic payments");
+  });
+
+  it("clears the combined marker and returns to checkout after a terminal charge outcome", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "combined-terminal", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ data: { status: "failed_terminal" } }) });
+    mocks.tokenizeCard.mockResolvedValue("combined-source");
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.standingAutopayCard).toHaveBeenCalled());
+    const standingProps = mocks.standingAutopayCard.mock.calls.at(-1)?.[0] as { onPayDueNow: () => void };
+    act(() => { standingProps.onPayDueNow(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ dueNowOnly: true }));
+    const checkoutProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+
+    await act(async () => { await checkoutProps.onSubmit(); });
+
+    expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "combined-terminal");
+    expect(document.body).not.toHaveTextContent("Payment confirmation is in progress");
+    expect(document.body).not.toHaveTextContent("Retry automatic payments");
+  });
+
+  it("keeps consent retry visible when the successful payment removes the remaining balance", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "combined-consent", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-1" } }) });
+    mocks.apiRequest.mockRejectedValueOnce(Object.assign(new Error("consent unavailable"), { status: 503 }));
+    mocks.tokenizeCard.mockResolvedValue("combined-source");
+
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.standingAutopayCard).toHaveBeenCalled());
+    const standingProps = mocks.standingAutopayCard.mock.calls.at(-1)?.[0] as { onPayDueNow: () => void };
+    act(() => { standingProps.onPayDueNow(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ dueNowOnly: true }));
+    const checkoutProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+
+    await act(async () => { await checkoutProps.onSubmit(); });
+    await waitFor(() => expect(document.body).toHaveTextContent("Retry automatic payments"));
+
+    mocks.setPaidInFull(true);
+    view.rerender(<MakePaymentPage />);
+    expect(document.body).toHaveTextContent("Retry automatic payments");
+    expect(document.body).not.toHaveTextContent("No one-time balance available");
   });
 
   it("does not re-probe recovery when a positive payment amount changes", async () => {

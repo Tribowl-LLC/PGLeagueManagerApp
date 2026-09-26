@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
+import { formatCurrency } from "@/lib/utils";
 
 type QuoteResponse = { data: StandingAutopayQuoteWire };
 type EditorMode = "one-time" | "autopay" | null;
@@ -24,6 +25,11 @@ type Props = {
   initializeCard: (element: HTMLDivElement) => Promise<void>;
   cleanupCard: () => void;
   onCardEditorModeChange: (mode: EditorMode) => void;
+  dueNowMinor?: number;
+  catchUpWeeks?: number;
+  dueNowDataAvailable?: boolean;
+  combinedCheckoutActive?: boolean;
+  onPayDueNow?: () => void;
 };
 
 function commandKey(prefix: string): string { return `${prefix}-${crypto.randomUUID().replace(/-/g, "")}`; }
@@ -38,7 +44,7 @@ export function formatNextPaymentDate(value: string, timezone: string | null | u
   }
 }
 
-export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEmail, card, isInitialized, cardEditorMode, initializeCard, cleanupCard, onCardEditorModeChange }: Props) {
+export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEmail, card, isInitialized, cardEditorMode, initializeCard, cleanupCard, onCardEditorModeChange, dueNowMinor = 0, dueNowDataAvailable = true, combinedCheckoutActive = false, onPayDueNow }: Props) {
   const { toast } = useToast();
   const [selectedCard, setSelectedCard] = useState(savedCards[0]?.id ?? "");
   const [replaceMode, setReplaceMode] = useState(false);
@@ -50,6 +56,9 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
   const statusQuery = useQuery<{ data: StandingAutopayConsentWire }>({ queryKey: [`/api/financials/leagues/${league.id}/standing-autopay/1`], enabled, retry: false });
   const consent = statusQuery.data?.data;
   const active = consent?.state === "active";
+  const statusUnavailable = Boolean(statusQuery.error) || (statusQuery.isFetched && !consent);
+  const dueNowRequired = !statusUnavailable && !active && dueNowDataAvailable && dueNowMinor > 0;
+  const setupDataUnavailable = !statusUnavailable && !active && !dueNowDataAvailable;
   const paymentAttention = consent?.paymentAttention ?? null;
   const quoteQuery = useQuery<QuoteResponse>({
     queryKey: [`/api/financials/leagues/${league.id}/standing-autopay/1/quote`],
@@ -133,7 +142,10 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
     <CardHeader><CardTitle className="flex items-center justify-between">Automatic Payments {active ? <Badge>Enabled</Badge> : <Badge variant="secondary">Off</Badge>}</CardTitle></CardHeader>
     <CardContent spacing="tight">
       {!bowlerHasEmail && <p className="rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900">Add an email address to your <Link href="/profile" className="font-semibold underline">Profile</Link> before enabling automatic payments. A temporary receipt email cannot be used.</p>}
-      {active && !replaceMode && !addingCard ? <>{paymentAttention === "scheduled_payment_declined" ? <div role="alert" className="space-y-2 rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900"><p>Your scheduled automatic payment was declined. Use the One-Time Payment section above to settle this balance before automatic payments can resume.</p></div> : <><p className="text-sm">Next Payment Scheduled: <span className="font-medium">{nextPayment}</span></p>{quoteQuery.isError && <p role="alert" className="text-sm text-destructive">{quoteError}</p>}</>}<div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate()}>Revoke automatic payments</Button><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setReplaceMode(true)}>Replace payment method</Button></div></> : <>
+      {statusUnavailable && <div role="alert" className="flex flex-col gap-3 rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900"><p>Automatic-payment status could not be confirmed. Refresh before continuing.</p><Button type="button" variant="outline" size="sm" onClick={() => void statusQuery.refetch()} disabled={statusQuery.isFetching}>{statusQuery.isFetching ? "Refreshing…" : "Refresh status"}</Button></div>}
+      {setupDataUnavailable && <div role="alert" className="rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900">Current payment obligations are unavailable. Refresh the payment page before enabling automatic payments.</div>}
+      {!statusUnavailable && !setupDataUnavailable && dueNowRequired && (combinedCheckoutActive ? <div role="status" className="rounded-md border border-muted-foreground/30 bg-muted/30 p-3 text-sm text-muted-foreground">Complete checkout above to enable automatic payments.</div> : <div role="alert" className="flex flex-col gap-3 rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900"><div><p className="font-medium">Pay {formatCurrency(dueNowMinor)} to get up to date before enabling automatic payments.</p></div>{onPayDueNow ? <Button type="button" disabled={!bowlerHasEmail || setupPending} onClick={onPayDueNow}>{setupPending ? "Preparing checkout…" : "Pay to get up to date"}</Button> : <p>Use the One-Time Payment section above to settle this amount before enabling automatic payments.</p>}</div>)}
+      {statusUnavailable || setupDataUnavailable ? null : active && !replaceMode && !addingCard ? <>{paymentAttention === "scheduled_payment_declined" ? <div role="alert" className="space-y-2 rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900"><p>Your scheduled automatic payment was declined. Use the One-Time Payment section above to settle this balance before automatic payments can resume.</p></div> : <><p className="text-sm">Next Payment Scheduled: <span className="font-medium">{nextPayment}</span></p>{quoteQuery.isError && <p role="alert" className="text-sm text-destructive">{quoteError}</p>}</>}<div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate()}>Revoke automatic payments</Button><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setReplaceMode(true)}>Replace payment method</Button></div></> : combinedCheckoutActive || dueNowRequired ? null : <>
         {savedCards.length > 0 && !addingCard && <label className="block text-sm">Saved card<select className="mt-1 w-full rounded border bg-background p-2" value={selectedCard} onChange={(event) => setSelectedCard(event.target.value)} disabled={!bowlerHasEmail}><option value="">Select a card</option>{savedCards.map((saved) => <option key={saved.id} value={saved.id}>{saved.brand} ending {saved.last4}</option>)}</select></label>}
         {!addingCard && savedCards.length === 0 && <Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => { cleanupCard(); onCardEditorModeChange("autopay"); }}>Add new card</Button>}
         {addingCard || savedCards.length === 0 ? <div className="space-y-3"><p className="text-sm font-medium">{savedCards.length ? "Add a new card" : "Add a card for automatic payments"}</p><div ref={(element) => { if (element && cardEditorMode === "autopay") void initializeCard(element); }} className={cardEditorMode === "autopay" ? "min-h-20 rounded-md border p-3" : "min-h-20 rounded-md border p-3 hidden"} /><div className="flex flex-wrap gap-2"><Button type="button" disabled={!bowlerHasEmail || !isInitialized || setupPending} onClick={() => void saveAndEnable()}>{setupPending ? "Saving card and enabling…" : "Save card and enable automatic payments"}</Button>{addingCard && <Button type="button" variant="ghost" disabled={setupPending} onClick={() => { cleanupCard(); onCardEditorModeChange(null); }}>Cancel</Button>}</div></div> : null}
