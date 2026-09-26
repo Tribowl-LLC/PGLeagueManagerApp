@@ -1,10 +1,10 @@
 /**
- * Task #731 — focused security boundary tests for registration, the retired
- * self-claim endpoint, and administrator identity linking:
+ * Task #731 — focused security boundary tests for registration and retired
+ * ordinary-user self-claim endpoints:
  *
  *  1. POST /api/auth/register: trusted organization context and fail-closed gates
  *  2. POST /api/auth/claim-bowler: retired self-claim endpoint is unavailable
- *  3. POST /api/user-bowlers/link-bowler: org membership + email ownership (incl. blank-email)
+ *  3. POST /api/user-bowlers/link-bowler: retired self-claim endpoint is unavailable
  *
  * Negative cases — each test drives an attack scenario and asserts the
  * server refuses with the correct HTTP status and error code.
@@ -399,96 +399,19 @@ describe('POST /api/auth/claim-bowler — retired endpoint', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. link-bowler — org gate and email ownership including blank-email
+// 3. Retired user-bowler self-claim endpoint
 // ---------------------------------------------------------------------------
 
-describe('POST /api/user-bowlers/link-bowler — authorization boundaries', () => {
-  const LINK_URL = () => `${userBowlersBase}/api/user-bowlers/link-bowler`;
-
-  it('rejects link to bowler from a different org', async () => {
-    mockGetBowler.mockResolvedValueOnce({
-      id: 30, name: 'Victim', email: 'victim@example.com',
-      organizationId: 999,
-    });
-    const res = await fetch(LINK_URL(), {
+describe('POST /api/user-bowlers/link-bowler — retired endpoint', () => {
+  it('is no longer exposed and makes no bowler or identity-link calls', async () => {
+    const res = await fetch(`${userBowlersBase}/api/user-bowlers/link-bowler`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bowlerId: 30 }),
     });
-    expect(res.status).toBe(403);
-    const data = await res.json();
-    expect(data.error?.code).toBe('FORBIDDEN');
-  });
-
-  it('rejects link to blank-email bowler in the same org', async () => {
-    mockGetBowler.mockResolvedValueOnce({
-      id: 31, name: 'NoEmail Bowler', email: '',
-      organizationId: 5,
-    });
-    const res = await fetch(LINK_URL(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bowlerId: 31 }),
-    });
-    expect(res.status).toBe(403);
-    const data = await res.json();
-    expect(data.error?.code).toBe('FORBIDDEN');
-  });
-
-  it('rejects link to same-org bowler whose email mismatches', async () => {
-    mockGetBowler.mockResolvedValueOnce({
-      id: 32, name: 'Other Person', email: 'otherperson@example.com',
-      organizationId: 5,
-    });
-    const res = await fetch(LINK_URL(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bowlerId: 32 }),
-    });
-    expect(res.status).toBe(403);
-    const data = await res.json();
-    expect(data.error?.code).toBe('FORBIDDEN');
-  });
-
-  it('rejects link to already-linked same-email bowler', async () => {
-    mockGetBowler.mockResolvedValueOnce({
-      id: 33, name: 'Linked Bowler', email: 'attacker@example.com',
-      organizationId: 5,
-    });
-    mockIsBowlerLinked.mockResolvedValueOnce(true);
-    const res = await fetch(LINK_URL(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bowlerId: 33 }),
-    });
-    expect(res.status).toBe(400);
-    const data = await res.json();
-    expect(data.error?.code).toBe('ALREADY_LINKED');
-  });
-
-  it('rejects a payment-manager account before reading the target bowler', async () => {
-    const staffApp = makeUserBowlersApp({
-      id: 2,
-      email: 'staff@example.com',
-      role: 'payment_manager',
-      organizationId: 5,
-      locationId: 7,
-      bowlerId: null,
-    });
-    const server = await new Promise<Server>((resolve) => {
-      const started = staffApp.listen(0, '127.0.0.1', () => resolve(started));
-    });
-    try {
-      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-      const response = await fetch(`${base}/api/user-bowlers/link-bowler`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bowlerId: 33 }),
-      });
-      expect(response.status).toBe(403);
-      expect(mockGetBowler).not.toHaveBeenCalled();
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
+    expect(res.status).toBe(404);
+    expect(mockGetBowler).not.toHaveBeenCalled();
+    expect(linkUserToBowler).not.toHaveBeenCalled();
+    expect(mockIsBowlerLinked).not.toHaveBeenCalled();
   });
 });
