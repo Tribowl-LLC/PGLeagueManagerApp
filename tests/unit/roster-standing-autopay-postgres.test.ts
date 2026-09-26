@@ -595,6 +595,87 @@ it("activates consent only from a finalized self-only due-now v3 operation", asy
   expect(first.obligation.id).toBeTruthy();
 });
 
+it("uses the vaulted card from a saved new-card due-now operation", async () => {
+  const now = Date.now();
+  const first = await publishOccurrence(new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString());
+  const quote = await quoteInteractivePartnerPayments({
+    organizationId,
+    leagueId,
+    payerBowlerId,
+    recipients: [{ bowlerId: payerBowlerId, weeks: 1, fullBalance: false, dueNow: true }],
+  });
+  const tokenSourceId = "cnonce:new-card-token";
+  const vaultedSourceId = "ccof:vaulted-new-card";
+  const operation = await prepareInteractivePartnerPaymentOperation({
+    organizationId,
+    authorizingUserId: actorUserId,
+    requestKey: `standing-new-card-${randomUUID()}`,
+    amountMinor: quote.amountMinor,
+    currency: quote.currency,
+    providerName: "square",
+    leagueId,
+    locationId,
+    providerLocationId: null,
+    payerBowlerId,
+    sourceId: tokenSourceId,
+    customerId: "customer-fixture",
+    buyerEmail: "standing-new-card@example.test",
+    storeCard: true,
+    sourceKind: "new_card",
+    allocations: quote.allocations.map((row) => ({ ...row, paidByUserId: actorUserId })),
+    partnerEvidence: quote.partnerEvidence,
+    quoteFingerprint: quote.fingerprint,
+  });
+  const completedAt = new Date().toISOString();
+  await db.transaction(async (tx) => {
+    await tx.update(paymentOperations).set({
+      status: "succeeded",
+      providerObjectId: "sq-standing-new-card",
+      nextAttemptAt: null,
+      completedAt,
+      updatedAt: completedAt,
+      cardSaveStatus: "saved",
+      cardSaveProviderIdempotencyKey: `standing-card-save-${randomUUID()}`.slice(0, 45),
+      encryptedSavedCardId: encrypt(vaultedSourceId),
+      cardSaveCompletedAt: completedAt,
+    }).where(eq(paymentOperations.id, operation.id));
+    const [payment] = await tx.insert(payments).values({
+      organizationId, bowlerId: payerBowlerId, leagueId, amount: quote.amountMinor, status: "paid", type: "square",
+      providerPaymentId: "sq-standing-new-card", paymentOperationId: operation.id, idempotencyKey: `standing-new-card-payment-${randomUUID()}`, paidByUserId: actorUserId,
+    }).returning();
+    await tx.insert(paymentAllocations).values(quote.allocations.map((row) => ({ organizationId, leagueId, paymentId: payment.id, obligationId: row.obligationId, amountMinor: row.amountMinor, currency: "USD", recordedByUserId: actorUserId })));
+    await tx.update(paymentObligations).set({ state: "settled" }).where(and(eq(paymentObligations.organizationId, organizationId), eq(paymentObligations.leagueId, leagueId), inArray(paymentObligations.id, quote.allocations.map((row) => row.obligationId))));
+  });
+  await db.update(autopayConsents).set({ state: "revoked", revokedAt: completedAt }).where(and(eq(autopayConsents.organizationId, organizationId), eq(autopayConsents.leagueId, leagueId), eq(autopayConsents.payerBowlerId, payerBowlerId), eq(autopayConsents.state, "active")));
+  const hasCardOnFile = vi.fn().mockResolvedValue(true);
+  standingProviderMock.mockResolvedValue({
+    providerName: "square",
+    locationId,
+    getProviderLocationId: vi.fn().mockResolvedValue("square-location-fixture"),
+    validateCardId: vi.fn((sourceId: string) => sourceId.startsWith("ccof:")),
+    hasCardOnFile,
+  });
+  try {
+    const { activateStandingAutopayConsent } = await import("../../server/services/roster-standing-autopay");
+    const consent = await activateStandingAutopayConsent({
+      organizationId,
+      leagueId,
+      payerBowlerId,
+      actorUserId,
+      request: { commandKey: `standing-new-card-consent-${randomUUID()}`, paymentOperationId: operation.id, partnerBowlerIds: [] },
+    });
+    expect(consent).toMatchObject({ state: "active", payerBowlerId });
+    const [stored] = await db.select().from(autopayConsents).where(eq(autopayConsents.id, consent.consentId!));
+    if (!stored) throw new Error("new-card standing consent was not persisted");
+    expect(decrypt(stored.encryptedSourceId!)).toBe(vaultedSourceId);
+    expect(decrypt(stored.encryptedSourceId!)).not.toBe(tokenSourceId);
+    expect(hasCardOnFile).toHaveBeenCalledWith("customer-fixture", vaultedSourceId);
+  } finally {
+    standingProviderMock.mockReset();
+  }
+  expect(first.obligation.id).toBeTruthy();
+});
+
 async function createRefundableCardPayment(obligation: typeof paymentObligations.$inferSelect) {
   const providerPaymentId = `standing-refund-payment-${randomUUID()}`;
   const operationId = randomUUID();

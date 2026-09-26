@@ -165,7 +165,7 @@ describe("PaymentHistoryContent", () => {
     expect(screen.getByRole("button", { name: "Enable automatic payments" })).toBeDisabled();
   });
 
-  it("routes due obligations through the combined checkout before enabling automatic payments", async () => {
+  it("routes due obligations through one combined checkout", async () => {
     const onPayDueNow = vi.fn();
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ data: { state: "none", partnerBowlerIds: [] } }) } } });
     render(<QueryClientProvider client={queryClient}><StandingAutopayCard
@@ -174,10 +174,10 @@ describe("PaymentHistoryContent", () => {
       initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
       dueNowMinor={4_500} catchUpWeeks={2} onPayDueNow={onPayDueNow}
     /></QueryClientProvider>);
-    expect(await screen.findByText("Pay $45.00 to get up to date before enabling automatic payments.")).toBeInTheDocument();
+    expect(await screen.findByText("Pay $45.00 due now and enable automatic payments in one checkout.")).toBeInTheDocument();
     expect(screen.queryByText(/This payment covers/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Enable automatic payments" })).not.toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Pay to get up to date" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Pay due now and enable automatic payments" }));
     expect(onPayDueNow).toHaveBeenCalledOnce();
   });
 
@@ -190,7 +190,7 @@ describe("PaymentHistoryContent", () => {
       dueNowMinor={4_500} catchUpWeeks={2} combinedCheckoutActive onPayDueNow={vi.fn()}
     /></QueryClientProvider>);
     expect(await screen.findByRole("status")).toHaveTextContent("Complete checkout above to enable automatic payments.");
-    expect(screen.queryByRole("button", { name: "Pay to get up to date" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pay due now and enable automatic payments" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Enable automatic payments" })).not.toBeInTheDocument();
   });
 

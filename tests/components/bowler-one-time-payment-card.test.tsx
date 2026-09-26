@@ -91,7 +91,7 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
   it("locks combined automatic-payment setup to the amount needed to get up to date", () => {
     renderCard(false, { amountMinor: 4_500, weeks: 2 }, [], [], false, false, undefined, true);
 
-    expect(screen.getByText("Pay the amount needed to get up to date before automatic payments can be enabled.")).toBeInTheDocument();
+    expect(screen.getByText("Pay the amount needed to get up to date and enable automatic payments in one checkout.")).toBeInTheDocument();
     expect(screen.getByText("Amount needed to get up to date").parentElement).toHaveTextContent("$45.00");
     expect(screen.queryByRole("button", { name: /one more week/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pay and enable automatic payments" })).toBeEnabled();

@@ -14,10 +14,11 @@ const mocks = vi.hoisted(() => {
   const csrfFetch = vi.fn();
   const apiRequest = vi.fn();
   const tokenizeCard = vi.fn();
+  const paymentRequestWithRecovery = vi.fn((_key: string, request: () => Promise<Response>) => request());
   const toast = vi.fn();
   const clearPaymentIntent = vi.fn();
   const invalidatePaymentHistoryFinancials = vi.fn(async () => {});
-  const prepareRosterPaymentIntent = vi.fn(async (): Promise<{ requestKey: string; outcome: string; status?: string }> => ({ requestKey: "request-key", outcome: "none" }));
+  const prepareRosterPaymentIntent = vi.fn(async (): Promise<{ requestKey: string; outcome: string; status?: string; response?: { clone: () => { json: () => Promise<unknown> } } }> => ({ requestKey: "request-key", outcome: "none" }));
   const squareCard = { tokenize: vi.fn(), destroy: vi.fn(), attach: vi.fn() };
   const cleanupCard = vi.fn();
   const walletOptions: {
@@ -32,6 +33,7 @@ const mocks = vi.hoisted(() => {
   const standingQueryCalls: unknown[][] = [];
   let rotatingPoolMember = false;
   let standingAutopayState: "pending" | "active" | "revoked" | "expired" | "none" = "none";
+  const standingStatusRefetch = vi.fn(async () => ({ data: { data: { state: standingAutopayState } }, error: null, isError: false }));
   const financialData = () => ({
     contractVersion: "canonical-due-past-due/2",
     authoritativeSource: "payment_obligations",
@@ -110,7 +112,7 @@ const mocks = vi.hoisted(() => {
         data: { success: true, data: { contractVersion: "standing-autopay-consent/1", organizationId: 1, leagueId: 17, payerBowlerId: 42, consentId: standingAutopayState === "active" ? "consent-1" : null, consentVersion: standingAutopayState === "active" ? 1 : null, state: standingAutopayState, paymentMode: "weekly", partnerBowlerIds: [], paymentAttention: null } },
         isLoading: false,
         error: null,
-        refetch: vi.fn(),
+        refetch: standingStatusRefetch,
       };
     }
     if (key === "/api/user") {
@@ -200,6 +202,7 @@ const mocks = vi.hoisted(() => {
     apiRequest,
     query,
     standingQueryCalls,
+    standingStatusRefetch,
     setPaymentMode: (mode: "upfront" | "weekly") => { paymentMode = mode; },
     setRotatingPoolMember: (value: boolean) => { rotatingPoolMember = value; },
     setStandingAutopayState: (state: "pending" | "active" | "revoked" | "expired" | "none") => { standingAutopayState = state; },
@@ -212,6 +215,7 @@ const mocks = vi.hoisted(() => {
     setParticipantRefreshGate: (value: Promise<void> | null) => { participantRefreshGate = value; },
     setParticipantRefreshMissing: (value: boolean) => { participantRefreshMissing = value; },
     csrfFetch,
+    paymentRequestWithRecovery,
     tokenizeCard,
     toast,
     clearPaymentIntent,
@@ -277,7 +281,7 @@ vi.mock("@/lib/payment-request-identity", () => ({
   interactivePaymentIntentScope: vi.fn(() => "stable-scope"),
   isTerminalRosterPaymentFailure: vi.fn((status: unknown) => status === "failed_terminal" || status === "canceled" || status === "action_required"),
   paymentRequestHeaders: vi.fn((requestKey: string) => ({ "Idempotency-Key": requestKey })),
-  paymentRequestWithRecovery: vi.fn((_key: string, request: () => Promise<Response>) => request()),
+  paymentRequestWithRecovery: mocks.paymentRequestWithRecovery,
   prepareRosterPaymentIntent: mocks.prepareRosterPaymentIntent,
   rosterPaymentStatusMessage: vi.fn((status: unknown) => status === "pending" ? "Your payment is still being confirmed. Use payment recovery before trying another card." : null),
 }));
@@ -291,6 +295,7 @@ afterEach(() => {
   mocks.oneTimePaymentCard.mockClear();
   mocks.rotatingShareCreditCard.mockClear();
   mocks.standingQueryCalls.length = 0;
+  mocks.standingStatusRefetch.mockReset().mockImplementation(async () => ({ data: { data: { state: "none" } }, error: null, isError: false }));
   mocks.setPaymentMode("upfront");
   mocks.setRotatingPoolMember(false);
   mocks.setStandingAutopayState("none");
@@ -303,6 +308,7 @@ afterEach(() => {
   mocks.setParticipantRefreshGate(null);
   mocks.setParticipantRefreshMissing(false);
   mocks.csrfFetch.mockReset();
+  mocks.paymentRequestWithRecovery.mockReset().mockImplementation((_key: string, request: () => Promise<Response>) => request());
   mocks.tokenizeCard.mockReset();
   mocks.cleanupCard.mockReset();
   mocks.toast.mockReset();
@@ -477,6 +483,84 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(document.body).toHaveTextContent("Retry automatic payments");
   });
 
+  it("keeps transport recovery visible and promotes a recovered success without charging again", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "combined-transport", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockRejectedValueOnce(new Error("charge transport"));
+    mocks.paymentRequestWithRecovery.mockImplementationOnce(async (_key: string, request: () => Promise<Response>) => {
+      await request().catch(() => undefined);
+      throw new Error("recovery transport");
+    });
+    mocks.tokenizeCard.mockResolvedValue("combined-source");
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.standingAutopayCard).toHaveBeenCalled());
+    const standingProps = mocks.standingAutopayCard.mock.calls.at(-1)?.[0] as { onPayDueNow: () => void };
+    act(() => { standingProps.onPayDueNow(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ dueNowOnly: true }));
+    const checkoutProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+
+    await act(async () => { await checkoutProps.onSubmit(); });
+    expect(document.body).toHaveTextContent("Payment confirmation is in progress");
+    expect(document.body).toHaveTextContent("Retry automatic payments");
+    expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
+
+    mocks.prepareRosterPaymentIntent.mockResolvedValue({
+      requestKey: "combined-transport",
+      outcome: "succeeded",
+      response: { clone: () => ({ json: async () => ({ data: { operationId: "operation-recovered" } }) }) },
+    });
+    await act(async () => { await checkoutProps.onSubmit(); });
+
+    expect(mocks.paymentRequestWithRecovery).toHaveBeenCalledOnce();
+    expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
+    expect(JSON.parse(window.localStorage.getItem("leaguevault:standing-consent-intent:v1:stable-scope") ?? "{}")).toMatchObject({ phase: "consent", operationId: "operation-recovered" });
+  });
+
+  it("clears a charging marker after reload when the exact request key has no server operation", async () => {
+    mocks.setPaymentMode("weekly");
+    window.localStorage.setItem("leaguevault:standing-consent-intent:v1:stable-scope", JSON.stringify({
+      scope: "stable-scope",
+      requestKey: "stale-charge",
+      operationId: null,
+      commandKey: "standing-consent-stale",
+      phase: "charging",
+    }));
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "stale-charge", outcome: "new" });
+
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment setup can restart" })));
+    expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "stale-charge");
+    expect(window.localStorage.getItem("leaguevault:standing-consent-intent:v1:stable-scope")).toBeNull();
+    expect(document.body).not.toHaveTextContent("Retry automatic payments");
+  });
+
+  it("promotes a succeeded charging marker after reload without submitting another charge", async () => {
+    mocks.setPaymentMode("weekly");
+    window.localStorage.setItem("leaguevault:standing-consent-intent:v1:stable-scope", JSON.stringify({
+      scope: "stable-scope",
+      requestKey: "recovered-charge",
+      operationId: null,
+      commandKey: "standing-consent-recovered",
+      phase: "charging",
+    }));
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({
+      requestKey: "recovered-charge",
+      outcome: "succeeded",
+      response: { clone: () => ({ json: async () => ({ data: { operationId: "operation-recovered" } }) }) },
+    });
+
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem("leaguevault:standing-consent-intent:v1:stable-scope") ?? "{}")).toMatchObject({ phase: "consent", operationId: "operation-recovered" }));
+    expect(mocks.paymentRequestWithRecovery).not.toHaveBeenCalled();
+    expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
+    expect(document.body).toHaveTextContent("Retry automatic payments");
+  });
+
   it("clears the combined marker and returns to checkout after a terminal charge outcome", async () => {
     mocks.setPaymentMode("weekly");
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "combined-terminal", outcome: "new" });
@@ -522,6 +606,44 @@ describe("MakePaymentPage upfront payment mode", () => {
     view.rerender(<MakePaymentPage />);
     expect(document.body).toHaveTextContent("Retry automatic payments");
     expect(document.body).not.toHaveTextContent("No one-time balance available");
+
+    const oneTimeCallCountBeforeRetry = mocks.oneTimePaymentCard.mock.calls.length;
+    mocks.setStandingAutopayState("active");
+    mocks.standingStatusRefetch.mockResolvedValue({ data: { data: { state: "active" } }, error: null, isError: false });
+    view.rerender(<MakePaymentPage />);
+    await act(async () => { screen.getByRole("button", { name: "Retry automatic payments" }).click(); });
+    await waitFor(() => expect(document.body).toHaveTextContent("No one-time balance available"));
+    expect(mocks.oneTimePaymentCard).toHaveBeenCalledTimes(oneTimeCallCountBeforeRetry);
+    expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "combined-consent");
+    expect(mocks.paymentRequestWithRecovery).toHaveBeenCalledOnce();
+  });
+
+  it("keeps consent recovery blocked when the authoritative balance refresh fails", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "refresh-failure", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-refresh-failure" } }) });
+    mocks.apiRequest.mockRejectedValueOnce(Object.assign(new Error("consent unavailable"), { status: 503 }));
+    mocks.invalidatePaymentHistoryFinancials.mockRejectedValue(new Error("balance refresh unavailable"));
+    mocks.tokenizeCard.mockResolvedValue("combined-source");
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.standingAutopayCard).toHaveBeenCalled());
+    const standingProps = mocks.standingAutopayCard.mock.calls.at(-1)?.[0] as { onPayDueNow: () => void };
+    act(() => { standingProps.onPayDueNow(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ dueNowOnly: true }));
+    const checkoutProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+    await act(async () => { await checkoutProps.onSubmit(); });
+    await waitFor(() => expect(document.body).toHaveTextContent("Retry automatic payments"));
+
+    mocks.setStandingAutopayState("active");
+    mocks.standingStatusRefetch.mockResolvedValue({ data: { data: { state: "active" } }, error: null, isError: false });
+    await act(async () => { screen.getByRole("button", { name: "Retry automatic payments" }).click(); });
+
+    expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("leaguevault:standing-consent-intent:v1:stable-scope")).not.toBeNull();
+    expect(document.body).toHaveTextContent("Retry automatic payments");
   });
 
   it("does not re-probe recovery when a positive payment amount changes", async () => {

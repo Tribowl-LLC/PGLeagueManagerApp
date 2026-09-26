@@ -118,7 +118,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
       <CardHeader>
         <CardTitle>One-Time Payment</CardTitle>
         {showRecipientChooser && !fullBalanceOnly && <CardDescription>Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.</CardDescription>}
-        {dueNowOnly && <CardDescription>Pay the amount needed to get up to date before automatic payments can be enabled.</CardDescription>}
+        {dueNowOnly && <CardDescription>Pay the amount needed to get up to date and enable automatic payments in one checkout.</CardDescription>}
       </CardHeader>
       <CardContent spacing="normal">
         {dueNowOnly && <Alert role="status"><AlertDescription><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><span>We'll confirm automatic-payment setup after this payment.</span>{onCancelDueNow && <Button type="button" variant="ghost" size="sm" onClick={onCancelDueNow} disabled={paymentInFlight}>Cancel</Button>}</div></AlertDescription></Alert>}
