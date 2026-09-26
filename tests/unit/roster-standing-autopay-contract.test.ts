@@ -7,6 +7,7 @@ const consentCommandKey = ["standing", "consent", "fixture"].join("-");
 const revokeCommandKey = ["standing", "revoke", "fixture"].join("-");
 const partnerCommandKey = ["standing", "consent", "partner", "fixture"].join("-");
 const sourceFixture = ["saved", "source", "fixture"].join("-");
+const operationFixture = "11111111-1111-4111-8111-111111111111";
 
 describe("standing automatic-payment contract", () => {
   it("uses a distinct ledger operation and derives customer identity server-side", () => {
@@ -28,11 +29,12 @@ describe("standing automatic-payment contract", () => {
   it("accepts exactly one direct source or confirmed payment operation proof", () => {
     expect(standingAutopayConsentRequestSchema.parse({
       commandKey: consentCommandKey,
-      paymentOperationId: "operation-proof-1",
+      paymentOperationId: operationFixture,
       partnerBowlerIds: [],
-    })).toMatchObject({ paymentOperationId: "operation-proof-1" });
+    })).toMatchObject({ paymentOperationId: operationFixture });
     expect(() => standingAutopayConsentRequestSchema.parse({ commandKey: consentCommandKey, partnerBowlerIds: [] })).toThrow();
-    expect(() => standingAutopayConsentRequestSchema.parse({ commandKey: consentCommandKey, sourceId: sourceFixture, paymentOperationId: "operation-proof-1", partnerBowlerIds: [] })).toThrow();
+    expect(() => standingAutopayConsentRequestSchema.parse({ commandKey: consentCommandKey, sourceId: sourceFixture, paymentOperationId: operationFixture, partnerBowlerIds: [] })).toThrow();
+    expect(() => standingAutopayConsentRequestSchema.parse({ commandKey: consentCommandKey, paymentOperationId: "not-a-uuid", partnerBowlerIds: [] })).toThrow();
   });
 
   it("keeps quote/revoke requests narrow and strict", () => {

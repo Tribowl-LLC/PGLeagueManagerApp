@@ -359,6 +359,35 @@ async function createDoublePayGroup(trigger: Awaited<ReturnType<typeof publishOc
   return groupId;
 }
 
+type PartnerOperationFixtureInput = Omit<Parameters<typeof prepareInteractivePartnerPaymentOperation>[0], "transaction"> & {
+  snapshotItemFinalState?: "released";
+};
+
+async function preparePartnerOperationWithItems(input: PartnerOperationFixtureInput) {
+  const { snapshotItemFinalState, ...operationInput } = input;
+  return db.transaction(async (tx) => {
+    const operation = await prepareInteractivePartnerPaymentOperation({ ...operationInput, transaction: tx });
+    await tx.insert(paymentOperationRosterSnapshotItems).values(operationInput.allocations.map((row) => ({
+      operationId: operation.id,
+      organizationId: operationInput.organizationId,
+      leagueId: operationInput.leagueId,
+      obligationId: row.obligationId,
+      allocationIndex: row.allocationIndex,
+      amountMinor: row.amountMinor,
+      state: "reserved" as const,
+    })));
+    if (snapshotItemFinalState) {
+      await tx.update(paymentOperationRosterSnapshotItems).set({ state: snapshotItemFinalState }).where(and(
+        eq(paymentOperationRosterSnapshotItems.operationId, operation.id),
+        eq(paymentOperationRosterSnapshotItems.organizationId, operationInput.organizationId),
+        eq(paymentOperationRosterSnapshotItems.leagueId, operationInput.leagueId),
+        eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+      ));
+    }
+    return operation;
+  });
+}
+
 it("uses published pair order for v2, v3, and manual FIFO before the trigger arrives", async () => {
   const trigger = await publishOccurrence("2039-07-10T19:00:00.000Z");
   const ordinary = await publishOccurrence("2039-07-17T19:00:00.000Z");
@@ -471,7 +500,7 @@ it("activates consent only from a finalized self-only due-now v3 operation", asy
     payerBowlerId,
     recipients: [{ bowlerId: payerBowlerId, weeks: 1, fullBalance: false, dueNow: true }],
   });
-  const operation = await prepareInteractivePartnerPaymentOperation({
+  const operation = await preparePartnerOperationWithItems({
     organizationId,
     authorizingUserId: actorUserId,
     requestKey: `standing-proof-${randomUUID()}`,
@@ -499,6 +528,12 @@ it("activates consent only from a finalized self-only due-now v3 operation", asy
       providerPaymentId: "sq-standing-proof", paymentOperationId: operation.id, idempotencyKey: `standing-proof-payment-${randomUUID()}`, paidByUserId: actorUserId,
     }).returning();
     await tx.insert(paymentAllocations).values(quote.allocations.map((row) => ({ organizationId, leagueId, paymentId: payment.id, obligationId: row.obligationId, amountMinor: row.amountMinor, currency: "USD", recordedByUserId: actorUserId })));
+    await tx.update(paymentOperationRosterSnapshotItems).set({ state: "finalized" }).where(and(
+      eq(paymentOperationRosterSnapshotItems.operationId, operation.id),
+      eq(paymentOperationRosterSnapshotItems.organizationId, organizationId),
+      eq(paymentOperationRosterSnapshotItems.leagueId, leagueId),
+      eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+    ));
     await tx.update(paymentObligations).set({ state: "settled" }).where(and(eq(paymentObligations.organizationId, organizationId), eq(paymentObligations.leagueId, leagueId), inArray(paymentObligations.id, quote.allocations.map((row) => row.obligationId))));
   });
   await db.update(autopayConsents).set({ state: "revoked", revokedAt: completedAt }).where(and(eq(autopayConsents.organizationId, organizationId), eq(autopayConsents.leagueId, leagueId), eq(autopayConsents.payerBowlerId, payerBowlerId), eq(autopayConsents.state, "active")));
@@ -545,7 +580,7 @@ it("activates consent only from a finalized self-only due-now v3 operation", asy
       timezone: "UTC",
     }).returning({ id: leagues.id });
     await expect(activateStandingAutopayConsent({ organizationId, leagueId: foreignLeague.id, payerBowlerId, actorUserId, request: { ...consentRequest, commandKey: `${consentRequest.commandKey}-foreign-league` } })).rejects.toMatchObject({ code: "PAYMENT_OPERATION_INVALID" });
-    const unfinished = await prepareInteractivePartnerPaymentOperation({
+    const unfinished = await preparePartnerOperationWithItems({
       organizationId,
       authorizingUserId: actorUserId,
       requestKey: `standing-proof-unfinished-${randomUUID()}`,
@@ -564,9 +599,10 @@ it("activates consent only from a finalized self-only due-now v3 operation", asy
       allocations: quote.allocations.map((row) => ({ ...row, paidByUserId: actorUserId })),
       partnerEvidence: quote.partnerEvidence,
       quoteFingerprint: quote.fingerprint,
+      snapshotItemFinalState: "released",
     });
     await expect(activateStandingAutopayConsent({ organizationId, leagueId, payerBowlerId, actorUserId, request: { commandKey: `${consentRequest.commandKey}-unfinished`, paymentOperationId: unfinished.id, partnerBowlerIds: [] } })).rejects.toMatchObject({ code: "PAYMENT_OPERATION_INVALID" });
-    const unsaved = await prepareInteractivePartnerPaymentOperation({
+    const unsaved = await preparePartnerOperationWithItems({
       organizationId,
       authorizingUserId: actorUserId,
       requestKey: `standing-proof-unsaved-${randomUUID()}`,
@@ -585,6 +621,7 @@ it("activates consent only from a finalized self-only due-now v3 operation", asy
       allocations: quote.allocations.map((row) => ({ ...row, paidByUserId: actorUserId })),
       partnerEvidence: quote.partnerEvidence,
       quoteFingerprint: quote.fingerprint,
+      snapshotItemFinalState: "released",
     });
     const unsavedAt = new Date().toISOString();
     await db.update(paymentOperations).set({ status: "succeeded", providerObjectId: "sq-standing-unsaved", nextAttemptAt: null, completedAt: unsavedAt, updatedAt: unsavedAt }).where(eq(paymentOperations.id, unsaved.id));
@@ -606,7 +643,7 @@ it("uses the vaulted card from a saved new-card due-now operation", async () => 
   });
   const tokenSourceId = "cnonce:new-card-token";
   const vaultedSourceId = "ccof:vaulted-new-card";
-  const operation = await prepareInteractivePartnerPaymentOperation({
+  const operation = await preparePartnerOperationWithItems({
     organizationId,
     authorizingUserId: actorUserId,
     requestKey: `standing-new-card-${randomUUID()}`,
@@ -644,6 +681,12 @@ it("uses the vaulted card from a saved new-card due-now operation", async () => 
       providerPaymentId: "sq-standing-new-card", paymentOperationId: operation.id, idempotencyKey: `standing-new-card-payment-${randomUUID()}`, paidByUserId: actorUserId,
     }).returning();
     await tx.insert(paymentAllocations).values(quote.allocations.map((row) => ({ organizationId, leagueId, paymentId: payment.id, obligationId: row.obligationId, amountMinor: row.amountMinor, currency: "USD", recordedByUserId: actorUserId })));
+    await tx.update(paymentOperationRosterSnapshotItems).set({ state: "finalized" }).where(and(
+      eq(paymentOperationRosterSnapshotItems.operationId, operation.id),
+      eq(paymentOperationRosterSnapshotItems.organizationId, organizationId),
+      eq(paymentOperationRosterSnapshotItems.leagueId, leagueId),
+      eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+    ));
     await tx.update(paymentObligations).set({ state: "settled" }).where(and(eq(paymentObligations.organizationId, organizationId), eq(paymentObligations.leagueId, leagueId), inArray(paymentObligations.id, quote.allocations.map((row) => row.obligationId))));
   });
   await db.update(autopayConsents).set({ state: "revoked", revokedAt: completedAt }).where(and(eq(autopayConsents.organizationId, organizationId), eq(autopayConsents.leagueId, leagueId), eq(autopayConsents.payerBowlerId, payerBowlerId), eq(autopayConsents.state, "active")));

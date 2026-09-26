@@ -11,6 +11,10 @@ const mocks = vi.hoisted(() => {
   let zeroParticipants = false;
   let includePartner = false;
   let remainingMinor = 8_750;
+  let dueNowMinor = 1_000;
+  let participantRefreshUsesCurrentData = false;
+  let detailsLeagueReady = true;
+  let selectedLeagueId: number | null = 17;
   const csrfFetch = vi.fn();
   const apiRequest = vi.fn();
   const tokenizeCard = vi.fn();
@@ -82,7 +86,7 @@ const mocks = vi.hoisted(() => {
         : [1, 2, 3].map((weeks) => ({ weeks, amountMinor: weeks * 1_000 })),
       eligible: !paidInFull,
       reason: paidInFull ? "No remaining balance" : null,
-      ...(paymentMode === "weekly" ? { dueNowMinor: 1_000, catchUpWeeks: 1, catchUpAmountMinor: 1_000 } : {}),
+      ...(paymentMode === "weekly" ? { dueNowMinor, catchUpWeeks: 1, catchUpAmountMinor: dueNowMinor } : {}),
     }, ...(includePartner ? [{
       bowlerId: 84,
       name: "Partner",
@@ -124,8 +128,8 @@ const mocks = vi.hoisted(() => {
           success: true,
           data: {
             bowler: { id: 42, name: "Bowler", email: "bowler@example.test" },
-            bowlerLeagues: [{ leagueId: 17 }],
-            leagues: [{ id: 17, name: "League", paymentMode, locationId: "L17", organizationId: 1 }],
+            bowlerLeagues: detailsLeagueReady ? [{ leagueId: 17 }] : [],
+            leagues: detailsLeagueReady ? [{ id: 17, name: "League", paymentMode, locationId: "L17", organizationId: 1 }] : [],
           },
         },
         isLoading: false,
@@ -144,7 +148,7 @@ const mocks = vi.hoisted(() => {
         refetch: vi.fn(async () => {
           if (participantRefreshGate) await participantRefreshGate;
           if (participantRefreshMissing) return { data: undefined, isLoading: false, isFetching: false, error: null, isError: false };
-          return { data: participantResponse, isLoading: false, isFetching: false, error: null, isError: false };
+          return { data: participantRefreshUsesCurrentData ? { success: true, data: participantsData() } : participantResponse, isLoading: false, isFetching: false, error: null, isError: false };
         }),
       };
     }
@@ -210,6 +214,11 @@ const mocks = vi.hoisted(() => {
     setZeroParticipants: (value: boolean) => { zeroParticipants = value; },
     setIncludePartner: (value: boolean) => { includePartner = value; },
     setRemainingBalance: (value: number) => { remainingMinor = value; },
+    setDueNowMinor: (value: number) => { dueNowMinor = value; },
+    setParticipantRefreshUsesCurrentData: (value: boolean) => { participantRefreshUsesCurrentData = value; },
+    setDetailsLeagueReady: (value: boolean) => { detailsLeagueReady = value; },
+    setSelectedLeagueId: (value: number | null) => { selectedLeagueId = value; },
+    getSelectedLeagueId: () => selectedLeagueId,
     setQuoteFetching: (value: boolean) => { quoteFetching = value; },
     setQuoteError: (value: { code: string; message: string; status: number } | null) => { quoteError = value; },
     setParticipantRefreshGate: (value: Promise<void> | null) => { participantRefreshGate = value; },
@@ -235,7 +244,7 @@ vi.mock("@/components/page-states", () => ({ PageErrorState: () => null, PageLoa
 vi.mock("@/components/bowler-one-time-payment-card", () => ({ BowlerOneTimePaymentCard: mocks.oneTimePaymentCard }));
 vi.mock("@/components/standing-autopay-card", () => ({ StandingAutopayCard: mocks.standingAutopayCard }));
 vi.mock("@/components/rotating-share-credit-card", () => ({ RotatingShareCreditCard: mocks.rotatingShareCreditCard }));
-vi.mock("@/hooks/use-selected-league", () => ({ useSelectedLeague: () => [17, vi.fn()] }));
+vi.mock("@/hooks/use-selected-league", () => ({ useSelectedLeague: () => [mocks.getSelectedLeagueId(), vi.fn()] }));
 vi.mock("@/hooks/use-saved-card-default", () => ({ useSavedCardDefault: vi.fn() }));
 vi.mock("@/hooks/use-square-payment", () => ({ useSquarePayment: () => ({ card: mocks.squareCard, isInitialized: true, initializeCard: vi.fn(), cleanupCard: mocks.cleanupCard }) }));
 vi.mock("@/hooks/use-payment-provider", () => ({ usePaymentProvider: () => ({ supportsWallets: true }) }));
@@ -303,6 +312,10 @@ afterEach(() => {
   mocks.setZeroParticipants(false);
   mocks.setIncludePartner(false);
   mocks.setRemainingBalance(8_750);
+  mocks.setDueNowMinor(1_000);
+  mocks.setParticipantRefreshUsesCurrentData(false);
+  mocks.setDetailsLeagueReady(true);
+  mocks.setSelectedLeagueId(17);
   mocks.setQuoteFetching(false);
   mocks.setQuoteError(null);
   mocks.setParticipantRefreshGate(null);
@@ -458,6 +471,112 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(mocks.standingAutopayCard.mock.calls.at(-1)?.[0]).toMatchObject({
       league: expect.objectContaining({ paymentMode: "weekly" }),
     });
+  });
+
+  it("retains a restored consent marker while the initial league resolves", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.setDetailsLeagueReady(false);
+    mocks.setSelectedLeagueId(null);
+    window.localStorage.setItem("leaguevault:standing-consent-intent:v1:stable-scope", JSON.stringify({
+      scope: "stable-scope",
+      requestKey: "reload-consent",
+      operationId: "operation-reload",
+      commandKey: "standing-consent-reload",
+      phase: "consent",
+    }));
+    const view = render(<MakePaymentPage />);
+    expect(screen.queryByRole("button", { name: "Retry automatic payments" })).not.toBeInTheDocument();
+
+    mocks.setDetailsLeagueReady(true);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry automatic payments" })).toBeInTheDocument());
+    expect(window.localStorage.getItem("leaguevault:standing-consent-intent:v1:stable-scope")).not.toBeNull();
+  });
+
+  it("returns to the refreshed due-now checkout after an authoritative FIFO consent rejection", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "fifo-initial", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-fifo-initial" } }) });
+    mocks.apiRequest.mockImplementationOnce(async () => {
+      mocks.setDueNowMinor(2_000);
+      mocks.setParticipantRefreshUsesCurrentData(true);
+      throw Object.assign(new Error("new due amount"), { status: 409, code: "ARREARS_REQUIRE_ONE_TIME_FIFO" });
+    });
+    mocks.tokenizeCard.mockResolvedValue("combined-source");
+
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.standingAutopayCard).toHaveBeenCalled());
+    act(() => { (mocks.standingAutopayCard.mock.calls.at(-1)?.[0] as { onPayDueNow: () => void }).onPayDueNow(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ dueNowOnly: true }));
+    await act(async () => { await (mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void }).onSubmit(); });
+
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.standingAutopayCard.mock.calls.at(-1)?.[0]).toMatchObject({ combinedCheckoutActive: false, dueNowMinor: 2_000 }));
+    expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "fifo-initial");
+    expect(window.localStorage.getItem("leaguevault:standing-consent-intent:v1:stable-scope")).toBeNull();
+    expect(mocks.csrfFetch).toHaveBeenCalledTimes(2);
+    expect(mocks.paymentRequestWithRecovery).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes before clearing recovery when a consent retry hits FIFO arrears", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "fifo-retry", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-fifo-retry" } }) });
+    mocks.apiRequest
+      .mockRejectedValueOnce(Object.assign(new Error("consent unavailable"), { status: 503 }))
+      .mockImplementationOnce(async () => {
+        mocks.setDueNowMinor(2_000);
+        mocks.setParticipantRefreshUsesCurrentData(true);
+        throw Object.assign(new Error("new due amount"), { status: 409, code: "ARREARS_REQUIRE_ONE_TIME_FIFO" });
+      });
+    mocks.tokenizeCard.mockResolvedValue("combined-source");
+
+    const view = render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.standingAutopayCard).toHaveBeenCalled());
+    act(() => { (mocks.standingAutopayCard.mock.calls.at(-1)?.[0] as { onPayDueNow: () => void }).onPayDueNow(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ dueNowOnly: true }));
+    await act(async () => { await (mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void }).onSubmit(); });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry automatic payments" })).toBeInTheDocument());
+
+    await act(async () => { screen.getByRole("button", { name: "Retry automatic payments" }).click(); });
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.standingAutopayCard.mock.calls.at(-1)?.[0]).toMatchObject({ combinedCheckoutActive: false, dueNowMinor: 2_000 }));
+    expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "fifo-retry");
+    expect(window.localStorage.getItem("leaguevault:standing-consent-intent:v1:stable-scope")).toBeNull();
+    expect(mocks.csrfFetch).toHaveBeenCalledTimes(2);
+    expect(mocks.paymentRequestWithRecovery).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Retry automatic payments" })).not.toBeInTheDocument();
+  });
+
+  it("keeps FIFO consent recovery blocked when the balance refresh fails", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "fifo-refresh-failure", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-fifo-refresh-failure" } }) });
+    mocks.apiRequest
+      .mockRejectedValueOnce(Object.assign(new Error("consent unavailable"), { status: 503 }))
+      .mockRejectedValueOnce(Object.assign(new Error("new due amount"), { status: 409, code: "ARREARS_REQUIRE_ONE_TIME_FIFO" }));
+    mocks.invalidatePaymentHistoryFinancials.mockRejectedValue(new Error("balance refresh unavailable"));
+    mocks.tokenizeCard.mockResolvedValue("combined-source");
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.standingAutopayCard).toHaveBeenCalled());
+    act(() => { (mocks.standingAutopayCard.mock.calls.at(-1)?.[0] as { onPayDueNow: () => void }).onPayDueNow(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ dueNowOnly: true }));
+    await act(async () => { await (mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void }).onSubmit(); });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry automatic payments" })).toBeInTheDocument());
+
+    await act(async () => { screen.getByRole("button", { name: "Retry automatic payments" }).click(); });
+    expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("leaguevault:standing-consent-intent:v1:stable-scope")).not.toBeNull();
+    expect(document.body).toHaveTextContent("the updated amount needed before automatic-payment setup could not be refreshed");
+    expect(document.body).toHaveTextContent("Retry automatic payments");
+    expect(mocks.csrfFetch).toHaveBeenCalledTimes(2);
   });
 
   it("keeps a same-page combined payment recovery action for an unresolved charge", async () => {

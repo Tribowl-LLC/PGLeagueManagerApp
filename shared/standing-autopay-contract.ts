@@ -11,7 +11,7 @@ const commandKey = z.string().trim().min(16).max(109).regex(/^[A-Za-z0-9_-]+$/);
 export const standingAutopayConsentRequestSchema = z.object({
   commandKey,
   sourceId: z.string().trim().min(1).max(255).optional(),
-  paymentOperationId: z.string().trim().min(1).max(255).optional(),
+  paymentOperationId: z.string().trim().uuid().max(255).optional(),
   partnerBowlerIds: z.array(z.number().int().positive()).max(32).default([]),
 }).strict().superRefine((request, ctx) => {
   if ((request.sourceId === undefined) === (request.paymentOperationId === undefined)) {
