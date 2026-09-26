@@ -3,7 +3,7 @@
 // Bump this value for every web release that changes the Vite output. Keeping
 // release caches separate prevents an older service worker from satisfying a
 // new entry module with a stale hashed chunk after a deploy.
-const CACHE_NAME = 'leaguevault-v4';
+const CACHE_NAME = 'leaguevault-v5';
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
