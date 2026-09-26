@@ -13,6 +13,7 @@ import {
   shouldReinitializeOneTimeCardEditor,
 } from "@/pages/make-payment-page";
 import { queryClient } from "@/lib/queryClient";
+import { buildInteractivePaymentRecipients } from "@/lib/interactive-payment-v3";
 
 vi.mock("@/components/bowler-layout", () => ({ BowlerLayout: ({ children }: { children: ReactNode }) => <div data-testid="bowler-layout">{children}</div> }));
 
@@ -49,6 +50,14 @@ describe("dedicated make-payment guards", () => {
 
   it("resets week count and past-due intent when changing leagues", () => {
     expect(resetPaymentSelectionForLeagueChange()).toEqual({ weekCount: 1, intentApplied: false });
+  });
+
+  it("marks only the self recipient for the exact due-now v3 selection", () => {
+    const recipients = buildInteractivePaymentRecipients([
+      { bowlerId: 42, name: "Bowler", role: "self", remainingMinor: 8_000, pastDueMinor: 2_000, weeklyOptions: [{ weeks: 1, amountMinor: 4_000 }, { weeks: 2, amountMinor: 8_000 }], eligible: true, reason: null, dueNowMinor: 4_000, catchUpAmountMinor: 4_000, catchUpWeeks: 1 },
+      { bowlerId: 84, name: "Partner", role: "partner", remainingMinor: 4_000, pastDueMinor: 0, weeklyOptions: [{ weeks: 1, amountMinor: 4_000 }], eligible: true, reason: null },
+    ], { 42: true, 84: false }, { 42: 1, 84: 1 }, "weekly", 42);
+    expect(recipients).toEqual([{ bowlerId: 42, weeks: 1, fullBalance: false, dueNow: true }]);
   });
 
   it.each([

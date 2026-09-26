@@ -26,7 +26,7 @@ import { logger } from "@/lib/logger";
 import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import { getApiErrorCode, getApiErrorStatus, isTransportError } from "@/lib/api-error";
 import { isProviderNotConfiguredError, providerNotConfiguredToast, makeApiError } from "@/lib/provider-not-configured";
-import { assertRosterPaymentSucceeded, clearPaymentIntent, interactivePaymentIntentScope, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
+import { assertRosterPaymentSucceeded, clearPaymentIntent, interactivePaymentIntentScope, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent, rosterPaymentStatusMessage } from "@/lib/payment-request-identity";
 import { paymentHistoryFinancialQueryKey, invalidatePaymentHistoryFinancials } from "@/lib/payment-history-financial-query";
 import {
   buildInteractivePaymentRecipients,
@@ -42,6 +42,72 @@ import {
 } from "@/lib/interactive-payment-v3";
 
 type EditorMode = "one-time" | "autopay" | null;
+type CombinedAutopayConsentRecovery = {
+  scope: string;
+  requestKey: string;
+  operationId: string | null;
+  commandKey: string;
+  phase: "charging" | "consent";
+  message: string;
+};
+
+const COMBINED_AUTOPAY_CONSENT_STORAGE_PREFIX = "leaguevault:standing-consent-intent:v1:";
+const COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE = "Payment complete; automatic-payment setup needs confirmation. Check status and retry.";
+const COMBINED_AUTOPAY_REFRESH_RECOVERY_MESSAGE = "Automatic-payment setup is confirmed, but payment balances could not be refreshed. Retry before continuing.";
+const COMBINED_AUTOPAY_FIFO_REFRESH_RECOVERY_MESSAGE = "Payment complete; the updated amount needed before automatic-payment setup could not be refreshed. Refresh balances and retry.";
+const ARREARS_REQUIRE_ONE_TIME_FIFO = "ARREARS_REQUIRE_ONE_TIME_FIFO";
+
+function combinedAutopayConsentStorageKey(scope: string): string {
+  return `${COMBINED_AUTOPAY_CONSENT_STORAGE_PREFIX}${scope}`;
+}
+
+function readCombinedAutopayConsentRecovery(scope: string): CombinedAutopayConsentRecovery | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(combinedAutopayConsentStorageKey(scope));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CombinedAutopayConsentRecovery>;
+    if (typeof parsed.scope !== "string" || parsed.scope !== scope
+      || typeof parsed.requestKey !== "string" || (typeof parsed.operationId !== "string" && parsed.operationId !== null)
+      || typeof parsed.commandKey !== "string" || (parsed.phase !== "charging" && parsed.phase !== "consent")) return null;
+    return {
+      scope: parsed.scope,
+      requestKey: parsed.requestKey,
+      operationId: parsed.operationId,
+      commandKey: parsed.commandKey,
+      phase: parsed.phase,
+      message: parsed.phase === "charging"
+        ? "Payment confirmation is in progress. Check the payment status before trying another card."
+        : COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistCombinedAutopayConsentRecovery(recovery: CombinedAutopayConsentRecovery): void {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(combinedAutopayConsentStorageKey(recovery.scope), JSON.stringify(recovery)); } catch { /* best effort; payment identity remains durable */ }
+}
+
+function clearCombinedAutopayConsentRecovery(scope: string): void {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.removeItem(combinedAutopayConsentStorageKey(scope)); } catch { /* best effort */ }
+}
+
+async function extractPaymentOperationId(response: { clone: () => { json: () => Promise<unknown> } } | undefined): Promise<string | null> {
+  if (!response) return null;
+  const body = await response.clone().json().catch(() => ({})) as { data?: { operationId?: unknown } };
+  return typeof body.data?.operationId === "string" && body.data.operationId.length > 0 ? body.data.operationId : null;
+}
+
+function combinedConsentCommandKey(): string {
+  return `standing-consent-${crypto.randomUUID().replace(/-/g, "")}`;
+}
+
+function isArrearsRequireOneTimeFifo(error: unknown): boolean {
+  return getApiErrorCode(error) === ARREARS_REQUIRE_ONE_TIME_FIFO && getApiErrorStatus(error) === 409;
+}
 
 const STALE_INTERACTIVE_PAYMENT_CODES = new Set([
   "NO_ELIGIBLE_OBLIGATIONS",
@@ -162,6 +228,9 @@ export default function MakePaymentPage() {
   const [selectedSavedCardId, setSelectedSavedCardId] = useState("");
   const [storeCard, setStoreCard] = useState(false);
   const [receiptEmail, setReceiptEmail] = useState("");
+  const [combinedAutopayMode, setCombinedAutopayMode] = useState(false);
+  const [combinedAutopayConsentRecovery, setCombinedAutopayConsentRecovery] = useState<CombinedAutopayConsentRecovery | null>(null);
+  const [isRetryingCombinedConsent, setIsRetryingCombinedConsent] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isWalletProcessing, setIsWalletProcessing] = useState(false);
   const [walletRecoveryReady, setWalletRecoveryReady] = useState(false);
@@ -171,6 +240,9 @@ export default function MakePaymentPage() {
   const walletRequestKeyRef = useRef<string | null>(null);
   const recoveryNoticeRef = useRef<string | null>(null);
   const intentAppliedRef = useRef(false);
+  const combinedAutopayModeRef = useRef(false);
+  const combinedConsentCommandKeyRef = useRef<string | null>(null);
+  const restoredCombinedConsentScopeRef = useRef<string | null>(null);
   const [selectedRecipients, setSelectedRecipients] = useState<Record<number, boolean>>({});
   const [recipientWeeks, setRecipientWeeks] = useState<Record<number, number>>({});
   const [selectionStale, setSelectionStale] = useState(false);
@@ -229,7 +301,7 @@ export default function MakePaymentPage() {
   const isRotatingPoolMember = rotatingCreditEligibilityQuery.data?.success === true && rotatingCreditEligibilityQuery.data.data?.eligibleForCredit === true;
   const standingAutopayStatusQuery = useQuery<ApiResponse<StandingAutopayConsentWire>>({
     queryKey: [`/api/financials/leagues/${leagueId ?? 0}/standing-autopay/1`],
-    enabled: !!bowlerId && !!leagueId && paymentMode !== "upfront" && isRotatingPoolMember,
+    enabled: !!bowlerId && !!leagueId && paymentMode !== "upfront",
     retry: false,
   });
   const rotatingLegacyConsent = standingAutopayStatusQuery.data?.success ? standingAutopayStatusQuery.data.data : undefined;
@@ -273,9 +345,13 @@ export default function MakePaymentPage() {
   );
   useSavedCardDefault({ firstSavedCardId: savedCards[0]?.id ?? null, setCardMode, setSelectedSavedCardId, dependencyKey: String(leagueId ?? "") });
   const selfParticipant = participants.find((participant) => participant.role === "self");
+  combinedAutopayModeRef.current = combinedAutopayMode;
   const hasPaymentPartner = participants.some((participant) => participant.role === "partner");
   const fullBalanceOnly = paymentMode === "upfront";
   const effectiveSelectedRecipients = useMemo(() => {
+    if (combinedAutopayMode) {
+      return Object.fromEntries(participants.map((participant) => [participant.bowlerId, participant.role === "self" && participant.eligible && participant.remainingMinor > 0]));
+    }
     const next = { ...selectedRecipients };
     for (const participant of participants) {
       const isSoloSelf = !hasPaymentPartner && participant.role === "self";
@@ -284,10 +360,12 @@ export default function MakePaymentPage() {
       }
     }
     return next;
-  }, [hasPaymentPartner, participants, selectedRecipients]);
+  }, [combinedAutopayMode, hasPaymentPartner, participants, selectedRecipients]);
   const selectedRecipientRows = useMemo<PaymentRecipientRow[]>(() => participants.map((participant) => {
     const maximumWeeks = participant.weeklyOptions.at(-1)?.weeks ?? 0;
-    const weeks = fullBalanceOnly
+    const weeks = combinedAutopayMode && participant.catchUpWeeks && participant.catchUpWeeks > 0
+      ? participant.catchUpWeeks
+      : fullBalanceOnly
       ? initialInteractivePaymentWeeks(participant, paymentMode)
       : Math.max(1, Math.trunc(recipientWeeks[participant.bowlerId] ?? 1));
     return {
@@ -298,13 +376,15 @@ export default function MakePaymentPage() {
       pastDueMinor: participant.pastDueMinor,
       weeks,
       maximumWeekCount: Math.max(1, maximumWeeks),
-      amountMinor: participantAmountForSelection(participant, weeks, paymentMode),
+      amountMinor: combinedAutopayMode && participant.role === "self" && ((participant.catchUpAmountMinor ?? participant.dueNowMinor) ?? 0) > 0
+        ? (participant.catchUpAmountMinor ?? participant.dueNowMinor ?? 0)
+        : participantAmountForSelection(participant, weeks, paymentMode),
       selected: effectiveSelectedRecipients[participant.bowlerId] === true,
       eligible: participant.eligible && participant.remainingMinor > 0,
       reason: participant.reason,
     };
-  }), [participants, fullBalanceOnly, paymentMode, recipientWeeks, effectiveSelectedRecipients]);
-  const recipientSelections = useMemo(() => selectionStale ? [] : buildInteractivePaymentRecipients(participants, effectiveSelectedRecipients, recipientWeeks, paymentMode), [participants, effectiveSelectedRecipients, recipientWeeks, paymentMode, selectionStale]);
+  }), [combinedAutopayMode, participants, fullBalanceOnly, paymentMode, recipientWeeks, effectiveSelectedRecipients]);
+  const recipientSelections = useMemo(() => selectionStale ? [] : buildInteractivePaymentRecipients(participants, effectiveSelectedRecipients, recipientWeeks, paymentMode, combinedAutopayMode ? selfParticipant?.bowlerId : undefined), [combinedAutopayMode, participants, effectiveSelectedRecipients, recipientWeeks, paymentMode, selectionStale, selfParticipant?.bowlerId]);
   const recipientSelectionKey = useMemo(() => JSON.stringify(recipientSelections), [recipientSelections]);
   const [isRecoveryBlocked, setIsRecoveryBlocked] = useState(false);
   const [paymentRefreshState, setPaymentRefreshState] = useState<"idle" | "refreshing" | "retry">("idle");
@@ -340,6 +420,47 @@ export default function MakePaymentPage() {
   const paymentIntentScope = typeof bowlerId === "number" && typeof leagueId === "number" && typeof paymentOrganizationId === "number" && Number.isSafeInteger(paymentOrganizationId) && typeof paymentActorUserId === "number" && Number.isSafeInteger(paymentActorUserId)
     ? interactivePaymentIntentScope({ actorUserId: paymentActorUserId, organizationId: paymentOrganizationId, leagueId, bowlerId })
     : null;
+  useEffect(() => {
+    if (!paymentIntentScope || restoredCombinedConsentScopeRef.current === paymentIntentScope) return;
+    restoredCombinedConsentScopeRef.current = paymentIntentScope;
+    const restored = readCombinedAutopayConsentRecovery(paymentIntentScope);
+    if (!restored) return;
+    combinedConsentCommandKeyRef.current = restored.commandKey;
+    setCombinedAutopayConsentRecovery(restored);
+    if (restored.phase !== "charging") return;
+    let cancelled = false;
+    void prepareRosterPaymentIntent(paymentIntentScope, leagueId ?? 0, { createIfMissing: false }).then(async (prepared) => {
+      if (cancelled) return;
+      if (prepared.outcome === "terminal_failure") {
+        clearCombinedAutopayConsentRecovery(paymentIntentScope);
+        clearPaymentIntent(paymentIntentScope, restored.requestKey);
+        setCombinedAutopayConsentRecovery(null);
+        return;
+      }
+      if (prepared.outcome === "none") {
+        clearCombinedAutopayConsentRecovery(paymentIntentScope);
+        clearPaymentIntent(paymentIntentScope, restored.requestKey);
+        setCombinedAutopayConsentRecovery(null);
+        return;
+      }
+      if (prepared.outcome === "new" && prepared.requestKey === restored.requestKey) {
+        clearCombinedAutopayConsentRecovery(paymentIntentScope);
+        clearPaymentIntent(paymentIntentScope, restored.requestKey);
+        combinedConsentCommandKeyRef.current = null;
+        setCombinedAutopayConsentRecovery(null);
+        setCombinedAutopayMode(false);
+        toastRef.current({ title: "Payment setup can restart", description: "The previous payment was not created. Review and restart automatic-payment setup." });
+        return;
+      }
+      if (prepared.outcome !== "succeeded" || !prepared.response) return;
+      const operationId = await extractPaymentOperationId(prepared.response);
+      if (!operationId) return;
+      const promoted: CombinedAutopayConsentRecovery = { ...restored, phase: "consent", operationId, message: COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE };
+      persistCombinedAutopayConsentRecovery(promoted);
+      setCombinedAutopayConsentRecovery(promoted);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [leagueId, paymentIntentScope]);
   const affectedBowlerIds = useMemo(() => recipientSelections.map((recipient) => recipient.bowlerId), [recipientSelections]);
   const affectedBowlerIdsRef = useRef<number[]>(affectedBowlerIds);
   affectedBowlerIdsRef.current = affectedBowlerIds;
@@ -371,6 +492,7 @@ export default function MakePaymentPage() {
   refetchParticipantsRef.current = refetchParticipants;
   const activeLeagueIdRef = useRef(leagueId);
   activeLeagueIdRef.current = leagueId;
+  const previousLeagueIdRef = useRef<number | undefined>(leagueId);
   const pageGenerationRef = useRef(0);
   const { supportsWallets } = usePaymentProvider(league?.locationId ?? null);
 
@@ -439,6 +561,7 @@ export default function MakePaymentPage() {
 
   useEffect(() => {
     if (participants.length === 0) return;
+    if (combinedAutopayMode) return;
     const expectedRefreshBaseline = participantRefreshBaselineRef.current;
     const isExpectedPaymentRefresh = expectedRefreshBaseline !== null;
     if (isExpectedPaymentRefresh) {
@@ -503,9 +626,10 @@ export default function MakePaymentPage() {
       const nextKeys = Object.keys(next);
       return currentKeys.length === nextKeys.length && nextKeys.every((key) => current[Number(key)] === next[Number(key)]) ? current : next;
     });
-  }, [hasPaymentPartner, participants, paymentMode, selectionStale]);
+  }, [combinedAutopayMode, hasPaymentPartner, participants, paymentMode, selectionStale]);
 
   useEffect(() => {
+    if (previousLeagueIdRef.current === undefined || previousLeagueIdRef.current === leagueId) return;
     pageGenerationRef.current += 1;
     participantSnapshotRef.current = null;
     participantRefreshBaselineRef.current = null;
@@ -518,6 +642,10 @@ export default function MakePaymentPage() {
     quoteRefreshKeyRef.current = null;
     pendingPaymentRefreshIdentityRef.current = null;
     successfulPaymentUiCompletedKeyRef.current = null;
+    setCombinedAutopayMode(false);
+    setCombinedAutopayConsentRecovery(null);
+    setIsRetryingCombinedConsent(false);
+    combinedConsentCommandKeyRef.current = null;
   }, [leagueId]);
 
   useEffect(() => {
@@ -542,11 +670,24 @@ export default function MakePaymentPage() {
   useEffect(() => {
     const recoveryLeagueId = leagueId;
     const recoveryBowlerId = bowlerId;
+    if (combinedAutopayMode) {
+      walletRequestKeyRef.current = null;
+      setWalletRecoveryReady(false);
+      return;
+    }
     const walletShouldPrepare = supportsWallets && typeof recoveryLeagueId === "number" && typeof recoveryBowlerId === "number" && hasPositivePaymentAmount;
     if (!paymentIntentScope || typeof recoveryLeagueId !== "number" || typeof recoveryBowlerId !== "number") {
       walletRequestKeyRef.current = null;
       setWalletRecoveryReady(false);
       setIsRecoveryBlocked(false);
+      return;
+    }
+    // A combined enrollment marker owns this request identity until consent
+    // is confirmed. Do not let the ordinary checkout recovery probe clear it
+    // before the consent recovery effect can promote the operation.
+    if (readCombinedAutopayConsentRecovery(paymentIntentScope)) {
+      walletRequestKeyRef.current = null;
+      setWalletRecoveryReady(false);
       return;
     }
     // A participant response can change the quote amount while this recovery
@@ -616,7 +757,7 @@ export default function MakePaymentPage() {
         if (!cancelled) setIsRecoveryBlocked(true);
       });
     return () => { cancelled = true; };
-  }, [supportsWallets, paymentIntentScope, leagueId, bowlerId, hasPositivePaymentAmount, recoveryRetry, refreshAfterPayment]);
+  }, [combinedAutopayMode, supportsWallets, paymentIntentScope, leagueId, bowlerId, hasPositivePaymentAmount, recoveryRetry, refreshAfterPayment]);
 
   const { card, isInitialized, initializeCard, cleanupCard } = useSquarePayment({
     locationId: league?.locationId,
@@ -627,7 +768,7 @@ export default function MakePaymentPage() {
     setWalletRecoveryReady(false);
     setRecoveryRetry((value) => value + 1);
   }, []);
-  const completeSuccessfulPaymentUi = useCallback((options: { identityKey: string; generation: number; leagueId: number; description: string; reinitializeEditor: boolean; refreshSavedCards: boolean }) => {
+  const completeSuccessfulPaymentUi = useCallback((options: { identityKey: string; generation: number; leagueId: number; description: string; reinitializeEditor: boolean; refreshSavedCards: boolean; showToast?: boolean }) => {
     if (activeLeagueIdRef.current !== options.leagueId || pageGenerationRef.current !== options.generation) return;
     if (successfulPaymentUiCompletedKeyRef.current === options.identityKey) return;
     successfulPaymentUiCompletedKeyRef.current = options.identityKey;
@@ -635,16 +776,19 @@ export default function MakePaymentPage() {
     const reinitializeOneTimeEditor = options.reinitializeEditor;
     setCardEditorMode(reinitializeOneTimeEditor ? "one-time" : null);
     if (reinitializeOneTimeEditor) setOneTimeCardEditorKey((key) => key + 1);
-    toast({ title: "Payment Successful", description: options.description });
+    if (options.showToast !== false) toast({ title: "Payment Successful", description: options.description });
     if (options.refreshSavedCards) void queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
   }, [bowlerId, cleanupCard, toast]);
-  const previousLeagueIdRef = useRef<number | undefined>(leagueId);
   useEffect(() => {
     if (previousLeagueIdRef.current !== undefined && previousLeagueIdRef.current !== leagueId) {
       cleanupCard();
       walletRequestKeyRef.current = null;
       intentAppliedRef.current = false;
       setCardEditorMode(savedCards.length === 0 ? "one-time" : null);
+      setCombinedAutopayMode(false);
+      setCombinedAutopayConsentRecovery(null);
+      setIsRetryingCombinedConsent(false);
+      combinedConsentCommandKeyRef.current = null;
     }
     previousLeagueIdRef.current = leagueId;
   }, [leagueId, savedCards.length, cleanupCard]);
@@ -653,11 +797,40 @@ export default function MakePaymentPage() {
     setCardEditorMode(mode);
   }, [cardEditorMode, cleanupCard]);
 
+  const beginCombinedAutopay = useCallback(() => {
+    const dueNowMinor = selfParticipant?.catchUpAmountMinor ?? selfParticipant?.dueNowMinor ?? 0;
+    if (!selfParticipant || dueNowMinor <= 0 || !selfParticipant.eligible || !bowlerEmail) return;
+    combinedConsentCommandKeyRef.current ??= combinedConsentCommandKey();
+    setCombinedAutopayConsentRecovery(null);
+    setCombinedAutopayMode(true);
+    setStoreCard(true);
+    setSelectionStale(false);
+    setSelectedRecipients({ [selfParticipant.bowlerId]: true });
+    setRecipientWeeks({ [selfParticipant.bowlerId]: selfParticipant.catchUpWeeks ?? 1 });
+    if (savedCards.length === 0 || cardMode === "new") {
+      setCardMode("new");
+      selectEditorMode("one-time");
+    } else {
+      selectEditorMode(null);
+    }
+    toast({ title: "Automatic payment setup", description: "Review the amount needed to get up to date, then choose a saved card or enter a new card." });
+  }, [bowlerEmail, cardMode, savedCards.length, selfParticipant, selectEditorMode, toast]);
+
+  const cancelCombinedAutopay = useCallback(() => {
+    setCombinedAutopayMode(false);
+    setCombinedAutopayConsentRecovery(null);
+    setIsRetryingCombinedConsent(false);
+    combinedConsentCommandKeyRef.current = null;
+    applyParticipantSelection(participants);
+  }, [applyParticipantSelection, participants]);
+
   const handleRecipientToggle = useCallback((recipientBowlerId: number, selected: boolean) => {
+    if (combinedAutopayModeRef.current) return;
     setSelectedRecipients((current) => ({ ...current, [recipientBowlerId]: selected }));
   }, []);
 
   const handleRecipientWeeksChange = useCallback((recipientBowlerId: number, weeks: number) => {
+    if (combinedAutopayModeRef.current) return;
     const participant = participants.find((candidate) => candidate.bowlerId === recipientBowlerId);
     if (!participant || fullBalanceOnly) return;
     const nextWeeks = clampInteractivePaymentWeeks(participant, weeks);
@@ -665,6 +838,10 @@ export default function MakePaymentPage() {
   }, [participants, fullBalanceOnly]);
 
   const resetRecipientSelection = useCallback((expectBalanceRefresh = false) => {
+    if (combinedAutopayModeRef.current) {
+      setSelectionStale(false);
+      return;
+    }
     const nextSelected: Record<number, boolean> = {};
     const nextWeeks: Record<number, number> = {};
     for (const participant of participants) {
@@ -706,6 +883,109 @@ export default function MakePaymentPage() {
     setRecoveryRetry((value) => value + 1);
   }, [paymentRefreshState]);
 
+  const refetchStandingAutopayStatus = standingAutopayStatusQuery.refetch;
+  const readAuthoritativeStandingConsent = useCallback(async (): Promise<StandingAutopayConsentWire["state"]> => {
+    const result = await refetchStandingAutopayStatus();
+    if (result.error || result.isError) throw result.error ?? new Error("Automatic-payment status could not be checked.");
+    const state = result.data?.data?.state;
+    if (!state) throw new Error("Automatic-payment status could not be confirmed.");
+    return state;
+  }, [refetchStandingAutopayStatus]);
+
+  const postCombinedAutopayConsent = useCallback(async (operationId: string, commandKey: string, checkBeforePost: boolean): Promise<boolean> => {
+    if (!bowlerEmail) throw new Error("Add an email address to your profile before enabling automatic payments.");
+    if (checkBeforePost && (await readAuthoritativeStandingConsent()) === "active") return true;
+    await apiRequest(`/api/financials/leagues/${league?.id ?? 0}/standing-autopay/1/consent`, "POST", {
+      commandKey,
+      paymentOperationId: operationId,
+      partnerBowlerIds: [],
+    });
+    return (await readAuthoritativeStandingConsent()) === "active";
+  }, [bowlerEmail, league?.id, readAuthoritativeStandingConsent]);
+
+  const retryCombinedAutopayConsent = useCallback(async () => {
+    const recovery = combinedAutopayConsentRecovery;
+    if (!recovery || isRetryingCombinedConsent) return;
+    setIsRetryingCombinedConsent(true);
+    let currentRecovery = recovery;
+    let consentConfirmed = false;
+    try {
+      let operationId = recovery.operationId;
+      if (!operationId) {
+        const prepared = await prepareRosterPaymentIntent(recovery.scope, leagueId ?? 0, { createIfMissing: false });
+        if (prepared.outcome === "new" && prepared.requestKey === recovery.requestKey) {
+          clearCombinedAutopayConsentRecovery(recovery.scope);
+          clearPaymentIntent(recovery.scope, recovery.requestKey);
+          combinedConsentCommandKeyRef.current = null;
+          setCombinedAutopayConsentRecovery(null);
+          setCombinedAutopayMode(false);
+          toast({ title: "Payment setup can restart", description: "The previous payment was not created. Review and restart automatic-payment setup." });
+          return;
+        }
+        if (prepared.outcome === "terminal_failure" || prepared.outcome === "none") {
+          clearCombinedAutopayConsentRecovery(recovery.scope);
+          clearPaymentIntent(recovery.scope, recovery.requestKey);
+          combinedConsentCommandKeyRef.current = null;
+          setCombinedAutopayConsentRecovery(null);
+          setCombinedAutopayMode(false);
+          return;
+        }
+        if (prepared.outcome !== "succeeded" || !prepared.response) throw new Error("Payment confirmation is still pending. Check again before retrying automatic payments.");
+        operationId = await extractPaymentOperationId(prepared.response);
+        if (!operationId) throw new Error("Payment confirmation is still pending. Check again before retrying automatic payments.");
+        const promoted = { ...recovery, operationId, phase: "consent" as const, message: COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE };
+        currentRecovery = promoted;
+        persistCombinedAutopayConsentRecovery(promoted);
+        setCombinedAutopayConsentRecovery(promoted);
+      }
+      const active = await postCombinedAutopayConsent(operationId, recovery.commandKey, true);
+      if (!active) throw new Error("Automatic-payment consent is still awaiting confirmation.");
+      consentConfirmed = true;
+      const affectedIds = [...new Set([bowlerId ?? 0, ...affectedBowlerIdsRef.current])].filter((id) => id > 0);
+      const refreshed = await refreshAfterPayment(affectedIds, { recovery: true });
+      if (!refreshed) throw new Error(COMBINED_AUTOPAY_REFRESH_RECOVERY_MESSAGE);
+      setCombinedAutopayMode(false);
+      setCombinedAutopayConsentRecovery(null);
+      combinedConsentCommandKeyRef.current = null;
+      clearCombinedAutopayConsentRecovery(recovery.scope);
+      clearPaymentIntent(recovery.scope, recovery.requestKey);
+      const pending = pendingPaymentRefreshIdentityRef.current;
+      if (pending?.scope === recovery.scope && pending.requestKey === recovery.requestKey) pendingPaymentRefreshIdentityRef.current = null;
+      if (recoveryRefreshKeyRef.current === `${recovery.scope}:${recovery.requestKey}`) recoveryRefreshKeyRef.current = null;
+      await queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] });
+      toast({ title: "Payment complete and automatic payments enabled" });
+    } catch (error) {
+      if (isArrearsRequireOneTimeFifo(error)) {
+        const affectedIds = [...new Set([bowlerId ?? 0, ...affectedBowlerIdsRef.current])].filter((id) => id > 0);
+        const refreshed = await refreshAfterPayment(affectedIds, { recovery: true });
+        if (refreshed) {
+          setCombinedAutopayMode(false);
+          setCombinedAutopayConsentRecovery(null);
+          combinedConsentCommandKeyRef.current = null;
+          clearCombinedAutopayConsentRecovery(recovery.scope);
+          clearPaymentIntent(recovery.scope, recovery.requestKey);
+          const pending = pendingPaymentRefreshIdentityRef.current;
+          if (pending?.scope === recovery.scope && pending.requestKey === recovery.requestKey) pendingPaymentRefreshIdentityRef.current = null;
+          if (recoveryRefreshKeyRef.current === `${recovery.scope}:${recovery.requestKey}`) recoveryRefreshKeyRef.current = null;
+          await queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] });
+          toast({ title: "Payment complete; updated amount needs payment", description: "Review the refreshed amount and complete automatic-payment setup in a new checkout." });
+          return;
+        }
+        setCombinedAutopayConsentRecovery({ ...currentRecovery, message: COMBINED_AUTOPAY_FIFO_REFRESH_RECOVERY_MESSAGE });
+      } else {
+        setCombinedAutopayConsentRecovery({
+          ...currentRecovery,
+          message: consentConfirmed
+            ? COMBINED_AUTOPAY_REFRESH_RECOVERY_MESSAGE
+            : COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE,
+        });
+      }
+      logger.error("Automatic payments", "Combined consent retry failed", error);
+    } finally {
+      setIsRetryingCombinedConsent(false);
+    }
+  }, [affectedBowlerIdsRef, bowlerId, combinedAutopayConsentRecovery, isRetryingCombinedConsent, leagueId, postCombinedAutopayConsent, refreshAfterPayment, toast]);
+
   useEffect(() => {
     const code = getApiErrorCode(quoteError);
     if (!quoteError || !STALE_INTERACTIVE_PAYMENT_CODES.has(code ?? "") || selectionStale || paymentRefreshState !== "idle") return;
@@ -716,7 +996,7 @@ export default function MakePaymentPage() {
   }, [affectedBowlerIdsRef, bowlerId, paymentRefreshState, quoteError, recipientSelectionKey, refreshAfterPayment, selectionStale]);
 
   const handleWalletPayment = useCallback(async (token: string, walletType: "apple_pay" | "google_pay") => {
-    if (!bowlerId || !leagueId || !league || paymentAmountMinor <= 0 || recipientSelections.length === 0 || paymentRefreshState !== "idle" || isRecoveryBlocked) return;
+    if (combinedAutopayMode || !bowlerId || !leagueId || !league || paymentAmountMinor <= 0 || recipientSelections.length === 0 || paymentRefreshState !== "idle" || isRecoveryBlocked) return;
     const paymentGeneration = pageGenerationRef.current;
     const paymentLeagueId = leagueId;
     const walletStartQuote = walletStartQuoteRef.current;
@@ -781,22 +1061,22 @@ export default function MakePaymentPage() {
       toast(isProviderNotConfiguredError(error) ? providerNotConfiguredToast({ navigate, locationId: league.locationId }) : { title: "Payment Failed", description: sanitizePaymentErrorMessage(error, "Unable to process payment."), variant: "destructive" });
     }
     finally { setIsWalletProcessing(false); }
-  }, [bowlerId, leagueId, league, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, paymentIntentScope, resetWalletRecovery, recipientSelections, refreshAfterPayment, paymentRefreshState, isRecoveryBlocked, completeSuccessfulPaymentUi]);
+  }, [bowlerId, leagueId, league, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, paymentIntentScope, resetWalletRecovery, recipientSelections, refreshAfterPayment, paymentRefreshState, isRecoveryBlocked, completeSuccessfulPaymentUi, combinedAutopayMode]);
   const beginWalletPayment = useCallback(() => {
     const displayedQuote = displayedQuoteRef.current;
-    if (!walletRecoveryReady || paymentRefreshState !== "idle" || isRecoveryBlocked || selectionStale || recipientSelections.length === 0 || !displayedQuote || displayedQuote.selectionKey !== recipientSelectionKeyRef.current) {
+    if (combinedAutopayMode || !walletRecoveryReady || paymentRefreshState !== "idle" || isRecoveryBlocked || selectionStale || recipientSelections.length === 0 || !displayedQuote || displayedQuote.selectionKey !== recipientSelectionKeyRef.current) {
       walletStartQuoteRef.current = null;
       return false;
     }
     walletStartQuoteRef.current = { ...displayedQuote };
     return true;
-  }, [walletRecoveryReady, paymentRefreshState, isRecoveryBlocked, selectionStale, recipientSelections.length]);
+  }, [combinedAutopayMode, walletRecoveryReady, paymentRefreshState, isRecoveryBlocked, selectionStale, recipientSelections.length]);
   // Keep the SDK instance mounted while quote data is refreshing. A native
   // wallet sheet can outlive the render that opened it; tearing down the SDK
   // on a transient loading flag would invalidate that in-flight tokenization.
   // beginWalletPayment and handleWalletPayment still reject stale selections
   // and amounts before any charge request is sent.
-  const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: savedCardReadState === "ready" && !!league?.locationId && paymentAmountMinor > 0 && supportsWallets && walletRecoveryReady && paymentRefreshState === "idle" && !selectionStale && recipientSelections.length > 0, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
+  const wallet = useWalletPayments({ locationId: league?.locationId, amountCents: paymentAmountMinor, enabled: savedCardReadState === "ready" && !!league?.locationId && paymentAmountMinor > 0 && supportsWallets && walletRecoveryReady && paymentRefreshState === "idle" && !selectionStale && recipientSelections.length > 0 && !combinedAutopayMode, onPaymentStarted: beginWalletPayment, onTokenReceived: handleWalletPayment, onError: (error) => toast({ title: "Wallet Payment Error", description: error, variant: "destructive" }) });
   const cleanupWallet = wallet.cleanup;
   useEffect(() => () => cleanupWallet(), [cleanupWallet]);
 
@@ -805,6 +1085,7 @@ export default function MakePaymentPage() {
     if (isWalletProcessing || wallet.isProcessing) return;
     const paymentGeneration = pageGenerationRef.current;
     const paymentLeagueId = leagueId;
+    const combinedEnrollment = combinedAutopayMode;
     // Capture this before any awaited recovery/quote work. If a background
     // refetch replaces the displayed quote while submit is in flight, the
     // fresh quote must still match the quote the user actually accepted.
@@ -814,10 +1095,34 @@ export default function MakePaymentPage() {
       toast({ title: "Payment unavailable", description: "Payment quote changed. Review the recipients and try again.", variant: "destructive" });
       return;
     }
+    let combinedMarkerForRecovery: CombinedAutopayConsentRecovery | null = null;
     try {
+      if (combinedAutopayConsentRecovery) {
+        throw new Error(COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE);
+      }
       setIsSubmitting(true);
       if (!paymentIntentScope) throw new Error("Payment identity is unavailable. Refresh and try again.");
       const preparedIntent = await prepareRosterPaymentIntent(paymentIntentScope, league.id);
+      const persistedCombinedRecovery = readCombinedAutopayConsentRecovery(paymentIntentScope);
+      const exactCombinedRecovery = persistedCombinedRecovery?.requestKey === preparedIntent.requestKey ? persistedCombinedRecovery : null;
+      if (preparedIntent.outcome === "succeeded" && exactCombinedRecovery) {
+        const operationId = exactCombinedRecovery.operationId ?? await extractPaymentOperationId(preparedIntent.response);
+        if (operationId) {
+          const promoted: CombinedAutopayConsentRecovery = {
+            ...exactCombinedRecovery,
+            operationId,
+            phase: "consent",
+            message: COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE,
+          };
+          combinedConsentCommandKeyRef.current = promoted.commandKey;
+          persistCombinedAutopayConsentRecovery(promoted);
+          setCombinedAutopayConsentRecovery(promoted);
+        } else {
+          setCombinedAutopayConsentRecovery(exactCombinedRecovery);
+        }
+        setCombinedAutopayMode(false);
+        return;
+      }
       if (preparedIntent.outcome === "succeeded") {
         setIsRecoveryBlocked(true);
         toast({ title: "Payment already confirmed", description: "Your previous payment was confirmed. Refreshing the payment balance." });
@@ -851,6 +1156,8 @@ export default function MakePaymentPage() {
       const latestQuoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-quote/3`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients: recipientSelections }) });
       const quoteBody = await latestQuoteResponse.json().catch(() => ({})) as ApiResponse<InteractivePaymentQuote>;
       if (!latestQuoteResponse.ok || !quoteBody?.data?.fingerprint || !Number.isSafeInteger(quoteBody.data.amountMinor) || quoteBody.data.amountMinor <= 0) throw makeApiError(quoteBody, latestQuoteResponse.status, "Exact payment obligations are unavailable.");
+      const combinedTargetMinor = selfParticipant?.catchUpAmountMinor ?? selfParticipant?.dueNowMinor ?? 0;
+      if (combinedEnrollment && combinedTargetMinor > 0 && quoteBody.data.amountMinor !== combinedTargetMinor) throw new Error("The amount needed to get up to date changed. Review the payment before continuing.");
       if (submittedSelectionKey !== recipientSelectionKeyRef.current || !isInteractivePaymentQuoteCurrent(acceptedQuote, quoteBody.data, submittedSelectionKey)) {
         throw new Error("Payment quote changed. Review the recipients and try again.");
       }
@@ -858,27 +1165,116 @@ export default function MakePaymentPage() {
       if (cardMode === "new" && !cardToTokenize) throw new Error("A payment source is required.");
       const sourceId = cardMode === "saved" ? selectedSavedCardId : await tokenizeCard(cardToTokenize);
       if (submittedSelectionKey !== recipientSelectionKeyRef.current || !isInteractivePaymentQuoteCurrent(acceptedQuote, displayedQuoteRef.current, submittedSelectionKey)) throw new Error("Payment quote changed. Review the recipients and try again.");
-      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-charge/3`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ recipients: recipientSelections, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: bowlerEmail || receiptEmail.trim() || null, storeCard: cardMode === "new" ? storeCard : false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
+      const combinedMarker: CombinedAutopayConsentRecovery | null = combinedEnrollment ? {
+        scope: paymentIntentScope,
+        requestKey,
+        operationId: null,
+        commandKey: combinedConsentCommandKeyRef.current ?? combinedConsentCommandKey(),
+        phase: "charging",
+        message: "Payment confirmation is in progress. Check the payment status before trying another card.",
+      } : null;
+      if (combinedMarker) {
+        combinedConsentCommandKeyRef.current = combinedMarker.commandKey;
+        combinedMarkerForRecovery = combinedMarker;
+        persistCombinedAutopayConsentRecovery(combinedMarker);
+      }
+      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-charge/3`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ recipients: recipientSelections, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: bowlerEmail || receiptEmail.trim() || null, storeCard: combinedEnrollment ? cardMode === "new" : (cardMode === "new" ? storeCard : false), idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
       const body = await response.json().catch(() => ({}));
+      const chargeStatus = body.data?.status ?? body.status;
+      if (combinedEnrollment && chargeStatus !== "succeeded") {
+        if (isTerminalRosterPaymentFailure(chargeStatus)) {
+          clearCombinedAutopayConsentRecovery(paymentIntentScope);
+          clearPaymentIntent(paymentIntentScope, requestKey);
+          combinedConsentCommandKeyRef.current = null;
+          combinedMarkerForRecovery = null;
+          setCombinedAutopayConsentRecovery(null);
+          setCombinedAutopayMode(false);
+        } else {
+          const unresolvedRecovery: CombinedAutopayConsentRecovery = {
+            ...(combinedMarker ?? {
+              scope: paymentIntentScope,
+              requestKey,
+              operationId: null,
+              commandKey: combinedConsentCommandKeyRef.current ?? combinedConsentCommandKey(),
+              phase: "charging",
+              message: "",
+            }),
+            phase: "charging",
+            operationId: null,
+            message: rosterPaymentStatusMessage(chargeStatus) ?? "Payment confirmation is still in progress. Check the payment status before trying another card.",
+          };
+          combinedConsentCommandKeyRef.current = unresolvedRecovery.commandKey;
+          combinedMarkerForRecovery = unresolvedRecovery;
+          persistCombinedAutopayConsentRecovery(unresolvedRecovery);
+          setCombinedAutopayConsentRecovery(unresolvedRecovery);
+          setCombinedAutopayMode(false);
+        }
+      }
       if (!response.ok) throw makeApiError(body, response.status, "Payment failed");
-      assertRosterPaymentSucceeded(body.data?.status ?? body.status);
+      assertRosterPaymentSucceeded(chargeStatus);
+      const operationId = body.data?.operationId;
+      if (combinedEnrollment && (typeof operationId !== "string" || operationId.length === 0)) throw new Error("Payment completed without a confirmation identity. Automatic payments need confirmation before retrying consent.");
       const affectedIds = [...new Set([bowlerId, ...recipientSelections.map((recipient) => recipient.bowlerId)])];
       pendingPaymentRefreshIdentityRef.current = { scope: paymentIntentScope, requestKey, affectedBowlerIds: affectedIds };
       recoveryRefreshKeyRef.current = `${paymentIntentScope}:${requestKey}`;
+      let combinedConsentFailure: Error | null = null;
+      if (combinedEnrollment) {
+        const recovery: CombinedAutopayConsentRecovery = {
+          scope: paymentIntentScope,
+          requestKey,
+          operationId: operationId as string,
+          commandKey: combinedConsentCommandKeyRef.current ?? combinedConsentCommandKey(),
+          phase: "consent",
+          message: COMBINED_AUTOPAY_CONSENT_RECOVERY_MESSAGE,
+        };
+        combinedConsentCommandKeyRef.current = recovery.commandKey;
+        persistCombinedAutopayConsentRecovery(recovery);
+        try {
+          if (!(await postCombinedAutopayConsent(recovery.operationId as string, recovery.commandKey, false))) throw new Error("Automatic-payment consent is still awaiting confirmation.");
+          setCombinedAutopayConsentRecovery(null);
+          clearCombinedAutopayConsentRecovery(recovery.scope);
+        } catch (error) {
+          combinedConsentFailure = error instanceof Error ? error : new Error("Automatic-payment consent needs confirmation.");
+          setCombinedAutopayConsentRecovery(recovery);
+        }
+      }
       completeSuccessfulPaymentUi({
         identityKey: `${paymentIntentScope}:${requestKey}`,
         generation: paymentGeneration,
         leagueId: paymentLeagueId,
-        description: `${formatCurrency(paymentAmountMinor)} has been paid.`,
+        description: combinedEnrollment ? `${formatCurrency(paymentAmountMinor)} payment completed; finishing automatic-payment setup.` : `${formatCurrency(paymentAmountMinor)} has been paid.`,
         reinitializeEditor: shouldReinitializeOneTimeCardEditor(cardMode, savedCards.length),
-        refreshSavedCards: storeCard && cardMode === "new",
+        refreshSavedCards: (combinedEnrollment || storeCard) && cardMode === "new",
+        showToast: !combinedEnrollment,
       });
       const refreshed = await refreshAfterPayment(affectedIds);
       if (!refreshed) return;
       clearPaymentIntent(paymentIntentScope, requestKey);
       pendingPaymentRefreshIdentityRef.current = null;
       recoveryRefreshKeyRef.current = null;
+      if (combinedEnrollment) {
+        if (combinedConsentFailure) {
+          if (isArrearsRequireOneTimeFifo(combinedConsentFailure)) {
+            setCombinedAutopayMode(false);
+            setCombinedAutopayConsentRecovery(null);
+            combinedConsentCommandKeyRef.current = null;
+            clearCombinedAutopayConsentRecovery(paymentIntentScope);
+            toast({ title: "Payment complete; updated amount needs payment", description: "Review the refreshed amount and complete automatic-payment setup in a new checkout." });
+          } else {
+            toast({ title: "Payment complete; automatic-payment setup needs confirmation", description: "Check status and retry consent without paying again.", variant: "destructive" });
+          }
+        } else {
+          setCombinedAutopayMode(false);
+          combinedConsentCommandKeyRef.current = null;
+          toast({ title: "Payment and automatic payments enabled" });
+          void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] });
+        }
+      }
     } catch (error) {
+      if (combinedEnrollment && combinedMarkerForRecovery) {
+        setCombinedAutopayConsentRecovery(combinedMarkerForRecovery);
+        setCombinedAutopayMode(false);
+      }
       if (STALE_INTERACTIVE_PAYMENT_CODES.has(getApiErrorCode(error) ?? "")) {
         void refreshAfterPayment([...new Set([bowlerId ?? 0, ...recipientSelections.map((recipient) => recipient.bowlerId)])].filter((id) => id > 0));
       }
@@ -916,6 +1312,11 @@ export default function MakePaymentPage() {
       label: allocation.label,
     })),
   })) ?? [];
+  const combinedConsentRecoveryProps = combinedAutopayConsentRecovery === null ? null : {
+    message: combinedAutopayConsentRecovery.message,
+    onRetry: () => void retryCombinedAutopayConsent(),
+    isRetrying: isRetryingCombinedConsent,
+  };
   return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId}>
     <div className="space-y-6">
       <div>
@@ -923,7 +1324,7 @@ export default function MakePaymentPage() {
         {hasMultipleLeagues ? <button type="button" onClick={() => setLeagueSheetOpen(true)} className="flex items-center gap-1 text-navigation-500 hover:text-navigation-700 transition-colors">{league.name}<span aria-hidden="true">⌄</span></button> : <p className="text-muted-foreground">{league.name}</p>}
       </div>
       <ErrorBoundary level="section">
-        {isRecoveryBlocked ? <div role="status" className="rounded-lg border border-warning-500/50 bg-warning-500/5 p-6 text-center"><h2 className="text-lg font-semibold">Payment confirmation in progress</h2><p className="mt-1 text-sm text-muted-foreground">Your previous payment is still being confirmed. Check its status before trying another card.</p><button type="button" className="mt-3 text-sm underline disabled:opacity-50" onClick={retryRecoveryStatus} disabled={paymentRefreshState === "refreshing"}>Check payment status again</button></div> : isNoBalanceAvailable ? <div role="status" className="rounded-lg border bg-muted/30 p-6 text-center"><h2 className="text-lg font-semibold">No one-time balance available</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
+        {isRecoveryBlocked ? <div role="status" className="rounded-lg border border-warning-500/50 bg-warning-500/5 p-6 text-center"><h2 className="text-lg font-semibold">Payment confirmation in progress</h2><p className="mt-1 text-sm text-muted-foreground">Your previous payment is still being confirmed. Check its status before trying another card.</p><button type="button" className="mt-3 text-sm underline disabled:opacity-50" onClick={retryRecoveryStatus} disabled={paymentRefreshState === "refreshing"}>Check payment status again</button></div> : combinedAutopayConsentRecovery ? <div role="alert" className="flex flex-col gap-3 rounded-lg border border-warning-300 bg-warning-50 p-6 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm text-warning-900">{combinedAutopayConsentRecovery.message}</p><Button type="button" variant="outline" onClick={() => void retryCombinedAutopayConsent()} disabled={isRetryingCombinedConsent}>{isRetryingCombinedConsent ? "Checking status…" : "Retry automatic payments"}</Button></div> : isNoBalanceAvailable ? <div role="status" className="rounded-lg border bg-muted/30 p-6 text-center"><h2 className="text-lg font-semibold">No one-time balance available</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
           key={oneTimeCardEditorKey}
           paymentAmountMinor={paymentAmountMinor}
           fullBalanceOnly={fullBalanceOnly}
@@ -965,6 +1366,9 @@ export default function MakePaymentPage() {
           onRecipientToggle={handleRecipientToggle}
           onRecipientWeeksChange={handleRecipientWeeksChange}
           onResetRecipientSelection={resetRecipientSelection}
+          dueNowOnly={combinedAutopayMode}
+          onCancelDueNow={combinedAutopayConsentRecovery ? undefined : cancelCombinedAutopay}
+          combinedConsentRecovery={combinedConsentRecoveryProps}
         />}
       </ErrorBoundary>
       <ErrorBoundary level="section"><RotatingShareCreditCard
@@ -974,7 +1378,7 @@ export default function MakePaymentPage() {
         bowlerEmail={bowlerEmail}
         savedCards={savedCards}
       /></ErrorBoundary>
-      {paymentMode !== "upfront" && !isRotatingPoolMember && <ErrorBoundary level="section"><StandingAutopayCard league={league} bowlerId={bowlerId} savedCards={savedCards} bowlerHasEmail={!!bowlerEmail} card={card} isInitialized={isInitialized && cardEditorMode === "autopay"} cardEditorMode={cardEditorMode} initializeCard={initializeCard} cleanupCard={cleanupCard} onCardEditorModeChange={selectEditorMode} /></ErrorBoundary>}
+      {paymentMode !== "upfront" && !isRotatingPoolMember && <ErrorBoundary level="section"><StandingAutopayCard league={league} bowlerId={bowlerId} savedCards={savedCards} bowlerHasEmail={!!bowlerEmail} card={card} isInitialized={isInitialized && cardEditorMode === "autopay"} cardEditorMode={cardEditorMode} initializeCard={initializeCard} cleanupCard={cleanupCard} onCardEditorModeChange={selectEditorMode} dueNowMinor={selfParticipant?.catchUpAmountMinor ?? selfParticipant?.dueNowMinor} dueNowDataAvailable={selfParticipant !== undefined && ("catchUpAmountMinor" in selfParticipant || "dueNowMinor" in selfParticipant)} combinedCheckoutActive={combinedAutopayMode || !!combinedAutopayConsentRecovery} onPayDueNow={beginCombinedAutopay} /></ErrorBoundary>}
       {paymentMode !== "upfront" && isRotatingPoolMember && standingAutopayStatusQuery.isLoading && <Card aria-busy="true"><CardContent><p className="py-4 text-sm text-muted-foreground">Checking existing automatic-payment status…</p></CardContent></Card>}
       {paymentMode !== "upfront" && isRotatingPoolMember && (standingAutopayStatusQuery.error || standingAutopayStatusQuery.data?.success === false) && <Card><CardContent><div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between"><p role="alert" className="text-sm">{standingAutopayStatusQuery.error instanceof Error ? standingAutopayStatusQuery.error.message : standingAutopayStatusQuery.data?.error?.message ?? "Existing automatic-payment status could not be checked."}</p><Button type="button" variant="outline" size="sm" onClick={() => void standingAutopayStatusQuery.refetch()}>Retry</Button></div></CardContent></Card>}
       {paymentMode !== "upfront" && isRotatingPoolMember && rotatingLegacyConsent?.state === "active" && <Card>

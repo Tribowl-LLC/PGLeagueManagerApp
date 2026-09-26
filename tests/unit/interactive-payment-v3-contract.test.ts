@@ -17,4 +17,11 @@ describe("interactive payment v3 contracts", () => {
     ], 4000);
     expect(options).toEqual([{ weekCount: 1, amountMinor: 3000 }, { weekCount: 2, amountMinor: 4000 }]);
   });
+
+  it("accepts the optional payer-only due-now selection", () => {
+    const parsed = interactivePaymentQuoteRequestV3Schema.parse({
+      recipients: [{ bowlerId: 1, weeks: 2, fullBalance: false, dueNow: true }],
+    });
+    expect(parsed.recipients[0]).toMatchObject({ bowlerId: 1, weeks: 2, dueNow: true });
+  });
 });

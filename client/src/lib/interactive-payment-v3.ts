@@ -19,7 +19,18 @@ export interface InteractivePaymentParticipant {
   weeklyOptions: InteractivePaymentWeeklyOption[];
   eligible: boolean;
   reason: string | null;
+  /** Exact amount currently due before standing automatic payments can start. */
+  dueNowMinor?: number;
+  /** Number of oldest obligations represented by the due-now amount. */
+  catchUpWeeks?: number;
+  /** Server-authoritative FIFO amount required to bring the payer current. */
+  catchUpAmountMinor?: number;
 }
+
+export type InteractivePaymentRecipientSelection = InteractivePaymentRecipientSelectionV3 & {
+  /** The server uses this optional flag to select the exact due-now amount. */
+  dueNow?: boolean;
+};
 
 export interface InteractivePaymentParticipantsResponse {
   contractVersion: "interactive-payment-participants/3";
@@ -101,14 +112,22 @@ export function buildInteractivePaymentRecipients(
   selected: Readonly<Record<number, boolean>>,
   weeksByBowlerId: Readonly<Record<number, number>>,
   paymentMode: InteractivePaymentMode,
-): InteractivePaymentRecipientSelectionV3[] {
+  dueNowBowlerId?: number,
+): InteractivePaymentRecipientSelection[] {
   return participants
     .filter((participant) => selected[participant.bowlerId] === true && participant.eligible && participant.remainingMinor > 0)
     .map((participant) => {
       const weeks = paymentMode === "upfront"
         ? initialInteractivePaymentWeeks(participant, paymentMode)
+        : participant.bowlerId === dueNowBowlerId && participant.catchUpWeeks && participant.catchUpWeeks > 0
+          ? participant.catchUpWeeks
         : clampInteractivePaymentWeeks(participant, weeksByBowlerId[participant.bowlerId] ?? 1);
-      return { bowlerId: participant.bowlerId, weeks, fullBalance: paymentMode === "upfront" };
+      return {
+        bowlerId: participant.bowlerId,
+        weeks,
+        fullBalance: paymentMode === "upfront",
+        ...(participant.bowlerId === dueNowBowlerId ? { dueNow: true } : {}),
+      };
     })
     .sort((left, right) => left.bowlerId - right.bowlerId);
 }

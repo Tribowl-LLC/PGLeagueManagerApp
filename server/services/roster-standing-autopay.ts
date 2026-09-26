@@ -13,6 +13,7 @@ import {
   leagues,
   occurrencePaymentResponsibilities,
   paymentAllocations,
+  payments,
   refundAllocationAdjustments,
   paymentObligations,
   paymentOperationRosterSnapshotItems,
@@ -43,6 +44,8 @@ import { validateRosterSnapshotForDispatchInTransaction } from "./roster-payment
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 import { isCurrentBowlerOwnedObligationSql } from "./roster-obligation-owners.js";
 import { resolvePaymentObligationOwnersInTransaction } from "./roster-obligation-owners.js";
+import { reconstructInteractivePartnerSnapshot, type InteractivePartnerPaymentSnapshot } from "./interactive-partner-payment-snapshot.js";
+import { fifoCandidatesInTransaction } from "./roster-payment-core.js";
 
 const CONSENT_FP_PREFIX = "lvstandingconsent:v1:";
 const PARTNER_FP_PREFIX = "lvpartnerlink:v1:";
@@ -118,6 +121,40 @@ async function assertNotActiveRotatingPoolMemberForStandingAutopay(
 
 function digest(prefix: string, value: unknown): string {
   return `${prefix}${createHash("sha256").update(canonicalizePaymentOperationInput(value)).digest("hex")}`;
+}
+
+function consentCommandFingerprint(input: {
+  leagueId: number;
+  payerBowlerId: number;
+  sourceId: string;
+  customerId: string;
+  providerName: string;
+  providerLocationId: string;
+  partnerIds: number[];
+  paymentOperationId?: string;
+}): string {
+  return digest("lvstandingcommand:v1:", {
+    leagueId: input.leagueId,
+    payerBowlerId: input.payerBowlerId,
+    sourceId: input.sourceId,
+    customerId: input.customerId,
+    providerName: input.providerName,
+    providerLocationId: input.providerLocationId,
+    partnerIds: input.partnerIds,
+    ...(input.paymentOperationId ? { paymentOperationId: input.paymentOperationId } : {}),
+  });
+}
+
+function validateOrReplayConsentCommand(
+  existing: typeof financialCommands.$inferSelect | undefined,
+  input: { actorUserId: number; fingerprint: string },
+): void {
+  if (!existing) return;
+  if (existing.actorUserId !== input.actorUserId || existing.requestFingerprint !== input.fingerprint) {
+    throw new StandingAutopayError("IDEMPOTENCY_CONFLICT", "The standing command identity does not match the original request");
+  }
+  if (existing.state === "applied" && existing.result !== null) throw new StandingAutopayReplay(existing.result);
+  if (existing.state === "failed") throw new StandingAutopayError(existing.errorCode ?? "COMMAND_FAILED", "The standing command previously failed");
 }
 
 function iso(value: string | Date): string {
@@ -224,6 +261,155 @@ async function activeConsent(tx: StandingTx, input: { organizationId: number; le
   if (!consent) return undefined;
   if (consent.paymentMode !== "weekly" || !consent.providerName || !consent.providerLocationId || !consent.encryptedSourceId || !consent.encryptedCustomerId || consent.revokedAt !== null) throw new StandingAutopayError("CONSENT_INVALID", "The standing consent is not dispatchable");
   return consent;
+}
+
+type ConsentPaymentMethodEvidence = {
+  sourceId: string;
+  customerId: string;
+  operationId: string | null;
+};
+
+function invalidConsentPaymentOperation(message = "The payment operation cannot authorize standing automatic payments"): never {
+  throw new StandingAutopayError("PAYMENT_OPERATION_INVALID", message, 422);
+}
+
+/**
+ * A combined checkout may authorize consent only after a fully finalized,
+ * self-only v3 interactive charge. All evidence is read while the canonical
+ * league lock is held so a foreign or unfinished operation cannot be swapped
+ * into a consent request between validation and the consent write.
+ */
+async function resolveOperationConsentPaymentMethodInTransaction(
+  tx: StandingTx,
+  input: { organizationId: number; leagueId: number; payerBowlerId: number; actorUserId: number; paymentOperationId: string },
+  provider: Awaited<ReturnType<typeof getPaymentProvider>>,
+  options: { identityOnly?: boolean } = {},
+): Promise<ConsentPaymentMethodEvidence> {
+  const [actor] = await tx.select({ id: users.id }).from(users).where(and(
+    eq(users.id, input.actorUserId),
+    eq(users.organizationId, input.organizationId),
+  )).limit(1).for("share");
+  if (!actor) invalidConsentPaymentOperation();
+  const [operation] = await tx.select().from(paymentOperations).where(and(
+    eq(paymentOperations.id, input.paymentOperationId),
+    eq(paymentOperations.organizationId, input.organizationId),
+    eq(paymentOperations.leagueId, input.leagueId),
+    eq(paymentOperations.operationType, "interactive_charge"),
+  )).limit(1).for("share");
+  if (!operation || operation.status !== "succeeded" || operation.authorizingUserId !== input.actorUserId || !operation.providerObjectId) invalidConsentPaymentOperation();
+  if (operation.providerName !== provider.providerName) invalidConsentPaymentOperation();
+
+  const [stored] = await tx.select().from(paymentOperationRosterSnapshots).where(and(
+    eq(paymentOperationRosterSnapshots.operationId, operation.id),
+    eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
+    eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
+    eq(paymentOperationRosterSnapshots.snapshotKind, "interactive"),
+  )).limit(1).for("share");
+  if (!stored || stored.snapshotVersion !== 3 || stored.payerBowlerId !== input.payerBowlerId || stored.sourceKind === null || stored.encryptedSourceId === null || stored.partnerEvidence === null || stored.requestKind === null || stored.quoteFingerprint === null) invalidConsentPaymentOperation();
+  if (stored.locationId !== provider.locationId || stored.providerLocationId !== null) invalidConsentPaymentOperation("The payment operation provider location does not match this league");
+
+  let snapshot: InteractivePartnerPaymentSnapshot;
+  try {
+    snapshot = reconstructInteractivePartnerSnapshot({
+      organizationId: operation.organizationId,
+      amountMinor: operation.amountMinor,
+      currency: operation.currency,
+      providerName: operation.providerName,
+      providerIdempotencyKey: operation.providerIdempotencyKey,
+      stored: {
+        snapshotVersion: 3,
+        snapshotFingerprint: stored.snapshotFingerprint,
+        leagueId: stored.leagueId,
+        locationId: stored.locationId,
+        providerLocationId: stored.providerLocationId,
+        payerBowlerId: stored.payerBowlerId,
+        requestKind: stored.requestKind,
+        encryptedSourceId: stored.encryptedSourceId,
+        encryptedCustomerId: stored.encryptedCustomerId,
+        encryptedBuyerEmail: stored.encryptedBuyerEmail,
+        storeCard: stored.storeCard,
+        sourceKind: stored.sourceKind,
+        quoteFingerprint: stored.quoteFingerprint,
+        partnerEvidence: stored.partnerEvidence,
+      },
+      allocations: (Array.isArray(stored.obligations) ? stored.obligations : []) as InteractivePartnerPaymentSnapshot["allocations"],
+      lineItems: stored.lineItems,
+    });
+  } catch {
+    invalidConsentPaymentOperation();
+  }
+
+  if (snapshot.requestKind !== "direct" || snapshot.partnerEvidence.length !== 1) invalidConsentPaymentOperation();
+  const selfEvidence = snapshot.partnerEvidence[0];
+  if (selfEvidence?.role !== "self" || selfEvidence.dueNow !== true || selfEvidence.recipientBowlerId !== input.payerBowlerId || snapshot.allocations.some((row) => row.bowlerId !== input.payerBowlerId)) invalidConsentPaymentOperation();
+  if (snapshot.sourceKind === "wallet") invalidConsentPaymentOperation();
+
+  const customerId = snapshot.customerId;
+  if (!customerId) invalidConsentPaymentOperation("The payment operation customer does not belong to this payer");
+
+  let sourceId: string;
+  try {
+    if (snapshot.sourceKind === "new_card") {
+      if (!snapshot.storeCard || operation.cardSaveStatus !== "saved") invalidConsentPaymentOperation();
+      const savedCardId = operation.encryptedSavedCardId ? decrypt(operation.encryptedSavedCardId) : null;
+      if (!savedCardId) invalidConsentPaymentOperation();
+      sourceId = savedCardId;
+    } else {
+      if (snapshot.storeCard || operation.cardSaveStatus !== null) invalidConsentPaymentOperation();
+      const decryptedSourceId = decrypt(stored.encryptedSourceId);
+      if (!decryptedSourceId) invalidConsentPaymentOperation();
+      sourceId = decryptedSourceId;
+    }
+  } catch {
+    invalidConsentPaymentOperation();
+  }
+  if (!sourceId || !provider.validateCardId(sourceId) || !provider.hasCardOnFile) invalidConsentPaymentOperation();
+  // Applied-command replay only needs immutable operation/snapshot identity.
+  // Fresh consent continues through payer, provider ownership, and finalized
+  // payment checks below.
+  if (options.identityOnly) return { sourceId, customerId, operationId: operation.id };
+
+  const [payer] = await tx.select({ paymentCustomerId: bowlers.paymentCustomerId }).from(bowlers).where(and(
+    eq(bowlers.id, input.payerBowlerId),
+    eq(bowlers.organizationId, input.organizationId),
+    eq(bowlers.active, true),
+  )).limit(1).for("share");
+  if (!payer || payer.paymentCustomerId !== customerId) invalidConsentPaymentOperation("The payment operation customer does not belong to this payer");
+  if (!(await provider.hasCardOnFile(customerId, sourceId))) {
+    invalidConsentPaymentOperation("The payment operation card is not owned by this payer");
+  }
+
+  const [payment] = await tx.select().from(payments).where(and(
+    eq(payments.organizationId, input.organizationId),
+    eq(payments.leagueId, input.leagueId),
+    eq(payments.paymentOperationId, operation.id),
+  )).limit(1).for("share");
+  if (!payment || payment.status !== "paid" || payment.bowlerId !== input.payerBowlerId || payment.amount !== operation.amountMinor || payment.providerPaymentId !== operation.providerObjectId) invalidConsentPaymentOperation("The payment operation charge is not finalized");
+  const allocations = await tx.select({ obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, input.organizationId),
+    eq(paymentAllocations.leagueId, input.leagueId),
+    eq(paymentAllocations.paymentId, payment.id),
+    eq(paymentAllocations.state, "active"),
+  )).for("share");
+  const expectedAllocations = snapshot.allocations.map((row) => `${row.obligationId}:${row.amountMinor}`).sort().join("|");
+  const actualAllocations = allocations.map((row) => `${row.obligationId}:${row.amountMinor}`).sort().join("|");
+  if (allocations.length === 0 || actualAllocations !== expectedAllocations || allocations.reduce((sum, row) => sum + row.amountMinor, 0) !== operation.amountMinor) invalidConsentPaymentOperation("The payment operation allocations are incomplete");
+  return { sourceId, customerId, operationId: operation.id };
+}
+
+async function assertNoInitialDueNowInTransaction(
+  tx: StandingTx,
+  input: { organizationId: number; leagueId: number; payerBowlerId: number; asOf: string },
+): Promise<void> {
+  const candidates = await fifoCandidatesInTransaction(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    payerBowlerId: input.payerBowlerId,
+  });
+  const asOf = new Date(input.asOf).getTime();
+  if (candidates.some((row) => new Date(row.dueAt).getTime() <= asOf && (row.outstandingMinor > 0 || row.reservedMinor > 0))) {
+    throw new StandingAutopayError("ARREARS_REQUIRE_ONE_TIME_FIFO", "Standing automatic payment is blocked until due-now obligations are settled by a one-time FIFO payment", 409);
+  }
 }
 
 const unresolvedRefundOperationStatuses = [
@@ -634,16 +820,52 @@ export async function activateStandingAutopayConsent(input: { organizationId: nu
   if (!league || league.locationId === null) throw new StandingAutopayError("NOT_FOUND", "League not found", 404);
   if (league.paymentMode === "upfront") throw new StandingAutopayError("STANDING_AUTOPAY_UNAVAILABLE_FOR_UPFRONT", "Standing automatic payments are disabled for upfront leagues", 422);
   const [payer] = await db.select().from(bowlers).where(and(eq(bowlers.id, input.payerBowlerId), eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true))).limit(1);
-  const customerId = payer?.paymentCustomerId ?? null;
-  if (!payer || !customerId) throw new StandingAutopayError("PAYMENT_CUSTOMER_MISMATCH", "The payment method belongs to another payer", 403);
+  if (!payer) throw new StandingAutopayError("PAYMENT_CUSTOMER_MISMATCH", "The payment method belongs to another payer", 403);
   const provider = await getPaymentProvider(league.locationId);
   const providerName = provider.providerName;
   const providerLocationId = await providerLocationIdentity(provider);
-  if (!provider.validateCardId(input.request.sourceId) || !provider.hasCardOnFile) throw new StandingAutopayError("PAYMENT_METHOD_INVALID", "The saved payment method is unavailable", 422);
-  if (!(await provider.hasCardOnFile(customerId, input.request.sourceId))) throw new StandingAutopayError("PAYMENT_METHOD_NOT_OWNED", "The saved payment method is unavailable", 403);
   if (input.request.partnerBowlerIds.length > 0) throw new StandingAutopayError("PARTNERS_NOT_SUPPORTED", "Automatic payment applies to one bowler; enter shared payments separately", 422);
   const partnerIds: number[] = [];
-  const commandFingerprint = digest("lvstandingcommand:v1:", { leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, sourceId: input.request.sourceId, customerId, providerName, providerLocationId, partnerIds });
+  const directSourceId = input.request.sourceId;
+  const directCustomerId = payer.paymentCustomerId ?? null;
+  const requestedPaymentOperationId = input.request.paymentOperationId;
+  if (directSourceId !== undefined) {
+    if (!directCustomerId) throw new StandingAutopayError("PAYMENT_CUSTOMER_MISMATCH", "The payment method belongs to another payer", 403);
+    if (!provider.validateCardId(directSourceId) || !provider.hasCardOnFile) throw new StandingAutopayError("PAYMENT_METHOD_INVALID", "The saved payment method is unavailable", 422);
+    if (!(await provider.hasCardOnFile(directCustomerId, directSourceId))) throw new StandingAutopayError("PAYMENT_METHOD_NOT_OWNED", "The saved payment method is unavailable", 403);
+  }
+  // Resolve the operation and snapshot without calling the provider first so
+  // an already-applied command can replay even when card lookup is temporarily
+  // unavailable. This read still validates the operation, tenant/league,
+  // snapshot, payer, and finalized payment evidence.
+  const operationEvidenceForCommand = requestedPaymentOperationId
+    ? await db.transaction((tx) => resolveOperationConsentPaymentMethodInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      payerBowlerId: input.payerBowlerId,
+      actorUserId: input.actorUserId,
+      paymentOperationId: requestedPaymentOperationId,
+    }, provider, { identityOnly: true }))
+    : undefined;
+  if (operationEvidenceForCommand) {
+    const commandFingerprint = consentCommandFingerprint({
+      leagueId: input.leagueId,
+      payerBowlerId: input.payerBowlerId,
+      sourceId: operationEvidenceForCommand.sourceId,
+      customerId: operationEvidenceForCommand.customerId,
+      providerName,
+      providerLocationId,
+      partnerIds,
+      paymentOperationId: operationEvidenceForCommand.operationId ?? undefined,
+    });
+    const [existingCommand] = await db.select().from(financialCommands).where(and(
+      eq(financialCommands.organizationId, input.organizationId),
+      eq(financialCommands.leagueId, input.leagueId),
+      eq(financialCommands.commandType, COMMAND_CONSENT),
+      eq(financialCommands.idempotencyKey, input.request.commandKey),
+    )).limit(1);
+    validateOrReplayConsentCommand(existingCommand, { actorUserId: input.actorUserId, fingerprint: commandFingerprint });
+  }
   const result = await db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
     const lockedLeague = await leagueFor(tx, input.organizationId, input.leagueId);
@@ -651,6 +873,47 @@ export async function activateStandingAutopayConsent(input: { organizationId: nu
     const lockedProvider = await getPaymentProvider(lockedLeague.locationId);
     const lockedProviderLocationId = await providerLocationIdentity(lockedProvider);
     if (lockedProvider.providerName !== providerName || lockedProviderLocationId !== providerLocationId) throw new StandingAutopayError("LEAGUE_PROVIDER_LOCATION_CHANGED", "The payment provider location changed; retry consent setup", 409);
+    if (operationEvidenceForCommand) {
+      const commandFingerprint = consentCommandFingerprint({
+        leagueId: input.leagueId,
+        payerBowlerId: input.payerBowlerId,
+        sourceId: operationEvidenceForCommand.sourceId,
+        customerId: operationEvidenceForCommand.customerId,
+        providerName,
+        providerLocationId,
+        partnerIds,
+        paymentOperationId: operationEvidenceForCommand.operationId ?? undefined,
+      });
+      const [lockedCommand] = await tx.select().from(financialCommands).where(and(
+        eq(financialCommands.organizationId, input.organizationId),
+        eq(financialCommands.leagueId, input.leagueId),
+        eq(financialCommands.commandType, COMMAND_CONSENT),
+        eq(financialCommands.idempotencyKey, input.request.commandKey),
+      )).limit(1).for("update");
+      validateOrReplayConsentCommand(lockedCommand, { actorUserId: input.actorUserId, fingerprint: commandFingerprint });
+    }
+    const operationEvidence = input.request.paymentOperationId
+      ? await resolveOperationConsentPaymentMethodInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        payerBowlerId: input.payerBowlerId,
+        actorUserId: input.actorUserId,
+        paymentOperationId: input.request.paymentOperationId,
+      }, lockedProvider)
+      : null;
+    const sourceId = operationEvidence?.sourceId ?? directSourceId;
+    const customerId = operationEvidence?.customerId ?? directCustomerId;
+    if (!sourceId || !customerId) throw new StandingAutopayError("PAYMENT_METHOD_INVALID", "The saved payment method is unavailable", 422);
+    const commandFingerprint = consentCommandFingerprint({
+      leagueId: input.leagueId,
+      payerBowlerId: input.payerBowlerId,
+      sourceId,
+      customerId,
+      providerName,
+      providerLocationId,
+      partnerIds,
+      paymentOperationId: operationEvidence?.operationId ?? undefined,
+    });
     await beginCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, actorUserId: input.actorUserId, commandType: COMMAND_CONSENT, key: input.request.commandKey, fingerprint: commandFingerprint });
     if (!(await activeMembership(tx, input.organizationId, input.leagueId, [input.payerBowlerId, ...partnerIds]))) throw new StandingAutopayError("BOWLER_NOT_IN_LEAGUE", "Every standing payer must be an active league member", 403);
     await assertNotActiveRotatingPoolMemberForStandingAutopay(tx, { organizationId: input.organizationId, leagueId: input.leagueId, bowlerId: input.payerBowlerId });
@@ -659,14 +922,15 @@ export async function activateStandingAutopayConsent(input: { organizationId: nu
     const timestampResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS activated_at`);
     const activatedAt = (timestampResult.rows[0] as { activated_at?: string } | undefined)?.activated_at;
     if (!activatedAt) throw new StandingAutopayError("CONSENT_TIME_UNAVAILABLE", "The standing consent could not establish its activation boundary", 503);
-    const consentFingerprint = digest(CONSENT_FP_PREFIX, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, paymentMode: "weekly", providerName, providerLocationId, sourceId: input.request.sourceId, customerId, activatedAt, partners: links.map((link) => ({ bowlerAId: link.bowlerAId, bowlerBId: link.bowlerBId, id: link.id, fingerprint: linkFingerprint(link) })) });
     const [existing] = await tx.select().from(autopayConsents).where(and(eq(autopayConsents.organizationId, input.organizationId), eq(autopayConsents.leagueId, input.leagueId), eq(autopayConsents.payerBowlerId, input.payerBowlerId), eq(autopayConsents.state, "active"))).limit(1).for("update");
+    if (!existing) await assertNoInitialDueNowInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, asOf: new Date(activatedAt).toISOString() });
+    const consentFingerprint = digest(CONSENT_FP_PREFIX, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, paymentMode: "weekly", providerName, providerLocationId, sourceId, customerId, activatedAt, partners: links.map((link) => ({ bowlerAId: link.bowlerAId, bowlerBId: link.bowlerBId, id: link.id, fingerprint: linkFingerprint(link) })) });
     const nextVersion = (await tx.select({ max: sql<number>`COALESCE(MAX(${autopayConsents.consentVersion}), 0)` }).from(autopayConsents).where(and(eq(autopayConsents.organizationId, input.organizationId), eq(autopayConsents.leagueId, input.leagueId), eq(autopayConsents.payerBowlerId, input.payerBowlerId))))[0]?.max ?? 0;
     const replacementRevokedAt = new Date(activatedAt).toISOString();
     if (existing) await revokeConsentAndStopOperationsInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, consent: existing, revokedAt: replacementRevokedAt });
     const [consent] = await tx.insert(autopayConsents).values({
       organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, consentVersion: Number(nextVersion) + 1, state: "active", paymentMode: "weekly", consentFingerprint,
-      providerName, providerLocationId, encryptedSourceId: encrypt(input.request.sourceId), encryptedCustomerId: encrypt(customerId), createdByUserId: input.actorUserId, activatedAt,
+      providerName, providerLocationId, encryptedSourceId: encrypt(sourceId), encryptedCustomerId: encrypt(customerId), createdByUserId: input.actorUserId, activatedAt,
     }).returning();
     if (!consent) throw new StandingAutopayError("CONSENT_WRITE_FAILED", "The standing consent could not be saved", 500);
     if (links.length > 0) await tx.insert(autopayConsentPartners).values(links.map((link) => ({ organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, partnerBowlerId: link.bowlerAId === input.payerBowlerId ? link.bowlerBId : link.bowlerAId, paymentLinkId: link.id, linkFingerprint: linkFingerprint(link) })));
