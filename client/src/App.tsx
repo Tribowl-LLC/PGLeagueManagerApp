@@ -194,19 +194,19 @@ function Router() {
             mustChangePassword redirect to avoid an infinite loop. */}
         <Route path="/change-password-required">{guard('auth', <ChangePasswordRequiredPage />)}</Route>
 
-        {/* Organization-member routes */}
-        <Route path="/home">{guard('org', <HomePage />)}</Route>
+        {/* Staff routes */}
+        <Route path="/home">{guard('staff', <HomePage />)}</Route>
         <Route path="/locations">{guard('orgAdmin', <LocationsPage />)}</Route>
-        <Route path="/leagues">{guard('org', <LeaguesPage />)}</Route>
+        <Route path="/leagues">{guard('staff', <LeaguesPage />)}</Route>
         <Route path="/leagues/:leagueId/payments/manage">{guard('paymentManager', <ManagePaymentsPage />)}</Route>
-        <Route path="/leagues/:leagueId">{guard('org', <LeagueViewPage />)}</Route>
-        <Route path="/leagues/:leagueId/schedule">{guard('org', <LeagueSchedulePage />)}</Route>
+        <Route path="/leagues/:leagueId">{guard('staff', <LeagueViewPage />)}</Route>
+        <Route path="/leagues/:leagueId/schedule">{guard('staff', <LeagueSchedulePage />)}</Route>
         <Route path="/leagues/:leagueId/teams">{guard('paymentManager', <TeamsPage />)}</Route>
-        <Route path="/leagues/:leagueId/scores">{guard('org', <LeagueScoresPage />)}</Route>
-        <Route path="/teams/:teamId">{guard('org', <TeamViewPage />)}</Route>
-        <Route path="/bowlers">{guard('org', <BowlersPage />)}</Route>
-        <Route path="/bowlers/:bowlerId">{guard('org', <BowlerViewPage />)}</Route>
-        <Route path="/bowlers/:bowlerId/scores">{guard('org', <BowlerScoresPage />)}</Route>
+        <Route path="/leagues/:leagueId/scores">{guard('staff', <LeagueScoresPage />)}</Route>
+        <Route path="/teams/:teamId">{guard('staff', <TeamViewPage />)}</Route>
+        <Route path="/bowlers">{guard('staff', <BowlersPage />)}</Route>
+        <Route path="/bowlers/:bowlerId">{guard('staff', <BowlerViewPage />)}</Route>
+        <Route path="/bowlers/:bowlerId/scores">{guard('staff', <BowlerScoresPage />)}</Route>
 
         {/* Organization Admin routes */}
         <Route path="/payments">{guard('paymentManager', <PaymentsPage />)}</Route>
