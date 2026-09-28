@@ -97,6 +97,77 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByRole("checkbox", { name: "Save this card for future payments" })).not.toBeChecked();
   });
 
+  it.each([
+    {
+      name: "one quoted week",
+      weeks: 1,
+      maximumWeekCount: 1,
+      coveredWeeks: ["Week 5"],
+      expected: "Week 5",
+    },
+    {
+      name: "a ten-week quote",
+      weeks: 10,
+      maximumWeekCount: 10,
+      coveredWeeks: Array.from({ length: 10 }, (_, index) => `Week ${index + 1}`),
+      expected: "Week 1 through Week 10",
+    },
+  ])("shows the quoted coverage in the review for $name", ({ weeks, maximumWeekCount, coveredWeeks, expected }) => {
+    renderCard(false, { weeks, maximumWeekCount, amountMinor: weeks * 1_000 }, [], [{
+      bowlerId: 42,
+      name: "Bowler",
+      role: "self",
+      amountMinor: weeks * 1_000,
+      coveredWeeks,
+      allocations: [],
+    }]);
+
+    fireEvent.click(screen.getByRole("button", { name: `Review payment of $${weeks * 10}` }));
+    expect(screen.getByRole("dialog", { name: "Review payment" })).toHaveTextContent(expected);
+  });
+
+  it("sorts and deduplicates quoted allocations without implying unpaid weeks were covered", () => {
+    renderCard(false, { weeks: 5, maximumWeekCount: 5, amountMinor: 5_000 }, [], [{
+      bowlerId: 42,
+      name: "Bowler",
+      role: "self",
+      amountMinor: 5_000,
+      coveredWeeks: ["Week 5", "Week 30", "Week 3", "Week 4", "Week 30"],
+      allocations: [
+        { obligationId: "obligation-5", amountMinor: 1_000, occurrenceLocalDate: "2026-09-29", plannedOrdinal: 5, label: "Week 5", isPairedFinalWeek: false },
+        { obligationId: "obligation-30a", amountMinor: 500, occurrenceLocalDate: "2027-04-27", plannedOrdinal: 30, label: "Week 30", isPairedFinalWeek: true },
+        { obligationId: "obligation-3", amountMinor: 1_000, occurrenceLocalDate: "2026-09-15", plannedOrdinal: 3, label: "Week 3", isPairedFinalWeek: false },
+        { obligationId: "obligation-30b", amountMinor: 500, occurrenceLocalDate: "2027-04-27", plannedOrdinal: 30, label: "Week 30", isPairedFinalWeek: true },
+        { obligationId: "obligation-4", amountMinor: 1_000, occurrenceLocalDate: "2026-09-22", plannedOrdinal: 4, label: "Week 4", isPairedFinalWeek: false },
+      ],
+    }]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Review payment of $50" }));
+    const dialog = screen.getByRole("dialog", { name: "Review payment" });
+    expect(dialog).toHaveTextContent("Week 3 through Week 5 and Week 30");
+    expect(dialog).not.toHaveTextContent("Week 3 through Week 30");
+  });
+
+  it("keeps double-pay final weeks explicit in the review", () => {
+    renderCard(false, { weeks: 5, maximumWeekCount: 5, amountMinor: 5_000 }, [], [{
+      bowlerId: 42,
+      name: "Bowler",
+      role: "self",
+      amountMinor: 5_000,
+      coveredWeeks: ["Week 3", "Week 4", "Week 5", "Week 30", "Week 31"],
+      allocations: [
+        { obligationId: "obligation-3", amountMinor: 1_000, occurrenceLocalDate: "2026-09-15", plannedOrdinal: 3, label: "Week 3", isPairedFinalWeek: false },
+        { obligationId: "obligation-4", amountMinor: 1_000, occurrenceLocalDate: "2026-09-22", plannedOrdinal: 4, label: "Week 4", isPairedFinalWeek: false },
+        { obligationId: "obligation-5", amountMinor: 1_000, occurrenceLocalDate: "2026-09-29", plannedOrdinal: 5, label: "Week 5", isPairedFinalWeek: false },
+        { obligationId: "obligation-30", amountMinor: 1_000, occurrenceLocalDate: "2027-04-27", plannedOrdinal: 30, label: "Week 30", isPairedFinalWeek: true },
+        { obligationId: "obligation-31", amountMinor: 1_000, occurrenceLocalDate: "2027-05-04", plannedOrdinal: 31, label: "Week 31", isPairedFinalWeek: true },
+      ],
+    }]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Review payment of $50" }));
+    expect(screen.getByRole("dialog", { name: "Review payment" })).toHaveTextContent("Week 3 through Week 5 and Weeks 30 and 31");
+  });
+
   it("requires an explicit final action after reviewing the quoted payment", () => {
     const { onSubmit } = renderCard(false);
 
@@ -362,6 +433,16 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("keeps the review action label and arrow together", () => {
+    renderCard(false);
+
+    const reviewButton = screen.getByRole("button", { name: "Review payment of $87.50" });
+    expect(reviewButton).not.toHaveClass("ml-auto");
+    expect(reviewButton.querySelector("svg")).toBeInTheDocument();
+    expect(reviewButton.querySelector("svg")).not.toHaveClass("size-4");
+    expect(document.querySelector(".familiar-one-time-card > div:last-child > button:last-child")).toBe(reviewButton);
+  });
+
   it("shows Save card for later only when a new card is selected and stored", () => {
     renderCard(true, {}, [], [], false, false, undefined, false, { storeCard: true });
 
@@ -391,7 +472,7 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     fireEvent.click(screen.getByRole("button", { name: "Review payment" }));
     const dialog = screen.getByRole("dialog", { name: "Review upfront payment" });
     expect(dialog).toHaveTextContent("BowlerWeek 1 · $27.50");
-    expect(dialog).toHaveTextContent("Alex PartnerWeeks 1–2 · $60");
+    expect(dialog).toHaveTextContent("Alex PartnerWeek 1 through Week 2 · $60");
   });
 
   it("uses allocation-aware partner coverage in a weekly review", () => {
@@ -432,7 +513,7 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     ]);
 
     fireEvent.click(screen.getByRole("button", { name: "Review payment of $10" }));
-    expect(screen.getByRole("dialog", { name: "Review payment" })).toHaveTextContent("Alex Partnerthrough Week 6 and includes Weeks 30 and 31 · $30");
+    expect(screen.getByRole("dialog", { name: "Review payment" })).toHaveTextContent("Alex PartnerWeek 6 and Weeks 30 and 31 · $30");
   });
 
   it("shows the authoritative quote subtotal when a partner projection differs", () => {
@@ -458,8 +539,8 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(reviewButton).toBeEnabled();
     fireEvent.click(reviewButton);
     const dialog = screen.getByRole("dialog", { name: "Review upfront payment" });
-    expect(dialog).toHaveTextContent("Alex PartnerWeeks 1–2 · $50");
-    expect(dialog).not.toHaveTextContent("Alex PartnerWeeks 1–2 · $60");
+    expect(dialog).toHaveTextContent("Alex PartnerWeek 1 through Week 2 · $50");
+    expect(dialog).not.toHaveTextContent("Alex PartnerWeek 1 through Week 2 · $60");
   });
 
   it("renders card completion only from an already confirmed and refreshed payment", () => {
