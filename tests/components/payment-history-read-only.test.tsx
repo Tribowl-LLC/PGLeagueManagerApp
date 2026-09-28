@@ -242,6 +242,7 @@ describe("PaymentHistoryContent", () => {
 
   it("routes due obligations through one combined checkout", async () => {
     const onPayDueNow = vi.fn();
+    const user = userEvent.setup();
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ data: { state: "none", partnerBowlerIds: [] } }) } } });
     render(<QueryClientProvider client={queryClient}><StandingAutopayCard
       league={{ ...league, payingLineupSize: 5 }} bowlerId={42} savedCards={[savedCard]}
@@ -249,11 +250,14 @@ describe("PaymentHistoryContent", () => {
       initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
       dueNowMinor={4_500} catchUpWeeks={2} onPayDueNow={onPayDueNow}
     /></QueryClientProvider>);
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Set up automatic payments" }));
+    await user.click(await screen.findByRole("button", { name: "Set up automatic payments" }));
     expect(await screen.findByText("Pay $45.00 due now and enable automatic payments in one checkout.")).toBeInTheDocument();
     expect(screen.queryByText(/This payment covers/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Enable automatic payments" })).not.toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Pay due now and enable automatic payments" }));
+    const payDueNow = screen.getByRole("button", { name: "Pay due now and enable automatic payments" });
+    expect(payDueNow).toBeDisabled();
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(payDueNow);
     expect(onPayDueNow).toHaveBeenCalledOnce();
   });
 

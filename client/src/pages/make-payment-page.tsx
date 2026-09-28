@@ -1328,6 +1328,11 @@ export default function MakePaymentPage() {
     isRetrying: isRetryingCombinedConsent,
   };
   const dueNowMinor = selfParticipant?.catchUpAmountMinor ?? selfParticipant?.dueNowMinor ?? 0;
+  const dueNowCaption = dueNowMinor <= 0
+    ? "Nothing due now"
+    : (selfParticipant?.pastDueMinor ?? 0) > 0
+      ? "Includes past-due balance"
+      : "Current payment due";
   const partnerAutopayNote = hasPaymentPartner && paymentPartner
     ? `Automatic payments apply to ${details?.bowler?.name ?? "you"} only. ${paymentPartner.name} is not included.`
     : undefined;
@@ -1340,7 +1345,7 @@ export default function MakePaymentPage() {
       {paymentMode === "weekly" && !isRotatingPoolMember && selfParticipant && <section className={`familiar-payment-balance${hasPaymentPartner ? " familiar-payment-balance-partner" : ""}`} aria-label="Payment balance">
         {hasPaymentPartner && <div className="familiar-balance-heading"><h2>Your balance</h2><small>{selfParticipant.weeklyOptions.at(-1)?.weeks ?? league.totalBowlingWeeks ?? 0} weeks left</small></div>}
         <div className="familiar-payment-balance-grid">
-          <div><span>Due now</span><strong>{formatPayCurrency(dueNowMinor)}</strong><small>{dueNowMinor > 0 ? "Past-due balance" : "Nothing past due"}</small></div>
+          <div><span>Due now</span><strong>{formatPayCurrency(dueNowMinor)}</strong><small>{dueNowCaption}</small></div>
           <div><span>Remaining</span><strong>{formatPayCurrency(selfParticipant.remainingMinor)}</strong><small>{selfParticipant.weeklyOptions.at(-1)?.weeks ?? 0}{league.totalBowlingWeeks ? ` of ${league.totalBowlingWeeks}` : ""} weeks</small></div>
         </div>
       </section>}

@@ -28,14 +28,14 @@ const savedCard: SavedCard = { id: "card_1", brand: "VISA", last4: "4242", expMo
 const replacementCard: SavedCard = { id: "card_2", brand: "MASTERCARD", last4: "5555", expMonth: 11, expYear: 2031 };
 const squareCard: SquareCard = { tokenize: async () => ({ status: "OK", token: "source_token" }), attach: async () => undefined, destroy: () => undefined };
 
-function makeQueryClient() {
+function makeQueryClient(state: "active" | "none" = "active") {
   return new QueryClient({
     defaultOptions: {
       queries: {
         retry: false,
         queryFn: async ({ queryKey }) => String(queryKey[0]).endsWith("/quote")
           ? { data: { cutoffAt: "2030-01-10T00:30:00.000Z" } }
-          : { data: { state: "active", partnerBowlerIds: [] } },
+          : { data: { state, partnerBowlerIds: [] } },
       },
     },
   });
@@ -59,6 +59,34 @@ function ActiveReplacementCard({ savedCards = [savedCard], card = null, isInitia
 
 function renderCard(props?: Parameters<typeof ActiveReplacementCard>[0]) {
   return render(<QueryClientProvider client={makeQueryClient()}><ActiveReplacementCard {...props} /></QueryClientProvider>);
+}
+
+function DueNowSetupCard({
+  onPayDueNow,
+  leagueOverrides = {},
+}: {
+  onPayDueNow: () => void;
+  leagueOverrides?: Partial<Pick<League, "totalBowlingWeeks" | "doublePayDates">>;
+}) {
+  const [cardEditorMode, setCardEditorMode] = useState<"one-time" | "autopay" | null>(null);
+  return <StandingAutopayCard
+    league={{ ...league, ...leagueOverrides }}
+    bowlerId={42}
+    savedCards={[savedCard]}
+    bowlerHasEmail
+    card={null}
+    isInitialized={false}
+    cardEditorMode={cardEditorMode}
+    initializeCard={vi.fn()}
+    cleanupCard={vi.fn()}
+    onCardEditorModeChange={setCardEditorMode}
+    dueNowMinor={4_500}
+    onPayDueNow={onPayDueNow}
+  />;
+}
+
+function renderDueNowSetupCard(props: Parameters<typeof DueNowSetupCard>[0]) {
+  return render(<QueryClientProvider client={makeQueryClient("none")}><DueNowSetupCard {...props} /></QueryClientProvider>);
 }
 
 beforeEach(() => {
@@ -107,5 +135,36 @@ describe("StandingAutopayCard active replacement", () => {
       "POST",
       expect.objectContaining({ sourceId: "card_new", partnerBowlerIds: [] }),
     );
+  });
+});
+
+describe("StandingAutopayCard due-now setup", () => {
+  it("requires consent before starting combined due-now checkout", async () => {
+    const user = userEvent.setup();
+    const onPayDueNow = vi.fn();
+    renderDueNowSetupCard({ onPayDueNow });
+
+    await user.click(await screen.findByRole("button", { name: "Set up automatic payments" }));
+    const payButton = await screen.findByRole("button", { name: "Pay due now and enable automatic payments" });
+    expect(payButton).toBeDisabled();
+    expect(onPayDueNow).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("checkbox"));
+    expect(payButton).toBeEnabled();
+    await user.click(payButton);
+    expect(onPayDueNow).toHaveBeenCalledOnce();
+  });
+
+  it("omits a derived last-pay-week claim when future weeks are already prepaid", async () => {
+    const user = userEvent.setup();
+    renderDueNowSetupCard({
+      onPayDueNow: vi.fn(),
+      leagueOverrides: { totalBowlingWeeks: 30, doublePayDates: ["2026-10-10", "2026-11-07"] },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Set up automatic payments" }));
+    expect(await screen.findByText("I agree to automatic weekly payments and understand that double-pay weeks may be charged twice to cover the final weeks of the season.")).toBeInTheDocument();
+    expect(screen.getByText("Double-pay weeks cover the final weeks of the season. Review this schedule before enabling anything.")).toBeInTheDocument();
+    expect(screen.queryByText(/Last pay week|final scheduled payment is Week|Week 28/)).not.toBeInTheDocument();
   });
 });

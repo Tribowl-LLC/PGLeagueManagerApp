@@ -110,4 +110,95 @@ describe("dashboard latest payment", () => {
     expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/api/financials/f5/payments"))
       .map(([input]) => new URL(String(input), "http://localhost").searchParams.get("page"))).toEqual(["1", "2"]);
   });
+
+  it("uses the final row when same-day payments have distinct amounts", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/financials/f5/payments") {
+        const sameDay = { authoritativeLocalDate: "2026-01-25", amountMinor: 2_500, currency: "USD", appliedTo: [], allocations: [] };
+        return { ok: true, json: async () => ({ success: true, data: { totalRows: 2, rows: [
+          { ...sameDay, amountMinor: 1_500 },
+          sameDay,
+        ] } }) };
+      }
+      if (url.pathname.endsWith("/rotating-credit/1")) {
+        return { ok: true, json: async () => ({ success: true, data: { eligibleForCredit: false } }) };
+      }
+      if (url.pathname.endsWith("/occurrence-schedule")) {
+        return { ok: true, json: async () => ({ success: true, data: {} }) };
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}>
+      <PaymentStatusSection league={league} bowler={bowler} weeklyFee={2_500} />
+    </QueryClientProvider>);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /View latest payment of \$25 on Jan 25, 2026/ })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /View latest payment of \$15 on Jan 25, 2026/ })).not.toBeInTheDocument();
+  });
+
+  it("requires review when current outstanding evidence is unresolved", async () => {
+    csrfFetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: {
+          rows: [{
+            id: "obligation-1",
+            organizationId: 1,
+            leagueId: 17,
+            occurrenceId: "occurrence-1",
+            responsibilityId: "responsibility-1",
+            teamId: 1,
+            component: "full",
+            payerBowlerId: 42,
+            amountMinor: 2_500,
+            currency: "USD",
+            dueAt: "2026-01-01T00:00:00.000Z",
+            pastDueAt: "2026-01-02T00:00:00.000Z",
+            state: "open",
+            allocatedMinor: 0,
+            grossAllocatedMinor: 0,
+            refundedMinor: 0,
+            waivedMinor: 0,
+            stillOwed: true,
+            outstandingMinor: 2_500,
+            classification: "review_required",
+            reviewRequired: true,
+          }],
+          asOf: "2026-01-25T12:00:00Z",
+          totals: { collectiblePastDueMinor: 0, outstandingMinor: 2_500 },
+        },
+      }),
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/financials/f5/payments") {
+        return { ok: true, json: async () => ({ success: true, data: { totalRows: 0, rows: [] } }) };
+      }
+      if (url.pathname.endsWith("/rotating-credit/1")) {
+        return { ok: true, json: async () => ({ success: true, data: { eligibleForCredit: false } }) };
+      }
+      if (url.pathname.endsWith("/occurrence-schedule")) {
+        return { ok: true, json: async () => ({ success: true, data: {} }) };
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}>
+      <PaymentStatusSection league={league} bowler={bowler} weeklyFee={2_500} />
+    </QueryClientProvider>);
+
+    await waitFor(() => {
+      expect(screen.getByText("Payment totals require review.")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Payment overview")).not.toBeInTheDocument();
+  });
 });

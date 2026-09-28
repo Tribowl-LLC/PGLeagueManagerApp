@@ -45,6 +45,7 @@ function readCurrentDueMinor(rows: CanonicalDuePastDueRowV2[] | undefined): numb
   let currentDueMinor = 0;
   for (const row of rows) {
     if (!Number.isSafeInteger(row.outstandingMinor) || row.outstandingMinor < 0) return null;
+    if (row.reviewRequired && row.outstandingMinor > 0) return null;
     if (row.reviewRequired || row.state === "voided" || row.state === "settled") continue;
     if (row.classification === "due" || row.classification === "past_due") currentDueMinor += row.outstandingMinor;
   }
@@ -243,12 +244,10 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({ league, bo
 };
 
 function latestPayment(rows: CanonicalPaymentRow[]): CanonicalPaymentRow | null {
-  return [...rows].sort((left, right) => {
-    const rightDate = Date.parse(right.authoritativeLocalDate);
-    const leftDate = Date.parse(left.authoritativeLocalDate);
-    if (Number.isFinite(rightDate) && Number.isFinite(leftDate) && rightDate !== leftDate) return rightDate - leftDate;
-    return 0;
-  })[0] ?? null;
+  // The canonical report is ordered oldest first, and this query always reads
+  // its final page. Keeping the final row preserves the canonical tie-breaker
+  // when multiple payments share the same league-local date.
+  return rows[rows.length - 1] ?? null;
 }
 
 function formatPaymentDate(value: string): string {

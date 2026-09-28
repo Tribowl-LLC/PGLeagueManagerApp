@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
   let includePartner = false;
   let remainingMinor = 8_750;
   let dueNowMinor = 1_000;
+  let pastDueMinor = 0;
   let participantRefreshUsesCurrentData = false;
   let detailsLeagueReady = true;
   let selectedLeagueId: number | null = 17;
@@ -80,7 +81,7 @@ const mocks = vi.hoisted(() => {
       name: "Bowler",
       role: "self" as const,
       remainingMinor: paidInFull ? 0 : remainingMinor,
-      pastDueMinor: 0,
+      pastDueMinor,
       weeklyOptions: paymentMode === "upfront"
         ? (paidInFull ? [] : [{ weeks: 1, amountMinor: remainingMinor }])
         : [1, 2, 3].map((weeks) => ({ weeks, amountMinor: weeks * 1_000 })),
@@ -215,6 +216,7 @@ const mocks = vi.hoisted(() => {
     setIncludePartner: (value: boolean) => { includePartner = value; },
     setRemainingBalance: (value: number) => { remainingMinor = value; },
     setDueNowMinor: (value: number) => { dueNowMinor = value; },
+    setPastDueMinor: (value: number) => { pastDueMinor = value; },
     setParticipantRefreshUsesCurrentData: (value: boolean) => { participantRefreshUsesCurrentData = value; },
     setDetailsLeagueReady: (value: boolean) => { detailsLeagueReady = value; },
     setSelectedLeagueId: (value: number | null) => { selectedLeagueId = value; },
@@ -313,6 +315,7 @@ afterEach(() => {
   mocks.setIncludePartner(false);
   mocks.setRemainingBalance(8_750);
   mocks.setDueNowMinor(1_000);
+  mocks.setPastDueMinor(0);
   mocks.setParticipantRefreshUsesCurrentData(false);
   mocks.setDetailsLeagueReady(true);
   mocks.setSelectedLeagueId(17);
@@ -335,6 +338,23 @@ afterEach(() => {
 });
 
 describe("MakePaymentPage upfront payment mode", () => {
+  it("does not call an on-time current payment past due", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.setDueNowMinor(1_000);
+    render(<MakePaymentPage />);
+
+    expect(await screen.findByText("Current payment due")).toBeInTheDocument();
+    expect(screen.queryByText("Past-due balance")).not.toBeInTheDocument();
+  });
+
+  it("calls out past-due evidence only when the participant reports it", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.setPastDueMinor(500);
+    render(<MakePaymentPage />);
+
+    expect(await screen.findByText("Includes past-due balance")).toBeInTheDocument();
+  });
+
   it("passes a payable solo self participant as selected by default", async () => {
     render(<MakePaymentPage />);
 
