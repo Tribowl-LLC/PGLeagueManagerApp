@@ -53,7 +53,12 @@ Standing provider charges are classified as unattended card-not-present
 payments. The consent status read (`GET .../standing-autopay/1`) includes only
 the narrow `paymentAttention: "scheduled_payment_declined"` signal when the
 current consent has an actionable hard-declined charge with at least one
-unsettled obligation. It does not expose provider or operation identifiers.
+unsettled obligation. For an active consent it may also include display-only
+`paymentMethod` metadata (`brand` and `last4`) after the server resolves the
+encrypted source/customer against the provider card list outside the schedule
+transaction. Provider or operation identifiers are never exposed, and a
+provider lookup failure leaves the active status intact with `paymentMethod`
+set to `null`.
 The signal clears when a one-time FIFO payment settles those obligations, so
 the normal next-cutoff quote becomes visible again; the client refetches both
 status and quote after a successful one-time payment.

@@ -787,6 +787,7 @@ function consentWire(
   leagueId: number,
   payerBowlerId: number,
   paymentAttention: "scheduled_payment_declined" | null = null,
+  paymentMethod: { brand: string; last4: string } | null = null,
 ) {
   return {
     contractVersion: "standing-autopay-consent/1" as const,
@@ -796,22 +797,75 @@ function consentWire(
     state: consent?.state ?? "none",
     paymentMode: "weekly" as const,
     partnerBowlerIds: partners,
+    paymentMethod,
     paymentAttention,
   };
+}
+
+type StandingAutopayPaymentMethodLookup = {
+  locationId: number;
+  providerName: string;
+  providerLocationId: string;
+  encryptedSourceId: string;
+  encryptedCustomerId: string;
+};
+
+/**
+ * Resolve card metadata after the status transaction has released the
+ * schedule lock. The provider source/customer identifiers never leave this
+ * server-side lookup; only the card brand and last four digits are returned.
+ */
+async function resolveStandingAutopayPaymentMethod(
+  lookup: StandingAutopayPaymentMethodLookup | null,
+): Promise<{ brand: string; last4: string } | null> {
+  if (!lookup) return null;
+  try {
+    const provider = await getPaymentProvider(lookup.locationId);
+    if (provider.locationId !== lookup.locationId || provider.providerName !== lookup.providerName) return null;
+    if (typeof provider.getProviderLocationId !== "function" || (await provider.getProviderLocationId()) !== lookup.providerLocationId) return null;
+    const sourceId = decrypt(lookup.encryptedSourceId);
+    const customerId = decrypt(lookup.encryptedCustomerId);
+    if (!sourceId || !customerId) return null;
+    const card = (await provider.listCardsOnFile(customerId)).find((candidate) => candidate.id === sourceId);
+    if (!card || typeof card.brand !== "string" || typeof card.last4 !== "string" || !card.brand || !card.last4) return null;
+    return { brand: card.brand, last4: card.last4 };
+  } catch {
+    // Provider outages and missing/deleted cards must not hide a valid active
+    // consent or make the status endpoint fail closed.
+    return null;
+  }
 }
 
 export async function readStandingAutopayConsent(input: { organizationId: number; leagueId: number; payerBowlerId: number }) {
   if (!rosterStandingAutopayEnabled || scheduledPaymentExecutionMode !== "ledger_execute") {
     return consentWire(undefined, [], input.organizationId, input.leagueId, input.payerBowlerId);
   }
-  return db.transaction(async (tx) => {
+  const snapshot = await db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
-    await leagueFor(tx, input.organizationId, input.leagueId);
+    const league = await leagueFor(tx, input.organizationId, input.leagueId);
     const consent = await activeConsent(tx, input);
     const partners = consent ? await consentPartners(tx, { organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, payerBowlerId: input.payerBowlerId }) : [];
     const paymentAttention = await latestActionableStandingOperation(tx, input, consent, input.payerBowlerId);
-    return consentWire(consent, partners.map((row) => row.partnerBowlerId), input.organizationId, input.leagueId, input.payerBowlerId, paymentAttention);
+    const paymentMethodLookup = consent && league.locationId !== null
+      && consent.providerName !== null
+      && consent.providerLocationId !== null
+      && consent.encryptedSourceId !== null
+      && consent.encryptedCustomerId !== null
+      ? {
+        locationId: league.locationId,
+        providerName: consent.providerName,
+        providerLocationId: consent.providerLocationId,
+        encryptedSourceId: consent.encryptedSourceId,
+        encryptedCustomerId: consent.encryptedCustomerId,
+      }
+      : null;
+    return {
+      wire: consentWire(consent, partners.map((row) => row.partnerBowlerId), input.organizationId, input.leagueId, input.payerBowlerId, paymentAttention),
+      paymentMethodLookup,
+    };
   });
+  const paymentMethod = await resolveStandingAutopayPaymentMethod(snapshot.paymentMethodLookup);
+  return { ...snapshot.wire, paymentMethod };
 }
 
 export async function activateStandingAutopayConsent(input: { organizationId: number; leagueId: number; payerBowlerId: number; actorUserId: number; request: StandingAutopayConsentRequest }) {

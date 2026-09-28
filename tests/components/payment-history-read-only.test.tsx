@@ -34,6 +34,8 @@ describe("PaymentHistoryContent", () => {
   it("formats the next automatic payment in the league timezone", () => {
     expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "America/Detroit")).toMatch(/December 31, 2029/);
     expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "Pacific/Kiritimati")).toMatch(/January 1, 2030/);
+    expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "America/Detroit", "short")).toMatch(/Dec 31/);
+    expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "Pacific/Kiritimati", "short")).toMatch(/Jan 1/);
   });
 
   it("is read-only action-wise and links summary cards to Make Payment", () => {
@@ -289,14 +291,18 @@ describe("PaymentHistoryContent", () => {
 
   it("shows the next scheduled automatic-payment date without implementation copy", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => String(queryKey[0]).endsWith("/quote")
-      ? ({ data: { cutoffAt: "2030-01-10T00:30:00.000Z" } })
-      : ({ data: { state: "active", partnerBowlerIds: [] } }) } } });
+      ? ({ data: { cutoffAt: "2030-01-10T00:30:00.000Z", amountMinor: 2500, collectionMode: "weekly" } })
+      : ({ data: { state: "active", partnerBowlerIds: [], paymentMethod: { brand: "Visa", last4: "4242" } } }) } } });
     render(<QueryClientProvider client={queryClient}><StandingAutopayCard
       league={{ ...league, payingLineupSize: 4 }} bowlerId={42}
       savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
       cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
     /></QueryClientProvider>);
-    await waitFor(() => expect(screen.getByText(/Next Payment Scheduled:/)).toHaveTextContent("Next Payment Scheduled: January 9, 2030"));
+    await waitFor(() => expect(screen.getByText("$25")).toBeInTheDocument());
+    expect(screen.getByText("· Jan 9")).toBeInTheDocument();
+    expect(screen.getByText("Next automatic payment")).toBeInTheDocument();
+    expect(screen.getByText("Visa ending in 4242")).toBeInTheDocument();
+    expect(screen.queryByText("Double-pay weeks")).not.toBeInTheDocument();
     expect(screen.queryByText(/exact remaining roster obligations|consent version/i)).not.toBeInTheDocument();
     expect(csrfFetchMock).not.toHaveBeenCalled();
   });
@@ -311,7 +317,8 @@ describe("PaymentHistoryContent", () => {
       savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
       cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
     /></QueryClientProvider>);
-    await waitFor(() => expect(screen.getByText(/Next Payment Scheduled:/)).toHaveTextContent("Next Payment Scheduled: Unavailable"));
+    await waitFor(() => expect(screen.getByText("Unavailable")).toBeInTheDocument());
+    expect(screen.getByText("Next automatic payment")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Pay older unpaid obligations with a one-time payment before automatic payments can resume.");
     expect(screen.getByRole("alert")).not.toHaveTextContent("409:");
   });

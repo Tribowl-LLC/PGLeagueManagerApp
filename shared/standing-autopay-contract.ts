@@ -35,6 +35,8 @@ export type StandingAutopayConsentWire = {
   state: "pending" | "active" | "revoked" | "expired" | "none";
   paymentMode: "weekly";
   partnerBowlerIds: number[];
+  /** Display-only metadata for the active provider card, when it can be verified. */
+  paymentMethod: { brand: string; last4: string } | null;
   /** A narrow signal for an unresolved scheduled-payment decline. */
   paymentAttention: "scheduled_payment_declined" | null;
 };
