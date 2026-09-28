@@ -3,19 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import type { ApiResponse, User } from "@shared/schema";
 import { ErrorBoundary } from "@/components/error-boundary";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
+import { PublicPageLayout } from "@/components/public-page-layout";
 import { apiRequest, clearCsrfToken, queryClient } from "@/lib/queryClient";
 import { logger } from "@/lib/logger";
-import { Clock3, Loader2, LogOut, MailCheck, RefreshCw } from "lucide-react";
+import { Clock3, Home, Loader2, LogOut, MailCheck, RefreshCw } from "lucide-react";
 
 const REGISTRATION_STATUS_INTERVAL_MS = 30_000;
 
@@ -32,6 +23,7 @@ const RegistrationCompletePage: FC = () => {
   const [, setLocation] = useLocation();
   const [isVisible, setIsVisible] = useState(isDocumentVisible);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [checkedManually, setCheckedManually] = useState(false);
 
   const {
     data: userResponse,
@@ -52,6 +44,7 @@ const RegistrationCompletePage: FC = () => {
   });
 
   const checkStatus = useCallback(() => {
+    setCheckedManually(true);
     void refetch();
   }, [refetch]);
 
@@ -100,84 +93,39 @@ const RegistrationCompletePage: FC = () => {
 
   return (
     <ErrorBoundary level="section">
-      <div className="min-h-screen bg-background flex items-start sm:items-center justify-center p-4 pt-6 sm:pt-4">
-        <Card className="w-full max-w-md mt-4 sm:mt-0">
-          <CardHeader spacing="relaxed" className="text-center">
-            <div className="flex justify-center">
-              <Clock3 className="size-12 text-primary" aria-hidden="true" />
-            </div>
-            <CardTitle size="2xl" weight="bold">Registration in progress</CardTitle>
-            <CardDescription>
-              Your account is waiting for administrator setup.
-            </CardDescription>
-          </CardHeader>
-          <CardContent spacing="normal">
-            <div className="rounded-md border bg-muted/40 p-4 flex items-start gap-3">
-              <MailCheck className="size-5 text-primary mt-0.5 shrink-0" aria-hidden="true" />
-              <p className="text-sm text-muted-foreground">
-                Your sign-in account has been created. A league administrator
-                needs to connect it to your bowler profile. We’ll request an
-                email notification when your account is ready. This page
-                checks automatically, and you can return here to check the
-                status yourself.
-              </p>
-            </div>
+      <PublicPageLayout>
+        <article className="public-flow-card">
+          <div className="public-flow-icon"><Clock3 className="size-6" aria-hidden="true" /></div>
+          <p className="public-flow-eyebrow">Account setup</p>
+          <h1 className="public-flow-title">Your account is almost ready</h1>
+          <p className="public-flow-description">
+            Your account is created. An administrator still needs to connect it to a bowler profile before your league appears.
+          </p>
 
-            {statusError && (
-              <Alert variant="destructive" role="alert">
-                <AlertTitle>Couldn’t check registration status</AlertTitle>
-                <AlertDescription spacing="normal">
-                  <p>
-                    We couldn’t reach the registration service. Your account
-                    is still safe; please try again.
-                  </p>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={checkStatus}
-                    disabled={isFetching}
-                  >
-                    Try again
-                  </Button>
-                </AlertDescription>
-              </Alert>
-            )}
+          <div className="public-flow-inset public-flow-waiting-inset">
+            <span className="public-flow-inset-icon" aria-hidden="true"><MailCheck className="size-5" /></span>
+            <div><strong>Waiting for administrator setup</strong><p>Only an administrator can make this connection. You can continue once your profile is linked.</p></div>
+          </div>
 
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-sm text-muted-foreground" aria-live="polite">
-              <span>{isLoading || isFetching ? "Checking registration status…" : "We’ll check again automatically."}</span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={checkStatus}
-                disabled={isFetching}
-                className="w-full sm:w-auto shrink-0"
-                data-testid="button-check-registration-status"
-              >
-                {isFetching ? <Loader2 className="size-4 mr-2 animate-spin" aria-hidden="true" /> : <RefreshCw className="size-4 mr-2" aria-hidden="true" />}
-                Check registration status
-              </Button>
-            </div>
-          </CardContent>
-          <CardFooter spacing="tight" className="flex flex-col">
-            <Button asChild variant="outline" className="w-full">
-              <Link href="/profile">View Profile</Link>
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              className="w-full"
-              onClick={handleLogout}
-              disabled={isLoggingOut}
-              data-testid="button-registration-sign-out"
-            >
-              {isLoggingOut ? <Loader2 className="size-4 mr-2 animate-spin" aria-hidden="true" /> : <LogOut className="size-4 mr-2" aria-hidden="true" />}
+          {statusError && <div className="public-flow-alert" role="alert"><strong>Couldn’t check registration status.</strong><p>Your account is still safe. Try again when you’re ready.</p></div>}
+
+          <div className="public-flow-status-row" aria-live="polite">
+            <span>{isLoading || isFetching ? "Checking registration status…" : statusError ? "Status check needs another try." : checkedManually ? "Checked just now. No profile has been linked yet." : "We’ll check again automatically."}</span>
+            <button type="button" className="public-flow-secondary public-flow-status-button" onClick={checkStatus} disabled={isFetching} data-testid="button-check-registration-status">
+              {isFetching ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="size-4" aria-hidden="true" />}
+              {statusError ? "Try again" : "Check status"}
+            </button>
+          </div>
+
+          <div className="public-flow-actions-stack">
+            <Link href="/profile" className="public-flow-secondary"><Home className="size-4" aria-hidden="true" />View profile</Link>
+            <button type="button" className="public-flow-link public-flow-sign-out" onClick={handleLogout} disabled={isLoggingOut} data-testid="button-registration-sign-out">
+              {isLoggingOut ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <LogOut className="size-4" aria-hidden="true" />}
               {isLoggingOut ? "Signing out…" : "Sign out"}
-            </Button>
-          </CardFooter>
-        </Card>
-      </div>
+            </button>
+          </div>
+        </article>
+      </PublicPageLayout>
     </ErrorBoundary>
   );
 };

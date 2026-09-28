@@ -1,9 +1,17 @@
+/* eslint-disable shadcn/no-unknown-classes, shadcn/no-restyle */
 import { useMemo, useState, FC } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Users, Mail, X, Check, Trash2, Loader2 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -68,8 +76,11 @@ function partnerInviteOutcome(result: PartnerInviteEmailResult | undefined, acti
 export const BowlerPaymentLinksSection: FC<{
   currentBowlerId: number;
   alwaysShow?: boolean;
-}> = ({ currentBowlerId, alwaysShow = false }) => {
+  /** Render a profile row and open the partner tools in a mobile dialog. */
+  triggerOnly?: boolean;
+}> = ({ currentBowlerId, alwaysShow = false, triggerOnly = false }) => {
   const { toast } = useToast();
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   const { data, isLoading } = useQuery<ApiResponse<LinksResponse>>({
     queryKey: ["/api/bowler-links"],
@@ -140,17 +151,8 @@ export const BowlerPaymentLinksSection: FC<{
   const accepted = links.filter((l) => l.status === "accepted");
   const pending = links.filter((l) => l.status === "pending");
 
-  return (
-    <Card data-testid="card-payment-partners" className="mt-4">
-      <CardHeader>
-        <CardTitle size="base" iconSpacing>
-          <Users className="size-4" /> Payment partners
-        </CardTitle>
-        <CardDescription>
-          Linked bowlers can pay for each other from a saved card.
-        </CardDescription>
-      </CardHeader>
-      <CardContent spacing="normal">
+  const content = (
+    <CardContent spacing="normal" className={triggerOnly ? "familiar-payment-links-content" : undefined}>
         {accepted.length > 0 && (
           <div className="space-y-2">
             {accepted.map((l) => {
@@ -178,10 +180,10 @@ export const BowlerPaymentLinksSection: FC<{
                         onClick={() => setPartnerToRemove(l)}
                         disabled={unlink.isPending && partnerToRemove?.id === l.id}
                         data-testid={`button-remove-partner-${l.id}`}
-                        aria-label={`Remove payment partner ${l.partnerName}`}
+                        aria-label={`Remove link for payment partner ${l.partnerName}`}
                       >
                         <Trash2 className="size-4 mr-1" />
-                        Remove
+                        Remove link
                       </Button>
                     </span>
                   </div>
@@ -301,12 +303,53 @@ export const BowlerPaymentLinksSection: FC<{
                 }}
                 disabled={unlink.isPending}
               >
-                {unlink.isPending ? <Loader2 className="size-4 animate-spin" /> : "Remove Partner"}
+                {unlink.isPending ? <Loader2 className="size-4 animate-spin" /> : "Remove link"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-      </CardContent>
+    </CardContent>
+  );
+
+  if (triggerOnly) {
+    return (
+      <>
+        <section className="familiar-profile-setting-row" data-testid="profile-setting-payment-partners">
+          <div className="familiar-profile-setting-copy">
+            <h2>Payment-partner links</h2>
+            <p>{hasAny ? "Manage bowlers who can pay for each other." : "No payment partners are linked."}</p>
+          </div>
+          <Button variant="outline" className="familiar-profile-row-action" onClick={() => setIsDialogOpen(true)}>
+            View partners
+          </Button>
+        </section>
+        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+          <DialogContent className="familiar-profile-dialog familiar-payment-links-dialog" viewport="tall">
+            <DialogHeader>
+              <DialogTitle>Payment-partner links</DialogTitle>
+              <DialogDescription>
+                Linked bowlers can pay for each other from a saved card.
+              </DialogDescription>
+            </DialogHeader>
+            {content}
+            <Button type="button" onClick={() => setIsDialogOpen(false)}>Done</Button>
+          </DialogContent>
+        </Dialog>
+      </>
+    );
+  }
+
+  return (
+    <Card data-testid="card-payment-partners" className="mt-4">
+      <CardHeader>
+        <CardTitle size="base" iconSpacing>
+          <Users className="size-4" /> Payment partners
+        </CardTitle>
+        <CardDescription>
+          Linked bowlers can pay for each other from a saved card.
+        </CardDescription>
+      </CardHeader>
+      {content}
     </Card>
   );
 };

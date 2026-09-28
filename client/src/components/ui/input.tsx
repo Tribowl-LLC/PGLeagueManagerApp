@@ -20,6 +20,7 @@ const inputVariants = cva(
         default: "",
         sm: "pr-8",
         md: "pr-10",
+        lg: "pr-12",
       },
       padding: {
         default: "",

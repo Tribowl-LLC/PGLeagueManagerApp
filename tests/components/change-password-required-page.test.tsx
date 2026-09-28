@@ -25,6 +25,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
+vi.mock('@/hooks/use-business-context', () => ({ useBusinessContext: () => ({ business: null }) }));
+
 vi.mock('@/lib/queryClient', async () => {
   const actual = await vi.importActual<typeof import('../../client/src/lib/queryClient')>(
     '../../client/src/lib/queryClient',
@@ -91,17 +93,30 @@ describe('ChangePasswordRequiredPage (task #455)', () => {
     expect(screen.queryByRole('button', { name: /^cancel$/i })).not.toBeInTheDocument();
   });
 
+  it('lets the bowler reveal and hide a password without clearing it', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const currentPassword = await screen.findByLabelText(/^current password$/i);
+    await user.type(currentPassword, 'AdminSetPw1!');
+    await user.click(screen.getByRole('button', { name: 'Show current password' }));
+    expect(currentPassword).toHaveAttribute('type', 'text');
+    expect(currentPassword).toHaveValue('AdminSetPw1!');
+
+    await user.click(screen.getByRole('button', { name: 'Hide current password' }));
+    expect(currentPassword).toHaveAttribute('type', 'password');
+    expect(currentPassword).toHaveValue('AdminSetPw1!');
+  });
+
   it('shows the explanatory copy so the user understands why they are here', () => {
     renderPage();
 
     // Headline tells them WHAT to do.
-    expect(screen.getByText(/choose a new password to continue/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /choose a new password/i })).toBeInTheDocument();
     // Body tells them WHY (and which password is the "current" one).
+    expect(screen.getByText(/administrator reset your password/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/administrator recently reset your password/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/password your administrator gave you/i),
+      screen.getByText(/temporary password as your current password/i),
     ).toBeInTheDocument();
   });
 

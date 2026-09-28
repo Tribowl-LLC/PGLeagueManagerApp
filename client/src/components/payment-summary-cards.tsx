@@ -1,7 +1,5 @@
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { format, parseISO } from "date-fns";
+/* eslint-disable shadcn/no-unknown-classes */
 import { formatCurrency } from "@/lib/utils";
-import { CheckCircle2, CircleDollarSign } from "lucide-react";
 import { Link } from "wouter";
 
 interface DoublePayInfo {
@@ -28,171 +26,102 @@ interface PaymentSummaryCardsProps {
   onPayRemaining: () => void;
   pastDueHref?: string;
   remainingHref?: string;
+  /** Rotating shares intentionally expose only paid and past-due totals. */
+  isRotating?: boolean;
 }
 
 export function PaymentSummaryCards({
-  totalWeeksInSeason,
   fullSeasonAmount,
-  weeklyFee,
-  weeksDueCount,
-  totalSeasonDues,
-  weeksPaid,
   totalPaidAmount,
-  waivedAmount = 0,
   amountPastDue,
   remainingBalance,
-  doublePay,
   onPayPastDue,
   onPayRemaining,
   pastDueHref,
   remainingHref,
+  isRotating = false,
 }: PaymentSummaryCardsProps) {
-  const isPaidInFull = remainingBalance <= 0 && totalPaidAmount > 0;
+  const showPastDue = amountPastDue > 0;
+  const summaryClassName = [
+    "familiar-payment-summary__grid",
+    showPastDue ? "familiar-payment-summary__grid--past-due" : "",
+    isRotating ? "familiar-payment-summary__grid--rotating" : "",
+  ].filter(Boolean).join(" ");
+
+  const pastDueValue = showPastDue && pastDueHref ? (
+    <Link
+      href={pastDueHref}
+      className="familiar-payment-summary__value familiar-payment-summary__value--past-due"
+      aria-label="Amount Past Due — Make a payment"
+      onClick={onPayPastDue}
+    >
+      {formatFamiliarCurrency(amountPastDue)}
+    </Link>
+  ) : showPastDue ? (
+    <button type="button" className="familiar-payment-summary__value familiar-payment-summary__value--past-due" onClick={onPayPastDue}>
+      {formatFamiliarCurrency(amountPastDue)}
+    </button>
+  ) : <span className="familiar-payment-summary__value">{formatFamiliarCurrency(0)}</span>;
+
+  const remainingValue = remainingBalance > 0 && remainingHref ? (
+    <Link
+      href={remainingHref}
+      className="familiar-payment-summary__value"
+      aria-label="Full Season Remaining Balance — Make a payment"
+      onClick={onPayRemaining}
+    >
+      {formatFamiliarCurrency(remainingBalance)}
+    </Link>
+  ) : remainingBalance > 0 ? (
+    <button type="button" className="familiar-payment-summary__value" onClick={onPayRemaining}>
+      {formatFamiliarCurrency(remainingBalance)}
+    </button>
+  ) : <span className="familiar-payment-summary__value">{formatFamiliarCurrency(0)}</span>;
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-      {isPaidInFull && (
-        <Card tone="success" className="md:col-span-3">
-          <CardContent className="flex items-center justify-center" gap="3" padding="vertical">
-            <CheckCircle2 className="size-6 text-success-600" />
-            <span className="text-lg font-semibold text-success-600">Season Paid in Full</span>
-          </CardContent>
-        </Card>
-      )}
+    <section className="familiar-payment-summary" aria-labelledby="history-season-totals-title">
+      <h2 id="history-season-totals-title" className="familiar-payment-summary__heading">Season totals</h2>
+      <div className={summaryClassName}>
+        <div>
+          <span className="familiar-payment-summary__label">Paid</span>
+          <strong className="familiar-payment-summary__value">{formatFamiliarCurrency(totalPaidAmount)}</strong>
+        </div>
+        {!isRotating && (
+          <>
+            {showPastDue && <div>
+              <span className="familiar-payment-summary__label">Past Due</span>
+              {pastDueValue}
+            </div>}
+            <div>
+              <span className="familiar-payment-summary__label">Remaining</span>
+              {remainingValue}
+              {remainingBalance <= 0 && <span className="sr-only">Fully paid</span>}
+            </div>
+            <div>
+              <span className="familiar-payment-summary__label">Season</span>
+              <strong className="familiar-payment-summary__value">{formatFamiliarCurrency(fullSeasonAmount)}</strong>
+            </div>
+          </>
+        )}
+        {isRotating && showPastDue && (
+          <div>
+            <span className="familiar-payment-summary__label">Past Due</span>
+            {pastDueValue}
+          </div>
+        )}
+      </div>
 
-      <Card>
-        <CardHeader padding="compact">
-          <CardTitle size="lg">Full Season Amount Due</CardTitle>
-          <CardDescription>
-            {totalWeeksInSeason} week{totalWeeksInSeason === 1 ? "" : "s"} at {formatCurrency(weeklyFee)}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-2xl font-bold">{formatCurrency(fullSeasonAmount)}</p>
-        </CardContent>
-      </Card>
-
-      {waivedAmount > 0 && (
-        <Card>
-          <CardHeader padding="compact"><CardTitle size="lg">Refunds Waived</CardTitle><CardDescription>Not counted as payments</CardDescription></CardHeader>
-          <CardContent><p className="text-2xl font-bold">{formatCurrency(waivedAmount)}</p></CardContent>
-        </Card>
-      )}
-
-      <Card>
-        <CardHeader padding="compact">
-          <CardTitle size="lg">Weekly Fee</CardTitle>
-          <CardDescription>Regular payment amount</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-2xl font-bold">{formatCurrency(weeklyFee)}</p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader padding="compact">
-          <CardTitle size="lg">Amount Due to Date</CardTitle>
-          <CardDescription>
-            {weeksDueCount} week{weeksDueCount === 1 ? "" : "s"} at {formatCurrency(weeklyFee)}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-2xl font-bold">{formatCurrency(totalSeasonDues)}</p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader padding="compact">
-          <CardTitle size="lg">Amount Paid to Date</CardTitle>
-          <CardDescription>
-            {weeksPaid} week{weeksPaid === 1 ? "" : "s"} at {formatCurrency(weeklyFee)}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-2xl font-bold">{formatCurrency(totalPaidAmount)}</p>
-        </CardContent>
-      </Card>
-
-      {pastDueHref ? (
-        <Link
-          href={pastDueHref}
-          aria-label="Amount Past Due to Date — Make a payment"
-          onClick={() => amountPastDue > 0 && onPayPastDue()}
-          className="block no-underline text-inherit"
-        >
-          <Card interaction={amountPastDue > 0 ? "danger" : "none"} className={amountPastDue > 0 ? "cursor-pointer" : undefined}>
-            <CardHeader padding="compact">
-              <CardTitle size="lg">Amount Past Due to Date</CardTitle>
-              <CardDescription>{amountPastDue > 0 ? "Make a payment" : "No amount past due"}</CardDescription>
-            </CardHeader>
-            <CardContent><p className="text-2xl font-bold text-destructive">{formatCurrency(amountPastDue)}</p></CardContent>
-          </Card>
-        </Link>
-      ) : (
-        <Card
-          interaction={amountPastDue > 0 ? "danger" : "none"}
-          className={amountPastDue > 0 ? "cursor-pointer" : undefined}
-          onClick={() => amountPastDue > 0 && onPayPastDue()}
-        >
-          <CardHeader padding="compact"><CardTitle size="lg">Amount Past Due to Date</CardTitle><CardDescription>{amountPastDue > 0 ? "Click to make a payment" : "No amount past due"}</CardDescription></CardHeader>
-          <CardContent><p className="text-2xl font-bold text-destructive">{formatCurrency(amountPastDue)}</p></CardContent>
-        </Card>
-      )}
-
-      {remainingHref ? (
-        <Link
-          href={remainingHref}
-          aria-label="Full Season Remaining Balance — Make a payment"
-          onClick={() => remainingBalance > 0 && onPayRemaining()}
-          className="block no-underline text-inherit"
-        >
-          <Card interaction={remainingBalance > 0 ? "primary" : "none"} className={remainingBalance > 0 ? "cursor-pointer" : undefined}>
-            <CardHeader padding="compact"><CardTitle size="lg">Full Season Remaining Balance</CardTitle><CardDescription>{remainingBalance > 0 ? "Make a one-time payment" : "Fully paid"}</CardDescription></CardHeader>
-            <CardContent><p className="text-2xl font-bold">{formatCurrency(remainingBalance)}</p></CardContent>
-          </Card>
-        </Link>
-      ) : (
-        <Card
-          interaction={remainingBalance > 0 ? "primary" : "none"}
-          className={remainingBalance > 0 ? "cursor-pointer" : undefined}
-          onClick={() => remainingBalance > 0 && onPayRemaining()}
-        >
-          <CardHeader padding="compact"><CardTitle size="lg">Full Season Remaining Balance</CardTitle><CardDescription>{remainingBalance > 0 ? "Click to make a one-time payment" : "Fully paid"}</CardDescription></CardHeader>
-          <CardContent><p className="text-2xl font-bold">{formatCurrency(remainingBalance)}</p></CardContent>
-        </Card>
-      )}
-
-      {doublePay.dates.length > 0 && (
-        <Card tone="positive">
-          <CardHeader padding="compact">
-            <CardTitle size="lg" iconSpacing="tight" tone="positive">
-              <CircleDollarSign className="size-5" />
-              Double-Pay Weeks
-            </CardTitle>
-            <CardDescription>
-              {doublePay.dates.length} week{doublePay.dates.length === 1 ? '' : 's'} billed at 2×; last{' '}
-              {doublePay.dates.length} regular week{doublePay.dates.length === 1 ? '' : 's'} not charged
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold text-positive-700 dark:text-positive-400">
-              {formatCurrency(doublePay.perWeekExtra * 2)}/week
-            </p>
-            <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-              {doublePay.dates.map((d) => (
-                <li key={d} className="flex items-center justify-between">
-                  <span>{format(parseISO(d), 'MMM d, yyyy')}</span>
-                  <span>{formatCurrency(doublePay.perWeekExtra * 2)}</span>
-                </li>
-              ))}
-            </ul>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Season total unchanged; these dates collect early so the last{' '}
-              {doublePay.dates.length} regular bowling week{doublePay.dates.length === 1 ? '' : 's'} bill $0.
-            </p>
-          </CardContent>
-        </Card>
-      )}
-    </div>
+    </section>
   );
+}
+
+function formatFamiliarCurrency(amountMinor: number): string {
+  if (!Number.isSafeInteger(amountMinor)) return formatCurrency(amountMinor);
+  const hasCents = Math.abs(amountMinor) % 100 !== 0;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: hasCents ? 2 : 0,
+    maximumFractionDigits: 2,
+  }).format(amountMinor / 100);
 }

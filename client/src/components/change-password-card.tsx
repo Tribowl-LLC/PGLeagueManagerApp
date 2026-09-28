@@ -4,7 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useMutation } from "@tanstack/react-query";
-import { AlertTriangle, Loader2, Lock } from "lucide-react";
+import { AlertTriangle, ArrowRight, Eye, EyeOff, Loader2, Lock } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -62,15 +62,15 @@ type ChangePasswordResponse = {
 // the user has to complete the form before the route guard will
 // stop bouncing them. The success path doesn't collapse back into
 // the toggle either; the next /api/user refetch flips the flag and
-// the guard releases the user automatically.
-export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}) {
+// the guard releases the user automatically. `alwaysOpen` embeds the same
+// form in Profile without implying an administrator reset.
+export function ChangePasswordCard({ forced = false, alwaysOpen = false, onSuccess }: { forced?: boolean; alwaysOpen?: boolean; onSuccess?: () => void } = {}) {
   const { toast } = useToast();
-  // `forced` is a stable prop for this card's lifetime, so deriving the
-  // visible state from it (rather than seeding state and syncing) keeps
-  // a single source of truth: the form is open whenever it's forced open
-  // or the user opened it via the toggle.
+  // These embedding props are stable for this card's lifetime, so the form
+  // stays open for either focused route/dialog without syncing extra state.
   const [userOpen, setUserOpen] = useState(false);
-  const showForm = forced || userOpen;
+  const [visibleFields, setVisibleFields] = useState({ current: false, next: false, confirm: false });
+  const showForm = forced || alwaysOpen || userOpen;
   const { isThrottled, remainingSeconds, throttle, clear: clearThrottle } =
     useThrottleCountdown();
 
@@ -88,12 +88,13 @@ export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}
     },
     onSuccess: (response) => {
       form.reset();
+      setVisibleFields({ current: false, next: false, confirm: false });
       // Task #455: in the forced-rotation flow we keep the form
       // mounted so the success toast is visible without an empty
       // collapsed card flashing in. The /api/user refetch
       // invalidation below releases the route guard and the user
       // navigates away naturally.
-      if (!forced) {
+      if (!forced && !alwaysOpen) {
         setUserOpen(false);
       }
       clearThrottle();
@@ -117,6 +118,7 @@ export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}
       // no longer pinned to /change-password-required.
       queryClient.invalidateQueries({ queryKey: ['/api/user'] });
       toast({ title: "Password Changed", description: "Your password has been updated successfully." });
+      onSuccess?.();
     },
     onError: (error: Error) => {
       if (isRateLimitError(error)) {
@@ -135,11 +137,11 @@ export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}
   });
 
   return (
-    <Card>
-      <CardHeader padding="standard">
+    <Card surface={forced || alwaysOpen ? "plain" : "default"} noPadding={forced || alwaysOpen}>
+      {!forced && !alwaysOpen && <CardHeader padding="standard">
         <CardTitle>Change Password</CardTitle>
         <CardDescription className="mt-1.5">Update your account password</CardDescription>
-      </CardHeader>
+      </CardHeader>}
       <CardContent>
         {!showForm ? (
           <Button variant="outline" onClick={() => setUserOpen(true)} data-testid="button-change-password-toggle">
@@ -148,7 +150,7 @@ export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}
           </Button>
         ) : (
           <Form {...form}>
-            <form onSubmit={form.handleSubmit((data) => mutation.mutate(data))} className="space-y-5">
+            <form onSubmit={form.handleSubmit((data) => mutation.mutate(data))} className={forced || alwaysOpen ? "space-y-3" : "space-y-5"}>
               {isThrottled && (
                 <Alert variant="destructive" data-testid="alert-change-password-throttled">
                   <AlertTriangle className="size-4" />
@@ -180,8 +182,11 @@ export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}
                 name="currentPassword"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Current Password</FormLabel>
-                    <FormControl><Input type="password" {...field} /></FormControl>
+                    <FormLabel>Current password</FormLabel>
+                    <div className="relative">
+                      <FormControl><Input type={visibleFields.current ? "text" : "password"} autoComplete="current-password" placeholder={forced ? "Temporary password" : undefined} trailing="lg" {...field} /></FormControl>
+                      <button type="button" className="absolute inset-y-0 right-0 grid w-12 place-items-center text-muted-foreground hover:text-foreground" aria-label={`${visibleFields.current ? "Hide" : "Show"} current password`} aria-pressed={visibleFields.current} onClick={() => setVisibleFields(previous => ({ ...previous, current: !previous.current }))}>{visibleFields.current ? <EyeOff className="size-4.5" aria-hidden="true" /> : <Eye className="size-4.5" aria-hidden="true" />}</button>
+                    </div>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -191,19 +196,26 @@ export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}
                 name="newPassword"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>New Password</FormLabel>
-                    <FormControl><Input type="password" {...field} /></FormControl>
+                    <FormLabel>New password</FormLabel>
+                    <div className="relative">
+                      <FormControl><Input type={visibleFields.next ? "text" : "password"} autoComplete="new-password" placeholder={forced ? "Choose a new password" : undefined} trailing="lg" {...field} /></FormControl>
+                      <button type="button" className="absolute inset-y-0 right-0 grid w-12 place-items-center text-muted-foreground hover:text-foreground" aria-label={`${visibleFields.next ? "Hide" : "Show"} new password`} aria-pressed={visibleFields.next} onClick={() => setVisibleFields(previous => ({ ...previous, next: !previous.next }))}>{visibleFields.next ? <EyeOff className="size-4.5" aria-hidden="true" /> : <Eye className="size-4.5" aria-hidden="true" />}</button>
+                    </div>
                     <FormMessage />
                   </FormItem>
                 )}
               />
+              <p className="text-xs text-muted-foreground">At least 6 characters. New passwords must match.</p>
               <FormField
                 control={form.control}
                 name="confirmPassword"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Confirm New Password</FormLabel>
-                    <FormControl><Input type="password" {...field} /></FormControl>
+                    <FormLabel>Confirm new password</FormLabel>
+                    <div className="relative">
+                      <FormControl><Input type={visibleFields.confirm ? "text" : "password"} autoComplete="new-password" placeholder={forced ? "Re-enter your new password" : undefined} trailing="lg" {...field} /></FormControl>
+                      <button type="button" className="absolute inset-y-0 right-0 grid w-12 place-items-center text-muted-foreground hover:text-foreground" aria-label={`${visibleFields.confirm ? "Hide" : "Show"} confirmed password`} aria-pressed={visibleFields.confirm} onClick={() => setVisibleFields(previous => ({ ...previous, confirm: !previous.confirm }))}>{visibleFields.confirm ? <EyeOff className="size-4.5" aria-hidden="true" /> : <Eye className="size-4.5" aria-hidden="true" />}</button>
+                    </div>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -218,9 +230,9 @@ export function ChangePasswordCard({ forced = false }: { forced?: boolean } = {}
                     <><Loader2 className="mr-2 size-4 animate-spin" />Updating…</>
                   ) : isThrottled ? (
                     `Try again in ${formatCountdown(remainingSeconds)}`
-                  ) : "Update Password"}
+                  ) : <>{forced ? "Update password" : "Update Password"}{forced && <ArrowRight className="ml-2 size-4" aria-hidden="true" />}</>}
                 </Button>
-                {!forced && (
+                {!forced && !alwaysOpen && (
                   <Button
                     type="button"
                     variant="outline"

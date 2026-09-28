@@ -89,6 +89,42 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByText(/dispute/i)).toBeInTheDocument();
   });
 
+  it("renders canonical period evidence as a compact mobile payment row and keeps the details action", async () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 12,
+      status: "confirmed_paid",
+      unresolved: false,
+      reviewRequired: false,
+      source: "canonical_allocation",
+      amountMinor: 2500,
+      authoritativeLocalDate: "2026-09-01",
+      allocations: [],
+      appliedTo: [{ plannedOrdinal: 2, occurrenceLocalDate: "2026-09-01", amountMinor: 2500, currency: "USD", state: "active" }],
+    })]} totalTransactions={2} />);
+
+    expect(screen.getByText("Week 2 payment")).toBeInTheDocument();
+    expect(screen.getByText("2 payments")).toBeInTheDocument();
+    expect(screen.getByText("Sep 1, 2026")).toBeInTheDocument();
+    expect(screen.getByText("$25")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View payment details: Confirmed paid" })).toHaveClass("familiar-payment-history-status--paid");
+    await fireEvent.click(screen.getByRole("button", { name: "View payment details: Confirmed paid" }));
+    expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
+  });
+
+  it("keeps exceptional review status visible in the mobile row", () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      status: "review_required",
+      unresolved: true,
+      reviewRequired: true,
+      source: "held_credit",
+      appliedTo: [{ plannedOrdinal: null, occurrenceLocalDate: "2026-09-08", amountMinor: 2500, currency: "USD", state: "active" }],
+    })]} />);
+
+    expect(screen.getByText("Review required")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View payment details: Review required" })).toHaveClass("familiar-payment-history-status--review");
+    expect(screen.getByText("Share credit refund on hold")).toBeInTheDocument();
+  });
+
   it("opens details from a status and scopes receipt lookup", async () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     render(<CanonicalPaymentEvidenceTable rows={[row({

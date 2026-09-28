@@ -1,4 +1,4 @@
-import { Loader2, Pencil, RefreshCw } from "lucide-react";
+import { Loader2, Mail, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { languageLabelFor } from "@/lib/preferred-language";
 import type { CurrentUserWithSyncStatus, PendingEmailChange } from "./profile-info-card";
@@ -10,7 +10,7 @@ interface ProfileInfoViewProps {
   inRetryCooldown: boolean;
   cooldownSecondsLeft: number;
   retryPending: boolean;
-  onEdit: () => void;
+  teamName?: string | null;
   onRetryEmailChange: () => void;
   onRetry: () => void;
 }
@@ -22,18 +22,14 @@ export function ProfileInfoView({
   inRetryCooldown,
   cooldownSecondsLeft,
   retryPending,
-  onEdit,
+  teamName,
   onRetryEmailChange,
   onRetry,
 }: ProfileInfoViewProps) {
   return (
-    <div className="space-y-4">
-      <div>
-        <p className="text-sm font-medium text-muted-foreground">Name</p>
-        <p className="text-sm mt-1">{currentUser.name}</p>
-      </div>
-      <div>
-        <p className="text-sm font-medium text-muted-foreground">Email</p>
+    <div className="familiar-profile-fields">
+      <div className="familiar-profile-field-row">
+        <p className="text-sm font-medium text-muted-foreground"><Mail className="size-4" aria-hidden="true" />Email</p>
         <p className="text-sm mt-1">{currentUser.email}</p>
       </div>
       {pendingEmailChange && (
@@ -69,22 +65,21 @@ export function ProfileInfoView({
           )}
         </div>
       )}
-      <div>
+      <div className="familiar-profile-field-row">
         <p className="text-sm font-medium text-muted-foreground">Phone</p>
         <p className="text-sm mt-1">{currentUser.phone || "Not provided"}</p>
       </div>
-      <div>
-        <p className="text-sm font-medium text-muted-foreground">Preferred language</p>
+      {teamName && <div className="familiar-profile-field-row">
+        <p className="text-sm font-medium text-muted-foreground">Team</p>
+        <p className="text-sm mt-1">{teamName}</p>
+      </div>}
+      <div className="familiar-profile-field-row familiar-profile-field-row--last">
+        <p className="text-sm font-medium text-muted-foreground">Language</p>
         <p className="text-sm mt-1" data-testid="text-preferred-language">
           {languageLabelFor(currentUser.preferredLanguage)}
         </p>
       </div>
-      <div className="flex flex-wrap gap-2">
-        <Button variant="outline" onClick={onEdit}>
-          <Pencil className="size-4" />
-          Edit Profile
-        </Button>
-        {showRetry && (
+      {showRetry && <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
             onClick={onRetry}
@@ -98,8 +93,7 @@ export function ProfileInfoView({
             )}
             Retry payment sync
           </Button>
-        )}
-      </div>
+      </div>}
       {showRetry && inRetryCooldown && (
         <p
           className="text-xs text-muted-foreground"

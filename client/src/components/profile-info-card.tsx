@@ -1,9 +1,17 @@
+/* eslint-disable shadcn/no-unknown-classes, shadcn/no-restyle */
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useMutation } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
@@ -84,7 +92,13 @@ const RETRY_COOLDOWN_FALLBACK_SECONDS = 60;
 // minute.
 const RETRY_FLICKER_GUARD_MS = 30_000;
 
-export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithSyncStatus }) {
+export function ProfileInfoCard({
+  currentUser,
+  teamName,
+}: {
+  currentUser: CurrentUserWithSyncStatus;
+  teamName?: string | null;
+}) {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [pendingEmailChange, setPendingEmailChange] = useState<PendingEmailChange | null>(null);
@@ -418,27 +432,55 @@ export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithS
   });
 
   const showRetry = lastSyncStatus === "pending_retry";
+  const initials = currentUser.name
+    .split(/\s+/)
+    .map((part) => part[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase() || currentUser.email.slice(0, 1).toUpperCase();
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Profile Settings</CardTitle>
-        <CardDescription>Your personal information</CardDescription>
-      </CardHeader>
-      <CardContent>
-        {!isEditing ? (
+    <>
+      <Card className="familiar-profile-info-card">
+        <CardHeader className="familiar-profile-intro">
+          <div className="familiar-profile-avatar" aria-hidden="true">{initials}</div>
+          <CardTitle as="h2" size="lg" className="familiar-profile-name">{currentUser.name}</CardTitle>
+          <CardDescription>Bowler account</CardDescription>
+          <button type="button" className="familiar-profile-edit-link" aria-label="Edit Profile: edit personal details" onClick={() => beginEdit("normal")}>Edit personal details</button>
+        </CardHeader>
+        <CardContent className="familiar-profile-info-content">
           <ProfileInfoView
             currentUser={currentUser}
+            teamName={teamName}
             pendingEmailChange={pendingEmailChange}
             showRetry={showRetry}
             inRetryCooldown={inRetryCooldown}
             cooldownSecondsLeft={cooldownSecondsLeft}
             retryPending={retryMutation.isPending}
-            onEdit={() => beginEdit("normal")}
             onRetryEmailChange={() => beginEdit("retry")}
             onRetry={() => retryMutation.mutate()}
           />
-        ) : (
+        </CardContent>
+      </Card>
+
+      <Dialog
+        open={isEditing}
+        onOpenChange={(open) => {
+          if (!open && !mutation.isPending) {
+            form.reset();
+            setEmailChangeEditMode("normal");
+            setIsEditing(false);
+          }
+        }}
+      >
+        <DialogContent className="familiar-profile-dialog" viewport="dialog">
+          <DialogHeader>
+            <DialogTitle>Edit personal details</DialogTitle>
+            <DialogDescription>
+              Keep your account information up to date.
+            </DialogDescription>
+          </DialogHeader>
           <ProfileInfoForm
             form={form}
             isSaving={mutation.isPending}
@@ -449,8 +491,8 @@ export function ProfileInfoCard({ currentUser }: { currentUser: CurrentUserWithS
               setIsEditing(false);
             }}
           />
-        )}
-      </CardContent>
-    </Card>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

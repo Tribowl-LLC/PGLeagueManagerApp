@@ -353,6 +353,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(await screen.findByText("Existing automatic payment")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Revoke existing automatic payments" })).toBeInTheDocument();
     expect(screen.getByText(/Rotating members buy shares manually/)).toBeInTheDocument();
+    expect(mocks.oneTimePaymentCard).not.toHaveBeenCalled();
     expect(mocks.standingAutopayCard).not.toHaveBeenCalled();
   });
 

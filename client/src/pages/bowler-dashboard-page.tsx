@@ -197,13 +197,13 @@ const BowlerDashboardPage: FC = () => {
   }
 
   const isSystemAdmin = currentUser?.role === 'system_admin';
-  const hasMultipleLeagues = activeBowlerLeagues.length > 1;
 
   return (
     <BowlerLayout
       bowlerName={bowler.name}
       leagueName={leagueName}
       currentLeagueId={activeBowlerLeague?.leagueId}
+      onOpenLeagueSheet={() => setSheetOpen(true)}
     >
       {isSystemAdmin && <BackToDashboardButton />}
       
@@ -212,13 +212,10 @@ const BowlerDashboardPage: FC = () => {
         <DashboardHero
           bowlerName={bowler.name}
           isSystemAdmin={isSystemAdmin}
-          hasMultipleLeagues={hasMultipleLeagues}
-          leagueName={leagueName}
           teamName={teamName}
           leagueId={league.id}
           organizationId={league.organizationId}
           viewerRole={currentUser.role}
-          onOpenLeagueSheet={() => setSheetOpen(true)}
         />
 
         <PaymentStatusSection

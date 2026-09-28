@@ -1,21 +1,20 @@
-import { Card, CardContent } from "@/components/ui/card";
-import { AlertCircle } from "lucide-react";
+import { FileQuestion, Home, LogIn } from "lucide-react";
+import { Link } from "wouter";
+import { PublicPageLayout } from "@/components/public-page-layout";
 
 export default function NotFound() {
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-neutral-surface-50">
-      <Card className="w-full max-w-md mx-4">
-        <CardContent padding="topComfortable">
-          <div className="flex mb-4 gap-2">
-            <AlertCircle className="size-8 text-danger-500" />
-            <h1 className="text-2xl font-bold text-neutral-surface-900">404 Page Not Found</h1>
-          </div>
-
-          <p className="mt-4 text-sm text-neutral-surface-600">
-            Did you forget to add the page to the router?
-          </p>
-        </CardContent>
-      </Card>
-    </div>
+    <PublicPageLayout>
+      <article className="public-flow-card">
+        <div className="public-flow-icon"><FileQuestion className="size-6" aria-hidden="true" /></div>
+        <p className="public-flow-eyebrow">Page not found</p>
+        <h1 className="public-flow-title">We couldn’t find that page.</h1>
+        <p className="public-flow-description">The link may be out of date, or the page may have moved. Choose a place to continue.</p>
+        <div className="public-flow-actions-stack">
+          <Link href="/sign-up" className="public-flow-primary"><Home className="size-4" aria-hidden="true" />Go to home</Link>
+          <Link href="/login" className="public-flow-secondary"><LogIn className="size-4" aria-hidden="true" />Sign in</Link>
+        </div>
+      </article>
+    </PublicPageLayout>
   );
 }

@@ -135,6 +135,19 @@
 .public-flow-progress i.is-filled { background: var(--public-navy); }
 .public-flow-inset { padding: 18px; border: 1px solid var(--public-line); border-radius: 9px; background: #f3f7fb; color: var(--public-muted); font-size: 13px; line-height: 1.58; }
 .public-flow-inset strong { display: block; margin-bottom: 6px; color: var(--public-ink); font-weight: 650; }
+.public-flow-waiting-inset { display: flex; align-items: flex-start; gap: 12px; }
+.public-flow-inset-icon { display: grid; flex: 0 0 34px; place-items: center; width: 34px; height: 34px; margin-top: 1px; border-radius: 50%; background: #e1edf8; color: #204c7e; }
+.public-flow-alert { margin-top: 16px; padding: 12px 14px; border: 1px solid #e5b9b2; border-radius: 8px; background: #fff5f3; color: var(--public-danger); font-size: 12px; line-height: 1.5; }
+.public-flow-alert strong { display: block; font-weight: 650; }
+.public-flow-alert p { margin-top: 4px; }
+.public-flow-status-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; color: var(--public-muted); font-size: 12px; line-height: 1.45; }
+.public-flow-status-row .public-flow-status-button { width: auto; min-height: 50px; flex: 0 0 auto; gap: 7px; padding: 10px 12px; font-size: 12px; }
+.public-flow-actions-stack { display: grid; gap: 10px; margin-top: 20px; }
+.public-flow-actions-stack .public-flow-secondary { gap: 9px; }
+.public-flow-sign-out { width: fit-content; margin: 2px auto 0; border: 0; background: transparent; cursor: pointer; }
+.public-flow-required-password-form > div { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.public-flow-required-password-form form button[type='submit'] { width: 100%; min-height: 50px; margin-top: 8px; }
+.public-flow-required-password > .public-flow-sign-out { display: flex; margin: 18px 0 0; }
 .public-flow-inset-danger { border-color: #ebd5d1; background: #fff8f6; color: #6e4c48; }
 .public-flow-inset-danger strong { color: #8e392f; }
 .public-flow-primary {
@@ -196,6 +209,8 @@
   .public-flow-main { padding: 24px 14px 38px; }
   .public-flow-card { padding: 28px 22px; }
   .public-flow-main-welcome .public-flow-main-inner { padding: 0 9px; }
+  .public-flow-status-row { align-items: stretch; flex-direction: column; }
+  .public-flow-status-row .public-flow-status-button { width: 100%; }
 }
 
 @media (max-width: 360px) {

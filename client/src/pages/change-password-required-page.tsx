@@ -1,7 +1,6 @@
 import { ErrorBoundary } from "@/components/error-boundary";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { ChangePasswordCard } from "@/components/change-password-card";
+import { PublicPageLayout } from "@/components/public-page-layout";
 import { apiRequest, clearCsrfToken } from "@/lib/queryClient";
 import { ShieldAlert, LogOut } from "lucide-react";
 
@@ -20,34 +19,16 @@ export default function ChangePasswordRequiredPage() {
 
   return (
     <ErrorBoundary level="page">
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <div className="w-full max-w-md space-y-4" data-testid="page-change-password-required">
-          <Alert>
-            <ShieldAlert className="size-4" />
-            <AlertTitle>Choose a new password to continue</AlertTitle>
-            <AlertDescription>
-              An administrator recently reset your password. For your
-              security, please pick a new one before you continue using
-              your account. Use the password your administrator gave you
-              as the current password.
-            </AlertDescription>
-          </Alert>
-
-          <ChangePasswordCard forced />
-
-          <div className="flex justify-center pt-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleLogout}
-              data-testid="button-change-password-required-logout"
-            >
-              <LogOut className="size-4 mr-2" />
-              Sign out instead
-            </Button>
-          </div>
-        </div>
-      </div>
+      <PublicPageLayout>
+        <section className="public-flow-card public-flow-required-password" data-testid="page-change-password-required">
+          <div className="public-flow-icon"><ShieldAlert className="size-6" aria-hidden="true" /></div>
+          <p className="public-flow-eyebrow">Password reset required</p>
+          <h1 className="public-flow-title">Choose a new password.</h1>
+          <p className="public-flow-description">An administrator reset your password. Enter the temporary password as your current password, then choose a new one.</p>
+          <div className="public-flow-required-password-form"><ChangePasswordCard forced /></div>
+          <button type="button" className="public-flow-link public-flow-sign-out" onClick={handleLogout} data-testid="button-change-password-required-logout"><LogOut className="size-4" aria-hidden="true" />Sign out instead</button>
+        </section>
+      </PublicPageLayout>
     </ErrorBoundary>
   );
 }

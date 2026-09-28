@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { getQueryFn } from "@/lib/queryClient";
 
+vi.mock("@/hooks/use-business-context", () => ({ useBusinessContext: () => ({ business: null }) }));
+
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 vi.mock("wouter", async () => {
   const actual = await vi.importActual<typeof import("wouter")>("wouter");
@@ -68,8 +70,8 @@ describe("RegistrationCompletePage", () => {
     const user = userEvent.setup();
     renderPage();
 
-    expect(await screen.findByText("Registration in progress")).toBeInTheDocument();
-    expect(screen.getByText(/your sign-in account has been created/i)).toBeInTheDocument();
+    expect(await screen.findByText("Your account is almost ready")).toBeInTheDocument();
+    expect(screen.getByText(/your account is created/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view profile/i })).toHaveAttribute("href", "/profile");
     expect(screen.getByRole("button", { name: /sign out/i })).toBeInTheDocument();
 

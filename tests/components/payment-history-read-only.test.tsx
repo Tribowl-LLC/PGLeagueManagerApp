@@ -94,7 +94,7 @@ describe("PaymentHistoryContent", () => {
     />);
     expect(screen.queryByRole("link", { name: /Amount Past Due/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Remaining Balance/ })).not.toBeInTheDocument();
-    expect(screen.getByText("No amount past due")).toBeInTheDocument();
+    expect(screen.queryByText("Past Due")).not.toBeInTheDocument();
     expect(screen.getByText("Fully paid")).toBeInTheDocument();
   });
 
@@ -110,7 +110,7 @@ describe("PaymentHistoryContent", () => {
       canonicalPaymentLoading={false} canonicalPaymentError={new Error("report unavailable")}
       onCanonicalReportRetry={retry}
     />);
-    expect(screen.getByRole("heading", { name: "Payment History" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Payment history" })).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledOnce();
   });
@@ -147,6 +147,44 @@ describe("PaymentHistoryContent", () => {
     expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
   });
 
+  it("does not expose ordinary totals while rotating eligibility is unresolved", () => {
+    const props = {
+      bowlerName: "Bowler",
+      league,
+      leagueId: 17,
+      hasMultipleLeagues: false,
+      leagueSheetOpen: false,
+      onOpenLeagueSheet: vi.fn(),
+      onCloseLeagueSheet: vi.fn(),
+      bowlerLeagues: [],
+      leagueMap: new Map(),
+      onSelectLeague: vi.fn(),
+      totalWeeksInSeason: 10,
+      fullSeasonAmount: 30000,
+      weeksDueCount: 3,
+      totalSeasonDues: 9000,
+      weeksPaid: 1,
+      totalPaidAmount: 3000,
+      amountPastDue: 6000,
+      remainingBalance: 27000,
+      doublePay: { dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false },
+      canonicalPaymentLoading: false,
+      canonicalPaymentError: null,
+      canonicalRows: [],
+    };
+    const view = render(<PaymentHistoryContent {...props} rotatingCreditState="loading" />);
+    expect(screen.getByText("Loading payment summary…")).toBeInTheDocument();
+    expect(screen.queryByText("Season totals")).not.toBeInTheDocument();
+
+    view.rerender(<PaymentHistoryContent {...props} rotatingCreditState="standard" isRotating={false} />);
+    expect(screen.getByText("Season totals")).toBeInTheDocument();
+
+    view.rerender(<PaymentHistoryContent {...props} rotatingCreditState="standard" isRotating />);
+    expect(screen.getByText("Paid")).toBeInTheDocument();
+    expect(screen.queryByText("Remaining")).not.toBeInTheDocument();
+    expect(screen.queryByText("Season", { selector: ".familiar-payment-summary__label" })).not.toBeInTheDocument();
+  });
+
   it("disables automatic-payment setup without a profile email", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ data: { state: "none", partnerBowlerIds: [] } }) } } });
     render(<QueryClientProvider client={queryClient}><StandingAutopayCard
@@ -162,7 +200,7 @@ describe("PaymentHistoryContent", () => {
       onCardEditorModeChange={vi.fn()}
     /></QueryClientProvider>);
     expect(screen.getByRole("link", { name: "Profile" })).toHaveAttribute("href", "/profile");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Enable automatic payments" })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Set up automatic payments" })).toBeDisabled());
   });
 
   it("keeps the due-now CTA hidden until a delayed active status read completes", async () => {
@@ -211,6 +249,7 @@ describe("PaymentHistoryContent", () => {
       initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
       dueNowMinor={4_500} catchUpWeeks={2} onPayDueNow={onPayDueNow}
     /></QueryClientProvider>);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Set up automatic payments" }));
     expect(await screen.findByText("Pay $45.00 due now and enable automatic payments in one checkout.")).toBeInTheDocument();
     expect(screen.queryByText(/This payment covers/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Enable automatic payments" })).not.toBeInTheDocument();
@@ -288,7 +327,7 @@ describe("PaymentHistoryContent", () => {
       cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
     /></QueryClientProvider>);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("scheduled automatic payment was declined"));
-    expect(screen.getByRole("alert")).toHaveTextContent("Use the One-Time Payment section above");
+    expect(screen.getByRole("alert")).toHaveTextContent("Use the One-Time Payment section below");
     expect(screen.queryByText(/Next Payment Scheduled:/)).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).not.toHaveTextContent("ARREARS_REQUIRE_ONE_TIME_FIFO");
   });
@@ -303,7 +342,9 @@ describe("PaymentHistoryContent", () => {
       bowlerHasEmail={true} card={null} isInitialized={false} cardEditorMode={null}
       initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
     /></QueryClientProvider>);
+    await user.click(await screen.findByRole("button", { name: "Set up automatic payments" }));
     const enable = await screen.findByRole("button", { name: "Enable automatic payments" });
+    await user.click(screen.getByRole("checkbox", { name: /I agree to automatic weekly payments/i }));
     await user.click(enable);
     await waitFor(() => expect(apiRequestMock).toHaveBeenCalledTimes(1));
     await user.click(enable);
@@ -323,7 +364,10 @@ describe("PaymentHistoryContent", () => {
       isInitialized={true} cardEditorMode="autopay" initializeCard={vi.fn()}
       cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
     /></QueryClientProvider>);
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Save card and enable automatic payments" }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Set up automatic payments" }));
+    await user.click(await screen.findByRole("checkbox", { name: /I agree to automatic weekly payments/i }));
+    await user.click(await screen.findByRole("button", { name: "Save card and enable automatic payments" }));
     await waitFor(() => expect(apiRequestMock).toHaveBeenCalledTimes(1));
     expect(csrfFetchMock).toHaveBeenCalledWith("/api/payments-provider/cards/42", expect.objectContaining({ method: "POST" }));
     expect(JSON.parse(String(csrfFetchMock.mock.calls[0]?.[1]?.body))).toEqual({ sourceId: "source_token", leagueId: 17 });
@@ -342,7 +386,9 @@ describe("PaymentHistoryContent", () => {
       bowlerHasEmail={true} card={squareCard} isInitialized={true} cardEditorMode="autopay"
       initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
     /></QueryClientProvider>);
+    await user.click(await screen.findByRole("button", { name: "Set up automatic payments" }));
     const save = await screen.findByRole("button", { name: "Save card and enable automatic payments" });
+    await user.click(screen.getByRole("checkbox", { name: /I agree to automatic weekly payments/i }));
     const click = user.click(save);
     await waitFor(() => expect(save).toBeDisabled());
     await user.click(save);

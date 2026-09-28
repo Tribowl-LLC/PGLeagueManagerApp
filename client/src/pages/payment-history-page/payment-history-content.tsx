@@ -1,5 +1,5 @@
+/* eslint-disable shadcn/no-unknown-classes */
 import { FC } from "react";
-import { ChevronDown } from "lucide-react";
 import type { League, BowlerLeague } from "@shared/schema";
 import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
@@ -9,6 +9,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { PageErrorState } from "@/components/page-states";
 import { LeagueSwitcherSheet } from "@/components/league-switcher-sheet";
 import type { DoublePayStatus } from "@/lib/financial-utils";
+import type { RotatingCreditDisplayState } from "@/components/payment-status-section";
 
 interface PaymentHistoryContentProps {
   bowlerName: string;
@@ -38,6 +39,9 @@ interface PaymentHistoryContentProps {
   canonicalReportTotalPages?: number;
   onCanonicalReportPageChange?: (page: number) => void;
   canonicalRows?: CanonicalPaymentRow[];
+  canonicalReportTotalTransactions?: number;
+  rotatingCreditState?: RotatingCreditDisplayState;
+  isRotating?: boolean;
 }
 
 export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
@@ -47,41 +51,50 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   totalSeasonDues, weeksPaid, totalPaidAmount, amountPastDue, remainingBalance,
   waivedAmount,
   doublePay, canonicalPaymentLoading, canonicalPaymentError, canonicalReportPage,
-  onCanonicalReportRetry, canonicalReportTotalPages, onCanonicalReportPageChange, canonicalRows = [],
+  onCanonicalReportRetry, canonicalReportTotalPages, onCanonicalReportPageChange, canonicalRows = [], canonicalReportTotalTransactions,
+  rotatingCreditState = "standard", isRotating = false,
 }) => {
   const makePaymentHref = `/make-payment?leagueId=${leagueId}`;
   const pastDueHref = `${makePaymentHref}&intent=past-due`;
 
   return (
-    <BowlerLayout bowlerName={bowlerName} leagueName={league.name} currentLeagueId={leagueId}>
+    <BowlerLayout
+      bowlerName={bowlerName}
+      leagueName={league.name}
+      currentLeagueId={leagueId}
+      onOpenLeagueSheet={hasMultipleLeagues ? onOpenLeagueSheet : undefined}
+    >
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold mb-1">Payment History</h1>
-          {hasMultipleLeagues ? (
-            <button type="button" onClick={onOpenLeagueSheet} className="flex items-center gap-1 text-navigation-500 hover:text-navigation-700 transition-colors mb-4">
-              <span>{league.name}</span><ChevronDown className="size-4" />
-            </button>
-          ) : <p className="text-muted-foreground mb-4">{league.name}</p>}
-        </div>
+        <header className="familiar-bowler-page-heading">
+          <h1>Payment history</h1>
+          <p>Every payment, all in one place.</p>
+        </header>
 
         <ErrorBoundary level="section">
-          <PaymentSummaryCards
-            totalWeeksInSeason={totalWeeksInSeason}
-            fullSeasonAmount={fullSeasonAmount}
-            weeklyFee={league.weeklyFee || 0}
-            weeksDueCount={weeksDueCount}
-            totalSeasonDues={totalSeasonDues}
-            weeksPaid={weeksPaid}
-            totalPaidAmount={totalPaidAmount}
-            waivedAmount={waivedAmount}
-            amountPastDue={amountPastDue}
-            remainingBalance={remainingBalance}
-            doublePay={doublePay}
-            onPayPastDue={() => undefined}
-            onPayRemaining={() => undefined}
-            pastDueHref={amountPastDue > 0 ? pastDueHref : undefined}
-            remainingHref={remainingBalance > 0 ? makePaymentHref : undefined}
-          />
+          {rotatingCreditState === "loading" ? (
+            <p className="text-sm text-muted-foreground">Loading payment summary…</p>
+          ) : rotatingCreditState === "error" ? (
+            <p className="text-sm text-destructive">Payment summary requires review.</p>
+          ) : (
+            <PaymentSummaryCards
+              totalWeeksInSeason={totalWeeksInSeason}
+              fullSeasonAmount={fullSeasonAmount}
+              weeklyFee={league.weeklyFee || 0}
+              weeksDueCount={weeksDueCount}
+              totalSeasonDues={totalSeasonDues}
+              weeksPaid={weeksPaid}
+              totalPaidAmount={totalPaidAmount}
+              waivedAmount={waivedAmount}
+              amountPastDue={amountPastDue}
+              remainingBalance={remainingBalance}
+              doublePay={doublePay}
+              isRotating={isRotating}
+              onPayPastDue={() => undefined}
+              onPayRemaining={() => undefined}
+              pastDueHref={amountPastDue > 0 ? pastDueHref : undefined}
+              remainingHref={remainingBalance > 0 ? makePaymentHref : undefined}
+            />
+          )}
         </ErrorBoundary>
 
         <ErrorBoundary level="section">
@@ -90,7 +103,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
           ) : canonicalPaymentError ? (
             <PageErrorState message="Payment history is unavailable; please try again." onRetry={onCanonicalReportRetry} />
           ) : (
-            <CanonicalPaymentEvidenceTable rows={canonicalRows} organizationId={league.organizationId} bowlerName={bowlerName} title="Payment history" />
+            <CanonicalPaymentEvidenceTable rows={canonicalRows} organizationId={league.organizationId} bowlerName={bowlerName} title="Transactions" totalTransactions={canonicalReportTotalTransactions} />
           )}
           {!canonicalPaymentLoading && !canonicalPaymentError && canonicalReportPage !== undefined && canonicalReportTotalPages !== undefined && canonicalReportTotalPages > 1 && onCanonicalReportPageChange && (
             <div className="mt-3 flex items-center justify-between text-sm">
