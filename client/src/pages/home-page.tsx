@@ -10,6 +10,8 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { DashboardSkeleton, PageErrorState } from "@/components/page-states";
 import { ApplePayRecoveryBanner } from "@/components/apple-pay-recovery-banner";
 import { SquareCatalogCapBanner } from "@/components/square-catalog-cap-banner";
+import { shouldRetryApiQuery, throwIfResNotOk } from "@/lib/queryClient";
+import { financialReadErrorMessage } from "@/lib/financial-utils";
 
 
 function LeagueHealthCard({ leagueId, name, bowlerCount, pastDueBowlerCount, reviewRequiredBowlerCount }: {
@@ -99,19 +101,20 @@ export default function HomePage() {
     staleTime: 1000 * 60 * 5,
     retry: false,
   });
+  const financialOrganizationId = userResponse?.data?.role === "system_admin" ? userResponse.data.organizationId : null;
 
   const { data: financialReportResponse, isLoading: loadingFinancialReport, error: financialReportError, refetch: refetchFinancialReport } = useQuery<ApiResponse<{
     leagues: Array<{ leagueId: number; report: CanonicalDuePastDueResponseV2 }>;
   }>>({
-    queryKey: ["/api/financials/due-past-due"],
-    queryFn: async () => {
-      const response = await fetch('/api/financials/due-past-due');
-      if (!response.ok) throw new Error("Financial evidence requires review");
-      return response.json();
+    queryKey: ["/api/financials/due-past-due", financialOrganizationId ?? null],
+    queryFn: async ({ signal }) => {
+      const response = await fetch('/api/financials/due-past-due', { credentials: "include", signal });
+      const validatedResponse = await throwIfResNotOk(response);
+      return validatedResponse.json();
     },
     enabled: userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager",
     staleTime: 1000 * 30,
-    retry: false,
+    retry: shouldRetryApiQuery,
   });
 
   const adminFinancialLoading = (userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager") && loadingFinancialReport;
@@ -121,7 +124,8 @@ export default function HomePage() {
 
   const error = leaguesError || paymentsError || bowlerLeaguesError || bowlersError || (userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager" ? financialReportError : null);
   if (error) {
-    return <Layout><PageErrorState message={`Error loading data: ${(error as Error).message}`} onRetry={() => { refetchLeagues(); refetchPayments(); refetchBowlerLeagues(); refetchBowlers(); refetchFinancialReport(); }} /></Layout>;
+    const message = error === financialReportError ? financialReadErrorMessage(error) : `Error loading data: ${(error as Error).message}`;
+    return <Layout><PageErrorState message={message} onRetry={() => { refetchLeagues(); refetchPayments(); refetchBowlerLeagues(); refetchBowlers(); refetchFinancialReport(); }} /></Layout>;
   }
 
   const leagues = leaguesResponse?.data || [];
@@ -256,7 +260,7 @@ export default function HomePage() {
           </div>
 
           <ErrorBoundary level="section">
-            <PastDueBowlersSection enabled={userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager"} organizationId={userResponse?.data?.role === "system_admin" ? userResponse.data.organizationId : null} />
+            <PastDueBowlersSection enabled={userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager"} organizationId={financialOrganizationId} />
           </ErrorBoundary>
 
           {leagueHealthData.length > 0 && (
