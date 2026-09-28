@@ -400,6 +400,16 @@
 @utility familiar-profile-fields { --lv-familiar-profile-component: 1; }
 @utility familiar-profile-field-row { --lv-familiar-profile-component: 1; }
 @utility familiar-profile-field-row--last { --lv-familiar-profile-component: 1; }
+@utility familiar-payment-review-dialog { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-review-header { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-review-details { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-review-recipient { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-review-actions { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-success-card { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-success { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-success-icon { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-success-allocations { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-success-actions { --lv-familiar-pay-component: 1; }
 @utility public-flow-required-password { --lv-public-flow-component: 1; }
 @utility public-flow-required-password-form { --lv-public-flow-component: 1; }
 @utility public-flow-sign-out { --lv-public-flow-component: 1; }

@@ -857,6 +857,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     render(<MakePaymentPage />);
     await waitFor(() => expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce());
     expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentAmountMinor: 5_750 });
+    expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ completedPayment: null });
     expect(mocks.csrfFetch).toHaveBeenCalledTimes(2);
     expect(mocks.tokenizeCard).toHaveBeenCalledOnce();
     expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment already confirmed" }));
@@ -874,12 +875,41 @@ describe("MakePaymentPage upfront payment mode", () => {
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
     const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
     await act(async () => { await props.onSubmit(); });
-    await waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment Successful" })));
+    expect(mocks.toast.mock.calls.filter(([value]) => (value as { title?: string }).title === "Payment Successful")).toHaveLength(0);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      completedPayment: expect.objectContaining({ amountMinor: 8_750, isUpfront: true, coverage: "Week 1", hasRemainingBalance: false }),
+    }));
+    expect((mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { completedPayment: { coverage: string } }).completedPayment.coverage).not.toContain("Bowler:");
 
     mocks.setRemainingBalance(5_750);
     view.rerender(<MakePaymentPage />);
     await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: true, paymentAmountMinor: 5_750 }));
     view.unmount();
+  });
+
+  it("clears ordinary card completion before starting combined automatic-payment enrollment", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "ordinary-card-request", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded" } }) });
+    mocks.tokenizeCard.mockResolvedValue("card-source");
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.standingAutopayCard).toHaveBeenCalled());
+    const checkoutProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
+    await act(async () => { await checkoutProps.onSubmit(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      completedPayment: expect.objectContaining({ amountMinor: 1_000 }),
+    }));
+
+    const standingProps = mocks.standingAutopayCard.mock.calls.at(-1)?.[0] as { onPayDueNow: () => void };
+    act(() => { standingProps.onPayDueNow(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      dueNowOnly: true,
+      completedPayment: null,
+      onCancelDueNow: expect.any(Function),
+    }));
   });
 
   it("keeps recovered checkout blocked until the balance refresh settles", async () => {
@@ -921,11 +951,35 @@ describe("MakePaymentPage upfront payment mode", () => {
     const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
     await act(async () => { await props.onSubmit(); });
     await waitFor(() => expect(document.body).toHaveTextContent("Payment confirmation in progress"));
+    expect((mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { completedPayment: unknown }).completedPayment).toBeNull();
     expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
 
     await act(async () => { await (document.querySelector("button") as HTMLButtonElement).click(); });
     await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "submit-confirmed"));
+    expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ completedPayment: null });
     expect(document.body).not.toHaveTextContent("Payment confirmation in progress");
+  });
+
+  it("keeps the remaining-balance action when an unselected partner still owes after a self-only upfront payment", async () => {
+    mocks.setIncludePartner(true);
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "partner-balance-request", outcome: "new" });
+    mocks.csrfFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded" } }) });
+    mocks.tokenizeCard.mockResolvedValue("card-source");
+
+    render(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void; recipientRows: Array<{ bowlerId: number; selected: boolean }> };
+    expect(props.recipientRows).toEqual([
+      expect.objectContaining({ bowlerId: 42, selected: true }),
+      expect.objectContaining({ bowlerId: 84, selected: false }),
+    ]);
+
+    await act(async () => { await props.onSubmit(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      completedPayment: expect.objectContaining({ hasRemainingBalance: true }),
+    }));
   });
 
   it("replaces a terminal wallet identity before the next same-page click", async () => {
@@ -1081,14 +1135,16 @@ describe("MakePaymentPage upfront payment mode", () => {
     await act(async () => { await props.onSubmit(); });
 
     expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
-    expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Payment Successful" }));
+    expect(mocks.toast.mock.calls.filter(([value]) => (value as { title?: string }).title === "Payment Successful")).toHaveLength(0);
+    expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ completedPayment: null });
     expect(mocks.cleanupCard).toHaveBeenCalledOnce();
     await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentRefreshState: "retry", isSubmitting: true }));
     mocks.setParticipantRefreshMissing(false);
     const retryProps = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onRetryPaymentRefresh: () => void };
     await act(async () => { retryProps.onRetryPaymentRefresh(); });
     await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "missing-refresh-request"));
-    expect(mocks.toast.mock.calls.filter(([value]) => (value as { title?: string }).title === "Payment Successful")).toHaveLength(1);
+    expect(mocks.toast.mock.calls.filter(([value]) => (value as { title?: string }).title === "Payment Successful")).toHaveLength(0);
+    expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ completedPayment: expect.objectContaining({ amountMinor: 8_750, coverage: "Week 1" }) });
     expect(mocks.cleanupCard).toHaveBeenCalledOnce();
     view.unmount();
   });

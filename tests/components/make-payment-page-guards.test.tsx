@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import {
   clampPaymentWeekCount,
   clearWalletRequestKeyForTerminalStatus,
+  formatCompletedCoverage,
   hasPositivePaymentEvidence,
   invalidatePaymentViews,
   MakePaymentReadError,
@@ -18,6 +19,10 @@ import { buildInteractivePaymentRecipients } from "@/lib/interactive-payment-v3"
 vi.mock("@/components/bowler-layout", () => ({ BowlerLayout: ({ children }: { children: ReactNode }) => <div data-testid="bowler-layout">{children}</div> }));
 
 describe("dedicated make-payment guards", () => {
+  it("sorts and groups double-pay completion weeks into concise factual ranges", () => {
+    expect(formatCompletedCoverage(["Week 5", "Week 30", "Week 6", "Week 31", "Week 30"])).toBe("Weeks 5–6 and Weeks 30–31");
+  });
+
   it.each(["failed_terminal", "canceled", "action_required"])("clears the in-memory wallet key for terminal HTTP-202 status %s", (status) => {
     const requestKeyRef = { current: "wallet-request-key" };
     clearWalletRequestKeyForTerminalStatus(status, requestKeyRef);
