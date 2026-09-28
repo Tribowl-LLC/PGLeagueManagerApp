@@ -420,6 +420,7 @@ it("uses published pair order for v2, v3, and manual FIFO before the trigger arr
   });
   expect(v3Quote.allocations.map((allocation) => allocation.obligationId)).toEqual(v2Ids);
   expect(v3Quote.allocations.map((allocation) => allocation.amountMinor)).toEqual(v2Quote.allocations.map((allocation) => allocation.amountMinor));
+  expect(v3Quote.recipients[0]?.allocations.map((allocation) => allocation.isPairedFinalWeek)).toEqual([false, true]);
 
   const manual = await recordCanonicalManualPayment({
     organizationId,

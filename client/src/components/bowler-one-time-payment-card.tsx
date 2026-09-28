@@ -41,7 +41,67 @@ export interface PaymentBreakdownRow {
     occurrenceLocalDate: string;
     plannedOrdinal: number | null;
     label: string;
+    isPairedFinalWeek: boolean;
   }>;
+}
+
+interface CoveragePart {
+  name: string;
+  normalLabel: string | null;
+  pairedLabels: string[];
+}
+
+function formatCoverageLabels(labels: string[]): string {
+  if (labels.length === 1) return labels[0] ?? "";
+  const weekLabels = labels.map((label) => label.match(/^Week (\d+)$/));
+  if (weekLabels.every((match): match is RegExpMatchArray => match !== null)) {
+    const ordinals = weekLabels.map((match) => match[1]);
+    return `Weeks ${ordinals.slice(0, -1).join(", ")} and ${ordinals.at(-1)}`;
+  }
+  return `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
+}
+
+function pairedLabelKey(allocation: PaymentBreakdownRow["allocations"][number]): string {
+  return allocation.plannedOrdinal === null || allocation.plannedOrdinal === undefined
+    ? `label:${allocation.label}`
+    : `ordinal:${allocation.plannedOrdinal}`;
+}
+
+function coveragePartForRow(row: PaymentBreakdownRow): Omit<CoveragePart, "name"> {
+  const allocations = row.allocations.length > 0
+    ? row.allocations
+    : row.coveredWeeks.map((label) => ({
+      obligationId: null,
+      amountMinor: 0,
+      occurrenceLocalDate: "",
+      plannedOrdinal: null,
+      label,
+      isPairedFinalWeek: false,
+    }));
+  const normalAllocations = allocations.filter((allocation) => !allocation.isPairedFinalWeek);
+  const pairedLabels: string[] = [];
+  const seenPairedLabels = new Set<string>();
+  for (const allocation of allocations) {
+    if (!allocation.isPairedFinalWeek) continue;
+    const key = pairedLabelKey(allocation);
+    if (seenPairedLabels.has(key)) continue;
+    seenPairedLabels.add(key);
+    pairedLabels.push(allocation.label);
+  }
+  return { normalLabel: normalAllocations.at(-1)?.label ?? null, pairedLabels };
+}
+
+function formatCoveragePart(part: CoveragePart): string {
+  const included = part.pairedLabels.length > 0
+    ? ` and includes ${formatCoverageLabels(part.pairedLabels)}`
+    : "";
+  const coverage = part.normalLabel
+    ? `through ${part.normalLabel}${included}`
+    : part.pairedLabels.length > 0
+      ? formatCoverageLabels(part.pairedLabels)
+      : null;
+  if (!coverage) return "";
+  return part.name ? `${part.name}: ${coverage}` : coverage;
 }
 
 interface Props {
@@ -136,13 +196,13 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     : selectedCard
       ? `${selectedCard.brand} ending in ${selectedCard.last4}`
       : "Choose a saved card";
-  const coverageParts = (breakdownRows ?? [])
-    .filter((row) => recipientRows.some((recipient) => recipient.bowlerId === row.bowlerId && recipient.selected))
-    .map((row) => {
-      const labels = row.coveredWeeks.length > 0 ? row.coveredWeeks : row.allocations.map((allocation) => allocation.label);
-      return labels.length > 0 ? (breakdownRows && breakdownRows.length > 1 ? `${row.name}: ${labels.join(", ")}` : labels.join(", ")) : null;
-    })
-    .filter((label): label is string => Boolean(label));
+  const selectedCoverageRows = (breakdownRows ?? [])
+    .filter((row) => recipientRows.some((recipient) => recipient.bowlerId === row.bowlerId && recipient.selected));
+  const coverageParts: CoveragePart[] = selectedCoverageRows.map((row) => ({
+    name: selectedCoverageRows.length > 1 ? row.name : "",
+    ...coveragePartForRow(row),
+  }));
+  const formattedCoverageParts = coverageParts.map(formatCoveragePart).filter(Boolean);
   const fullBalanceCoverageParts = recipientRows
     .filter((row) => row.selected && row.eligible)
     .map((row) => {
@@ -162,14 +222,10 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     : "the selected season balances";
   const coverageCopy = fullBalanceOnly
     ? `Covers ${fullBalanceCoverageCopy}`
-    : coverageParts.length > 0
-    ? `This payment covers ${coverageParts.map((part) => {
-      const separator = part.indexOf(": ");
-      const prefix = separator >= 0 ? `${part.slice(0, separator)}: ` : "";
-      const labels = separator >= 0 ? part.slice(separator + 2) : part;
-      const lastLabel = labels.split(", ").at(-1) ?? labels;
-      return `${prefix}through ${lastLabel}`;
-    }).join(" · ")}`
+    : rotatingMode
+    ? `This payment covers ${fallbackWeekCount} ${fallbackWeekCount === 1 ? "week" : "weeks"}`
+    : formattedCoverageParts.length > 0
+    ? `This payment covers ${formattedCoverageParts.join(" · ")}`
     : `This payment covers ${fallbackWeekCount} ${fallbackWeekCount === 1 ? "week" : "weeks"}`;
 
   return (
@@ -272,7 +328,6 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
           {!googlePayTokenizeOnly && googlePayRef && <div ref={googlePayRef} className={googlePayAvailable ? "min-h-12 overflow-hidden rounded-md bg-black" : "hidden"} />}
           {googlePayAvailable && googlePayTokenizeOnly && <button type="button" aria-label="Pay with Google Pay" onClick={() => void onGooglePayClick()} disabled={paymentInFlight} className="wallet-button h-12 disabled:opacity-50"><span className="text-sm font-medium text-white">Google Pay</span></button>}
           {isWalletProcessing && <div className="flex items-center justify-center gap-2 py-2"><Loader2 className="size-4 animate-spin" /><span className="text-sm text-muted-foreground">Processing wallet payment…</span></div>}
-          {hasWalletOptions && <p className="familiar-wallet-note">Live availability depends on your device and browser.</p>}
           {hasWalletOptions && <div className="familiar-payment-divider" aria-hidden="true"><span>Pay with a card</span></div>}
         </div>}
 

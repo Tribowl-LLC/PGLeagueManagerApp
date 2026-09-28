@@ -173,7 +173,7 @@ const mocks = vi.hoisted(() => {
           weeks,
           fullBalance: paymentMode === "upfront",
           subtotalMinor: amountMinor,
-          allocations: [{ obligationId: "obligation-1", amountMinor, occurrenceId: "occurrence-1", occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1" }],
+          allocations: [{ obligationId: "obligation-1", amountMinor, occurrenceId: "occurrence-1", occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1", isPairedFinalWeek: false }],
           coveredWeeks: ["Week 1"],
         }],
       };

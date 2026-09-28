@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
 import { BowlerOneTimePaymentCard, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
 
-function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[], dueNowOnly = false) {
+function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[], dueNowOnly = false, options: { applePayAvailable?: boolean; googlePayAvailable?: boolean; rotatingMode?: boolean } = {}) {
   const applePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const googlePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const onRecipientToggle = vi.fn();
@@ -40,8 +40,8 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     cleanupCard={vi.fn()}
     onCardEditorModeChange={vi.fn()}
     cardEditorMode="one-time"
-    applePayAvailable={false}
-    googlePayAvailable={false}
+    applePayAvailable={options.applePayAvailable ?? false}
+    googlePayAvailable={options.googlePayAvailable ?? false}
     applePayTokenizeOnly={false}
     googlePayTokenizeOnly={false}
     applePayRef={applePayRef}
@@ -58,6 +58,7 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     onRecipientToggle={onRecipientToggle}
     onRecipientWeeksChange={onRecipientWeeksChange}
     dueNowOnly={dueNowOnly}
+    rotatingMode={options.rotatingMode ?? false}
     onCancelDueNow={vi.fn()}
   />);
   return { onRecipientToggle, onRecipientWeeksChange, onSubmit };
@@ -151,7 +152,7 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
         role: "self",
         amountMinor: 3_000,
         coveredWeeks: ["Week 1"],
-        allocations: [{ obligationId: "obligation-1", amountMinor: 3_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1" }],
+        allocations: [{ obligationId: "obligation-1", amountMinor: 3_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1", isPairedFinalWeek: false }],
       },
       {
         bowlerId: 84,
@@ -160,8 +161,8 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
         amountMinor: 4_000,
         coveredWeeks: ["Week 2", "Week 3"],
         allocations: [
-          { obligationId: "obligation-2", amountMinor: 2_000, occurrenceLocalDate: "2026-09-08", plannedOrdinal: 2, label: "Week 2" },
-          { obligationId: "obligation-3", amountMinor: 2_000, occurrenceLocalDate: "2026-09-15", plannedOrdinal: 3, label: "Week 3" },
+          { obligationId: "obligation-2", amountMinor: 2_000, occurrenceLocalDate: "2026-09-08", plannedOrdinal: 2, label: "Week 2", isPairedFinalWeek: false },
+          { obligationId: "obligation-3", amountMinor: 2_000, occurrenceLocalDate: "2026-09-15", plannedOrdinal: 3, label: "Week 3", isPairedFinalWeek: false },
         ],
       },
     ]);
@@ -173,6 +174,7 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByText("Alex Partner")).toBeInTheDocument();
     expect(screen.getByText("Week 2 · 2026-09-08")).toBeInTheDocument();
     expect(screen.getByText("Week 3 · 2026-09-15")).toBeInTheDocument();
+    expect(screen.getByText("This payment covers Bowler: through Week 1 · Alex Partner: through Week 3")).toBeInTheDocument();
     expect(screen.queryByText(/obligation-|allocation/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: "Pay Alex Partner" }));
     expect(onRecipientToggle).toHaveBeenCalledWith(84, false);
@@ -201,6 +203,97 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Pay Alex Partner" })).toBeDisabled();
     expect(screen.getByText("No remaining balance")).toBeInTheDocument();
+  });
+
+  it("describes the normal coverage endpoint and one quoted paired final week", () => {
+    renderCard(false, { weeks: 4 }, [], [{
+      bowlerId: 42,
+      name: "Bowler",
+      role: "self",
+      amountMinor: 4_000,
+      coveredWeeks: ["Week 3", "Week 4", "Week 5", "Week 30"],
+      allocations: [
+        { obligationId: "obligation-3", amountMinor: 1_000, occurrenceLocalDate: "2026-09-15", plannedOrdinal: 3, label: "Week 3", isPairedFinalWeek: false },
+        { obligationId: "obligation-4", amountMinor: 1_000, occurrenceLocalDate: "2026-09-22", plannedOrdinal: 4, label: "Week 4", isPairedFinalWeek: false },
+        { obligationId: "obligation-5", amountMinor: 1_000, occurrenceLocalDate: "2026-09-29", plannedOrdinal: 5, label: "Week 5", isPairedFinalWeek: false },
+        { obligationId: "obligation-30", amountMinor: 1_000, occurrenceLocalDate: "2027-04-27", plannedOrdinal: 30, label: "Week 30", isPairedFinalWeek: true },
+      ],
+    }]);
+
+    expect(screen.getByText("This payment covers through Week 5 and includes Week 30")).toBeInTheDocument();
+  });
+
+  it("lists multiple quoted paired final weeks once each", () => {
+    renderCard(false, { weeks: 5 }, [], [{
+      bowlerId: 42,
+      name: "Bowler",
+      role: "self",
+      amountMinor: 5_000,
+      coveredWeeks: ["Week 5", "Week 30", "Week 30", "Week 6", "Week 31"],
+      allocations: [
+        { obligationId: "obligation-5", amountMinor: 1_000, occurrenceLocalDate: "2026-09-29", plannedOrdinal: 5, label: "Week 5", isPairedFinalWeek: false },
+        { obligationId: "obligation-30a", amountMinor: 500, occurrenceLocalDate: "2027-04-27", plannedOrdinal: 30, label: "Week 30", isPairedFinalWeek: true },
+        { obligationId: "obligation-30b", amountMinor: 500, occurrenceLocalDate: "2027-04-27", plannedOrdinal: 30, label: "Week 30", isPairedFinalWeek: true },
+        { obligationId: "obligation-6", amountMinor: 1_000, occurrenceLocalDate: "2026-10-06", plannedOrdinal: 6, label: "Week 6", isPairedFinalWeek: false },
+        { obligationId: "obligation-31", amountMinor: 1_000, occurrenceLocalDate: "2027-05-04", plannedOrdinal: 31, label: "Week 31", isPairedFinalWeek: true },
+      ],
+    }]);
+
+    expect(screen.getByText("This payment covers through Week 6 and includes Weeks 30 and 31")).toBeInTheDocument();
+  });
+
+  it("keeps normal-only and paired-only coverage copy tied to quoted labels", () => {
+    const normalOnly = {
+      bowlerId: 42,
+      name: "Bowler",
+      role: "self" as const,
+      amountMinor: 2_000,
+      coveredWeeks: ["Week of 2026-09-01", "Week of 2026-09-08"],
+      allocations: [
+        { obligationId: "obligation-a", amountMinor: 1_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: null, label: "Week of 2026-09-01", isPairedFinalWeek: false },
+        { obligationId: "obligation-b", amountMinor: 1_000, occurrenceLocalDate: "2026-09-08", plannedOrdinal: null, label: "Week of 2026-09-08", isPairedFinalWeek: false },
+      ],
+    } satisfies PaymentBreakdownRow;
+    renderCard(false, {}, [], [normalOnly]);
+    expect(screen.getByText("This payment covers through Week of 2026-09-08")).toBeInTheDocument();
+    expect(screen.queryByText(/includes/)).not.toBeInTheDocument();
+  });
+
+  it("uses direct coverage copy when the quote contains only a paired final week", () => {
+    renderCard(false, {}, [], [{
+      bowlerId: 42,
+      name: "Bowler",
+      role: "self",
+      amountMinor: 1_000,
+      coveredWeeks: ["Week 30"],
+      allocations: [{ obligationId: "obligation-30", amountMinor: 1_000, occurrenceLocalDate: "2027-04-27", plannedOrdinal: 30, label: "Week 30", isPairedFinalWeek: true }],
+    }]);
+
+    expect(screen.getByText("This payment covers Week 30")).toBeInTheDocument();
+    expect(screen.queryByText("This payment covers through Week 30")).not.toBeInTheDocument();
+  });
+
+  it("keeps rotating payments in count-only coverage mode", () => {
+    renderCard(false, { weeks: 3 }, [], [{
+      bowlerId: 42,
+      name: "Bowler",
+      role: "self",
+      amountMinor: 3_000,
+      coveredWeeks: ["Week 3", "Week 30"],
+      allocations: [
+        { obligationId: "obligation-3", amountMinor: 2_000, occurrenceLocalDate: "2026-09-15", plannedOrdinal: 3, label: "Week 3", isPairedFinalWeek: false },
+        { obligationId: "obligation-30", amountMinor: 1_000, occurrenceLocalDate: "2027-04-27", plannedOrdinal: 30, label: "Week 30", isPairedFinalWeek: true },
+      ],
+    }], false, false, undefined, false, { rotatingMode: true });
+
+    expect(screen.getByText("This payment covers 3 weeks")).toBeInTheDocument();
+  });
+
+  it("does not show the removed wallet availability note", () => {
+    renderCard(false, {}, [], [], false, false, undefined, false, { applePayAvailable: true });
+
+    expect(screen.queryByText("Live availability depends on your device and browser.")).not.toBeInTheDocument();
+    expect(screen.getByText("Pay with a card")).toBeInTheDocument();
   });
 
   it.each([false, true])("uses generic available-bowler/payment-detail language for stale %s payment choices", (fullBalanceOnly) => {
@@ -240,8 +333,8 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
       amountMinor: 4_000,
       coveredWeeks: ["Week 1", "Week 1"],
       allocations: [
-        { obligationId: "obligation-1", amountMinor: 2_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1" },
-        { obligationId: "obligation-2", amountMinor: 2_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1" },
+        { obligationId: "obligation-1", amountMinor: 2_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1", isPairedFinalWeek: false },
+        { obligationId: "obligation-2", amountMinor: 2_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1", isPairedFinalWeek: false },
       ],
     }]);
 

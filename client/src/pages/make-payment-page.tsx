@@ -1320,6 +1320,7 @@ export default function MakePaymentPage() {
       occurrenceLocalDate: allocation.occurrenceLocalDate,
       plannedOrdinal: allocation.plannedOrdinal,
       label: allocation.label,
+      isPairedFinalWeek: allocation.isPairedFinalWeek,
     })),
   })) ?? [];
   const combinedConsentRecoveryProps = combinedAutopayConsentRecovery === null ? null : {

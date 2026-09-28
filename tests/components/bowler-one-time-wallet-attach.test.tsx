@@ -112,6 +112,6 @@ describe("BowlerOneTimePaymentCard wallet attachment", () => {
     expect(appleMount).not.toHaveClass("hidden");
     expect(googleMount).toHaveClass("hidden");
     expect(screen.getByText("Provider Apple Pay")).toBeInTheDocument();
-    expect(screen.getByText("Live availability depends on your device and browser.")).toBeInTheDocument();
+    expect(screen.queryByText("Live availability depends on your device and browser.")).not.toBeInTheDocument();
   });
 });
