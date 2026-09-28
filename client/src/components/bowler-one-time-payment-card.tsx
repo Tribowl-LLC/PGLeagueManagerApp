@@ -6,9 +6,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { ChevronDown, CreditCard, Loader2, Minus, Plus, Wallet } from "lucide-react";
+import { ArrowRight, CheckCircle2, ChevronDown, CreditCard, Loader2, Minus, Plus, Wallet } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import type { SavedCard } from "@shared/schema";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 function formatPayCurrency(amountMinor: number): string {
   const formatted = formatCurrency(amountMinor);
@@ -42,6 +43,20 @@ export interface PaymentBreakdownRow {
     plannedOrdinal: number | null;
     label: string;
     isPairedFinalWeek: boolean;
+  }>;
+}
+
+export interface CompletedPayment {
+  amountMinor: number;
+  coverage: string;
+  isUpfront: boolean;
+  hasRemainingBalance: boolean;
+  recipients: Array<{
+    bowlerId: number;
+    name: string;
+    role: "self" | "partner";
+    amountMinor: number;
+    coverage: string;
   }>;
 }
 
@@ -104,8 +119,25 @@ function formatCoveragePart(part: CoveragePart): string {
   return part.name ? `${part.name}: ${coverage}` : coverage;
 }
 
+function formatReviewCoverage(labels: string[], fallbackWeekCount: number): string {
+  if (labels.length === 0) return fallbackWeekCount === 1 ? "Week 1" : `Weeks 1–${fallbackWeekCount}`;
+  const numbers = labels.map((label) => label.match(/^Week (\d+)$/)?.[1]);
+  if (numbers.every((number): number is string => number !== undefined)) {
+    const first = Number(numbers[0]);
+    const last = Number(numbers.at(-1));
+    if (first === last) return `Week ${first}`;
+    if (numbers.every((number, index) => index === 0 || Number(number) === Number(numbers[index - 1]) + 1)) return `Weeks ${first}–${last}`;
+  }
+  return formatCoverageLabels(labels);
+}
+
 interface Props {
   paymentAmountMinor: number;
+  leagueName?: string;
+  quoteFingerprint?: string | null;
+  completedPayment?: CompletedPayment | null;
+  onViewPaymentHistory?: () => void;
+  onMakeAnotherPayment?: () => void;
   fullBalanceOnly?: boolean;
   savedCards: SavedCard[];
   cardMode: "new" | "saved";
@@ -159,6 +191,8 @@ interface Props {
 
 export const BowlerOneTimePaymentCard: FC<Props> = ({
   paymentAmountMinor,
+  leagueName = "Selected league", quoteFingerprint = null, completedPayment = null,
+  onViewPaymentHistory, onMakeAnotherPayment,
   fullBalanceOnly = false, savedCards, cardMode, setCardMode, selectedSavedCardId,
   setSelectedSavedCardId, storeCard, setStoreCard, isInitialized, isSubmitting,
   onSubmit, initializeCard, cleanupCard,
@@ -184,6 +218,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   const selectionStaleMessage = "The available bowler or payment details changed while this page was open. Review the available bowler and payment details before paying.";
   const [sourceOpen, setSourceOpen] = useState(savedCards.length === 0 || fullBalanceOnly);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const reviewFingerprintRef = useRef<string | null>(null);
   const previousSavedCardCountRef = useRef(savedCards.length);
   useEffect(() => {
     if (savedCards.length === 0 || fullBalanceOnly) setSourceOpen(true);
@@ -228,6 +263,80 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     ? `This payment covers ${formattedCoverageParts.join(" · ")}`
     : `This payment covers ${fallbackWeekCount} ${fallbackWeekCount === 1 ? "week" : "weeks"}`;
 
+  const checkoutFingerprint = JSON.stringify({
+    quoteFingerprint,
+    paymentAmountMinor,
+    recipients: recipientRows.map((row) => ({
+      bowlerId: row.bowlerId,
+      selected: row.selected,
+      eligible: row.eligible,
+      weeks: row.weeks,
+      amountMinor: row.amountMinor,
+    })),
+    cardMode,
+    selectedSavedCardId: cardMode === "saved" ? selectedSavedCardId : null,
+    selectedSourceLabel,
+    storeCard: cardMode === "new" && storeCard,
+  });
+
+  useEffect(() => {
+    if (reviewOpen && reviewFingerprintRef.current !== checkoutFingerprint) {
+      reviewFingerprintRef.current = null;
+      setReviewOpen(false);
+    }
+  }, [checkoutFingerprint, reviewOpen]);
+
+  const closeReview = () => {
+    reviewFingerprintRef.current = null;
+    setReviewOpen(false);
+  };
+
+  const openReview = () => {
+    reviewFingerprintRef.current = checkoutFingerprint;
+    setReviewOpen(true);
+  };
+
+  const reviewCoverage = fullBalanceOnly
+    ? fullBalanceCoverageCopy
+    : coverageCopy.replace(/^This payment covers\s*/, "");
+  const reviewRecipients = recipientRows.filter((row) => row.selected && row.eligible);
+  const reviewCoverageForRecipient = (row: PaymentRecipientRow) => formatReviewCoverage(
+    breakdownRows?.find((candidate) => candidate.bowlerId === row.bowlerId)?.coveredWeeks ?? [],
+    row.maximumWeekCount,
+  );
+  const reviewDisabled = (cardMode === "new" && !isInitialized) || (cardMode === "saved" && !selectedSavedCardId)
+    || paymentInFlight || paymentAmountMinor <= 0 || !hasSelectedRecipient || quoteLoading || Boolean(quoteError)
+    || selectionStale || (!bowlerHasEmail && !receiptEmail.trim());
+
+  if (completedPayment) {
+    return (
+      <Card data-testid="one-time-payment-success" className="familiar-one-time-card familiar-payment-success-card">
+        <CardContent spacing="normal">
+          <div className="familiar-payment-success" role="status">
+            <CheckCircle2 className="familiar-payment-success-icon" aria-hidden="true" />
+            <h2>{completedPayment.isUpfront ? "Upfront payment complete" : "Payment complete"}</h2>
+            <p>{formatPayCurrency(completedPayment.amountMinor)} covered {completedPayment.coverage}.</p>
+            {completedPayment.recipients.some((recipient) => recipient.role === "partner") && (
+              <div className="familiar-payment-success-allocations" aria-label="Payment allocation">
+                {completedPayment.recipients.map((recipient) => (
+                  <div key={recipient.bowlerId}>
+                    <span>{recipient.name}</span>
+                    <strong>{formatPayCurrency(recipient.amountMinor)}</strong>
+                    <small>{recipient.coverage}</small>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="familiar-payment-success-actions">
+              {onViewPaymentHistory && <Button type="button" onClick={onViewPaymentHistory}>View payment history<ArrowRight aria-hidden="true" /></Button>}
+              {onMakeAnotherPayment && completedPayment.hasRemainingBalance && <Button type="button" variant="outline" onClick={onMakeAnotherPayment}>{completedPayment.isUpfront ? "Pay remaining balance" : "Make another payment"}<ArrowRight aria-hidden="true" /></Button>}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card data-testid="one-time-payment-card" data-full-balance={fullBalanceOnly ? "true" : undefined} data-rotating-mode={rotatingMode ? "true" : undefined} className="familiar-one-time-card familiar-partner-one-time-card">
       <CardHeader>
@@ -250,7 +359,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
                         id={`payment-recipient-${row.bowlerId}-checkbox`}
                         checked={row.selected}
                         disabled={paymentInFlight || !row.eligible}
-                        onCheckedChange={(checked) => { setReviewOpen(false); onRecipientToggle(row.bowlerId, checked === true); }}
+                        onCheckedChange={(checked) => { closeReview(); onRecipientToggle(row.bowlerId, checked === true); }}
                         aria-label={`Pay ${row.name}`}
                     />}
                     <div className="min-w-0 flex-1">
@@ -276,9 +385,9 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
                         ) : (
                           <div className="familiar-week-stepper mt-3 flex flex-wrap items-center gap-3 border-t pt-3">
                             <span className="text-sm text-muted-foreground">Weeks to pay</span>
-                            <Button type="button" variant="outline" size="icon" aria-label={`Pay ${row.name} for one fewer week`} disabled={paymentInFlight || row.weeks <= 1} onClick={() => { setReviewOpen(false); onRecipientWeeksChange(row.bowlerId, row.weeks - 1); }}><Minus className="size-4" /></Button>
+                            <Button type="button" variant="outline" size="icon" aria-label={`Pay ${row.name} for one fewer week`} disabled={paymentInFlight || row.weeks <= 1} onClick={() => { closeReview(); onRecipientWeeksChange(row.bowlerId, row.weeks - 1); }}><Minus className="size-4" /></Button>
                             <output aria-label={`Number of weeks to pay for ${row.name}`} className="min-w-8 text-center text-lg font-semibold">{row.weeks}</output>
-                            <Button type="button" variant="outline" size="icon" aria-label={`Pay ${row.name} for one more week`} disabled={paymentInFlight || row.weeks >= row.maximumWeekCount} onClick={() => { setReviewOpen(false); onRecipientWeeksChange(row.bowlerId, row.weeks + 1); }}><Plus className="size-4" /></Button>
+                            <Button type="button" variant="outline" size="icon" aria-label={`Pay ${row.name} for one more week`} disabled={paymentInFlight || row.weeks >= row.maximumWeekCount} onClick={() => { closeReview(); onRecipientWeeksChange(row.bowlerId, row.weeks + 1); }}><Plus className="size-4" /></Button>
                           </div>
                         )
                       )}
@@ -339,20 +448,36 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
             <ChevronDown className={sourceOpen ? "is-open" : ""} size={18} aria-hidden="true" />
           </button>
           {sourceOpen && <div className="familiar-source-menu" role="listbox" aria-label="Payment source">
-            {savedCards.map((candidate) => <button key={candidate.id} type="button" role="option" aria-selected={cardMode === "saved" && selectedSavedCardId === candidate.id} className={`familiar-source-option${cardMode === "saved" && selectedSavedCardId === candidate.id ? " is-selected" : ""}`} onClick={() => { cleanupCard(); onCardEditorModeChange(null); setCardMode("saved"); setSelectedSavedCardId(candidate.id); setReviewOpen(false); setSourceOpen(false); }}><span><strong>{candidate.brand} ending in {candidate.last4}</strong><small>Saved card · exp {candidate.expMonth}/{candidate.expYear}</small></span>{cardMode === "saved" && selectedSavedCardId === candidate.id && <span aria-hidden="true">✓</span>}</button>)}
-            <button type="button" role="option" aria-selected={cardMode === "new"} className={`familiar-source-option${cardMode === "new" ? " is-selected" : ""}`} onClick={() => { cleanupCard(); setCardMode("new"); onCardEditorModeChange("one-time"); setReviewOpen(false); setSourceOpen(true); }}><span><strong>Use a new card</strong><small>Card details</small></span>{cardMode === "new" && <span aria-hidden="true">✓</span>}</button>
+            {savedCards.map((candidate) => <button key={candidate.id} type="button" role="option" aria-selected={cardMode === "saved" && selectedSavedCardId === candidate.id} className={`familiar-source-option${cardMode === "saved" && selectedSavedCardId === candidate.id ? " is-selected" : ""}`} onClick={() => { cleanupCard(); onCardEditorModeChange(null); setCardMode("saved"); setSelectedSavedCardId(candidate.id); closeReview(); setSourceOpen(false); }}><span><strong>{candidate.brand} ending in {candidate.last4}</strong><small>Saved card · exp {candidate.expMonth}/{candidate.expYear}</small></span>{cardMode === "saved" && selectedSavedCardId === candidate.id && <span aria-hidden="true">✓</span>}</button>)}
+            <button type="button" role="option" aria-selected={cardMode === "new"} className={`familiar-source-option${cardMode === "new" ? " is-selected" : ""}`} onClick={() => { cleanupCard(); setCardMode("new"); onCardEditorModeChange("one-time"); closeReview(); setSourceOpen(true); }}><span><strong>Use a new card</strong><small>Card details</small></span>{cardMode === "new" && <span aria-hidden="true">✓</span>}</button>
             {cardMode === "new" && <div className="familiar-card-editor" role="group" aria-label="Card details"><span className="text-sm font-medium">Card details</span><div ref={(element) => cardCallbackRef.current(element)} className={cardEditorMode === "one-time" ? "min-h-20 rounded-md border p-3" : "min-h-20 rounded-md border p-3 hidden"} /><div className="flex items-center gap-x-3"><Checkbox id="store-card-make-payment" checked={dueNowOnly ? true : storeCard} disabled={dueNowOnly} onCheckedChange={(checked) => setStoreCard(checked === true)} /><Label htmlFor="store-card-make-payment" size="sm" className="cursor-pointer">{dueNowOnly ? "Save this card for automatic payments" : "Save this card for future payments"}</Label></div></div>}
           </div>}
         </div>
         {!bowlerHasEmail && <div className="space-y-2 rounded-md border bg-muted/30 p-3"><Label htmlFor="make-payment-receipt-email" size="sm">Email for receipt <span className="text-destructive">*</span></Label><Input id="make-payment-receipt-email" type="email" placeholder="you@example.com" value={receiptEmail} onChange={(event) => onReceiptEmailChange(event.target.value)} /><p className="text-xs text-muted-foreground">We don't have an email on file for you. Add one to get a Square receipt for this payment.</p></div>}
-        {reviewOpen && <section className="familiar-payment-review" aria-label="Review payment">
-          <div><span>Payment total</span><strong>{formatPayCurrency(paymentAmountMinor)}</strong></div>
-          <p>{coverageCopy}</p>
-          {(breakdownRows ?? []).length > 0 && <ul aria-label="Payment coverage details">{(breakdownRows ?? []).map((row) => <li key={row.bowlerId}><span>{row.name}</span><span>{row.coveredWeeks.length > 0 ? row.coveredWeeks.join(", ") : "Selected season balance"}</span></li>)}</ul>}
-          <small>We’ll confirm the latest payment quote before charging your selected source.</small>
-        </section>}
-        {reviewOpen && <Button type="button" variant="ghost" onClick={() => setReviewOpen(false)} disabled={isSubmitting || isWalletProcessing}>Back to payment details</Button>}
-        <Button onClick={() => { if (reviewOpen) onSubmit(); else setReviewOpen(true); }} disabled={(cardMode === "new" && !isInitialized) || (cardMode === "saved" && !selectedSavedCardId) || isSubmitting || isWalletProcessing || paymentAmountMinor <= 0 || !hasSelectedRecipient || quoteLoading || Boolean(quoteError) || selectionStale || (!bowlerHasEmail && !receiptEmail.trim())} className="w-full">{isSubmitting ? <><Loader2 className="mr-2 size-4 animate-spin" />Processing…</> : <><CreditCard className="mr-2 size-4" />{reviewOpen ? (dueNowOnly ? "Pay and enable automatic payments" : `Pay ${formatPayCurrency(paymentAmountMinor)}`) : "Review payment"}</>}</Button>
+        <Dialog open={reviewOpen} onOpenChange={(open) => { if (open) openReview(); else closeReview(); }}>
+          <DialogContent className="familiar-payment-review-dialog">
+            <DialogHeader className="familiar-payment-review-header">
+              <DialogTitle>{fullBalanceOnly ? "Review upfront payment" : "Review payment"}</DialogTitle>
+              <DialogDescription>Check the payment details before confirming.</DialogDescription>
+            </DialogHeader>
+            <dl className="familiar-payment-review-details">
+              <div><dt>League</dt><dd>{leagueName}</dd></div>
+              {hasPaymentPartner
+                ? reviewRecipients.map((row) => <div className="familiar-payment-review-recipient" key={row.bowlerId}><dt>{row.name}</dt><dd>{reviewCoverageForRecipient(row)} · {formatPayCurrency(row.amountMinor)}</dd></div>)
+                : <div><dt>Weeks covered</dt><dd>{reviewCoverage}</dd></div>}
+              <div><dt>Method</dt><dd>{selectedSourceLabel}</dd></div>
+              <div><dt>Total</dt><dd>{formatPayCurrency(paymentAmountMinor)}</dd></div>
+              {cardMode === "new" && storeCard && <div><dt>Card on file</dt><dd>Save card for later</dd></div>}
+            </dl>
+            <DialogFooter className="familiar-payment-review-actions">
+              <Button type="button" onClick={() => { closeReview(); onSubmit(); }} disabled={reviewDisabled}>Confirm payment</Button>
+              <Button type="button" variant="outline" onClick={closeReview} disabled={isSubmitting || isWalletProcessing}>Go back</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <Button type="button" onClick={openReview} disabled={reviewDisabled} aria-haspopup="dialog" className="w-full">
+          {isSubmitting ? <><Loader2 className="mr-2 size-4 animate-spin" />Processing…</> : <>{fullBalanceOnly ? "Review payment" : paymentAmountMinor > 0 ? `Review payment of ${formatPayCurrency(paymentAmountMinor)}` : "Review payment"}<ArrowRight className="ml-auto size-4" aria-hidden="true" /></>}
+        </Button>
       </CardContent>
     </Card>
   );
