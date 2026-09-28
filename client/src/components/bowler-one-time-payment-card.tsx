@@ -119,16 +119,93 @@ function formatCoveragePart(part: CoveragePart): string {
   return part.name ? `${part.name}: ${coverage}` : coverage;
 }
 
-function formatReviewCoverage(labels: string[], fallbackWeekCount: number): string {
-  if (labels.length === 0) return fallbackWeekCount === 1 ? "Week 1" : `Weeks 1–${fallbackWeekCount}`;
-  const numbers = labels.map((label) => label.match(/^Week (\d+)$/)?.[1]);
-  if (numbers.every((number): number is string => number !== undefined)) {
-    const first = Number(numbers[0]);
-    const last = Number(numbers.at(-1));
-    if (first === last) return `Week ${first}`;
-    if (numbers.every((number, index) => index === 0 || Number(number) === Number(numbers[index - 1]) + 1)) return `Weeks ${first}–${last}`;
+interface ReviewCoverageLabel {
+  label: string;
+  ordinal: number | null;
+  isPairedFinalWeek: boolean;
+  sourceIndex: number;
+}
+
+function reviewCoverageOrdinal(label: string, plannedOrdinal: number | null): number | null {
+  if (plannedOrdinal !== null && Number.isSafeInteger(plannedOrdinal) && plannedOrdinal > 0) return plannedOrdinal;
+  const match = label.match(/^Week (\d+)$/);
+  if (!match) return null;
+  const ordinal = Number(match[1]);
+  return Number.isSafeInteger(ordinal) && ordinal > 0 ? ordinal : null;
+}
+
+function reviewCoverageLabelsForRow(row: PaymentBreakdownRow): ReviewCoverageLabel[] {
+  const allocations = row.allocations.length > 0
+    ? row.allocations
+    : row.coveredWeeks.map((label) => ({
+      obligationId: null,
+      amountMinor: 0,
+      occurrenceLocalDate: "",
+      plannedOrdinal: null,
+      label,
+      isPairedFinalWeek: false,
+    }));
+  const labelsByWeek = new Map<string, ReviewCoverageLabel>();
+  allocations.forEach((allocation, sourceIndex) => {
+    if (!allocation.label.trim()) return;
+    const ordinal = reviewCoverageOrdinal(allocation.label, allocation.plannedOrdinal);
+    const key = ordinal === null ? `label:${allocation.label}` : `ordinal:${ordinal}`;
+    const existing = labelsByWeek.get(key);
+    if (existing) {
+      // A quote can split one week's amount over multiple allocation rows.
+      // Keep one label while retaining the paired marker if any split row has it.
+      existing.isPairedFinalWeek ||= allocation.isPairedFinalWeek;
+      return;
+    }
+    labelsByWeek.set(key, {
+      label: allocation.label,
+      ordinal,
+      isPairedFinalWeek: allocation.isPairedFinalWeek,
+      sourceIndex,
+    });
+  });
+  return [...labelsByWeek.values()].sort((left, right) => {
+    if (left.ordinal !== null && right.ordinal !== null) return left.ordinal - right.ordinal;
+    if (left.ordinal !== null) return -1;
+    if (right.ordinal !== null) return 1;
+    return left.sourceIndex - right.sourceIndex;
+  });
+}
+
+function formatReviewCoverageGroup(labels: ReviewCoverageLabel[], collapseRanges = true): string {
+  if (labels.length === 0) return "";
+  if (!collapseRanges) return formatCoverageLabels(labels.map((label) => label.label));
+  const segments: string[] = [];
+  let start = 0;
+  while (start < labels.length) {
+    const first = labels[start];
+    let end = start;
+    while (end + 1 < labels.length) {
+      const previousOrdinal = labels[end].ordinal;
+      const nextOrdinal = labels[end + 1].ordinal;
+      if (first.ordinal === null || previousOrdinal === null || nextOrdinal === null || nextOrdinal !== previousOrdinal + 1) break;
+      end += 1;
+    }
+    const last = labels[end];
+    if (first.ordinal !== null && last.ordinal !== null) {
+      segments.push(first.ordinal === last.ordinal
+        ? `Week ${first.ordinal}`
+        : `Week ${first.ordinal} through Week ${last.ordinal}`);
+    } else {
+      segments.push(first.label);
+    }
+    start = end + 1;
   }
-  return formatCoverageLabels(labels);
+  return segments.join(" and ");
+}
+
+function formatReviewCoverageFromRow(row: PaymentBreakdownRow | undefined, fallbackWeekCount: number): string {
+  if (!row) return `${fallbackWeekCount} ${fallbackWeekCount === 1 ? "week" : "weeks"}`;
+  const labels = reviewCoverageLabelsForRow(row);
+  if (labels.length === 0) return `${fallbackWeekCount} ${fallbackWeekCount === 1 ? "week" : "weeks"}`;
+  const normal = formatReviewCoverageGroup(labels.filter((label) => !label.isPairedFinalWeek));
+  const paired = formatReviewCoverageGroup(labels.filter((label) => label.isPairedFinalWeek), false);
+  return [normal, paired].filter(Boolean).join(" and ");
 }
 
 function formatFullBalanceReviewCoverage(labels: string[], fallbackWeekCount: number): string {
@@ -299,22 +376,16 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     setReviewOpen(true);
   };
 
-  const reviewCoverage = fullBalanceOnly
-    ? fullBalanceCoverageCopy
-    : coverageCopy.replace(/^This payment covers\s*/, "");
   const reviewRecipients = recipientRows.filter((row) => row.selected && row.eligible);
   const reviewQuoteForRecipient = (row: PaymentRecipientRow) => breakdownRows?.find((candidate) => candidate.bowlerId === row.bowlerId);
   const reviewCoverageForRecipient = (row: PaymentRecipientRow) => {
-    const breakdown = reviewQuoteForRecipient(row);
-    if (fullBalanceOnly) return formatFullBalanceReviewCoverage(breakdown?.coveredWeeks ?? [], row.maximumWeekCount);
-    if (breakdown) {
-      const allocationAwareCoverage = breakdown.allocations.length > 0
-        ? formatCoveragePart({ name: "", ...coveragePartForRow(breakdown) })
-        : "";
-      if (allocationAwareCoverage) return allocationAwareCoverage;
-    }
-    return formatReviewCoverage(breakdown?.coveredWeeks ?? [], row.maximumWeekCount);
+    // Rotating prepayments do not promise specific league obligations yet.
+    if (rotatingMode) return `${row.weeks} ${row.weeks === 1 ? "week" : "weeks"}`;
+    return formatReviewCoverageFromRow(reviewQuoteForRecipient(row), row.weeks);
   };
+  const reviewCoverage = reviewRecipients.length > 0
+    ? reviewCoverageForRecipient(reviewRecipients[0])
+    : "Coverage details unavailable";
   const reviewDisabled = (cardMode === "new" && !isInitialized) || (cardMode === "saved" && !selectedSavedCardId)
     || paymentInFlight || paymentAmountMinor <= 0 || !hasSelectedRecipient || quoteLoading || Boolean(quoteError)
     || selectionStale || (!bowlerHasEmail && !receiptEmail.trim());
@@ -490,7 +561,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
           </DialogContent>
         </Dialog>
         <Button type="button" onClick={openReview} disabled={reviewDisabled} aria-haspopup="dialog" className="w-full">
-          {isSubmitting ? <><Loader2 className="mr-2 size-4 animate-spin" />Processing…</> : <>{fullBalanceOnly ? "Review payment" : paymentAmountMinor > 0 ? `Review payment of ${formatPayCurrency(paymentAmountMinor)}` : "Review payment"}<ArrowRight className="ml-auto size-4" aria-hidden="true" /></>}
+          {isSubmitting ? <><Loader2 className="mr-2 size-4 animate-spin" />Processing…</> : <>{fullBalanceOnly ? "Review payment" : paymentAmountMinor > 0 ? `Review payment of ${formatPayCurrency(paymentAmountMinor)}` : "Review payment"}<ArrowRight aria-hidden="true" /></>}
         </Button>
       </CardContent>
     </Card>

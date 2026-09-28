@@ -714,7 +714,18 @@
 }
 
 .familiar-one-time-card > div:last-child > button:last-child {
+  align-items: center;
+  display: flex;
+  font-size: 15px;
+  font-weight: 650;
+  gap: 10px;
+  justify-content: center;
   min-height: 50px;
+}
+
+.familiar-one-time-card > div:last-child > button:last-child > svg {
+  height: 18px;
+  width: 18px;
 }
 
 .familiar-payment-review-dialog {
