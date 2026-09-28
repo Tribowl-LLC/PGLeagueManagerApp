@@ -150,15 +150,6 @@
   letter-spacing: -0.025em;
 }
 
-.familiar-standing-autopay-card .familiar-autopay-enabled-badge {
-  background: #dcfce7;
-  color: #166534;
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 1.2;
-  padding: 4px 9px;
-}
-
 .familiar-standing-autopay-card .familiar-autopay-intro {
   color: var(--familiar-pay-muted);
   display: grid;

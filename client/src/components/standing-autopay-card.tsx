@@ -1,4 +1,4 @@
-/* eslint-disable shadcn/no-restyle, shadcn/no-unknown-classes */
+/* eslint-disable shadcn/no-restyle */
 import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -43,23 +43,17 @@ function doublePayScheduleCopy(doublePayDates: string[] | null | undefined): str
   return doublePayDates.join(", ");
 }
 
-export function formatNextPaymentDate(value: string, timezone: string | null | undefined): string {
+export function formatNextPaymentDate(value: string, timezone: string | null | undefined, style: "long" | "short" = "long"): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "Unavailable";
+  const timeZone = timezone ?? "UTC";
+  const options: Intl.DateTimeFormatOptions = style === "short"
+    ? { month: "short", day: "numeric", timeZone }
+    : { dateStyle: "long", timeZone };
   try {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: "long", timeZone: timezone ?? "UTC" }).format(date);
+    return new Intl.DateTimeFormat(undefined, options).format(date);
   } catch {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: "long", timeZone: "UTC" }).format(date);
-  }
-}
-
-function formatNextPaymentShortDate(value: string, timezone: string | null | undefined): string {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return "Unavailable";
-  try {
-    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: timezone ?? "UTC" }).format(date);
-  } catch {
-    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" }).format(date);
+    return new Intl.DateTimeFormat(undefined, { ...options, timeZone: "UTC" }).format(date);
   }
 }
 
@@ -178,7 +172,7 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
     : quoteQuery.isError
       ? "Unavailable"
       : quoteHasUpcomingPayment && quote?.cutoffAt
-        ? `${formatStandingAutopayAmount(quote.amountMinor)} · ${formatNextPaymentShortDate(quote.cutoffAt, league.timezone)}`
+        ? `${formatStandingAutopayAmount(quote.amountMinor)} · ${formatNextPaymentDate(quote.cutoffAt, league.timezone, "short")}`
         : "No upcoming payment";
   const quoteError = quoteQuery.error instanceof Error
     ? quoteQuery.error.message.replace(/^\d{3}:\s*/, "")
@@ -187,7 +181,7 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
   const consentCopy = "I agree to automatic weekly payments and understand that double-pay weeks may be charged twice to cover the final weeks of the season.";
   return <>
   <Card data-testid="standing-autopay-card" className="familiar-standing-autopay-card">
-    <CardHeader><CardTitle className="flex items-center justify-between">Automatic payments {active ? <Badge className="familiar-autopay-enabled-badge">Enabled</Badge> : <Badge variant="secondary">Off</Badge>}</CardTitle></CardHeader>
+    <CardHeader><CardTitle className="flex items-center justify-between">Automatic payments {active ? <Badge tone="positive" size="compact" className="min-h-5">Enabled</Badge> : <Badge variant="secondary">Off</Badge>}</CardTitle></CardHeader>
     <CardContent spacing="tight">
       {!bowlerHasEmail && <p className="rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900">Add an email address to your <Link href="/profile" className="font-semibold underline">Profile</Link> before enabling automatic payments. A temporary receipt email cannot be used.</p>}
       {statusLoading && <div role="status" aria-live="polite" className="rounded-md border border-muted-foreground/30 bg-muted/30 p-3 text-sm text-muted-foreground">Checking automatic-payment status…</div>}
@@ -197,7 +191,7 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
       {statusLoading || statusUnavailable || setupDataUnavailable ? null : active && !replaceMode && !addingCard ? <>
         {paymentAttention === "scheduled_payment_declined" ? <div role="alert" className="space-y-2 rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900"><p>Your scheduled automatic payment was declined. Use the One-Time Payment section below to settle this balance before automatic payments can resume.</p></div> : <div className="familiar-autopay-next" aria-label="Next automatic payment">
           <span className="familiar-autopay-next-label">Next automatic payment</span>
-          {quoteHasUpcomingPayment && quote?.cutoffAt ? <strong><span className="familiar-autopay-amount">{formatStandingAutopayAmount(quote.amountMinor)}</span><span className="familiar-autopay-date">· {formatNextPaymentShortDate(quote.cutoffAt, league.timezone)}</span></strong> : <strong>{nextPayment}</strong>}
+          {quoteHasUpcomingPayment && quote?.cutoffAt ? <strong><span>{formatStandingAutopayAmount(quote.amountMinor)}</span><span className="familiar-autopay-date">· {formatNextPaymentDate(quote.cutoffAt, league.timezone, "short")}</span></strong> : <strong>{nextPayment}</strong>}
           {quoteQuery.isError && <p role="alert" className="text-sm text-destructive">{quoteError}</p>}
           {quoteHasUpcomingPayment && quote?.collectionMode && <p>{quote.collectionMode === "double_pay" ? "Double-pay week" : "Weekly automatic payment"}</p>}
         </div>}

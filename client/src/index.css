@@ -421,6 +421,12 @@
 @utility familiar-payment-balance-grid { --lv-familiar-pay-component: 1; }
 @utility familiar-standing-autopay-card { --lv-familiar-pay-component: 1; }
 @utility familiar-autopay-schedule { --lv-familiar-pay-component: 1; }
+@utility familiar-autopay-next { --lv-familiar-pay-component: 1; }
+@utility familiar-autopay-next-label { --lv-familiar-pay-component: 1; }
+@utility familiar-autopay-date { --lv-familiar-pay-component: 1; }
+@utility familiar-autopay-method { --lv-familiar-pay-component: 1; }
+@utility familiar-autopay-actions { --lv-familiar-pay-component: 1; }
+@utility familiar-autopay-dialog-actions { --lv-familiar-pay-component: 1; }
 @utility familiar-autopay-intro { --lv-familiar-pay-component: 1; }
 @utility familiar-autopay-partner-note { --lv-familiar-pay-component: 1; }
 @utility familiar-autopay-review { --lv-familiar-pay-component: 1; }

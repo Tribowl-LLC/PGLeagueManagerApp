@@ -34,6 +34,8 @@ describe("PaymentHistoryContent", () => {
   it("formats the next automatic payment in the league timezone", () => {
     expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "America/Detroit")).toMatch(/December 31, 2029/);
     expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "Pacific/Kiritimati")).toMatch(/January 1, 2030/);
+    expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "America/Detroit", "short")).toMatch(/Dec 31/);
+    expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "Pacific/Kiritimati", "short")).toMatch(/Jan 1/);
   });
 
   it("is read-only action-wise and links summary cards to Make Payment", () => {
