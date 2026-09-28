@@ -131,6 +131,16 @@ function formatReviewCoverage(labels: string[], fallbackWeekCount: number): stri
   return formatCoverageLabels(labels);
 }
 
+function formatFullBalanceReviewCoverage(labels: string[], fallbackWeekCount: number): string {
+  const weekNumbers = labels.map((label) => Number(label.match(/\d+/)?.[0])).filter((week): week is number => Number.isInteger(week));
+  if (weekNumbers.length > 0) {
+    const first = Math.min(...weekNumbers);
+    const last = Math.max(...weekNumbers);
+    return first === last ? `Week ${first}` : `Weeks ${first}–${last}`;
+  }
+  return fallbackWeekCount === 1 ? "Week 1" : `Weeks 1–${fallbackWeekCount}`;
+}
+
 interface Props {
   paymentAmountMinor: number;
   leagueName?: string;
@@ -242,14 +252,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     .filter((row) => row.selected && row.eligible)
     .map((row) => {
       const breakdown = breakdownRows?.find((candidate) => candidate.bowlerId === row.bowlerId);
-      const labels = breakdown?.coveredWeeks ?? [];
-      const weekNumbers = labels.map((label) => Number(label.match(/\d+/)?.[0])).filter((week): week is number => Number.isInteger(week));
-      if (weekNumbers.length > 0) {
-        const first = Math.min(...weekNumbers);
-        const last = Math.max(...weekNumbers);
-        return `${row.name}: ${first === last ? `Week ${first}` : `Weeks ${first}–${last}`}`;
-      }
-      return row.maximumWeekCount === 1 ? `${row.name}: Week 1` : `${row.name}: Weeks 1–${row.maximumWeekCount}`;
+      return `${row.name}: ${formatFullBalanceReviewCoverage(breakdown?.coveredWeeks ?? [], row.maximumWeekCount)}`;
     });
   const fallbackWeekCount = recipientRows.filter((row) => row.selected && row.eligible).reduce((total, row) => total + row.weeks, 0);
   const fullBalanceCoverageCopy = fullBalanceCoverageParts.length > 0
@@ -300,10 +303,18 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     ? fullBalanceCoverageCopy
     : coverageCopy.replace(/^This payment covers\s*/, "");
   const reviewRecipients = recipientRows.filter((row) => row.selected && row.eligible);
-  const reviewCoverageForRecipient = (row: PaymentRecipientRow) => formatReviewCoverage(
-    breakdownRows?.find((candidate) => candidate.bowlerId === row.bowlerId)?.coveredWeeks ?? [],
-    row.maximumWeekCount,
-  );
+  const reviewQuoteForRecipient = (row: PaymentRecipientRow) => breakdownRows?.find((candidate) => candidate.bowlerId === row.bowlerId);
+  const reviewCoverageForRecipient = (row: PaymentRecipientRow) => {
+    const breakdown = reviewQuoteForRecipient(row);
+    if (fullBalanceOnly) return formatFullBalanceReviewCoverage(breakdown?.coveredWeeks ?? [], row.maximumWeekCount);
+    if (breakdown) {
+      const allocationAwareCoverage = breakdown.allocations.length > 0
+        ? formatCoveragePart({ name: "", ...coveragePartForRow(breakdown) })
+        : "";
+      if (allocationAwareCoverage) return allocationAwareCoverage;
+    }
+    return formatReviewCoverage(breakdown?.coveredWeeks ?? [], row.maximumWeekCount);
+  };
   const reviewDisabled = (cardMode === "new" && !isInitialized) || (cardMode === "saved" && !selectedSavedCardId)
     || paymentInFlight || paymentAmountMinor <= 0 || !hasSelectedRecipient || quoteLoading || Boolean(quoteError)
     || selectionStale || (!bowlerHasEmail && !receiptEmail.trim());
@@ -450,7 +461,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
           {sourceOpen && <div className="familiar-source-menu" role="listbox" aria-label="Payment source">
             {savedCards.map((candidate) => <button key={candidate.id} type="button" role="option" aria-selected={cardMode === "saved" && selectedSavedCardId === candidate.id} className={`familiar-source-option${cardMode === "saved" && selectedSavedCardId === candidate.id ? " is-selected" : ""}`} onClick={() => { cleanupCard(); onCardEditorModeChange(null); setCardMode("saved"); setSelectedSavedCardId(candidate.id); closeReview(); setSourceOpen(false); }}><span><strong>{candidate.brand} ending in {candidate.last4}</strong><small>Saved card · exp {candidate.expMonth}/{candidate.expYear}</small></span>{cardMode === "saved" && selectedSavedCardId === candidate.id && <span aria-hidden="true">✓</span>}</button>)}
             <button type="button" role="option" aria-selected={cardMode === "new"} className={`familiar-source-option${cardMode === "new" ? " is-selected" : ""}`} onClick={() => { cleanupCard(); setCardMode("new"); onCardEditorModeChange("one-time"); closeReview(); setSourceOpen(true); }}><span><strong>Use a new card</strong><small>Card details</small></span>{cardMode === "new" && <span aria-hidden="true">✓</span>}</button>
-            {cardMode === "new" && <div className="familiar-card-editor" role="group" aria-label="Card details"><span className="text-sm font-medium">Card details</span><div ref={(element) => cardCallbackRef.current(element)} className={cardEditorMode === "one-time" ? "min-h-20 rounded-md border p-3" : "min-h-20 rounded-md border p-3 hidden"} /><div className="flex items-center gap-x-3"><Checkbox id="store-card-make-payment" checked={dueNowOnly ? true : storeCard} disabled={dueNowOnly} onCheckedChange={(checked) => setStoreCard(checked === true)} /><Label htmlFor="store-card-make-payment" size="sm" className="cursor-pointer">{dueNowOnly ? "Save this card for automatic payments" : "Save this card for future payments"}</Label></div></div>}
+            {cardMode === "new" && <div className="familiar-card-editor" role="group" aria-label="Card details"><span className="text-sm font-medium">Card details</span><div ref={(element) => cardCallbackRef.current(element)} className={cardEditorMode === "one-time" ? "min-h-20 rounded-md border p-3" : "min-h-20 rounded-md border p-3 hidden"} /><div className="flex items-center gap-x-3"><Checkbox id="store-card-make-payment" checked={dueNowOnly ? true : storeCard} disabled={dueNowOnly} onCheckedChange={(checked) => setStoreCard(checked === true)} /><Label htmlFor="store-card-make-payment" size="sm" className="cursor-pointer">{dueNowOnly ? "Save this card to enroll in recurring automatic payments" : "Save this card for future payments"}</Label></div></div>}
           </div>}
         </div>
         {!bowlerHasEmail && <div className="space-y-2 rounded-md border bg-muted/30 p-3"><Label htmlFor="make-payment-receipt-email" size="sm">Email for receipt <span className="text-destructive">*</span></Label><Input id="make-payment-receipt-email" type="email" placeholder="you@example.com" value={receiptEmail} onChange={(event) => onReceiptEmailChange(event.target.value)} /><p className="text-xs text-muted-foreground">We don't have an email on file for you. Add one to get a Square receipt for this payment.</p></div>}
@@ -458,19 +469,22 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
           <DialogContent className="familiar-payment-review-dialog">
             <DialogHeader className="familiar-payment-review-header">
               <DialogTitle>{fullBalanceOnly ? "Review upfront payment" : "Review payment"}</DialogTitle>
-              <DialogDescription>Check the payment details before confirming.</DialogDescription>
+              <DialogDescription>{dueNowOnly ? "Check the payment details before confirming and enrolling in recurring automatic payments." : "Check the payment details before confirming."}</DialogDescription>
             </DialogHeader>
             <dl className="familiar-payment-review-details">
               <div><dt>League</dt><dd>{leagueName}</dd></div>
               {hasPaymentPartner
-                ? reviewRecipients.map((row) => <div className="familiar-payment-review-recipient" key={row.bowlerId}><dt>{row.name}</dt><dd>{reviewCoverageForRecipient(row)} · {formatPayCurrency(row.amountMinor)}</dd></div>)
+                ? reviewRecipients.map((row) => {
+                  const quoteRow = reviewQuoteForRecipient(row);
+                  return <div className="familiar-payment-review-recipient" key={row.bowlerId}><dt>{row.name}</dt><dd>{reviewCoverageForRecipient(row)} · {quoteRow ? formatPayCurrency(quoteRow.amountMinor) : "Quote unavailable"}</dd></div>;
+                })
                 : <div><dt>Weeks covered</dt><dd>{reviewCoverage}</dd></div>}
               <div><dt>Method</dt><dd>{selectedSourceLabel}</dd></div>
               <div><dt>Total</dt><dd>{formatPayCurrency(paymentAmountMinor)}</dd></div>
-              {cardMode === "new" && storeCard && <div><dt>Card on file</dt><dd>Save card for later</dd></div>}
+              {cardMode === "new" && (storeCard || dueNowOnly) && <div><dt>Card on file</dt><dd>{dueNowOnly ? "Save card for recurring automatic payments" : "Save card for later"}</dd></div>}
             </dl>
             <DialogFooter className="familiar-payment-review-actions">
-              <Button type="button" onClick={() => { closeReview(); onSubmit(); }} disabled={reviewDisabled}>Confirm payment</Button>
+              <Button type="button" onClick={() => { closeReview(); onSubmit(); }} disabled={reviewDisabled}>{dueNowOnly ? "Confirm payment and enable automatic payments" : "Confirm payment"}</Button>
               <Button type="button" variant="outline" onClick={closeReview} disabled={isSubmitting || isWalletProcessing}>Go back</Button>
             </DialogFooter>
           </DialogContent>

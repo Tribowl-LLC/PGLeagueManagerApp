@@ -867,6 +867,7 @@ export default function MakePaymentPage() {
     const dueNowMinor = selfParticipant?.catchUpAmountMinor ?? selfParticipant?.dueNowMinor ?? 0;
     if (!selfParticipant || dueNowMinor <= 0 || !selfParticipant.eligible || !bowlerEmail) return;
     combinedConsentCommandKeyRef.current ??= combinedConsentCommandKey();
+    setCompletedCardPayment(null);
     setCombinedAutopayConsentRecovery(null);
     setCombinedAutopayMode(true);
     setStoreCard(true);
@@ -1211,11 +1212,7 @@ export default function MakePaymentPage() {
         const recoveredScope = preparedIntent.scope ?? paymentIntentScope;
         const pending = pendingPaymentRefreshIdentityRef.current;
         const pendingMatches = pending?.scope === recoveredScope && pending.requestKey === preparedIntent.requestKey;
-        const recoveredCompletedPayment = pendingMatches
-          ? pending.completedPayment
-          : !combinedEnrollment
-            ? completedPaymentSnapshot
-            : undefined;
+        const recoveredCompletedPayment = pendingMatches && pending ? pending.completedPayment : undefined;
         pendingPaymentRefreshIdentityRef.current = {
           scope: recoveredScope,
           requestKey: preparedIntent.requestKey,

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
 import { BowlerOneTimePaymentCard, type CompletedPayment, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
 
-function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[], dueNowOnly = false, options: { applePayAvailable?: boolean; googlePayAvailable?: boolean; rotatingMode?: boolean; cardMode?: "new" | "saved"; selectedSavedCardId?: string; savedCards?: Array<{ id: string; brand: string; last4: string; expMonth: number; expYear: number }>; storeCard?: boolean; quoteFingerprint?: string; completedPayment?: CompletedPayment; onViewPaymentHistory?: () => void; onMakeAnotherPayment?: () => void } = {}) {
+function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[], dueNowOnly = false, options: { applePayAvailable?: boolean; googlePayAvailable?: boolean; rotatingMode?: boolean; cardMode?: "new" | "saved"; selectedSavedCardId?: string; savedCards?: Array<{ id: string; brand: string; last4: string; expMonth: number; expYear: number }>; storeCard?: boolean; quoteFingerprint?: string; completedPayment?: CompletedPayment; onViewPaymentHistory?: () => void; onMakeAnotherPayment?: () => void; onRetryQuote?: () => void } = {}) {
   const applePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const googlePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const onRecipientToggle = vi.fn();
@@ -58,6 +58,7 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     completedPayment={options.completedPayment}
     onViewPaymentHistory={options.onViewPaymentHistory}
     onMakeAnotherPayment={options.onMakeAnotherPayment}
+    onRetryQuote={options.onRetryQuote}
     selectionStale={selectionStale}
     onRecipientToggle={onRecipientToggle}
     onRecipientWeeksChange={onRecipientWeeksChange}
@@ -117,6 +118,17 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.queryByRole("button", { name: /one more week/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review payment of $45" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  });
+
+  it("makes recurring enrollment explicit in the combined-autopay review", () => {
+    renderCard(false, { amountMinor: 4_500, weeks: 2 }, [], [], false, false, undefined, true);
+
+    expect(screen.getByText("Save this card to enroll in recurring automatic payments")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review payment of $45" }));
+    const dialog = screen.getByRole("dialog", { name: "Review payment" });
+    expect(dialog).toHaveTextContent("confirming and enrolling in recurring automatic payments");
+    expect(dialog).toHaveTextContent("Save card for recurring automatic payments");
+    expect(screen.getByRole("button", { name: "Confirm payment and enable automatic payments" })).toBeEnabled();
   });
 
   it("automatically selects a solo bowler while keeping independent weekly controls", () => {
@@ -380,6 +392,74 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     const dialog = screen.getByRole("dialog", { name: "Review upfront payment" });
     expect(dialog).toHaveTextContent("BowlerWeek 1 · $27.50");
     expect(dialog).toHaveTextContent("Alex PartnerWeeks 1–2 · $60");
+  });
+
+  it("uses allocation-aware partner coverage in a weekly review", () => {
+    const partner: PaymentRecipientRow = {
+      bowlerId: 84,
+      name: "Alex Partner",
+      role: "partner",
+      remainingMinor: 3_000,
+      pastDueMinor: 0,
+      weeks: 6,
+      maximumWeekCount: 6,
+      amountMinor: 3_000,
+      selected: true,
+      eligible: true,
+      reason: null,
+    };
+    renderCard(false, { amountMinor: 1_000, weeks: 1, maximumWeekCount: 1 }, [partner], [
+      {
+        bowlerId: 42,
+        name: "Bowler",
+        role: "self",
+        amountMinor: 1_000,
+        coveredWeeks: ["Week 1"],
+        allocations: [{ obligationId: "self-1", amountMinor: 1_000, occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1", isPairedFinalWeek: false }],
+      },
+      {
+        bowlerId: 84,
+        name: "Alex Partner",
+        role: "partner",
+        amountMinor: 3_000,
+        coveredWeeks: ["Week 6", "Week 30", "Week 31"],
+        allocations: [
+          { obligationId: "partner-6", amountMinor: 1_000, occurrenceLocalDate: "2026-10-06", plannedOrdinal: 6, label: "Week 6", isPairedFinalWeek: false },
+          { obligationId: "partner-30", amountMinor: 1_000, occurrenceLocalDate: "2027-04-27", plannedOrdinal: 30, label: "Week 30", isPairedFinalWeek: true },
+          { obligationId: "partner-31", amountMinor: 1_000, occurrenceLocalDate: "2027-05-04", plannedOrdinal: 31, label: "Week 31", isPairedFinalWeek: true },
+        ],
+      },
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Review payment of $10" }));
+    expect(screen.getByRole("dialog", { name: "Review payment" })).toHaveTextContent("Alex Partnerthrough Week 6 and includes Weeks 30 and 31 · $30");
+  });
+
+  it("shows the authoritative quote subtotal when a partner projection differs", () => {
+    const partner: PaymentRecipientRow = {
+      bowlerId: 84,
+      name: "Alex Partner",
+      role: "partner",
+      remainingMinor: 6_000,
+      pastDueMinor: 0,
+      weeks: 2,
+      maximumWeekCount: 2,
+      amountMinor: 6_000,
+      selected: true,
+      eligible: true,
+      reason: null,
+    };
+    renderCard(true, { amountMinor: 2_750 }, [partner], [
+      { bowlerId: 42, name: "Bowler", role: "self", amountMinor: 2_750, coveredWeeks: ["Week 1"], allocations: [] },
+      { bowlerId: 84, name: "Alex Partner", role: "partner", amountMinor: 5_000, coveredWeeks: ["Week 1", "Week 2"], allocations: [] },
+    ]);
+
+    const reviewButton = screen.getByRole("button", { name: "Review payment" });
+    expect(reviewButton).toBeEnabled();
+    fireEvent.click(reviewButton);
+    const dialog = screen.getByRole("dialog", { name: "Review upfront payment" });
+    expect(dialog).toHaveTextContent("Alex PartnerWeeks 1–2 · $50");
+    expect(dialog).not.toHaveTextContent("Alex PartnerWeeks 1–2 · $60");
   });
 
   it("renders card completion only from an already confirmed and refreshed payment", () => {
