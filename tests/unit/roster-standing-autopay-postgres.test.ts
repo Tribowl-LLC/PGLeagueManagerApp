@@ -818,45 +818,6 @@ async function insertSiblingObligation(target: Awaited<ReturnType<typeof publish
 }
 
 describe("standing automatic payments on migrated PostgreSQL", () => {
-  it("returns only the consent card metadata verified by the provider and degrades safely", async () => {
-    // Keep this below the fixture's normal version range so this metadata
-    // regression cannot change later MAX(consentVersion) assertions.
-    await insertConsent({ version: 1, activatedAt: "2039-01-02T00:00:00.000Z" });
-    const listCardsOnFile = vi.fn().mockResolvedValue([
-      { id: "other-source", brand: "MASTERCARD", last4: "0000" },
-      { id: "source-fixture", brand: "VISA", last4: "4242" },
-    ]);
-    const provider = () => ({
-      providerName: "square",
-      locationId,
-      getProviderLocationId: vi.fn().mockResolvedValue("square-location-fixture"),
-      listCardsOnFile,
-    });
-    standingProviderMock.mockResolvedValue(provider());
-    try {
-      const { readStandingAutopayConsent } = await import("../../server/services/roster-standing-autopay");
-      const verified = await readStandingAutopayConsent({ organizationId, leagueId, payerBowlerId });
-      expect(verified).toMatchObject({ state: "active", paymentMethod: { brand: "VISA", last4: "4242" } });
-      expect(verified).not.toHaveProperty("sourceId");
-      expect(verified).not.toHaveProperty("customerId");
-      expect(JSON.stringify(verified)).not.toContain("source-fixture");
-      expect(JSON.stringify(verified)).not.toContain("customer-fixture");
-      expect(listCardsOnFile).toHaveBeenCalledWith("customer-fixture");
-
-      const failedLookup = vi.fn().mockRejectedValue(new Error("provider unavailable"));
-      standingProviderMock.mockResolvedValue({ ...provider(), listCardsOnFile: failedLookup });
-      const degraded = await readStandingAutopayConsent({ organizationId, leagueId, payerBowlerId });
-      expect(degraded).toMatchObject({ state: "active", paymentMethod: null });
-
-      const missingCard = vi.fn().mockResolvedValue([{ id: "different-source", brand: "VISA", last4: "9999" }]);
-      standingProviderMock.mockResolvedValue({ ...provider(), listCardsOnFile: missingCard });
-      const missing = await readStandingAutopayConsent({ organizationId, leagueId, payerBowlerId });
-      expect(missing).toMatchObject({ state: "active", paymentMethod: null });
-    } finally {
-      standingProviderMock.mockReset();
-    }
-  });
-
   it("blocks pre-consent arrears until one-time FIFO settlement, then advances a cutoff", async () => {
     const beforeConsent = await publishOccurrence("2039-01-01T19:00:00.000Z");
     const afterConsent = await publishOccurrence("2039-01-08T19:00:00.000Z");
@@ -1681,6 +1642,45 @@ describe("standing automatic payments on migrated PostgreSQL", () => {
     const [partnerObligation] = await db.select({ id: paymentObligations.id }).from(paymentObligations).where(and(eq(paymentObligations.organizationId, organizationId), eq(paymentObligations.leagueId, leagueId), eq(paymentObligations.occurrenceId, target.occurrence.id), eq(paymentObligations.payerBowlerId, partnerBowlerId), eq(paymentObligations.state, "open")));
     expect(partnerObligation).toBeDefined();
     expect(participant).toMatchObject({ role: "partner", bowlerId: partnerBowlerId, paymentLinkId: link.id, linkFingerprint, obligationId: partnerObligation.id });
+  });
+
+  it("returns only the consent card metadata verified by the provider and degrades safely", async () => {
+    // Run this after the version-sensitive tests so its high fixture version
+    // cannot change any later MAX(consentVersion) assertion.
+    await insertConsent({ version: 120, activatedAt: "2039-01-02T00:00:00.000Z" });
+    const listCardsOnFile = vi.fn().mockResolvedValue([
+      { id: "other-source", brand: "MASTERCARD", last4: "0000" },
+      { id: "source-fixture", brand: "VISA", last4: "4242" },
+    ]);
+    const provider = () => ({
+      providerName: "square",
+      locationId,
+      getProviderLocationId: vi.fn().mockResolvedValue("square-location-fixture"),
+      listCardsOnFile,
+    });
+    standingProviderMock.mockResolvedValue(provider());
+    try {
+      const { readStandingAutopayConsent } = await import("../../server/services/roster-standing-autopay");
+      const verified = await readStandingAutopayConsent({ organizationId, leagueId, payerBowlerId });
+      expect(verified).toMatchObject({ state: "active", paymentMethod: { brand: "VISA", last4: "4242" } });
+      expect(verified).not.toHaveProperty("sourceId");
+      expect(verified).not.toHaveProperty("customerId");
+      expect(JSON.stringify(verified)).not.toContain("source-fixture");
+      expect(JSON.stringify(verified)).not.toContain("customer-fixture");
+      expect(listCardsOnFile).toHaveBeenCalledWith("customer-fixture");
+
+      const failedLookup = vi.fn().mockRejectedValue(new Error("provider unavailable"));
+      standingProviderMock.mockResolvedValue({ ...provider(), listCardsOnFile: failedLookup });
+      const degraded = await readStandingAutopayConsent({ organizationId, leagueId, payerBowlerId });
+      expect(degraded).toMatchObject({ state: "active", paymentMethod: null });
+
+      const missingCard = vi.fn().mockResolvedValue([{ id: "different-source", brand: "VISA", last4: "9999" }]);
+      standingProviderMock.mockResolvedValue({ ...provider(), listCardsOnFile: missingCard });
+      const missing = await readStandingAutopayConsent({ organizationId, leagueId, payerBowlerId });
+      expect(missing).toMatchObject({ state: "active", paymentMethod: null });
+    } finally {
+      standingProviderMock.mockReset();
+    }
   });
 
   it("revokes standing work when an active membership is deactivated", async () => {
