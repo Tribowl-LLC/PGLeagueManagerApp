@@ -1,4 +1,6 @@
+/* eslint-disable shadcn/no-unknown-classes, shadcn/no-restyle */
 import { useState } from "react";
+import { ArrowUpRight, ChevronRight } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -17,6 +19,7 @@ type Props = {
   organizationId?: number | null;
   bowlerName?: string;
   title?: string;
+  totalTransactions?: number;
 };
 
 function formatLocalDate(value: string, timezone = "UTC"): string {
@@ -44,7 +47,45 @@ function paymentTypeLabel(paymentType: CanonicalPaymentRow["paymentType"]): stri
 }
 
 function formatCurrency(amountMinor: number, currency: string): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(amountMinor / 100);
+  const hasCents = Number.isSafeInteger(amountMinor) && Math.abs(amountMinor) % 100 !== 0;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: hasCents ? 2 : 0,
+    maximumFractionDigits: 2,
+  }).format(amountMinor / 100);
+}
+
+type PaymentPeriodReference = {
+  plannedOrdinal?: number | null;
+  occurrenceLocalDate?: string | null;
+};
+
+function firstPaymentPeriod(row: CanonicalPaymentRow): PaymentPeriodReference {
+  const references: PaymentPeriodReference[] = row.appliedTo?.length
+    ? row.appliedTo
+    : row.allocations;
+  const ordered = [...references].sort((left, right) => {
+    const leftOrdinal = Number.isSafeInteger(left.plannedOrdinal) ? left.plannedOrdinal as number : Number.POSITIVE_INFINITY;
+    const rightOrdinal = Number.isSafeInteger(right.plannedOrdinal) ? right.plannedOrdinal as number : Number.POSITIVE_INFINITY;
+    return leftOrdinal - rightOrdinal;
+  });
+  return ordered[0] ?? { plannedOrdinal: null, occurrenceLocalDate: row.authoritativeLocalDate };
+}
+
+function formatMobilePaymentDate(value: string | null | undefined): string | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T12:00:00Z`);
+  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== value) return null;
+  return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }).format(date);
+}
+
+function mobilePaymentPeriodLabel(row: CanonicalPaymentRow): { period: string; date: string | null } {
+  const reference = firstPaymentPeriod(row);
+  const period = Number.isSafeInteger(reference.plannedOrdinal) && (reference.plannedOrdinal as number) > 0
+    ? `Week ${reference.plannedOrdinal} payment`
+    : "Payment";
+  return { period, date: formatMobilePaymentDate(reference.occurrenceLocalDate) ?? formatMobilePaymentDate(row.authoritativeLocalDate) };
 }
 
 function statusVariant(row: CanonicalPaymentRow) {
@@ -63,16 +104,19 @@ function statusVariant(row: CanonicalPaymentRow) {
  * row remains visible, including operation evidence without a payment id;
  * selecting its status opens the evidence-only details dialog.
  */
-export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName = "Bowler", title = "Payment history" }: Props) {
+export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName = "Bowler", title = "Payment history", totalTransactions }: Props) {
   const [detailsTarget, setDetailsTarget] = useState<CanonicalPaymentRow | null>(null);
 
   return (
-    <section aria-label={title} data-testid="canonical-payment-evidence-table" className="space-y-2">
-      <div className="text-sm font-medium">{title}</div>
+    <section aria-label={title} data-testid="canonical-payment-evidence-table" className="familiar-payment-history-section space-y-2">
+      <div className="familiar-history-heading">
+        <h2>{title}</h2>
+        {typeof totalTransactions === "number" && totalTransactions > 0 && <span>{totalTransactions} {totalTransactions === 1 ? "payment" : "payments"}</span>}
+      </div>
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">No payments yet.</p>
       ) : (
-        <div className="overflow-x-auto rounded-md border">
+        <div className="familiar-payment-history-table overflow-x-auto rounded-md border">
           <Table>
             <TableHeader>
               <TableRow>
@@ -88,11 +132,19 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
                 const reviewRequired = row.reviewRequired || row.dispute.reviewRequired === true;
                 const hasSeparateReviewIndicator = reviewRequired && displayStatus !== "Review required";
                 const paidByName = row.paidByName;
+                const paymentPeriod = mobilePaymentPeriodLabel(row);
                 return (
-                  <TableRow key={`${row.paymentOperationId ?? row.paymentId ?? "unresolved"}:${row.bowlerId}:${index}`}>
+                  <TableRow className="familiar-payment-history-table__row" key={`${row.paymentOperationId ?? row.paymentId ?? "unresolved"}:${row.bowlerId}:${index}`}>
                     <TableCell className="whitespace-nowrap">
-                      {formatLocalDate(row.authoritativeLocalDate)}
-                      <div className="text-xs text-muted-foreground md:hidden">{paymentTypeLabel(row.paymentType)}</div>
+                      <div className="familiar-payment-history-mobile-main">
+                        <span className="familiar-payment-history-mobile-icon" aria-hidden="true"><ArrowUpRight size={17} /></span>
+                        <span className="familiar-payment-history-mobile-copy">
+                          <strong className="familiar-payment-history-mobile-period">{paymentPeriod.period}</strong>
+                          {paymentPeriod.date && <span className="familiar-payment-history-mobile-date">{paymentPeriod.date}</span>}
+                        </span>
+                      </div>
+                      <span className="familiar-payment-history-desktop-date">{formatLocalDate(row.authoritativeLocalDate)}</span>
+                      <div className="familiar-payment-history-mobile-method text-xs text-muted-foreground md:hidden">{paymentTypeLabel(row.paymentType)}</div>
                     </TableCell>
                     <TableCell className="whitespace-nowrap" font="mono">
                       {formatCurrency(row.amountMinor, row.currency)}
@@ -103,11 +155,17 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
                       <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          className={cn(badgeVariants({ variant: statusVariant(row) }), "cursor-pointer")}
+                          className={cn(
+                            badgeVariants({ variant: statusVariant(row) }),
+                            "cursor-pointer",
+                            displayStatus === "Confirmed paid" && "familiar-payment-history-status--paid",
+                            displayStatus === "Review required" && "familiar-payment-history-status--review",
+                          )}
                           aria-label={`View payment details: ${displayStatus}`}
                           onClick={() => setDetailsTarget(row)}
                         >
-                          {displayStatus}
+                          <span className="familiar-payment-history-status-label">{displayStatus}</span>
+                          <ChevronRight className="familiar-payment-history-mobile-chevron" aria-hidden="true" size={17} />
                         </button>
                         {row.source === "prepaid_credit" && <Badge variant="secondary">Unused share credit</Badge>}
                         {row.source === "held_credit" && <Badge variant="secondary">Share credit refund on hold</Badge>}

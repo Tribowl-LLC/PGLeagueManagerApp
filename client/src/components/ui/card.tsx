@@ -6,6 +6,10 @@ const cardVariants = cva(
   "rounded-lg border bg-card text-card-foreground shadow-sm",
   {
     variants: {
+      surface: {
+        default: "",
+        plain: "rounded-none border-0 bg-transparent shadow-none",
+      },
       tone: {
         default: "",
         success: "border-success-500/50 bg-success-500/5",
@@ -26,6 +30,7 @@ const cardVariants = cva(
       },
     },
     defaultVariants: {
+      surface: "default",
       tone: "default",
       interaction: "none",
       selected: false,
@@ -43,11 +48,11 @@ interface CardProps
 }
 
 const Card = React.forwardRef<HTMLDivElement, CardProps>(
-  ({ className, noPadding, tone, interaction, selected, ...props }, ref) => (
+  ({ className, noPadding, surface, tone, interaction, selected, ...props }, ref) => (
     <div
       ref={ref}
       className={cn(
-        cardVariants({ tone, interaction, selected }),
+        cardVariants({ surface, tone, interaction, selected }),
         !noPadding && "p-6",
         className
       )}

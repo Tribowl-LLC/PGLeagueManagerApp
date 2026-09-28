@@ -8,6 +8,7 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
   const googlePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const onRecipientToggle = vi.fn();
   const onRecipientWeeksChange = vi.fn();
+  const onSubmit = vi.fn();
   const recipient: PaymentRecipientRow = {
     bowlerId: 42,
     name: "Bowler",
@@ -34,7 +35,7 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     setStoreCard={vi.fn()}
     isInitialized
     isSubmitting={false}
-    onSubmit={vi.fn()}
+    onSubmit={onSubmit}
     initializeCard={vi.fn(async () => undefined)}
     cleanupCard={vi.fn()}
     onCardEditorModeChange={vi.fn()}
@@ -59,7 +60,7 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     dueNowOnly={dueNowOnly}
     onCancelDueNow={vi.fn()}
   />);
-  return { onRecipientToggle, onRecipientWeeksChange };
+  return { onRecipientToggle, onRecipientWeeksChange, onSubmit };
 }
 
 describe("BowlerOneTimePaymentCard payment mode", () => {
@@ -68,33 +69,45 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
 
     expect(screen.getByText("No payment recipients are available for this league.")).toBeInTheDocument();
     expect(screen.queryByText("Select at least one recipient to continue.")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Pay $0.00" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
   });
 
   it("shows the selected recipient full balance for an upfront league", () => {
     renderCard(true);
 
-    expect(screen.getByText("Bowler (You)")).toBeInTheDocument();
+    expect(screen.getByText("Full season payment")).toBeInTheDocument();
+    expect(screen.getByText("Payment total").parentElement).toHaveTextContent("$87.50");
+    expect(screen.getByText("Covers Weeks 1–3")).toBeInTheDocument();
+    expect(screen.queryByTestId("payment-recipient-42")).not.toBeInTheDocument();
     expect(screen.queryByText("Who would you like to pay?")).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "Pay Bowler" })).not.toBeInTheDocument();
     expect(document.querySelectorAll("label[for^='payment-recipient-']")).toHaveLength(0);
-    expect(screen.getByText("Remaining balance: $87.50")).toBeInTheDocument();
-    expect(screen.getByText("Past due: $25.00")).toBeInTheDocument();
-    expect(screen.getByText("Full Season Remaining Balance")).toBeInTheDocument();
-    expect(screen.queryByText("Weeks")).not.toBeInTheDocument();
+    expect(screen.queryByText("Remaining balance: $87.50")).not.toBeInTheDocument();
+    expect(screen.queryByText("Past due: $25.00")).not.toBeInTheDocument();
+    expect(screen.queryByText("Full season remaining balance")).not.toBeInTheDocument();
+    expect(screen.queryByText("Weeks to pay")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /one more week/i })).not.toBeInTheDocument();
-    expect(screen.getByText("Full Season Remaining Balance").parentElement).toHaveTextContent("$87.50");
-    expect(screen.getByRole("button", { name: "Pay $87.50" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Save this card for future payments" })).not.toBeChecked();
+  });
+
+  it("requires an explicit final action after reviewing the quoted payment", () => {
+    const { onSubmit } = renderCard(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Review payment" }));
+    expect(screen.getByRole("region", { name: "Review payment" })).toHaveTextContent("$87.50");
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Pay $87.50" }));
+    expect(onSubmit).toHaveBeenCalledOnce();
   });
 
   it("locks combined automatic-payment setup to the amount needed to get up to date", () => {
     renderCard(false, { amountMinor: 4_500, weeks: 2 }, [], [], false, false, undefined, true);
 
     expect(screen.getByText("Pay the amount needed to get up to date and enable automatic payments in one checkout.")).toBeInTheDocument();
-    expect(screen.getByText("Amount needed to get up to date").parentElement).toHaveTextContent("$45.00");
+    expect(screen.getByText("Amount needed to get up to date").parentElement).toHaveTextContent("$45");
     expect(screen.queryByRole("button", { name: /one more week/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Pay and enable automatic payments" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 
@@ -108,7 +121,8 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByRole("button", { name: "Pay Bowler for one fewer week" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pay Bowler for one more week" })).toBeInTheDocument();
     expect(screen.getByRole("status", { name: "Number of weeks to pay for Bowler" })).toHaveTextContent("3");
-    expect(screen.getByText("Remaining balance: $87.50")).toBeInTheDocument();
+    expect(screen.queryByTestId("payment-recipient-42")).not.toBeInTheDocument();
+    expect(screen.queryByText("Remaining balance: $87.50")).not.toBeInTheDocument();
     expect(screen.queryByText("Select at least one recipient to continue.")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Pay Bowler for one fewer week" }));
@@ -153,8 +167,8 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     ]);
 
     expect(screen.getByText("Alex Partner (Partner)")).toBeInTheDocument();
-    expect(screen.getByText("Remaining balance: $60.00")).toBeInTheDocument();
-    expect(screen.getByText("Past due: $10.00")).toBeInTheDocument();
+    expect(screen.getByText("Remaining balance: $60")).toBeInTheDocument();
+    expect(screen.getByText("Past due: $10")).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Pay Alex Partner" })).toBeChecked();
     expect(screen.getByText("Alex Partner")).toBeInTheDocument();
     expect(screen.getByText("Week 2 · 2026-09-08")).toBeInTheDocument();
@@ -215,7 +229,7 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Pay Bowler for one fewer week" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Pay Bowler for one more week" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Pay $87.50" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
   });
 
   it("keeps repeated schedule labels distinct with server obligation identity", () => {

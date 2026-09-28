@@ -452,8 +452,8 @@ rounding, while badges and compact status indicators are pill-shaped.
 
 The public welcome, registration, verification, sign-in, password recovery,
 privacy, account-deletion, email-change, profile-report, and payment-partner
-response screens share this system. Authenticated admin and bowler pages retain
-the incumbent system above.
+response screens share this system. Authenticated bowler pages extend Familiar A
+as described below; authenticated admin pages retain the incumbent system above.
 
 - **Layout:** On desktop, a 40/60 split pairs a deep-navy story panel with a
   cool-slate form canvas. On mobile, the story collapses to a 76px navy bar;
@@ -472,6 +472,49 @@ the incumbent system above.
 - **Motion:** Cards enter with a short decelerating rise; reduced-motion
   preferences remove the animation. Status and error copy remain legible
   without motion.
+
+## Approved authenticated bowler flows: Familiar A
+
+The approved Familiar A design preview is the visual reference for Overview,
+Pay, History, Profile, and their shown states.
+Production data and provider controls remain authoritative. Mobile is the
+primary reference; desktop must use the same type, color, and component system
+with a responsive content width. This direction does not change the admin UI.
+
+- **Shell:** Center the official Perfect Game dark-background logo in a navy
+  header. Place the active league selector below it. Keep a white four-item
+  bottom navigation for Overview, Pay, History, and Profile, with a restrained
+  pale active state. Content scrolls independently of the navigation.
+- **Typography and surfaces:** Use Instrument Sans, navy `#0f172a`, white
+  page backgrounds on Pay, History, and Profile, and the approved light-slate
+  Overview background. Use open space for sections; frame only the cards and
+  controls that the preview frames. Financial amounts use natural proportional
+  numerals and an ordinary-sized dollar sign.
+- **Overview:** Keep the Payment overview card and Latest payment card.
+  Season totals show Paid, Remaining, and Season, with Past Due inserted only
+  when positive. Rotating bowlers see Paid and Past Due only. The next bowling
+  date does not appear between these cards.
+- **Pay:** Place Automatic payments above One-time payment when eligible.
+  The one-time selector changes a single coverage sentence as weeks are added;
+  double-pay weeks include the applicable final weeks. Saved-card selection
+  also offers an available device wallet and a new-card path. Upfront leagues
+  present one full-balance payment, including partner selection when eligible.
+  Rotating bowlers see a one-time-only payment view without Due now/Remaining
+  summary boxes or automatic-payment setup; its coverage sentence describes
+  the selected number of weeks. Provider-generated wallet confirmation remains
+  native to the provider.
+- **History:** Show Season totals directly on the page, followed by
+  Transactions. Use the Overview total style, with Paid and Past Due only for
+  rotating bowlers. Keep the real transaction evidence and detail actions.
+- **Profile:** Present account details as rows and use focused dialogs for
+  editing details, changing a password, managing saved payment methods and
+  payment-partner links, and requesting deletion. Put Request deletion below
+  Payment-partner links and Sign out alone at the bottom. Password fields have
+  accessible show/hide controls.
+- **Boundaries:** Keep current loading, error, authorization, payment quote,
+  idempotency, and account-security behavior. Additional exceptional states
+  identified for later focused design review are outside this visual release;
+  their existing production recovery remains functional.
 
 ## Do's and Don'ts
 
@@ -493,7 +536,7 @@ the incumbent system above.
 ### Don't:
 
 - **Don't** carry the incumbent authenticated-page styling into approved
-  Familiar A public pages or apply Familiar A to authenticated pages without
+  Familiar A public or bowler pages, or apply Familiar A to admin pages without
   a separate design decision.
 - **Don't** introduce a new font family, decorative display treatment, or
   marketing-style visual language into routine operations without updating the

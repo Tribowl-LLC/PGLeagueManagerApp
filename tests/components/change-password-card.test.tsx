@@ -85,6 +85,45 @@ beforeEach(() => {
 });
 
 describe('ChangePasswordCard throttle UX', () => {
+  it('opens the profile dialog form without administrator reset copy', () => {
+    const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    render(<QueryClientProvider client={qc}><ChangePasswordCard alwaysOpen /></QueryClientProvider>);
+
+    expect(screen.getByLabelText(/^current password$/i)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Temporary password')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^change password$/i })).not.toBeInTheDocument();
+  });
+
+  it('lets a bowler reveal and conceal each password without changing its value', async () => {
+    const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={qc}><ChangePasswordCard alwaysOpen /></QueryClientProvider>);
+
+    const input = screen.getByLabelText(/^current password$/i);
+    await user.type(input, 'currentpw');
+    await user.click(screen.getByRole('button', { name: 'Show current password' }));
+    expect(input).toHaveAttribute('type', 'text');
+    expect(input).toHaveValue('currentpw');
+    await user.click(screen.getByRole('button', { name: 'Hide current password' }));
+    expect(input).toHaveAttribute('type', 'password');
+  });
+
+  it('closes an embedding dialog after a successful password change', async () => {
+    mockedApiRequest.mockResolvedValueOnce({ success: true, data: { requiresLogin: false } });
+    const onSuccess = vi.fn();
+    const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={qc}><ChangePasswordCard forced onSuccess={onSuccess} /></QueryClientProvider>);
+
+    await user.type(screen.getByLabelText(/^current password$/i), 'currentpw');
+    await user.type(screen.getByLabelText(/^new password$/i), 'newpassword');
+    await user.type(screen.getByLabelText(/^confirm new password$/i), 'newpassword');
+    await user.click(screen.getByTestId('button-change-password-submit'));
+
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledOnce());
+    expect(mockedRedirectToLogin).not.toHaveBeenCalled();
+  });
+
   it('renders the throttle alert and Forgot Password link on a 429', async () => {
     mockedApiRequest.mockRejectedValueOnce(makeRateLimitError(120));
     const user = userEvent.setup();

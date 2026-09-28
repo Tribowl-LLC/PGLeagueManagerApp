@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { User, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
 import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
+import type { RotatingCreditBalanceWire } from "@shared/rotating-credit-contract";
 import { PageLoadingState } from "@/components/page-states";
 import { useLocation, useSearch } from "wouter";
 import { useSelectedLeague } from "@/hooks/use-selected-league";
@@ -15,6 +16,8 @@ import { NoLeagueView } from "./payment-history-page/no-league-view";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 import { deriveBowlerFinancials } from "@/lib/financial-utils";
 import { paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
+import { resolveRotatingCreditDisplayState } from "@/components/payment-status-section";
+import { rotatingPaidTotalMinor } from "@/lib/rotating-paid-total";
 
 export default function PaymentHistoryPage() {
   const search = useSearch();
@@ -70,8 +73,20 @@ export default function PaymentHistoryPage() {
     staleTime: 30_000,
     retry: false,
   });
+  const { data: rotatingCreditResponse, isLoading: loadingRotatingCredit, error: rotatingCreditError } = useQuery<ApiResponse<RotatingCreditBalanceWire>>({
+    queryKey: [`/api/financials/leagues/${leagueId ?? 0}/rotating-credit/1`],
+    queryFn: async ({ signal }) => {
+      const response = await fetch(`/api/financials/leagues/${leagueId}/rotating-credit/1`, { credentials: "include", headers: { Accept: "application/json" }, signal });
+      if (!response.ok) throw new Error("Rotating payment eligibility is unavailable");
+      return response.json();
+    },
+    enabled: !!bowlerId && !!leagueId,
+    staleTime: 30_000,
+    retry: false,
+  });
 
   const report = reportResponse?.data;
+  const rotatingCreditState = resolveRotatingCreditDisplayState(rotatingCreditResponse, loadingRotatingCredit, rotatingCreditError);
   const resolved = useMemo(() => resolveInteractiveFinancialRead(financialResponse?.data), [financialResponse?.data]);
   // Keep the resolver as the fail-closed gate for checkout-facing financial
   // data. Summary cards may use the full canonical rows only after that gate
@@ -83,11 +98,14 @@ export default function PaymentHistoryPage() {
     canonicalReport?.asOf ?? "",
     canonicalReport?.totals.collectiblePastDueMinor ?? 0,
   );
+  const isRotating = rotatingCreditState === "rotating";
+  const rotatingPaidMinor = isRotating ? rotatingPaidTotalMinor(report, leagueId ?? 0) : null;
+  const summaryDisplayState = isRotating && rotatingPaidMinor === null ? "error" : rotatingCreditState;
   const financials = {
     weeksPassed: summary.weeksDue,
     totalWeeksInSeason: summary.totalWeeksInSeason,
     totalDueToDate: summary.totalSeasonDues,
-    totalPaid: summary.totalPaidAmount,
+    totalPaid: isRotating ? rotatingPaidMinor ?? 0 : summary.totalPaidAmount,
     amountPastDue: resolved.amountPastDue,
     fullSeasonAmount: summary.fullSeasonAmount,
     waivedAmount: summary.waivedAmount,
@@ -133,5 +151,8 @@ export default function PaymentHistoryPage() {
     canonicalReportTotalPages={report ? Math.max(1, Math.ceil(report.totalTransactions / report.limit)) : undefined}
     onCanonicalReportPageChange={setCanonicalReportPage}
     canonicalRows={report?.rows ?? []}
+    canonicalReportTotalTransactions={report?.totalTransactions}
+    rotatingCreditState={summaryDisplayState}
+    isRotating={isRotating}
   />;
 }

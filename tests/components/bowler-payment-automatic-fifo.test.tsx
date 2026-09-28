@@ -92,7 +92,7 @@ describe("automatic FIFO bowler payment flow", () => {
       onPayRemaining={onPayRemaining}
     />);
 
-    await user.click(screen.getByText("Click to make a one-time payment"));
+    await user.click(screen.getByRole("button", { name: "Pay remaining balance of $960" }));
     expect(onPayRemaining).toHaveBeenCalledOnce();
   });
 
