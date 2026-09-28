@@ -111,15 +111,31 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({ league, bo
   });
 
   const { data: paymentReportResponse, isLoading: isLoadingPayments, error: paymentReportError } = useQuery<ApiResponse<CanonicalPaymentReport>>({
-    queryKey: [`/api/financials/f5/payments`, { leagueId: league.id, bowlerId: bowler.id, page: 1 }],
+    queryKey: [`/api/financials/f5/payments`, { leagueId: league.id, bowlerId: bowler.id, view: "dashboard-latest" }],
     queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/financials/f5/payments?leagueId=${league.id}&bowlerId=${bowler.id}&page=1&limit=20`, {
-        credentials: "include",
-        headers: { Accept: "application/json" },
-        signal,
-      });
-      if (!response.ok) throw new Error("Payment history is unavailable");
-      return response.json();
+      // The canonical report is ordered oldest first. Its totals cover the
+      // full scope, but rows are paginated, so the newest payment is on the
+      // final page once a bowler has more than 20 rows.
+      const pageSize = 20;
+      const readPage = async (page: number): Promise<ApiResponse<CanonicalPaymentReport>> => {
+        const response = await fetch(`/api/financials/f5/payments?leagueId=${league.id}&bowlerId=${bowler.id}&page=${page}&limit=${pageSize}`, {
+          credentials: "include",
+          headers: { Accept: "application/json" },
+          signal,
+        });
+        if (!response.ok) throw new Error("Payment history is unavailable");
+        const result = await response.json() as ApiResponse<CanonicalPaymentReport>;
+        if (!result.success || !result.data || !Array.isArray(result.data.rows)
+          || !Number.isSafeInteger(result.data.totalRows) || result.data.totalRows < 0) {
+          throw new Error("Payment history is unavailable");
+        }
+        return result;
+      };
+      const firstPage = await readPage(1);
+      const lastPage = Math.ceil(firstPage.data.totalRows / pageSize);
+      const report = lastPage > 1 ? await readPage(lastPage) : firstPage;
+      if (report.data.totalRows > 0 && report.data.rows.length === 0) throw new Error("Payment history is unavailable");
+      return report;
     },
     enabled: true,
     retry: false,

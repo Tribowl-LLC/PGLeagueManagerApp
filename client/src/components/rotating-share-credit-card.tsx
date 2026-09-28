@@ -241,13 +241,13 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
 
   useEffect(() => {
     const container = cardContainerRef.current;
-    if (!canBuyCredit || cardMode !== "new" || !container || providerLoading || !isProviderConfigured || intentIsUnresolved) {
+    if (!canBuyCredit || !sourceOpen || cardMode !== "new" || !container || providerLoading || !isProviderConfigured || intentIsUnresolved) {
       cleanupCard();
       return;
     }
     void initializeCard(container);
     return () => cleanupCard();
-  }, [canBuyCredit, cardMode, providerLoading, isProviderConfigured, intentIsUnresolved, initializeCard, cleanupCard]);
+  }, [canBuyCredit, sourceOpen, cardMode, providerLoading, isProviderConfigured, intentIsUnresolved, initializeCard, cleanupCard]);
 
   const applyOperation = useCallback(async (result: RotatingCreditOperationWire, exactIntent: CreditIntent) => {
     setOperation(result);
@@ -451,7 +451,7 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
           </button>
           {sourceOpen && <div className="familiar-source-menu" role="listbox" aria-label="Payment source">
             {savedCards.map((candidate) => <button key={candidate.id} type="button" role="option" aria-selected={cardMode === "saved" && selectedSavedCardId === candidate.id} className={`familiar-source-option${cardMode === "saved" && selectedSavedCardId === candidate.id ? " is-selected" : ""}`} onClick={() => { cleanupCard(); setReviewOpen(false); setCardMode("saved"); setSelectedSavedCardId(candidate.id); setSourceOpen(false); }}><span><strong>{candidate.brand} ending in {candidate.last4}</strong><small>Saved card · exp {candidate.expMonth}/{candidate.expYear}</small></span>{cardMode === "saved" && selectedSavedCardId === candidate.id && <span aria-hidden="true">✓</span>}</button>)}
-            <button type="button" role="option" aria-selected={cardMode === "new"} className={`familiar-source-option${cardMode === "new" ? " is-selected" : ""}`} onClick={() => { cleanupCard(); setReviewOpen(false); setCardMode("new"); setSourceOpen(true); }}><span><strong>Enter a new card</strong><small>Card details</small></span>{cardMode === "new" && <span aria-hidden="true">✓</span>}</button>
+            <button type="button" role="option" aria-selected={cardMode === "new"} className={`familiar-source-option${cardMode === "new" ? " is-selected" : ""}`} onClick={() => { setReviewOpen(false); setCardMode("new"); setSourceOpen(true); }}><span><strong>Enter a new card</strong><small>Card details</small></span>{cardMode === "new" && <span aria-hidden="true">✓</span>}</button>
             {cardMode === "new" && <div className="familiar-card-editor" role="group" aria-label="Card details"><span className="text-sm font-medium">Card details</span><div id={`rotating-credit-card-${league.id}`} ref={cardContainerRef} className="min-h-20 rounded-md border p-3" />{cardError && <p role="alert" className="text-sm text-destructive">{cardError}</p>}{providerError && <p role="alert" className="text-sm text-destructive">{providerError}</p>}{!providerLoading && !isProviderConfigured && <p role="status" className="text-sm text-muted-foreground">Card payments are unavailable for this league right now.</p>}</div>}
           </div>}
         </div>

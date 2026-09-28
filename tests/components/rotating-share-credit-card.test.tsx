@@ -167,6 +167,34 @@ describe("RotatingShareCreditCard", () => {
     expect(screen.getByRole("button", { name: /Preview payment of \$20/ })).toBeEnabled();
   });
 
+  it("reattaches the card editor after closing and reopening the source picker", async () => {
+    const user = userEvent.setup();
+    mocks.balanceResponse = { success: true, data: balance() };
+    mocks.quoteResponse = { success: true, data: quote };
+    mocks.providerConfigured = true;
+    renderCreditCard();
+
+    await waitFor(() => expect(mocks.initializeCard).toHaveBeenCalledTimes(1));
+    const firstContainer = screen.getByRole("group", { name: "Card details" }).querySelector<HTMLDivElement>("#rotating-credit-card-17");
+    expect(mocks.initializeCard).toHaveBeenLastCalledWith(firstContainer);
+
+    await user.click(screen.getByRole("button", { name: /Enter a new card/ }));
+    expect(screen.queryByRole("group", { name: "Card details" })).not.toBeInTheDocument();
+    const cleanupCount = mocks.cleanupCard.mock.calls.length;
+    expect(cleanupCount).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: /Enter a new card/ }));
+    await waitFor(() => expect(mocks.initializeCard).toHaveBeenCalledTimes(2));
+    const secondContainer = screen.getByRole("group", { name: "Card details" }).querySelector<HTMLDivElement>("#rotating-credit-card-17");
+    expect(secondContainer).not.toBe(firstContainer);
+    expect(mocks.initializeCard).toHaveBeenLastCalledWith(secondContainer);
+
+    await user.click(screen.getByRole("option", { name: /Enter a new card/ }));
+    expect(mocks.cleanupCard).toHaveBeenCalledTimes(cleanupCount);
+    expect(mocks.initializeCard).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("group", { name: "Card details" })).toContainElement(secondContainer);
+  });
+
   it("clears the purchase intent after a confirmed no-charge card decline", async () => {
     const user = userEvent.setup();
     mocks.balanceResponse = { success: true, data: balance() };

@@ -114,6 +114,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   const cardCallbackRef = useRef<(el: HTMLDivElement | null) => void>(() => undefined);
   cardCallbackRef.current = (el) => { if (el && cardMode === "new" && cardEditorMode === "one-time") void initializeCard(el); };
   const paymentInFlight = isSubmitting || isWalletProcessing || paymentRefreshState !== "idle";
+  const hasWalletOptions = applePayAvailable || googlePayAvailable;
   const hasPaymentPartner = recipientRows.some((row) => row.role === "partner");
   const showRecipientChooser = hasPaymentPartner && !dueNowOnly;
   const showSoloWeekSelection = !hasPaymentPartner && !dueNowOnly && !fullBalanceOnly && !rotatingMode;
@@ -265,14 +266,14 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
           )}
         </div>
 
-        {!dueNowOnly && (applePayAvailable || googlePayAvailable) && <div className="familiar-wallets" aria-label="Device wallets">
+        {!dueNowOnly && <div className="familiar-wallets" aria-label="Device wallets">
           {!applePayTokenizeOnly && applePayRef && <div ref={applePayRef} className={applePayAvailable ? "min-h-12 overflow-hidden rounded-md bg-black" : "hidden"} />}
           {applePayAvailable && applePayTokenizeOnly && <button type="button" aria-label="Pay with Apple Pay" onClick={() => void onApplePayClick()} disabled={paymentInFlight} className="wallet-button h-12 disabled:opacity-50"><span className="text-xl font-medium text-white"> Pay</span></button>}
           {!googlePayTokenizeOnly && googlePayRef && <div ref={googlePayRef} className={googlePayAvailable ? "min-h-12 overflow-hidden rounded-md bg-black" : "hidden"} />}
           {googlePayAvailable && googlePayTokenizeOnly && <button type="button" aria-label="Pay with Google Pay" onClick={() => void onGooglePayClick()} disabled={paymentInFlight} className="wallet-button h-12 disabled:opacity-50"><span className="text-sm font-medium text-white">Google Pay</span></button>}
           {isWalletProcessing && <div className="flex items-center justify-center gap-2 py-2"><Loader2 className="size-4 animate-spin" /><span className="text-sm text-muted-foreground">Processing wallet payment…</span></div>}
-          <p className="familiar-wallet-note">Live availability depends on your device and browser.</p>
-          <div className="familiar-payment-divider" aria-hidden="true"><span>Pay with a card</span></div>
+          {hasWalletOptions && <p className="familiar-wallet-note">Live availability depends on your device and browser.</p>}
+          {hasWalletOptions && <div className="familiar-payment-divider" aria-hidden="true"><span>Pay with a card</span></div>}
         </div>}
 
         {fullBalanceOnly && <div className="familiar-source-label">Pay with a card</div>}
