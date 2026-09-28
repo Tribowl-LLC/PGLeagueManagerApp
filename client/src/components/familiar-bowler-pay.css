@@ -145,9 +145,18 @@
 }
 
 .familiar-standing-autopay-card h3 {
-  color: var(--familiar-pay-accent);
+  color: var(--familiar-pay-ink);
   font-size: 18px;
   letter-spacing: -0.025em;
+}
+
+.familiar-standing-autopay-card .familiar-autopay-enabled-badge {
+  background: #dcfce7;
+  color: #166534;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.2;
+  padding: 4px 9px;
 }
 
 .familiar-standing-autopay-card .familiar-autopay-intro {
@@ -229,6 +238,67 @@
   border-top: 1px solid var(--familiar-pay-line);
   margin: 12px 0;
   padding-top: 2px;
+}
+
+.familiar-autopay-next {
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+}
+
+.familiar-autopay-next-label {
+  color: var(--familiar-pay-muted);
+  font-size: 12px;
+}
+
+.familiar-autopay-next strong {
+  align-items: baseline;
+  color: var(--familiar-pay-ink);
+  display: flex;
+  font-size: 25px;
+  font-weight: 700;
+  gap: 5px;
+  letter-spacing: -0.045em;
+  line-height: 1.15;
+}
+
+.familiar-autopay-next .familiar-autopay-date {
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+
+.familiar-autopay-next > p {
+  color: var(--familiar-pay-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.familiar-autopay-method {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 15px 0 0;
+}
+
+.familiar-autopay-actions {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 7px;
+}
+
+.familiar-autopay-actions > button {
+  min-height: 40px;
+  padding-inline: 0;
+}
+
+.familiar-autopay-dialog-actions {
+  gap: 8px;
 }
 
 .familiar-rotating-card {

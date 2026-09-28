@@ -1,4 +1,4 @@
-/* eslint-disable shadcn/no-restyle */
+/* eslint-disable shadcn/no-restyle, shadcn/no-unknown-classes */
 import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -10,9 +10,10 @@ import type { SquareCard } from "@/hooks/use-square-payment";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/utils";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, CreditCard } from "lucide-react";
 
 type QuoteResponse = { data: StandingAutopayQuoteWire };
 type EditorMode = "one-time" | "autopay" | null;
@@ -52,6 +53,32 @@ export function formatNextPaymentDate(value: string, timezone: string | null | u
   }
 }
 
+function formatNextPaymentShortDate(value: string, timezone: string | null | undefined): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Unavailable";
+  try {
+    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: timezone ?? "UTC" }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" }).format(date);
+  }
+}
+
+function formatStandingAutopayAmount(amountMinor: number): string {
+  return formatCurrency(amountMinor).replace(/\.00$/, "");
+}
+
+function formatStandingAutopayBrand(value: string): string {
+  const brands: Record<string, string> = {
+    AMERICAN_EXPRESS: "American Express",
+    DISCOVER: "Discover",
+    JCB: "JCB",
+    MASTERCARD: "Mastercard",
+    UNIONPAY: "UnionPay",
+    VISA: "Visa",
+  };
+  return brands[value.trim().toUpperCase()] ?? value;
+}
+
 export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEmail, card, isInitialized, cardEditorMode, initializeCard, cleanupCard, onCardEditorModeChange, dueNowMinor = 0, dueNowDataAvailable = true, combinedCheckoutActive = false, onPayDueNow, partnerAutopayNote }: Props) {
   const { toast } = useToast();
   const [selectedCard, setSelectedCard] = useState(savedCards[0]?.id ?? "");
@@ -59,6 +86,7 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
   const [setupOpen, setSetupOpen] = useState(false);
   const [consentGiven, setConsentGiven] = useState(false);
   const [isSavingAndEnabling, setIsSavingAndEnabling] = useState(false);
+  const [revokeDialogOpen, setRevokeDialogOpen] = useState(false);
   const consentCommandKeyRef = useRef(commandKey("standing-consent"));
   const revokeCommandKeyRef = useRef(commandKey("standing-revoke"));
   const suppressConsentErrorToastRef = useRef(false);
@@ -135,32 +163,47 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
     }
   };
 
-  if (!enabled) return <Card data-testid="standing-autopay-card"><CardHeader><CardTitle>Automatic Payments</CardTitle></CardHeader><CardContent><p className="text-sm text-muted-foreground">Automatic weekly payments are not available for this league.</p></CardContent></Card>;
-  if (league.paymentMode === "upfront") return <Card data-testid="standing-autopay-card"><CardHeader><CardTitle>Automatic Payments</CardTitle></CardHeader><CardContent><p className="text-sm text-muted-foreground">Standing automatic payments are weekly only. Use the exact balance checkout for this upfront league.</p></CardContent></Card>;
+  if (!enabled) return <Card data-testid="standing-autopay-card"><CardHeader><CardTitle>Automatic payments</CardTitle></CardHeader><CardContent><p className="text-sm text-muted-foreground">Automatic weekly payments are not available for this league.</p></CardContent></Card>;
+  if (league.paymentMode === "upfront") return <Card data-testid="standing-autopay-card"><CardHeader><CardTitle>Automatic payments</CardTitle></CardHeader><CardContent><p className="text-sm text-muted-foreground">Standing automatic payments are weekly only. Use the exact balance checkout for this upfront league.</p></CardContent></Card>;
 
   const addingCard = cardEditorMode === "autopay";
   const setupPending = isSavingAndEnabling || activate.isPending;
+  const quote = quoteQuery.data?.data;
+  const quoteHasUpcomingPayment = Boolean(quote?.cutoffAt)
+    && Number.isFinite(new Date(quote?.cutoffAt ?? "").getTime())
+    && typeof quote?.amountMinor === "number"
+    && quote.amountMinor > 0;
   const nextPayment = quoteQuery.isLoading
-    ? "Loading…"
+    ? "Checking…"
     : quoteQuery.isError
       ? "Unavailable"
-      : quoteQuery.data?.data.cutoffAt
-        ? formatNextPaymentDate(quoteQuery.data.data.cutoffAt, league.timezone)
-        : "None";
+      : quoteHasUpcomingPayment && quote?.cutoffAt
+        ? `${formatStandingAutopayAmount(quote.amountMinor)} · ${formatNextPaymentShortDate(quote.cutoffAt, league.timezone)}`
+        : "No upcoming payment";
   const quoteError = quoteQuery.error instanceof Error
     ? quoteQuery.error.message.replace(/^\d{3}:\s*/, "")
       : "The next automatic payment is unavailable.";
   const editorOpen = active ? replaceMode : setupOpen;
   const consentCopy = "I agree to automatic weekly payments and understand that double-pay weeks may be charged twice to cover the final weeks of the season.";
-  return <Card data-testid="standing-autopay-card" className="familiar-standing-autopay-card">
-    <CardHeader><CardTitle className="flex items-center justify-between">Automatic Payments {active ? <Badge>Enabled</Badge> : <Badge variant="secondary">Off</Badge>}</CardTitle></CardHeader>
+  return <>
+  <Card data-testid="standing-autopay-card" className="familiar-standing-autopay-card">
+    <CardHeader><CardTitle className="flex items-center justify-between">Automatic payments {active ? <Badge className="familiar-autopay-enabled-badge">Enabled</Badge> : <Badge variant="secondary">Off</Badge>}</CardTitle></CardHeader>
     <CardContent spacing="tight">
       {!bowlerHasEmail && <p className="rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900">Add an email address to your <Link href="/profile" className="font-semibold underline">Profile</Link> before enabling automatic payments. A temporary receipt email cannot be used.</p>}
       {statusLoading && <div role="status" aria-live="polite" className="rounded-md border border-muted-foreground/30 bg-muted/30 p-3 text-sm text-muted-foreground">Checking automatic-payment status…</div>}
       {statusUnavailable && <div role="alert" className="flex flex-col gap-3 rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900"><p>Automatic-payment status could not be confirmed. Refresh before continuing.</p><Button type="button" variant="outline" size="sm" onClick={() => void statusQuery.refetch()} disabled={statusQuery.isFetching}>{statusQuery.isFetching ? "Refreshing…" : "Refresh status"}</Button></div>}
       {setupDataUnavailable && <div role="alert" className="rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900">Current payment obligations are unavailable. Refresh the payment page before enabling automatic payments.</div>}
       {statusReady && !setupDataUnavailable && dueNowRequired && !combinedCheckoutActive && !setupOpen && <div className="familiar-autopay-intro"><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setSetupOpen(true)}>Set up automatic payments<ChevronRight className="size-4" aria-hidden="true" /></Button>{partnerAutopayNote && <p className="familiar-autopay-partner-note">{partnerAutopayNote}</p>}</div>}
-      {statusLoading || statusUnavailable || setupDataUnavailable ? null : active && !replaceMode && !addingCard ? <>{paymentAttention === "scheduled_payment_declined" ? <div role="alert" className="space-y-2 rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900"><p>Your scheduled automatic payment was declined. Use the One-Time Payment section below to settle this balance before automatic payments can resume.</p></div> : <><p className="text-sm">Next Payment Scheduled: <span className="font-medium">{nextPayment}</span></p>{quoteQuery.isError && <p role="alert" className="text-sm text-destructive">{quoteError}</p>}{quoteQuery.data?.data && <dl className="familiar-autopay-schedule"><div><dt>Next charge</dt><dd>{formatCurrency(quoteQuery.data.data.amountMinor)}</dd></div><div><dt>Collection</dt><dd>{quoteQuery.data.data.collectionMode === "double_pay" ? "Double-pay week" : "Weekly"}</dd></div><div><dt>Double-pay weeks</dt><dd>{doublePayScheduleCopy(league.doublePayDates)}</dd></div></dl>}</>}<div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate()}>Revoke automatic payments</Button><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setReplaceMode(true)}>Replace payment method</Button></div></> : combinedCheckoutActive ? <div role="status">Complete checkout above to enable automatic payments.</div> : editorOpen ? <>
+      {statusLoading || statusUnavailable || setupDataUnavailable ? null : active && !replaceMode && !addingCard ? <>
+        {paymentAttention === "scheduled_payment_declined" ? <div role="alert" className="space-y-2 rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900"><p>Your scheduled automatic payment was declined. Use the One-Time Payment section below to settle this balance before automatic payments can resume.</p></div> : <div className="familiar-autopay-next" aria-label="Next automatic payment">
+          <span className="familiar-autopay-next-label">Next automatic payment</span>
+          {quoteHasUpcomingPayment && quote?.cutoffAt ? <strong><span className="familiar-autopay-amount">{formatStandingAutopayAmount(quote.amountMinor)}</span><span className="familiar-autopay-date">· {formatNextPaymentShortDate(quote.cutoffAt, league.timezone)}</span></strong> : <strong>{nextPayment}</strong>}
+          {quoteQuery.isError && <p role="alert" className="text-sm text-destructive">{quoteError}</p>}
+          {quoteHasUpcomingPayment && quote?.collectionMode && <p>{quote.collectionMode === "double_pay" ? "Double-pay week" : "Weekly automatic payment"}</p>}
+        </div>}
+        {consent?.paymentMethod && <p className="familiar-autopay-method"><CreditCard className="size-4" aria-hidden="true" /><span>{formatStandingAutopayBrand(consent.paymentMethod.brand)} ending in {consent.paymentMethod.last4}</span></p>}
+        <div className="familiar-autopay-actions"><Button type="button" variant="ghost" disabled={!bowlerHasEmail} onClick={() => setReplaceMode(true)}>Change card</Button><Button type="button" variant="ghost" disabled={revoke.isPending} onClick={() => setRevokeDialogOpen(true)}>Turn off</Button></div>
+      </> : combinedCheckoutActive ? <div role="status">Complete checkout above to enable automatic payments.</div> : editorOpen ? <>
         {!active && <div className="familiar-autopay-review" aria-label="Automatic payment schedule review">
           <p className="familiar-autopay-review-title">Review your automatic payment schedule</p>
           <p className="familiar-autopay-review-copy">Double-pay weeks cover the final weeks of the season. Review this schedule before enabling anything.</p>
@@ -176,5 +219,19 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
         {!dueNowRequired && !addingCard && savedCards.length > 0 && <div className="flex flex-wrap gap-2"><Button type="button" disabled={!bowlerHasEmail || !selectedCard || setupPending || (!active && !consentGiven)} onClick={() => activate.mutate(selectedCard)}>{active ? "Replace payment method" : "Enable automatic payments"}</Button>{active && <Button type="button" variant="ghost" disabled={setupPending} onClick={() => setReplaceMode(false)}>Cancel</Button>}<Button type="button" variant="outline" disabled={!bowlerHasEmail || setupPending} onClick={() => { cleanupCard(); onCardEditorModeChange("autopay"); setReplaceMode(true); }}>Add new card</Button></div>}
       </> : !active && !dueNowRequired ? <div className="familiar-autopay-intro"><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setSetupOpen(true)}>Set up automatic payments<ChevronRight className="size-4" aria-hidden="true" /></Button>{partnerAutopayNote && <p className="familiar-autopay-partner-note">{partnerAutopayNote}</p>}</div> : null}
     </CardContent>
-  </Card>;
+  </Card>
+  <Dialog open={revokeDialogOpen} onOpenChange={(open) => { if (!revoke.isPending) setRevokeDialogOpen(open); }}>
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Turn off automatic payments?</DialogTitle>
+        <DialogDescription>You’ll make future payments yourself for {league.name}.</DialogDescription>
+      </DialogHeader>
+      <p className="text-sm text-muted-foreground">Your past payments stay in History. Turning this off does not pay or remove any outstanding balance.</p>
+      <DialogFooter className="familiar-autopay-dialog-actions">
+        <Button type="button" variant="outline" disabled={revoke.isPending} onClick={() => setRevokeDialogOpen(false)}>Keep automatic payments</Button>
+        <Button type="button" disabled={revoke.isPending} onClick={() => { setRevokeDialogOpen(false); revoke.mutate(); }}>{revoke.isPending ? "Turning off…" : "Turn off automatic payments"}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+  </>;
 }

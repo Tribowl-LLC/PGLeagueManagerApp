@@ -52,8 +52,9 @@ import { quoteInteractivePartnerPayments, readInteractivePaymentParticipants } f
 import { prepareInteractivePartnerPaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
 
 // This suite deliberately enables only the standing runtime in the isolated
-// test process. It never supplies provider credentials and never calls a
-// provider; preparation stops after the committed ledger/snapshot boundary.
+// test process. It never supplies provider credentials or calls a real
+// provider; provider behavior is represented by explicit mocks. Preparation
+// stops after the committed ledger/snapshot boundary.
 process.env.SCHEDULED_PAYMENT_EXECUTION_MODE = "ledger_execute";
 process.env.ROSTER_STANDING_AUTOPAY_ENABLED = "true";
 
@@ -817,6 +818,43 @@ async function insertSiblingObligation(target: Awaited<ReturnType<typeof publish
 }
 
 describe("standing automatic payments on migrated PostgreSQL", () => {
+  it("returns only the consent card metadata verified by the provider and degrades safely", async () => {
+    await insertConsent({ version: 120, activatedAt: "2039-01-02T00:00:00.000Z" });
+    const listCardsOnFile = vi.fn().mockResolvedValue([
+      { id: "other-source", brand: "MASTERCARD", last4: "0000" },
+      { id: "source-fixture", brand: "VISA", last4: "4242" },
+    ]);
+    const provider = () => ({
+      providerName: "square",
+      locationId,
+      getProviderLocationId: vi.fn().mockResolvedValue("square-location-fixture"),
+      listCardsOnFile,
+    });
+    standingProviderMock.mockResolvedValue(provider());
+    try {
+      const { readStandingAutopayConsent } = await import("../../server/services/roster-standing-autopay");
+      const verified = await readStandingAutopayConsent({ organizationId, leagueId, payerBowlerId });
+      expect(verified).toMatchObject({ state: "active", paymentMethod: { brand: "VISA", last4: "4242" } });
+      expect(verified).not.toHaveProperty("sourceId");
+      expect(verified).not.toHaveProperty("customerId");
+      expect(JSON.stringify(verified)).not.toContain("source-fixture");
+      expect(JSON.stringify(verified)).not.toContain("customer-fixture");
+      expect(listCardsOnFile).toHaveBeenCalledWith("customer-fixture");
+
+      const failedLookup = vi.fn().mockRejectedValue(new Error("provider unavailable"));
+      standingProviderMock.mockResolvedValue({ ...provider(), listCardsOnFile: failedLookup });
+      const degraded = await readStandingAutopayConsent({ organizationId, leagueId, payerBowlerId });
+      expect(degraded).toMatchObject({ state: "active", paymentMethod: null });
+
+      const missingCard = vi.fn().mockResolvedValue([{ id: "different-source", brand: "VISA", last4: "9999" }]);
+      standingProviderMock.mockResolvedValue({ ...provider(), listCardsOnFile: missingCard });
+      const missing = await readStandingAutopayConsent({ organizationId, leagueId, payerBowlerId });
+      expect(missing).toMatchObject({ state: "active", paymentMethod: null });
+    } finally {
+      standingProviderMock.mockReset();
+    }
+  });
+
   it("blocks pre-consent arrears until one-time FIFO settlement, then advances a cutoff", async () => {
     const beforeConsent = await publishOccurrence("2039-01-01T19:00:00.000Z");
     const afterConsent = await publishOccurrence("2039-01-08T19:00:00.000Z");

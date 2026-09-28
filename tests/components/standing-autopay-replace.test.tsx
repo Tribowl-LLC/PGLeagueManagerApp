@@ -101,7 +101,7 @@ describe("StandingAutopayCard active replacement", () => {
     const user = userEvent.setup();
     renderCard({ savedCards: [savedCard, replacementCard] });
 
-    await user.click(await screen.findByRole("button", { name: "Replace payment method" }));
+    await user.click(await screen.findByRole("button", { name: "Change card" }));
     const selector = await screen.findByLabelText("Saved card");
     expect(selector).toHaveValue("card_1");
     await user.selectOptions(selector, "card_2");
@@ -121,7 +121,7 @@ describe("StandingAutopayCard active replacement", () => {
     const user = userEvent.setup();
     renderCard({ savedCards: [savedCard], card: squareCard, isInitialized: true });
 
-    await user.click(await screen.findByRole("button", { name: "Replace payment method" }));
+    await user.click(await screen.findByRole("button", { name: "Change card" }));
     await user.click(screen.getByRole("button", { name: "Add new card" }));
     await user.click(await screen.findByRole("button", { name: "Save card and replace payment method" }));
 
@@ -134,6 +134,27 @@ describe("StandingAutopayCard active replacement", () => {
       "/api/financials/leagues/17/standing-autopay/1/consent",
       "POST",
       expect.objectContaining({ sourceId: "card_new", partnerBowlerIds: [] }),
+    );
+  });
+
+  it("requires confirmation before revoking the active consent", async () => {
+    const user = userEvent.setup();
+    renderCard();
+
+    await user.click(await screen.findByRole("button", { name: "Turn off" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("Turn off automatic payments?");
+    expect(apiRequestMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Keep automatic payments" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Turn off" }));
+    await user.click(screen.getByRole("button", { name: "Turn off automatic payments" }));
+
+    await waitFor(() => expect(apiRequestMock).toHaveBeenCalledOnce());
+    expect(apiRequestMock).toHaveBeenCalledWith(
+      "/api/financials/leagues/17/standing-autopay/1/revoke",
+      "POST",
+      expect.objectContaining({ commandKey: expect.any(String) }),
     );
   });
 });
