@@ -58,7 +58,7 @@ export function PaymentSummaryCards({
       {formatFamiliarCurrency(amountPastDue)}
     </Link>
   ) : showPastDue ? (
-    <button type="button" className="familiar-payment-summary__value familiar-payment-summary__value--past-due" onClick={onPayPastDue}>
+    <button type="button" className="familiar-payment-summary__value familiar-payment-summary__value--past-due" aria-label={`Pay past due balance of ${formatFamiliarCurrency(amountPastDue)}`} onClick={onPayPastDue}>
       {formatFamiliarCurrency(amountPastDue)}
     </button>
   ) : <span className="familiar-payment-summary__value">{formatFamiliarCurrency(0)}</span>;
@@ -73,7 +73,7 @@ export function PaymentSummaryCards({
       {formatFamiliarCurrency(remainingBalance)}
     </Link>
   ) : remainingBalance > 0 ? (
-    <button type="button" className="familiar-payment-summary__value" onClick={onPayRemaining}>
+    <button type="button" className="familiar-payment-summary__value" aria-label={`Pay remaining balance of ${formatFamiliarCurrency(remainingBalance)}`} onClick={onPayRemaining}>
       {formatFamiliarCurrency(remainingBalance)}
     </button>
   ) : <span className="familiar-payment-summary__value">{formatFamiliarCurrency(0)}</span>;
