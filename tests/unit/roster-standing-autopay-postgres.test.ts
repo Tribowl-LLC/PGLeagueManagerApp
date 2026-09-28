@@ -819,7 +819,9 @@ async function insertSiblingObligation(target: Awaited<ReturnType<typeof publish
 
 describe("standing automatic payments on migrated PostgreSQL", () => {
   it("returns only the consent card metadata verified by the provider and degrades safely", async () => {
-    await insertConsent({ version: 120, activatedAt: "2039-01-02T00:00:00.000Z" });
+    // Keep this below the fixture's normal version range so this metadata
+    // regression cannot change later MAX(consentVersion) assertions.
+    await insertConsent({ version: 1, activatedAt: "2039-01-02T00:00:00.000Z" });
     const listCardsOnFile = vi.fn().mockResolvedValue([
       { id: "other-source", brand: "MASTERCARD", last4: "0000" },
       { id: "source-fixture", brand: "VISA", last4: "4242" },
