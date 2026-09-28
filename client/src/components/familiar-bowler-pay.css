@@ -556,14 +556,6 @@
   text-align: center;
 }
 
-.familiar-wallet-note {
-  color: var(--familiar-pay-muted);
-  font-size: 10px;
-  line-height: 1.4;
-  margin: -2px 0 0;
-  text-align: center;
-}
-
 .familiar-payment-divider::before,
 .familiar-payment-divider::after {
   background: var(--familiar-pay-line);

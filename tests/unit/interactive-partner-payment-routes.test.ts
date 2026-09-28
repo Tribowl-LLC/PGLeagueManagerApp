@@ -224,7 +224,7 @@ describe("interactive partner payment v3 route boundaries", () => {
         fullBalance: false,
         subtotalMinor: 2_000,
         coveredWeeks: ["Week 1", "Week 2"],
-        allocations: [{ obligationId: "obligation-secret", amountMinor: 2_000, occurrenceId: "occurrence-secret", occurrenceLocalDate: "2039-01-01", plannedOrdinal: 1, label: "Week 1" }],
+        allocations: [{ obligationId: "obligation-secret", amountMinor: 2_000, occurrenceId: "occurrence-secret", occurrenceLocalDate: "2039-01-01", plannedOrdinal: 1, label: "Week 1", isPairedFinalWeek: true }],
       }],
       allocations: [{ allocationIndex: 0, bowlerId: 43, amountMinor: 2_000, obligationId: "obligation-secret", responsibilityId: "responsibility-secret", responsibilityVersion: 4, paidByUserId: 1, notes: "secret" }],
     });
@@ -236,6 +236,9 @@ describe("interactive partner payment v3 route boundaries", () => {
     expect((quoteData.recipients as Array<Record<string, unknown>>)[0]).not.toHaveProperty("linkFingerprint");
     expect((quoteData.allocations as Array<Record<string, unknown>>)[0]).not.toHaveProperty("paidByUserId");
     expect((quoteData.allocations as Array<Record<string, unknown>>)[0]).not.toHaveProperty("notes");
+    expect((quoteData.recipients as Array<Record<string, unknown>>)[0]?.allocations).toEqual([
+      expect.objectContaining({ isPairedFinalWeek: true }),
+    ]);
 
     mocks.charge.mockResolvedValue({
       contractVersion: "interactive-payment-charge/3",

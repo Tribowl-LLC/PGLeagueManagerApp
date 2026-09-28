@@ -240,6 +240,7 @@ export async function quoteInteractivePartnerPayments(input: { organizationId: n
           label: row.candidate.plannedOrdinal !== null && row.candidate.plannedOrdinal !== undefined
             ? `Week ${row.candidate.plannedOrdinal}`
             : `Week of ${occurrenceLocalDate}`,
+          isPairedFinalWeek: row.candidate.memberOrdinal === 2 && row.candidate.pairedCollectionReady === true,
         };
       });
       recipientRows.push({ bowlerId: participant.bowlerId, name: participant.name, role: participant.role, weeks: selection.weeks, fullBalance: selection.fullBalance, subtotalMinor: subtotal, allocations: projectedAllocations, coveredWeeks: projectedAllocations.map((allocation) => allocation.label) });

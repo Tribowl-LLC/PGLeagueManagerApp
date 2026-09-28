@@ -74,6 +74,8 @@ export interface InteractivePaymentQuoteAllocationV3 {
   plannedOrdinal: number | null;
   /** Human-readable label derived by the server from canonical occurrence evidence. */
   label: string;
+  /** True only when this allocation is the published pair's final week. */
+  isPairedFinalWeek: boolean;
 }
 
 export interface InteractivePaymentQuoteRecipientV3 {

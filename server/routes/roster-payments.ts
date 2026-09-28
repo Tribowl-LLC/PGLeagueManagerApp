@@ -282,6 +282,7 @@ function interactivePartnerWireResult(value: unknown): Record<string, unknown> {
           occurrenceLocalDate: item.occurrenceLocalDate,
           plannedOrdinal: item.plannedOrdinal ?? null,
           label: item.label,
+          isPairedFinalWeek: item.isPairedFinalWeek === true,
         };
       }) : [],
     };
