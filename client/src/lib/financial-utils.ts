@@ -26,6 +26,38 @@ export interface BowlerViewFinancials {
   reviewCategory: "refund" | "dispute" | "evidence" | null;
 }
 
+/** Count unique active canonical weeks fully covered by this bowler's own
+ * settled obligations. Effective allocations remain separate from waived
+ * amounts so a waived-only week is never presented as paid. */
+export function countCanonicalPaidWeeks(rows: CanonicalDuePastDueRowV2[], bowlerId: number | null | undefined): number {
+  if (!Number.isSafeInteger(bowlerId) || !bowlerId || bowlerId <= 0) return 0;
+  const byOccurrence = new Map<string, CanonicalDuePastDueRowV2[]>();
+  for (const row of rows) {
+    if (row.payerBowlerId !== bowlerId || row.state === "voided" || row.classification === "voided" || !row.occurrenceId) continue;
+    byOccurrence.set(row.occurrenceId, [...(byOccurrence.get(row.occurrenceId) ?? []), row]);
+  }
+
+  let paidWeeks = 0;
+  for (const obligations of byOccurrence.values()) {
+    const isFullyCovered = obligations.every((row) => {
+      const valuesAreValid = Number.isSafeInteger(row.amountMinor) && row.amountMinor > 0
+        && Number.isSafeInteger(row.allocatedMinor) && row.allocatedMinor >= 0
+        && Number.isSafeInteger(row.waivedMinor) && row.waivedMinor >= 0 && row.waivedMinor <= row.amountMinor
+        && Number.isSafeInteger(row.outstandingMinor) && row.outstandingMinor >= 0;
+      return valuesAreValid
+        && row.state === "settled"
+        && row.classification === "settled"
+        && !row.reviewRequired
+        && !row.stillOwed
+        && row.outstandingMinor === 0
+        && row.allocatedMinor >= row.amountMinor - row.waivedMinor;
+    });
+    const hasActualPayment = obligations.some((row) => row.allocatedMinor > 0);
+    if (isFullyCovered && hasActualPayment) paidWeeks += 1;
+  }
+  return paidWeeks;
+}
+
 /**
  * Derive the bowler summary from canonical obligation evidence.
  *

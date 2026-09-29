@@ -1,6 +1,6 @@
 import { aliasedTable, and, asc, desc, eq, exists, inArray, sql, or } from "drizzle-orm";
 import { db } from "../db.js";
-import { bowlers, leagueOccurrences, leagues, paymentAllocationCorrections, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments, refundAllocationAdjustments, rotatingCreditApplications, rotatingCreditApplicationReversals, rotatingCreditFundings, rotatingCreditPaymentOperationSnapshots, rotatingCreditRefundOperationSnapshots, rotatingCreditRefunds, type PaymentAllocationCorrection } from "@shared/schema";
+import { bowlers, canonicalCollectionGroupMembers, canonicalCollectionGroups, leagueOccurrenceBillingTerms, leagueOccurrenceGenerationRuns, leagueOccurrences, leagues, paymentAllocationCorrections, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments, refundAllocationAdjustments, rotatingCreditApplications, rotatingCreditApplicationReversals, rotatingCreditFundings, rotatingCreditPaymentOperationSnapshots, rotatingCreditRefundOperationSnapshots, rotatingCreditRefunds, type PaymentAllocationCorrection } from "@shared/schema";
 import type { CanonicalPaymentReport, CanonicalPaymentRow, CanonicalPaymentReportTotals } from "@shared/canonical-payment-report";
 import { canonicalCreditFundingSource, canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
 import { paymentVisibilityCondition } from "../storage/payments.js";
@@ -25,6 +25,117 @@ type CorrectionSnapshotEvidence = {
   snapshot: typeof paymentOperationRosterSnapshots.$inferSelect;
   item: typeof paymentOperationRosterSnapshotItems.$inferSelect;
 };
+
+export type CurrentPublishedPairMemberEvidence = {
+  groupId: string;
+  groupGenerationRunId: string;
+  groupState: string;
+  groupKind: string;
+  groupSourceScheduleRevision: number;
+  groupCurrentRevision: number;
+  groupPublishedAt: string | null;
+  groupPublishedByUserId: number | null;
+  groupPublicationCommandId: string | null;
+  groupRevokedAt: string | null;
+  groupRevokedByUserId: number | null;
+  groupRevocationCommandId: string | null;
+  memberGenerationRunId: string;
+  memberActive: boolean;
+  memberRole: string;
+  memberOrdinal: number;
+  memberCurrentRevision: number;
+  occurrenceId: string;
+  memberLocalDate: string;
+  memberBillingTermId: string;
+  memberBillingOrdinal: number;
+  memberAmountMinor: number;
+  memberCurrency: string;
+  occurrenceGenerationRunId: string | null;
+  occurrenceLifecycle: string;
+  occurrenceStatus: string;
+  occurrenceLocalDate: string;
+  termId: string;
+  termPurpose: string;
+  termObligationPolicy: string;
+  termDefaultAmountMinor: number;
+  termCurrency: string;
+  termBillingOrdinal: number | null;
+  termState: string;
+  termPublishedAt: string | null;
+  termPublishedByUserId: number | null;
+  termPublicationCommandId: string | null;
+  termSupersededAt: string | null;
+  termSupersededByCommandId: string | null;
+};
+
+type CurrentGenerationRunEvidence = {
+  id: string;
+  state: string;
+  sourceScheduleRevision: number;
+  supersededAt: string | null;
+};
+
+/**
+ * Fail closed unless both members of a double-pay group are still active in
+ * the one current published generation, and each member still agrees with
+ * its operational occurrence and published billing term. The returned IDs
+ * stay inside F5; ordinary readers receive only a boolean on their own row.
+ */
+export function deriveCurrentFinalPairedOccurrenceIds(
+  currentRun: CurrentGenerationRunEvidence | null,
+  evidence: CurrentPublishedPairMemberEvidence[],
+): Set<string> {
+  if (!currentRun || !["approved", "applied"].includes(currentRun.state) || currentRun.supersededAt !== null) return new Set();
+
+  const groups = new Map<string, CurrentPublishedPairMemberEvidence[]>();
+  for (const row of evidence) groups.set(row.groupId, [...(groups.get(row.groupId) ?? []), row]);
+
+  const pairedOccurrences = new Set<string>();
+  for (const members of groups.values()) {
+    if (members.length !== 2) continue;
+    const group = members[0];
+    if (members.some((member) => member.groupGenerationRunId !== currentRun.id
+      || member.groupState !== "published"
+      || member.groupKind !== "double_pay"
+      || member.groupSourceScheduleRevision !== currentRun.sourceScheduleRevision
+      || member.groupCurrentRevision < 1
+      || member.memberCurrentRevision !== member.groupCurrentRevision
+      || member.groupPublishedAt === null
+      || member.groupPublishedByUserId === null
+      || member.groupPublicationCommandId === null
+      || member.groupRevokedAt !== null
+      || member.groupRevokedByUserId !== null
+      || member.groupRevocationCommandId !== null
+      || member.memberGenerationRunId !== currentRun.id
+      || !member.memberActive
+      || member.memberCurrentRevision < 1
+      || member.occurrenceGenerationRunId !== currentRun.id
+      || !["published", "locked"].includes(member.occurrenceLifecycle)
+      || !["scheduled", "completed"].includes(member.occurrenceStatus)
+      || member.occurrenceLocalDate !== member.memberLocalDate
+      || member.memberBillingTermId !== member.termId
+      || member.termPurpose !== "league_weekly_fee"
+      || member.termObligationPolicy !== "eligible_bowlers"
+      || member.termDefaultAmountMinor !== member.memberAmountMinor
+      || member.termCurrency !== member.memberCurrency
+      || member.termBillingOrdinal !== member.memberBillingOrdinal
+      || member.memberBillingOrdinal <= 0
+      || member.memberAmountMinor <= 0
+      || !/^[A-Z]{3}$/.test(member.memberCurrency)
+      || member.termState !== "published"
+      || member.termPublishedAt === null
+      || member.termPublishedByUserId === null
+      || member.termPublicationCommandId === null
+      || member.termSupersededAt !== null
+      || member.termSupersededByCommandId !== null)) continue;
+
+    const triggers = members.filter((member) => member.memberRole === "trigger" && member.memberOrdinal === 1);
+    const paired = members.filter((member) => member.memberRole === "paired" && member.memberOrdinal === 2);
+    if (triggers.length !== 1 || paired.length !== 1 || triggers[0].occurrenceId === paired[0].occurrenceId) continue;
+    pairedOccurrences.add(paired[0].occurrenceId);
+  }
+  return pairedOccurrences;
+}
 
 /**
  * A corrected Square payment keeps its original operation snapshot immutable.
@@ -172,6 +283,85 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       : [];
     const upfrontDueAt = upfrontEvidence?.dueAt ? new Date(upfrontEvidence.dueAt).toISOString() : null;
     const timezone = league.timezone ?? "UTC";
+    const currentGenerationRuns = await tx.select({
+      id: leagueOccurrenceGenerationRuns.id,
+      state: leagueOccurrenceGenerationRuns.state,
+      sourceScheduleRevision: leagueOccurrenceGenerationRuns.sourceScheduleRevision,
+      supersededAt: leagueOccurrenceGenerationRuns.supersededAt,
+    }).from(leagueOccurrenceGenerationRuns).where(and(
+      eq(leagueOccurrenceGenerationRuns.organizationId, input.organizationId),
+      eq(leagueOccurrenceGenerationRuns.leagueId, input.leagueId),
+      inArray(leagueOccurrenceGenerationRuns.state, ["approved", "applied"]),
+    )).limit(2);
+    const currentGenerationRun = currentGenerationRuns.length === 1 ? currentGenerationRuns[0] : null;
+    const finalPairedOccurrences = currentGenerationRun
+      ? deriveCurrentFinalPairedOccurrenceIds(currentGenerationRun, await tx.select({
+        groupId: canonicalCollectionGroups.id,
+        groupGenerationRunId: canonicalCollectionGroups.generationRunId,
+        groupState: canonicalCollectionGroups.state,
+        groupKind: canonicalCollectionGroups.kind,
+        groupSourceScheduleRevision: canonicalCollectionGroups.sourceScheduleRevision,
+        groupCurrentRevision: canonicalCollectionGroups.currentRevision,
+        groupPublishedAt: canonicalCollectionGroups.publishedAt,
+        groupPublishedByUserId: canonicalCollectionGroups.publishedByUserId,
+        groupPublicationCommandId: canonicalCollectionGroups.publicationCommandId,
+        groupRevokedAt: canonicalCollectionGroups.revokedAt,
+        groupRevokedByUserId: canonicalCollectionGroups.revokedByUserId,
+        groupRevocationCommandId: canonicalCollectionGroups.revocationCommandId,
+        memberGenerationRunId: canonicalCollectionGroupMembers.generationRunId,
+        memberActive: canonicalCollectionGroupMembers.active,
+        memberRole: canonicalCollectionGroupMembers.role,
+        memberOrdinal: canonicalCollectionGroupMembers.memberOrdinal,
+        memberCurrentRevision: canonicalCollectionGroupMembers.currentRevision,
+        occurrenceId: canonicalCollectionGroupMembers.occurrenceId,
+        memberLocalDate: canonicalCollectionGroupMembers.localDate,
+        memberBillingTermId: canonicalCollectionGroupMembers.billingTermId,
+        memberBillingOrdinal: canonicalCollectionGroupMembers.billingOrdinal,
+        memberAmountMinor: canonicalCollectionGroupMembers.amountMinor,
+        memberCurrency: canonicalCollectionGroupMembers.currency,
+        occurrenceGenerationRunId: leagueOccurrences.generationRunId,
+        occurrenceLifecycle: leagueOccurrences.lifecycle,
+        occurrenceStatus: leagueOccurrences.status,
+        occurrenceLocalDate: leagueOccurrences.authoritativeLocalDate,
+        termId: leagueOccurrenceBillingTerms.id,
+        termPurpose: leagueOccurrenceBillingTerms.purpose,
+        termObligationPolicy: leagueOccurrenceBillingTerms.obligationPolicy,
+        termDefaultAmountMinor: leagueOccurrenceBillingTerms.defaultAmountMinor,
+        termCurrency: leagueOccurrenceBillingTerms.currency,
+        termBillingOrdinal: leagueOccurrenceBillingTerms.billingOrdinal,
+        termState: leagueOccurrenceBillingTerms.state,
+        termPublishedAt: leagueOccurrenceBillingTerms.publishedAt,
+        termPublishedByUserId: leagueOccurrenceBillingTerms.publishedByUserId,
+        termPublicationCommandId: leagueOccurrenceBillingTerms.publicationCommandId,
+        termSupersededAt: leagueOccurrenceBillingTerms.supersededAt,
+        termSupersededByCommandId: leagueOccurrenceBillingTerms.supersededByCommandId,
+      }).from(canonicalCollectionGroupMembers)
+        .innerJoin(canonicalCollectionGroups, and(
+          eq(canonicalCollectionGroups.id, canonicalCollectionGroupMembers.groupId),
+          eq(canonicalCollectionGroups.organizationId, input.organizationId),
+          eq(canonicalCollectionGroups.leagueId, input.leagueId),
+        ))
+        .innerJoin(leagueOccurrences, and(
+          eq(leagueOccurrences.id, canonicalCollectionGroupMembers.occurrenceId),
+          eq(leagueOccurrences.organizationId, input.organizationId),
+          eq(leagueOccurrences.leagueId, input.leagueId),
+        ))
+        .innerJoin(leagueOccurrenceBillingTerms, and(
+          eq(leagueOccurrenceBillingTerms.id, canonicalCollectionGroupMembers.billingTermId),
+          eq(leagueOccurrenceBillingTerms.occurrenceId, canonicalCollectionGroupMembers.occurrenceId),
+          eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
+          eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
+        ))
+        .where(and(
+          eq(canonicalCollectionGroupMembers.organizationId, input.organizationId),
+          eq(canonicalCollectionGroupMembers.leagueId, input.leagueId),
+          eq(canonicalCollectionGroupMembers.generationRunId, currentGenerationRun.id),
+          eq(canonicalCollectionGroupMembers.active, true),
+          eq(canonicalCollectionGroups.generationRunId, currentGenerationRun.id),
+          eq(canonicalCollectionGroups.state, "published"),
+          eq(canonicalCollectionGroups.kind, "double_pay"),
+        )))
+      : new Set<string>();
     // Fetch the tenant/league tender set before applying a bowler filter. A
     // combined charge is owned by its payer at the parent row, while a
     // recipient owns only the child allocation(s); filtering the parent here
@@ -507,6 +697,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           refundedMinor: adjustment?.amountMinor ?? 0,
           effectiveAmountMinor: candidate.allocation.state === "active" ? Math.max(0, candidate.allocation.amountMinor - (adjustment?.amountMinor ?? 0)) : 0,
           refundDisposition: adjustment?.disposition ?? null,
+          ...(finalPairedOccurrences.has(candidate.obligation.occurrenceId) ? { isFinalPairedWeek: true } : {}),
           currency: candidate.allocation.currency,
           state: candidate.allocation.state === "active" ? "active" as const : "voided" as const,
         };

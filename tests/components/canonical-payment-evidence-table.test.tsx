@@ -112,6 +112,71 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
   });
 
+  it("labels confirmed self-only multiweek payments from canonical ordinals and adds the paired final week", () => {
+    const multiWeekAppliedTo = [31, 32].map((plannedOrdinal) => ({
+      plannedOrdinal,
+      occurrenceLocalDate: `2038-04-${plannedOrdinal === 31 ? "01" : "08"}`,
+      amountMinor: 2500,
+      currency: "USD",
+      state: "active" as const,
+      isFinalPairedWeek: true,
+    }));
+    const confirmedSelfPayment = {
+      paymentId: 90,
+      status: "confirmed_paid" as const,
+      unresolved: false,
+      reviewRequired: false,
+      source: "canonical_allocation" as const,
+      amountMinor: 5000,
+      allocatedMinor: 5000,
+      refundedAllocationMinor: 0,
+      waivedMinor: 0,
+      refund: { present: false, amountMinor: 0, providerRefundId: null },
+      dispute: { present: false, amountMinor: 0, disputeId: null },
+      isSelfOnlyPayment: true,
+      hasMultipleRecipients: false,
+      appliedTo: multiWeekAppliedTo,
+      allocations: [],
+    };
+    render(<CanonicalPaymentEvidenceTable rows={[row(confirmedSelfPayment)]} variant="bowler" totalWeeksInSeason={32} />);
+
+    expect(screen.getByText("2 weeks paid (includes Weeks 31 and 32)")).toBeInTheDocument();
+  });
+
+  it("keeps legacy period labels for single-week, full-season, partner, credit, and unresolved rows", () => {
+    const appliedTo = [31, 32].map((plannedOrdinal) => ({
+      plannedOrdinal,
+      occurrenceLocalDate: `2038-04-${plannedOrdinal === 31 ? "01" : "08"}`,
+      amountMinor: 2500,
+      currency: "USD",
+      state: "active" as const,
+      isFinalPairedWeek: true,
+    }));
+    const base = {
+      status: "confirmed_paid" as const,
+      unresolved: false,
+      reviewRequired: false,
+      source: "canonical_allocation" as const,
+      refund: { present: false, amountMinor: 0, providerRefundId: null },
+      dispute: { present: false, amountMinor: 0, disputeId: null },
+      isSelfOnlyPayment: true,
+      appliedTo,
+      allocations: [],
+    };
+    const fullSeason = Array.from({ length: 32 }, (_, index) => ({ ...appliedTo[0], plannedOrdinal: index + 1, isFinalPairedWeek: false }));
+    const rows = [
+      row({ ...base, paymentId: 1, appliedTo: [appliedTo[0]] }),
+      row({ ...base, paymentId: 2, appliedTo: fullSeason }),
+      row({ ...base, paymentId: 3, hasMultipleRecipients: true }),
+      row({ ...base, paymentId: 4, source: "prepaid_credit", isSelfOnlyPayment: true }),
+      row({ ...base, paymentId: 5, status: "unresolved", source: "unresolved_operation", unresolved: true }),
+    ];
+    render(<CanonicalPaymentEvidenceTable rows={rows} variant="bowler" totalWeeksInSeason={32} />);
+
+    expect(screen.getAllByText("Week 31 payment")).toHaveLength(4);
+    expect(screen.getByText("Week 1 payment")).toBeInTheDocument();
+  });
+
   it("uses one accessible bowler row target for pointer, Enter, and Space activation", async () => {
     const user = userEvent.setup();
     render(<CanonicalPaymentEvidenceTable rows={[row({

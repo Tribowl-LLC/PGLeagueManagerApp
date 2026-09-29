@@ -503,9 +503,13 @@ with a responsive content width. This direction does not change the admin UI.
   summary boxes or automatic-payment setup; its coverage sentence describes
   the selected number of weeks. Provider-generated wallet confirmation remains
   native to the provider.
-- **History:** Show Season totals directly on the page, followed by
-  Transactions. Use the Overview total style, with Paid and Past Due only for
-  rotating bowlers. Keep the real transaction evidence and detail actions.
+- **History:** Show a Weeks paid line (`x/y weeks`) above the Season totals,
+  using active canonical obligations rather than money or weekly-fee math.
+  Follow it with Transactions. A confirmed self-only payment covering several
+  canonical weeks names that count, and includes the server-confirmed final
+  paired week when present. Keep single-week, shared, credit, and review rows'
+  existing truthful labels. Rotating bowlers see Paid and Past Due only, with
+  no Weeks paid line. Keep the real transaction evidence and detail actions.
 - **Profile:** Present account details as rows and use focused dialogs for
   editing details, changing a password, managing saved payment methods and
   payment-partner links, and requesting deletion. Put Request deletion below

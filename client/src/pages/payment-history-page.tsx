@@ -14,7 +14,7 @@ import { BowlerErrorView } from "./payment-history-page/bowler-error-view";
 import { NoLeaguesView } from "./payment-history-page/no-leagues-view";
 import { NoLeagueView } from "./payment-history-page/no-league-view";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
-import { deriveBowlerFinancials } from "@/lib/financial-utils";
+import { countCanonicalPaidWeeks, deriveBowlerFinancials } from "@/lib/financial-utils";
 import { paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
 import { resolveRotatingCreditDisplayState } from "@/components/payment-status-section";
 import { rotatingPaidTotalMinor } from "@/lib/rotating-paid-total";
@@ -98,6 +98,7 @@ export default function PaymentHistoryPage() {
     canonicalReport?.asOf ?? "",
     canonicalReport?.totals.collectiblePastDueMinor ?? 0,
   );
+  const weeksPaid = canonicalReport ? countCanonicalPaidWeeks(canonicalRows, bowlerId) : null;
   const isRotating = rotatingCreditState === "rotating";
   const rotatingPaidMinor = isRotating ? rotatingPaidTotalMinor(report, leagueId ?? 0) : null;
   const summaryDisplayState = isRotating && rotatingPaidMinor === null ? "error" : rotatingCreditState;
@@ -138,7 +139,7 @@ export default function PaymentHistoryPage() {
     fullSeasonAmount={financials.fullSeasonAmount}
     weeksDueCount={financials.weeksPassed}
     totalSeasonDues={financials.totalDueToDate}
-    weeksPaid={league.weeklyFee ? Math.round(financials.totalPaid / league.weeklyFee) : 0}
+    weeksPaid={weeksPaid}
     totalPaidAmount={financials.totalPaid}
     waivedAmount={financials.waivedAmount}
     amountPastDue={financials.amountPastDue}

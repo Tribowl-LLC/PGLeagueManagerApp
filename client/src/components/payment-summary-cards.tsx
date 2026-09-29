@@ -16,7 +16,7 @@ interface PaymentSummaryCardsProps {
   weeklyFee: number;
   weeksDueCount: number;
   totalSeasonDues: number;
-  weeksPaid: number;
+  weeksPaid: number | null;
   totalPaidAmount: number;
   waivedAmount?: number;
   amountPastDue: number;
@@ -31,6 +31,8 @@ interface PaymentSummaryCardsProps {
 }
 
 export function PaymentSummaryCards({
+  totalWeeksInSeason,
+  weeksPaid,
   fullSeasonAmount,
   totalPaidAmount,
   amountPastDue,
@@ -42,6 +44,13 @@ export function PaymentSummaryCards({
   isRotating = false,
 }: PaymentSummaryCardsProps) {
   const showPastDue = amountPastDue > 0;
+  const showWeeksPaid = !isRotating
+    && weeksPaid !== null
+    && Number.isSafeInteger(weeksPaid)
+    && weeksPaid >= 0
+    && Number.isSafeInteger(totalWeeksInSeason)
+    && totalWeeksInSeason > 0
+    && (weeksPaid ?? 0) <= totalWeeksInSeason;
   const summaryClassName = [
     "familiar-payment-summary__grid",
     showPastDue ? "familiar-payment-summary__grid--past-due" : "",
@@ -81,6 +90,12 @@ export function PaymentSummaryCards({
   return (
     <section className="familiar-payment-summary" aria-labelledby="history-season-totals-title">
       <h2 id="history-season-totals-title" className="familiar-payment-summary__heading">Season totals</h2>
+      {showWeeksPaid && (
+        <div className="familiar-payment-summary__weeks-paid" data-testid="history-weeks-paid">
+          <span className="familiar-payment-summary__label">Weeks paid</span>
+          <strong>{weeksPaid}/{totalWeeksInSeason} weeks</strong>
+        </div>
+      )}
       <div className={summaryClassName}>
         <div>
           <span className="familiar-payment-summary__label">Paid</span>
