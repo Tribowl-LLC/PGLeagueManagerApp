@@ -575,6 +575,34 @@
   overflow: hidden;
 }
 
+.familiar-payment-method-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.familiar-payment-details-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.familiar-payment-method-column > button:last-child {
+  align-items: center;
+  display: flex;
+  font-size: 15px;
+  font-weight: 650;
+  gap: 10px;
+  justify-content: center;
+  min-height: 50px;
+}
+
+.familiar-payment-method-column > button:last-child > svg {
+  height: 18px;
+  width: 18px;
+}
+
 .familiar-source-label {
   color: var(--familiar-pay-ink);
   font-size: 12px;
@@ -1160,10 +1188,25 @@
     margin-top: 0 !important;
   }
 
-  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-header-payment-total,
-  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] fieldset,
-  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-payment-coverage {
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:last-child > .familiar-payment-details-column {
+    align-content: start;
     grid-column: 1;
+    grid-row: 1;
+    margin-top: 0 !important;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:last-child > .familiar-payment-method-column {
+    align-content: start;
+    display: grid;
+    gap: 16px;
+    grid-column: 2;
+    grid-row: 1;
+    margin-top: 0 !important;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:last-child > .familiar-payment-method-column > * {
+    grid-column: auto;
+    margin-top: 0 !important;
   }
 
   .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-header-payment-total {
@@ -1176,20 +1219,13 @@
     margin: 14px 0 2px !important;
   }
 
-  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-wallets,
-  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-source-label,
-  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-source-picker,
-  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:last-child > button:last-child {
-    grid-column: 2;
-  }
-
   .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-wallets {
     display: grid;
     gap: 9px;
   }
 
   .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-source-label {
-    margin-top: 15px !important;
+    margin-top: 0 !important;
   }
 
   .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-source-picker {
@@ -1238,5 +1274,24 @@
 
   .familiar-bowler-pay-page-rotating .familiar-rotating-card {
     max-width: 440px;
+  }
+}
+
+@media (max-width: 1023px) {
+  .familiar-payment-details-column,
+  .familiar-payment-method-column {
+    display: contents;
+  }
+
+  .familiar-payment-details-column > *:not(.familiar-payment-coverage) {
+    margin-bottom: 16px;
+  }
+
+  .familiar-payment-method-column > *:not(:last-child):not(.familiar-source-label) {
+    margin-bottom: 16px;
+  }
+
+  .familiar-payment-method-column > .familiar-source-label {
+    margin-bottom: 6px;
   }
 }

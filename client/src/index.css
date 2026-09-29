@@ -481,3 +481,5 @@
 @utility familiar-primary-payment-total { --lv-familiar-pay-component: 1; }
 @utility familiar-bowler-pay-page-rotating { --lv-familiar-pay-component: 1; }
 @utility familiar-pay-context-rail { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-details-column { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-method-column { --lv-familiar-pay-component: 1; }
