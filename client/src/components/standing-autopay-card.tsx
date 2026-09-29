@@ -215,7 +215,7 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
     </CardContent>
   </Card>
   <Dialog open={revokeDialogOpen} onOpenChange={(open) => { if (!revoke.isPending) setRevokeDialogOpen(open); }}>
-    <DialogContent>
+    <DialogContent className="familiar-autopay-dialog">
       <DialogHeader>
         <DialogTitle>Turn off automatic payments?</DialogTitle>
         <DialogDescription>You’ll make future payments yourself for {league.name}.</DialogDescription>

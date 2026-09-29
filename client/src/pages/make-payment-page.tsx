@@ -308,6 +308,7 @@ export default function MakePaymentPage() {
   }, [bowlerLeagues, selectedLeagueId, setSelectedLeagueId]);
   const leagueId = selectedLeagueId ?? bowlerLeagues[0]?.leagueId;
   const leagueMap = useMemo(() => new Map((details?.leagues ?? []).map((league) => [league.id, league])), [details?.leagues]);
+  const teamMap = useMemo(() => new Map((details?.teams ?? []).map((team) => [team.id, team])), [details?.teams]);
   const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
   const hasMultipleLeagues = bowlerLeagues.length > 1;
   const openLeagueSheet = useCallback(() => {
@@ -1418,7 +1419,9 @@ export default function MakePaymentPage() {
     ? `Automatic payments apply to ${details?.bowler?.name ?? "you"} only. ${paymentPartner.name} is not included.`
     : undefined;
   const showPaymentContext = paymentMode !== "upfront" && !isRotatingPoolMember;
-  return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId} onOpenLeagueSheet={openLeagueSheet} mobileLeagueSwitchEnabled={hasMultipleLeagues}>
+  const activeBowlerLeague = bowlerLeagues.find((membership) => membership.leagueId === leagueId && membership.active);
+  const bowlerTeam = details?.teams?.find((team) => team.id === activeBowlerLeague?.teamId);
+  return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId} onOpenLeagueSheet={openLeagueSheet} mobileLeagueSwitchEnabled={hasMultipleLeagues} teamName={bowlerTeam?.name} leagueStartTime={league.competitionStartTime}>
     <div className={`familiar-bowler-pay-page${hasPaymentPartner ? " familiar-bowler-pay-page-partner" : ""}${paymentMode === "upfront" ? " familiar-bowler-pay-page-upfront" : ""}${isRotatingPoolMember ? " familiar-bowler-pay-page-rotating" : ""}`}>
       <div className="familiar-bowler-pay-header">
         <h1 className="text-2xl font-bold mb-1">Make a payment</h1>
@@ -1509,6 +1512,6 @@ export default function MakePaymentPage() {
         </div></CardContent>
       </Card>}
     </div>
-    <LeagueSwitcherSheet open={leagueSheetOpen} onClose={() => setLeagueSheetOpen(false)} bowlerLeagues={bowlerLeagues} leagueMap={leagueMap} selectedLeagueId={leagueId} onSelect={(nextId) => { setSelectedLeagueId(nextId); intentAppliedRef.current = false; navigate(`/make-payment?leagueId=${nextId}`); }} />
+    <LeagueSwitcherSheet open={leagueSheetOpen} onClose={() => setLeagueSheetOpen(false)} bowlerLeagues={bowlerLeagues} leagueMap={leagueMap} teamMap={teamMap} selectedLeagueId={leagueId} onSelect={(nextId) => { setSelectedLeagueId(nextId); intentAppliedRef.current = false; navigate(`/make-payment?leagueId=${nextId}`); }} />
   </BowlerLayout>;
 }

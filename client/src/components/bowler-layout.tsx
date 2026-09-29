@@ -6,12 +6,16 @@ import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { User, ApiResponse } from "@shared/schema";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { formatScheduleLocalTime } from "@/lib/league-display";
 import "./familiar-bowler-shell.css";
+import "./familiar-bowler-desktop-header.css";
 
 interface BowlerLayoutProps {
   children: ReactNode;
   bowlerName: string;
   leagueName: string;
+  teamName?: string | null;
+  leagueStartTime?: string | null;
   currentLeagueId?: number;
   onOpenLeagueSheet?: () => void;
   mobileLeagueSwitchEnabled?: boolean;
@@ -75,7 +79,7 @@ const LoadingFallback = () => (
   </div>
 );
 
-export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leagueName, currentLeagueId, onOpenLeagueSheet, mobileLeagueSwitchEnabled }) => {
+export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leagueName, teamName, leagueStartTime, currentLeagueId, onOpenLeagueSheet, mobileLeagueSwitchEnabled }) => {
   const [location] = useLocation();
   const navItems = buildNavItems(currentLeagueId);
   const screen = location.startsWith("/bowler-dashboard")
@@ -107,6 +111,8 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
   const profileItem = navItems[3];
   const isProfileActive = isNavItemActive(profileItem);
   const canSwitchLeagueOnMobile = mobileLeagueSwitchEnabled ?? Boolean(onOpenLeagueSheet);
+  const formattedLeagueStartTime = leagueStartTime ? formatScheduleLocalTime(leagueStartTime) : null;
+  const leagueMeta = [teamName?.trim(), formattedLeagueStartTime].filter(Boolean).join(" · ");
 
   return (
     <div className="familiar-bowler-shell bowler-familiar-shell fixed top-0 right-0 bottom-0 left-0 flex flex-col font-sans" data-bowler-flow="familiar-a" data-bowler-screen={screen}>
@@ -169,6 +175,7 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
               <div className="familiar-bowler-current-league">
                 <span>Current league</span>
                 <strong>{leagueName || "Select a league"}</strong>
+                {leagueMeta && <small className="familiar-bowler-current-league-meta">{leagueMeta}</small>}
               </div>
               {onOpenLeagueSheet && (
                 <button

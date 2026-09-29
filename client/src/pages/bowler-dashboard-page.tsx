@@ -202,6 +202,8 @@ const BowlerDashboardPage: FC = () => {
     <BowlerLayout
       bowlerName={bowler.name}
       leagueName={leagueName}
+      teamName={teamName}
+      leagueStartTime={league.competitionStartTime}
       currentLeagueId={activeBowlerLeague?.leagueId}
       onOpenLeagueSheet={() => setSheetOpen(true)}
     >

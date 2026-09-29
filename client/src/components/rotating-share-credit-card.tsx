@@ -1,7 +1,7 @@
 /* eslint-disable shadcn/no-restyle, shadcn/no-unknown-classes */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, ChevronDown, CreditCard, Loader2, Minus, Plus, RotateCcw, Wallet } from "lucide-react";
+import { AlertCircle, ArrowRight, ChevronDown, CreditCard, Loader2, Minus, Plus, RotateCcw, Wallet } from "lucide-react";
 import type { League, SavedCard } from "@shared/schema";
 import type {
   RotatingCreditBalanceWire,
@@ -25,6 +25,20 @@ import { formatCurrency } from "@/lib/utils";
 function formatPayCurrency(amountMinor: number): string {
   const formatted = formatCurrency(amountMinor);
   return amountMinor % 100 === 0 ? formatted.replace(/\.00$/, "") : formatted;
+}
+
+const WEEK_COUNT_SMALL_LABELS = [
+  "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+  "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+];
+const WEEK_COUNT_TENS = ["", "", "twenty", "thirty", "forty", "fifty"];
+
+function formatWeekCount(count: number): string {
+  if (count < WEEK_COUNT_SMALL_LABELS.length) return WEEK_COUNT_SMALL_LABELS[count] ?? String(count);
+  const tens = Math.floor(count / 10);
+  const remainder = count % 10;
+  const tensLabel = WEEK_COUNT_TENS[tens];
+  return tensLabel ? `${tensLabel}${remainder ? `-${WEEK_COUNT_SMALL_LABELS[remainder]}` : ""}` : String(count);
 }
 
 type ApiResponse<T> = { success: boolean; data: T; error?: { message: string; code?: string } };
@@ -422,7 +436,7 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
   return <Card className="familiar-rotating-card familiar-one-time-card">
     <CardHeader spacing="tight">
       <CardTitle>One-time payment</CardTitle>
-      {!canBuyCredit && <CardDescription>Your rotating payment balance and date history.</CardDescription>}
+      <CardDescription>{canBuyCredit ? "Payments are applied to eligible bowling weeks as they become due." : "Your rotating payment balance and date history."}</CardDescription>
     </CardHeader>
     <CardContent><div className="space-y-5">
       {canBuyCredit ? <div className="familiar-rotating-checkout">
@@ -437,26 +451,25 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
         <div aria-live="polite" className="familiar-rotating-quote-summary">
           {quoteQuery.error && <p role="alert" className="text-destructive">{readErrorMessage(quoteQuery.error, "Payment price could not be confirmed.")} <button type="button" className="underline" onClick={() => void quoteQuery.refetch()}>Try again</button></p>}
           {quoteIsCurrent && quote && <>
-            <p className="familiar-rotating-coverage">This payment covers {shareCount} {shareCount === 1 ? "week" : "weeks"}</p>
+            <p className="familiar-rotating-coverage">This payment covers {formatWeekCount(shareCount)} {shareCount === 1 ? "week" : "weeks"}</p>
             <div className="familiar-rotating-total"><span>Payment total</span><strong>{formatPayCurrency(quote.amountMinor)}</strong></div>
           </>}
           {!quoteQuery.error && !quoteIsCurrent && <div className="familiar-rotating-total"><span>Payment total</span><strong>{quoteQuery.isFetching ? "Confirming price…" : "—"}</strong></div>}
         </div>
 
-        <div className="familiar-source-picker">
+        <div className="familiar-source-picker familiar-source-picker-inline-card">
           <button type="button" className="familiar-source-trigger" aria-expanded={sourceOpen} aria-haspopup="listbox" onClick={() => setSourceOpen((open) => !open)} disabled={hasActiveRequest || isCharging}>
             <span className="familiar-source-icon" aria-hidden="true">{cardMode === "saved" ? <Wallet className="size-5" /> : <CreditCard className="size-5" />}</span>
-            <span className="familiar-source-copy"><strong>{selectedSourceLabel}</strong><small>{cardMode === "saved" ? "Saved payment method" : "Enter card details securely"}</small></span>
-            <ChevronDown className={sourceOpen ? "is-open" : ""} size={18} aria-hidden="true" />
+            <span className="familiar-source-copy"><strong className="familiar-source-label-current">{selectedSourceLabel}</strong><strong className="familiar-source-label-desktop">Enter a debit or credit card</strong>{cardMode === "saved" ? <><small className="familiar-source-helper-mobile">Saved payment method</small><small className="familiar-source-helper-desktop">Change or add a card</small></> : <small>Enter card details securely</small>}</span>
+            <ChevronDown className={`familiar-source-chevron${sourceOpen ? " is-open" : ""}`} size={18} aria-hidden="true" />
+            <Minus className="familiar-source-desktop-minus" size={18} aria-hidden="true" />
           </button>
           {sourceOpen && <div className="familiar-source-menu" role="listbox" aria-label="Payment source">
             {savedCards.map((candidate) => <button key={candidate.id} type="button" role="option" aria-selected={cardMode === "saved" && selectedSavedCardId === candidate.id} className={`familiar-source-option${cardMode === "saved" && selectedSavedCardId === candidate.id ? " is-selected" : ""}`} onClick={() => { cleanupCard(); setReviewOpen(false); setCardMode("saved"); setSelectedSavedCardId(candidate.id); setSourceOpen(false); }}><span><strong>{candidate.brand} ending in {candidate.last4}</strong><small>Saved card · exp {candidate.expMonth}/{candidate.expYear}</small></span>{cardMode === "saved" && selectedSavedCardId === candidate.id && <span aria-hidden="true">✓</span>}</button>)}
             <button type="button" role="option" aria-selected={cardMode === "new"} className={`familiar-source-option${cardMode === "new" ? " is-selected" : ""}`} onClick={() => { setReviewOpen(false); setCardMode("new"); setSourceOpen(true); }}><span><strong>Enter a new card</strong><small>Card details</small></span>{cardMode === "new" && <span aria-hidden="true">✓</span>}</button>
-            {cardMode === "new" && <div className="familiar-card-editor" role="group" aria-label="Card details"><span className="text-sm font-medium">Card details</span><div id={`rotating-credit-card-${league.id}`} ref={cardContainerRef} className="min-h-20 rounded-md border p-3" />{cardError && <p role="alert" className="text-sm text-destructive">{cardError}</p>}{providerError && <p role="alert" className="text-sm text-destructive">{providerError}</p>}{!providerLoading && !isProviderConfigured && <p role="status" className="text-sm text-muted-foreground">Card payments are unavailable for this league right now.</p>}</div>}
+            {cardMode === "new" && <div className="familiar-card-editor" role="group" aria-label="Debit or credit card entry"><span className="familiar-card-editor-heading text-sm font-medium">Card details</span><div id={`rotating-credit-card-${league.id}`} ref={cardContainerRef} className="min-h-20 rounded-md border p-3" />{cardError && <p role="alert" className="text-sm text-destructive">{cardError}</p>}{providerError && <p role="alert" className="text-sm text-destructive">{providerError}</p>}{!providerLoading && !isProviderConfigured && <p role="status" className="text-sm text-muted-foreground">Card payments are unavailable for this league right now.</p>}</div>}
           </div>}
         </div>
-        {sourceOpen && <details className="familiar-rotating-application-details"><summary>Payment application details</summary><p>Available balance after payment: {quoteIsCurrent && quote ? formatPayCurrency(quote.expectedAvailableAfterPurchaseMinor) : "—"}. After payment succeeds, the server applies funds to then-current confirmed dates. Dates are not reserved, and any unused amount remains available for a future week.</p><p>This one-time payment never enrolls a card in automatic payments.</p></details>}
-
         {!profileEmailValid && <div className="space-y-2"><Label htmlFor={`rotating-credit-email-${league.id}`}>Email for receipt <span className="text-destructive">*</span></Label><Input id={`rotating-credit-email-${league.id}`} type="email" autoComplete="email" value={receiptEmail} onChange={(event) => setReceiptEmail(event.currentTarget.value)} placeholder="you@example.com" aria-invalid={receiptEmail.length > 0 && !buyerEmailValid} required /><p className="text-xs text-muted-foreground">{bowlerEmail ? "Your profile email is invalid. Enter a valid receipt email to continue." : "Add a valid email to complete the receipt for this purchase."}</p></div>}
 
         <div className="familiar-rotating-wallets grid gap-2 sm:grid-cols-2">
@@ -467,10 +480,10 @@ export function RotatingShareCreditCard({ league, bowlerId, bowlerEmail, savedCa
         </div>
         {wallet.isProcessing && <p className="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status"><Loader2 className="size-4 animate-spin" />Processing wallet payment…</p>}
 
-        {reviewOpen && <section className="familiar-payment-review familiar-rotating-review" aria-label="Review payment"><div><span>Payment total</span><strong>{reviewAmount}</strong></div><p>This payment covers {shareCount} {shareCount === 1 ? "week" : "weeks"}.</p><small>We’ll confirm the latest quote before charging your selected card.</small></section>}
+        {reviewOpen && <section className="familiar-payment-review familiar-rotating-review" aria-label="Review payment"><div><span>Payment total</span><strong>{reviewAmount}</strong></div><p>This payment covers {formatWeekCount(shareCount)} {shareCount === 1 ? "week" : "weeks"}.</p><small>We’ll confirm the latest quote before charging your selected card. Funds may apply to eligible weeks later and are not reserved to specific dates.</small></section>}
         {reviewOpen && <Button type="button" variant="ghost" onClick={() => setReviewOpen(false)} disabled={isCharging || hasActiveRequest}>Back to payment details</Button>}
-        <Button type="button" className="w-full" onClick={() => { if (reviewOpen) void submitCard(); else setReviewOpen(true); }} disabled={!quoteIsCurrent || quoteQuery.isFetching || !!quoteQuery.error || !selectedSourceReady || providerLoading || !isProviderConfigured || !buyerEmailValid || isCharging || wallet.isProcessing || hasActiveRequest || isCheckingStatus}>
-          {isCharging ? <><Loader2 className="mr-2 size-4 animate-spin" />Processing…</> : reviewOpen ? <>Pay {reviewAmount}</> : <>Preview payment of {reviewAmount}</>}
+        <Button type="button" className="w-full justify-center font-semibold" onClick={() => { if (reviewOpen) void submitCard(); else setReviewOpen(true); }} disabled={!quoteIsCurrent || quoteQuery.isFetching || !!quoteQuery.error || !selectedSourceReady || providerLoading || !isProviderConfigured || !buyerEmailValid || isCharging || wallet.isProcessing || hasActiveRequest || isCheckingStatus}>
+          {isCharging ? <><Loader2 className="mr-2 size-4 animate-spin" />Processing…</> : reviewOpen ? <>Pay {reviewAmount}<ArrowRight className="ml-2 size-4" aria-hidden="true" /></> : <>Review payment of {reviewAmount}<ArrowRight className="ml-2 size-4" aria-hidden="true" /></>}
         </Button>
       </div> : <div role="status" className="rounded-md border border-warning-500/40 bg-warning-500/5 p-4 text-sm"><p className="font-medium">New rotating payments are unavailable.</p><p className="mt-1 text-muted-foreground">Your existing available or held balance remains in your payment history. Contact league staff for help with a refund or account change.</p></div>}
 

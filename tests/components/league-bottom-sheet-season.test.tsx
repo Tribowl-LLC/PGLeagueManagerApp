@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { BowlerLeague, League, Team } from '@shared/schema';
 import { LeagueBottomSheet } from '@/components/league-bottom-sheet';
+import { LeagueSwitcherSheet } from '@/components/league-switcher-sheet';
 
 const bowlerLeague = (leagueId: number): BowlerLeague => ({
   id: leagueId,
@@ -49,32 +50,81 @@ const league = (overrides: Partial<League>): League => ({
 const teamMap = new Map<number, Team>();
 
 function renderSheet(currentLeague: League) {
+  return renderSheetForLeagues([currentLeague]);
+}
+
+function renderSheetForLeagues(currentLeagues: League[]) {
   return render(
     <LeagueBottomSheet
       open
       onClose={() => undefined}
-      activeBowlerLeagues={[bowlerLeague(currentLeague.id)]}
-      leagueMap={new Map([[currentLeague.id, currentLeague]])}
+      activeBowlerLeagues={currentLeagues.map((currentLeague) => bowlerLeague(currentLeague.id))}
+      leagueMap={new Map(currentLeagues.map((currentLeague) => [currentLeague.id, currentLeague]))}
       teamMap={teamMap}
-      selectedLeagueId={currentLeague.id}
+      selectedLeagueId={currentLeagues[0]?.id ?? null}
       onSelectLeague={() => undefined}
     />,
   );
 }
 
+function renderSwitcherForLeagues(currentLeagues: League[]) {
+  return render(
+    <LeagueSwitcherSheet
+      open
+      onClose={() => undefined}
+      bowlerLeagues={currentLeagues.map((currentLeague) => bowlerLeague(currentLeague.id))}
+      leagueMap={new Map(currentLeagues.map((currentLeague) => [currentLeague.id, currentLeague]))}
+      teamMap={teamMap}
+      selectedLeagueId={currentLeagues[0]?.id ?? null}
+      onSelect={() => undefined}
+    />,
+  );
+}
+
+const sameNamedSeasonLeagues = [
+  league({ id: 7 }),
+  league({
+    id: 8,
+    seasonStart: '2027-08-01T00:00:00.000Z',
+    seasonEnd: '2028-03-31T00:00:00.000Z',
+  }),
+];
+
 describe('LeagueBottomSheet season titles', () => {
   it('appends the two-digit season range to the league title', () => {
-    renderSheet(league({}));
+    const { container } = renderSheet(league({}));
+    const expectedTitle = "Wednesday Night Men's League 26/27";
 
-    expect(screen.getByText("Wednesday Night Men's League 26/27")).toBeInTheDocument();
+    expect(container.querySelector('.familiar-league-switcher-name .familiar-league-switcher-title-mobile')).toHaveTextContent(expectedTitle);
+    expect(container.querySelector('.familiar-league-switcher-name .familiar-league-switcher-title-desktop')).toHaveTextContent(expectedTitle);
   });
 
   it('uses the single year for a season within one calendar year', () => {
-    renderSheet(league({
+    const { container } = renderSheet(league({
       seasonStart: '2026-03-01T00:00:00.000Z',
       seasonEnd: '2026-06-30T00:00:00.000Z',
     }));
+    const expectedTitle = "Wednesday Night Men's League 26";
 
-    expect(screen.getByText("Wednesday Night Men's League 26")).toBeInTheDocument();
+    expect(container.querySelector('.familiar-league-switcher-name .familiar-league-switcher-title-mobile')).toHaveTextContent(expectedTitle);
+    expect(container.querySelector('.familiar-league-switcher-name .familiar-league-switcher-title-desktop')).toHaveTextContent(expectedTitle);
+  });
+
+  it('keeps same-named rollover seasons distinct in accessible option titles', () => {
+    renderSheetForLeagues(sameNamedSeasonLeagues);
+
+    const options = screen.getAllByRole('button', { name: /Wednesday Night Men's League/ });
+    expect(options).toHaveLength(2);
+    expect(screen.getByRole('button', { name: /Wednesday Night Men's League 26\/27/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Wednesday Night Men's League 27\/28/ })).toBeInTheDocument();
+  });
+
+  it('keeps same-named rollover seasons distinct in the payment switcher', () => {
+    renderSwitcherForLeagues(sameNamedSeasonLeagues);
+
+    const options = screen.getAllByRole('button', { name: /Wednesday Night Men's League/ });
+    expect(options).toHaveLength(2);
+    expect(screen.getByRole('button', { name: /Wednesday Night Men's League 26\/27/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Wednesday Night Men's League 27\/28/ })).toBeInTheDocument();
   });
 });

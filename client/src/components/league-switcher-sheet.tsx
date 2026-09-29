@@ -1,12 +1,15 @@
 import { useEffect, useId, useRef } from "react";
 import { X, Check } from "lucide-react";
-import type { League, BowlerLeague } from "@shared/schema";
+import type { League, BowlerLeague, Team } from "@shared/schema";
+import { getSeasonYearRange } from "@shared/season-utils";
+import { formatScheduleLocalTime } from "@/lib/league-display";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   bowlerLeagues: BowlerLeague[];
   leagueMap: Map<number, League>;
+  teamMap?: Map<number, Team>;
   selectedLeagueId: number | null | undefined;
   onSelect: (leagueId: number) => void;
 }
@@ -16,6 +19,7 @@ export function LeagueSwitcherSheet({
   onClose,
   bowlerLeagues,
   leagueMap,
+  teamMap,
   selectedLeagueId,
   onSelect,
 }: Props) {
@@ -83,7 +87,7 @@ export function LeagueSwitcherSheet({
       <button
         type="button"
         aria-label="Close league switcher"
-        className="fixed inset-0 bg-black/40 z-40 transition-opacity duration-300"
+        className="fixed inset-0 bg-black/40 z-40 transition-opacity duration-300 familiar-league-switcher-backdrop"
         onClick={onClose}
       />
       <div className="fixed bottom-0 left-0 right-0 z-50 animate-slide-up familiar-bowler-league-sheet">
@@ -94,21 +98,30 @@ export function LeagueSwitcherSheet({
           aria-labelledby={dialogTitleId}
           className="bg-white rounded-t-2xl shadow-xl max-h-sheet-viewport overflow-hidden familiar-bowler-league-panel"
         >
-          <div className="flex items-center justify-between px-5 py-4 border-b border-navigation-100">
-            <h3 id={dialogTitleId} className="text-lg font-semibold text-navigation-900">Switch League</h3>
+          <div className="flex items-center justify-between px-5 py-4 border-b border-navigation-100 familiar-league-switcher-header">
+            <h3 id={dialogTitleId} className="text-lg font-semibold text-navigation-900"><span className="familiar-league-switcher-title-mobile">Switch League</span><span className="familiar-league-switcher-title-desktop">Choose your league</span></h3>
             <button
               ref={closeButtonRef}
               type="button"
               onClick={onClose}
               aria-label="Close league switcher"
-              className="size-8 rounded-full hover:bg-navigation-100 flex items-center justify-center text-navigation-400 transition-colors"
+              className="size-8 rounded-full hover:bg-navigation-100 flex items-center justify-center text-navigation-400 transition-colors familiar-league-switcher-close"
             >
               <X className="size-5" />
             </button>
           </div>
-          <div className="overflow-y-auto">
+          <p className="familiar-league-switcher-description">Balances and history follow the selected league.</p>
+          <div className="overflow-y-auto familiar-league-switcher-options">
             {bowlerLeagues.map((bl) => {
               const l = leagueMap.get(bl.leagueId);
+              const team = bl.teamId ? teamMap?.get(bl.teamId) : undefined;
+              const desktopCompetitionTime = l?.competitionStartTime
+                ? formatScheduleLocalTime(l.competitionStartTime)
+                : null;
+              const desktopMeta = [team?.name, desktopCompetitionTime].filter(Boolean).join(" · ");
+              const leagueTitle = l?.seasonStart && l.seasonEnd
+                ? `${l.name} ${getSeasonYearRange(l.seasonStart, l.seasonEnd)}`
+                : l?.name ?? `League #${bl.leagueId}`;
               const isSelected = bl.leagueId === selectedLeagueId;
               return (
                 <button type="button"
@@ -117,15 +130,16 @@ export function LeagueSwitcherSheet({
                     onSelect(bl.leagueId);
                     onClose();
                   }}
-                  className={`w-full text-left px-5 py-4 flex items-center justify-between transition-colors ${
-                    isSelected ? "bg-brand-accent-50" : "hover:bg-navigation-50"
-                  }`}
+                  className={`w-full text-left px-5 py-4 flex items-center justify-between transition-colors familiar-league-switcher-option ${isSelected ? 'is-selected' : ''}`}
                 >
-                  <div className={`font-medium ${isSelected ? "text-brand-accent-700" : "text-navigation-900"}`}>
-                    {l?.name ?? `League #${bl.leagueId}`}
+                  <div>
+                    <div className={`font-medium familiar-league-switcher-name ${isSelected ? "text-brand-accent-700" : "text-navigation-900"}`}>
+                      {leagueTitle}
+                    </div>
+                    {desktopMeta && <div className="familiar-league-switcher-meta-desktop">{desktopMeta}</div>}
                   </div>
                   {isSelected && (
-                    <div className="size-6 rounded-full bg-brand-accent-600 flex items-center justify-center flex-shrink-0 ml-3">
+                    <div className="size-6 rounded-full flex items-center justify-center flex-shrink-0 ml-3 familiar-league-switcher-check">
                       <Check className="size-4 text-white" />
                     </div>
                   )}
@@ -133,7 +147,7 @@ export function LeagueSwitcherSheet({
               );
             })}
           </div>
-          <div className="h-8" />
+          <div className="h-8 familiar-league-switcher-bottom-space" />
         </div>
       </div>
     </>

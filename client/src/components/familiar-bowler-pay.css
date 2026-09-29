@@ -704,6 +704,14 @@
   transform: rotate(180deg);
 }
 
+.familiar-source-desktop-minus {
+  display: none;
+}
+
+.familiar-source-helper-desktop {
+  display: none;
+}
+
 .familiar-source-menu {
   border-top: 1px solid var(--familiar-pay-line);
   display: grid;
@@ -937,24 +945,6 @@
   color: var(--familiar-pay-accent);
   font-size: 12px;
   margin: 0;
-}
-
-.familiar-rotating-application-details {
-  border-top: 1px solid var(--familiar-pay-line);
-  color: var(--familiar-pay-muted);
-  font-size: 11px;
-  padding-top: 8px;
-}
-
-.familiar-rotating-application-details summary {
-  color: var(--familiar-pay-ink);
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.familiar-rotating-application-details p {
-  line-height: 1.45;
-  margin: 7px 0 0;
 }
 
 .familiar-payment-review {
@@ -1293,5 +1283,263 @@
 
   .familiar-payment-method-column > .familiar-source-label {
     margin-bottom: 6px;
+  }
+}
+
+/* Desktop Familiar A uses the preview's navy/slate palette. Keep the mobile
+   surface on its existing token mapping while the wider layout has its own
+   approved color values and control rhythm. */
+@media (min-width: 1024px) {
+  .familiar-bowler-pay-page,
+  .familiar-payment-review-dialog,
+  .familiar-autopay-dialog {
+    --familiar-pay-line: rgb(100 116 139 / 0.26);
+    --familiar-pay-line-strong: rgb(100 116 139 / 0.38);
+    --familiar-pay-muted: rgb(71 85 105 / 0.78);
+    --familiar-pay-ink: rgb(15 23 42);
+    --familiar-pay-accent: rgb(15 23 42);
+  }
+
+  .familiar-bowler-pay-page {
+    color: var(--familiar-pay-ink);
+  }
+
+  .familiar-payment-balance-grid,
+  .familiar-one-time-card,
+  .familiar-standing-autopay-card {
+    color: var(--familiar-pay-ink);
+  }
+
+  .familiar-standing-autopay-card {
+    border-top-color: rgb(100 116 139 / 0.34);
+  }
+
+  .familiar-one-time-card {
+    border-radius: 10px;
+  }
+
+  .familiar-one-time-card [data-slot="card-description"],
+  .familiar-one-time-card p.text-sm.text-muted-foreground {
+    color: var(--familiar-pay-muted);
+  }
+
+  .familiar-one-time-card h3 {
+    font-size: 17px;
+    font-weight: 650;
+  }
+
+  .familiar-week-stepper {
+    border-color: var(--familiar-pay-line) !important;
+    min-height: 60px;
+    padding: 8px 9px 8px 13px !important;
+  }
+
+  .familiar-week-stepper button {
+    border-color: var(--familiar-pay-line-strong);
+    border-radius: 7px;
+    height: 44px;
+    min-height: 44px;
+    width: 44px;
+  }
+
+  .familiar-week-stepper > output {
+    font-size: 22px;
+    font-weight: 650;
+  }
+
+  .familiar-payment-coverage {
+    margin-top: 16px;
+    margin-bottom: 0;
+  }
+
+  .familiar-primary-payment-total {
+    margin-top: 0;
+    padding-top: 15px;
+  }
+
+  .familiar-primary-payment-total span {
+    font-size: 13px;
+  }
+
+  .familiar-primary-payment-total strong {
+    font-size: 25px;
+  }
+
+  .familiar-source-trigger {
+    color: var(--familiar-pay-ink);
+  }
+
+  .familiar-source-label-desktop {
+    display: none;
+  }
+
+  .familiar-source-helper-mobile {
+    display: none;
+  }
+
+  .familiar-source-helper-desktop {
+    display: block;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) > .familiar-source-trigger {
+    min-height: 52px;
+    padding-block: 9px;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-source-label-current {
+    display: none;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-source-label-desktop {
+    display: block;
+    font-weight: 600;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-source-icon {
+    display: none;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-source-copy > small {
+    display: none;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-source-chevron {
+    display: none;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-source-desktop-minus {
+    display: inline-flex;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-source-menu {
+    border-top: 0;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-source-option.is-selected {
+    /* Keep the selected role=option in the accessibility tree while the
+       editor owns the visible desktop card surface. It remains keyboard
+       focusable and is revealed when reached with a keyboard. */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-source-option.is-selected:focus-visible {
+    position: relative;
+    width: 100%;
+    height: auto;
+    margin: 0;
+    padding: 9px 12px;
+    overflow: visible;
+    clip: auto;
+    clip-path: none;
+    white-space: normal;
+    border-bottom: 1px solid var(--familiar-pay-line);
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-card-editor {
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-card-editor-heading {
+    display: none;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-card-editor > div:first-of-type {
+    border: 0;
+    padding: 0;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-card-editor {
+    border: 0 !important;
+    border-radius: 0;
+    gap: 8px;
+    padding: 12px 0 0;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-card-editor-heading {
+    display: none;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-card-editor > div:first-of-type {
+    border: 0;
+    padding: 0;
+  }
+
+  .familiar-payment-review-dialog,
+  .familiar-autopay-dialog {
+    border-color: var(--familiar-pay-line);
+    color: var(--familiar-pay-ink);
+    font-family: "Instrument Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  .familiar-payment-review-dialog,
+  .familiar-autopay-dialog {
+    background: #fff;
+    border-color: rgb(100 116 139 / 0.2);
+    border-radius: 16px;
+    box-shadow: 0 25px 90px rgb(100 116 139 / 0.24);
+    padding: 25px;
+  }
+
+  .familiar-payment-review-dialog [data-slot="dialog-description"],
+  .familiar-autopay-dialog [data-slot="dialog-description"],
+  .familiar-autopay-dialog p.text-sm.text-muted-foreground {
+    color: var(--familiar-pay-muted);
+  }
+
+  .familiar-standing-autopay-card .familiar-autopay-intro > button {
+    background: transparent;
+    border-color: rgb(100 116 139 / 0.34);
+    font-weight: 400;
+  }
+
+  .familiar-bowler-pay-page .bg-primary,
+  .familiar-payment-review-dialog .bg-primary,
+  .familiar-autopay-dialog .bg-primary {
+    background-color: rgb(15 23 42);
+    color: #fff;
+  }
+
+  .familiar-bowler-pay-page [data-state="checked"] {
+    background-color: rgb(15 23 42);
+    border-color: rgb(15 23 42);
+    color: #fff;
+  }
+
+  .familiar-bowler-pay-page [data-state="unchecked"] {
+    background-color: #fff;
+    border-color: var(--familiar-pay-line-strong);
+    color: var(--familiar-pay-ink);
+  }
+
+  .familiar-bowler-pay-page .familiar-payment-success-icon {
+    color: rgb(22 101 52);
+  }
+
+  .familiar-bowler-pay-page [class~="text-destructive"] {
+    color: rgb(220 38 38);
+  }
+
+  .familiar-bowler-pay-page [class~="border-success-500/40"] {
+    border-color: rgb(22 101 52 / 0.4);
+  }
+
+  .familiar-bowler-pay-page [class~="bg-success-500/5"] {
+    background-color: rgb(22 101 52 / 0.05);
+  }
+}
+
+@media (max-width: 1023px) {
+  .familiar-source-label-desktop {
+    display: none;
   }
 }
