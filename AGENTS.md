@@ -47,11 +47,19 @@ uses npm. Do not introduce Yarn, pnpm, or an additional lockfile.
 - Do not reuse a merged branch for new work.
 - Do not combine unrelated changes in one branch or pull request.
 - Do not push normal work directly to `main`.
+- The default agent assignments are GPT-6 Sol (`gpt-6-sol`) at maximum
+  reasoning with the preferred fast tier for the primary root, architect,
+  reviewer, and release authority, and GPT-6 Luna (`gpt-6-luna`) at maximum
+  reasoning with the preferred fast tier for bounded coding execution. The
+  launcher/runtime selects the actual model, reasoning effort, and service
+  tier; editing these files cannot change an already-running session. Verify
+  the actual values when the runtime exposes them, and do not claim an
+  unverified tier.
 - Follow the default release lifecycle in
   [`docs/production-runbook.md`](docs/production-runbook.md#default-release-lifecycle).
   Standing user authorization covers routine scoped LeagueVault changes at
   each stage once its preceding lifecycle gates pass: after review and
-  final-head checks, the accountable root/Astra may merge; after exact-main
+  final-head checks, the accountable root/Sol may merge; after exact-main
   certification, it may run the guarded Neon migration when required and
   deploy the exact certified `main` commit after the preceding migration gate;
   after successful deployment verification, it may perform the safe
@@ -90,7 +98,7 @@ before handoff.
 ## Task Startup
 
 For a multi-step implementation, follow [`docs/agent-workflow.md`](docs/agent-workflow.md)
-for the default Astra/Luna plan, handoff, escalation, and review loop. Simple
+for the default Sol/Luna plan, handoff, escalation, and review loop. Simple
 questions and tiny documentation tasks may be handled directly.
 
 Before editing:

@@ -28,7 +28,7 @@ mandatory. Keep the handoff current with the evidence fields in
 
 1. **Local review and checks.** Inspect the branch, base, status, and diff;
    preserve unrelated user work. Complete local architect review, including
-   the fresh internal Astra reviewer when assigned. Follow the focused local
+   the fresh internal Sol reviewer when assigned. Follow the focused local
    validation policy in [`AGENTS.md`](../AGENTS.md#verification): run the
    smallest relevant explicit Vitest project and file, plus `npm run check`,
    `npm run lint`, `npm run build`, `npm run db:check`, or security audits only
@@ -51,7 +51,7 @@ mandatory. Keep the handoff current with the evidence fields in
    regardless of CI state. If no automatic review is configured or started,
    make exactly one explicit request; first verify that no review is already
    queued or running rather than treating a delayed start as absence. Never request `@codex review` again after
-   fixes, rebases, or pushes. Internal Astra review is separate and never
+   fixes, rebases, or pushes. Internal Sol review is separate and never
    satisfies this GitHub review. Disposition every finding factually: fix it,
    or explain why it is invalid. Reply to each addressed thread with specific
    validation and the fix SHA, then resolve only addressed findings. Reviewer
@@ -61,8 +61,18 @@ mandatory. Keep the handoff current with the evidence fields in
    rereview loop. A GitHub rerun requires a later explicit user override.
 4. **Final-head checks and merge.** Before merging, confirm the live `main`
    ruleset and verify the known `LeagueVault` Render service and its
-   Auto-Deploy setting; it must be Off. Keep Auto-Deploy Off through
-   certification, migration, and deployment verification. On the final pushed
+   Auto-Deploy setting. If the release requires a schema migration or data
+   backfill, verify Auto-Deploy is Off before merge and record its prior mode;
+   keep it Off through exact-main certification, the guarded operation, manual
+   deployment of the exact certified SHA, and deployment verification. For a
+   code-only release, Auto-Deploy may remain Off, `After CI Checks Pass`, or
+   `On Commit`; Off does not block merge after the review and check gates pass.
+   With Auto-Deploy Off, manually deploy the exact certified SHA after
+   certification. `On Commit` starts immediately; `After CI Checks Pass` waits
+   for Render-detected CI checks. Do not rely on either mode as the Exact main
+   certification gate: rollout may start before certification, so verify the
+   deployed SHA after it completes. Preserve the PR review and required-check
+   gates for every release. On the final pushed
    PR head, confirm exactly one GitHub review is
    complete, every finding is addressed with a factual disposition, and every
    addressed thread is resolved. The single review may cover an earlier PR
@@ -74,36 +84,51 @@ mandatory. Keep the handoff current with the evidence fields in
    Cloud, Gitleaks, and dependency-audit results as release-blocking. Review
    the HoundDog privacy scan as advisory and record its result; do not promote
    it to a blocking gate. Do not use an admin bypass. The accountable
-   root/Astra merges only after this final-head evidence is complete and
+   root/Sol merges only after this final-head evidence is complete and
    records the merge result.
 5. **Exact-main certification.** Wait for `Exact main certification` on the
    merged `main` SHA. Its logs must prove the merged PR, identical tree, PR
    check provenance, and certified SHA. Record the exact certification evidence
-   and stop if identity or any required check is missing or fails.
-6. **Guarded Neon migration when needed.** If there is no schema change, mark
-   migration `N/A` and do not run one as a deployment ritual. For a schema
-   change, use the existing protected production migration workflow from the
+   and stop if identity or any required check is missing or fails. If a
+   code-only auto-deployment already rolled out before certification fails,
+   treat it as a live-release incident; capture the deployed SHA, health state,
+   and logs, then follow the incident and recovery process before continuing.
+6. **Guarded Neon migration or backfill when needed.** If no schema migration
+   or data backfill is required, record both as `N/A` and do not run one as a
+   deployment ritual. For a schema change, use the existing protected
+   production migration workflow from the
    exact certified `main` SHA, with its independent target, current backup or
    restorable branch, pre/post fingerprints, journal, checksum, exact pending
    list, recovery, and guarded order checks. Never bypass that workflow or run
    production migration SQL directly from a local shell. If the protected
    workflow is unavailable, use only the existing documented manual fallback
    under its explicit conditions and safeguards; it is not an ad hoc direct
-   SQL path, and the two executors must never run concurrently. The
-   `0040_remove_league_public_signup` application-first procedure below remains
-   the labeled approved exception; it is not the default order. A migration or
-   guard failure stops deployment.
-7. **Render deployment and verification.** Keep Render Auto-Deploy Off, verify
-   the known `LeagueVault` service and production configuration, and manually
-   select the exact certified SHA. Missing credentials, an unknown service,
-   deployment failure, or failed check stops the affected action; record the
-   blocker and do not claim completion. Verify the deployed commit through
+   SQL path, and the two executors must never run concurrently. Perform any
+   required data backfill only through its separately reviewed and approved
+   guarded procedure. The `0040_remove_league_public_signup` application-first
+   procedure below remains the labeled approved exception; it is not the
+   default order. A migration or guard failure stops deployment.
+7. **Render deployment and verification.** Verify the known `LeagueVault`
+   service and production configuration. For a release requiring a migration
+   or backfill, keep Auto-Deploy Off and manually select the exact certified
+   SHA. For a code-only release with Auto-Deploy Off, manually deploy the exact
+   certified SHA after certification. With `On Commit`, rollout starts
+   immediately; `After CI Checks Pass` waits for Render-detected CI checks. Do
+   not rely on either mode as the certification gate: rollout may start before
+   certification, so verify the running SHA after it completes. Missing
+   credentials, an unknown service, deployment
+   failure, or failed check stops the affected action; record the blocker and
+   do not claim completion. Verify the deployed commit through
    `/healthz`, `/api/health`, `/api/org-context` (`appEnv: "prod"` plus the
    matching short commit), authentication, the affected workflow, and Render
    and application logs. Verify the configured organization context explicitly
    with an allowed same-business request and denied foreign/unassigned-record
    requests using safe test records or approved evidence. Run the trust-proxy probe when its
-   conditions apply.
+   conditions apply. For a migration or backfill release, restore the prior
+   enabled Auto-Deploy mode only after the deployed service SHA matches the
+   certified SHA, the current `main` SHA still matches it, and all health and
+   workflow checks pass. If any SHA or health check is unsafe, leave Auto-Deploy
+   Off and record the hold.
 8. **Post-release fast-forward and worktree cleanup.** Start this step only
    after step 7 succeeds. Run `git fetch origin --prune`, then advance local
    `main` only in a known idle, clean checkout and verify that it equals the
@@ -167,14 +192,17 @@ using one Starter instance. It tracks GitHub
 Build: npm install --include=dev && npm run build
 Pre-deploy: unset
 Start: npm run start
-Auto-deploy: Off (manual)
+Auto-deploy: After CI Checks Pass (recorded dashboard setting)
 ```
 
 The repository does not contain a Render Blueprint or deployment workflow, so
 the dashboard remains an external control. Before every release, verify that
 the service inventory, branch, commands, instance count, and auto-deploy mode
-still match the intended release configuration. Keep Auto-Deploy Off and manually
-select the certified commit.
+still match the intended release configuration. Code-only releases may use
+Off, `After CI Checks Pass`, or `On Commit`, with manual deployment of the
+certified commit when Off. Releases requiring a migration or data backfill
+require Auto-Deploy Off before merge and manual deployment of the certified
+commit.
 
 The production Render Web Service should use `/healthz` as its Health Check
 Path. This is a database-free liveness endpoint, so Render's normal monitoring
@@ -184,11 +212,22 @@ still probe it explicitly during rollout and complete the commit,
 authentication, workflow, provider, worker, and log checks below; Render's
 health signal is one deployment gate, not proof that the release is complete.
 
-### Schema-release hold
+### Schema-release auto-deploy hold
 
-Keep Auto-Deploy Off throughout migration and verification. Record the exact
-service, source SHA, migration result, and deployed SHA. Do not enable automatic
-deployments or alter production payment execution settings as part of a release.
+For a release requiring a schema migration or data backfill, record the prior
+Auto-Deploy mode and verify that the known Render service is set to Off before
+merge. Keep it Off through exact-main certification, the guarded migration or
+backfill, manual deployment of the exact certified SHA, and health and workflow
+verification. Restore the prior enabled mode only after the running service
+SHA and current `main` SHA both match the certified SHA and all verification
+passes. If those checks fail or `main` has advanced, leave Auto-Deploy Off and
+record the hold. Code-only releases may use Off, `After CI Checks Pass`, or
+`On Commit`; Off does not block merge and requires manual deployment of the
+certified SHA. `On Commit` starts immediately, and `After CI Checks Pass` waits
+for Render-detected CI checks. Do not rely on either mode as the Exact main
+certification gate: rollout may start before certification, so verify the
+deployed SHA after it completes. Preserve the production payment execution
+settings during every release.
 
 Production should explicitly set:
 

@@ -3,9 +3,10 @@
 <!-- impeccable:product-schema 1 -->
 
 <!--
-Draft for review. This document records product context for UI and product
-decisions; it is not a visual design specification. Items identified as
-working drafts or open decisions should be confirmed before the redesign.
+Product-context draft for review. This document records product context and
+candidate product decisions; it is not a visual design specification. Items
+identified as working drafts or open decisions should be confirmed as product
+facts. The shipped visual system is documented in [`DESIGN.md`](DESIGN.md).
 -->
 
 ## Platform
@@ -143,9 +144,11 @@ hours, and future native-specific behavior are open decisions.
 - Product copy must be clear about account status, verification, linking,
   payment status, and whether an action was accepted, completed, or needs
   administrator attention.
-- No formal voice, personality, slogan, color system, typography system, or
-  approved marketing language has been established here. Those decisions
-  belong in the later design work and must not be inferred as product facts.
+- The current visual system is recorded in [`DESIGN.md`](DESIGN.md), which owns
+  color, typography, layout, and component styling. Shipped on-screen copy,
+  including “League payments, simplified.” in the public story panel, is
+  authoritative for its surface. No broader voice, slogan, or marketing system
+  is documented as a durable product commitment.
 
 ## Evidence on Hand
 

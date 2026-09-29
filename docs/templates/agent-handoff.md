@@ -1,9 +1,11 @@
 # Agent handoff
 
-Keep this file concise. Luna is the single writer. Store verbose raw logs
-separately. Never include secrets, tokens, credentials, or personal
-information. `.local/` is local evidence; paths are not portable by default.
-Preserve local paths and add shared references when portable artifacts exist.
+Keep this file concise. The agent assigned to this task is its single writer;
+parallel tasks use distinct handoffs, and Sol coordinates their combined status.
+Store verbose raw logs separately. Never include secrets, tokens, credentials,
+or personal information. `.local/` is local evidence; paths are not portable by
+default. Preserve local paths and add shared references when portable artifacts
+exist.
 
 ## Identity and target
 
@@ -12,8 +14,9 @@ Preserve local paths and add shared references when portable artifacts exist.
 - Objective and acceptance criteria:
 - Worktree (absolute path):
 - Target branch:
-- Requested role / model / reasoning effort:
-- Actual runtime-reported role / model / reasoning effort (or launcher verification):
+- Requested role / model / reasoning effort / preferred service tier:
+- Actual runtime-reported role / model / reasoning effort / service tier (or
+  launcher verification when available):
 - Runtime collaboration schema/capabilities checked:
 - Base commit:
 - Current `HEAD`:
@@ -27,7 +30,7 @@ Preserve local paths and add shared references when portable artifacts exist.
 - Forbidden or reserved paths:
 - Affected systems:
 - Constraints and invariants:
-- Release authority: Astra
+- Release authority: Sol
 
 ## Status and next step
 
@@ -75,8 +78,13 @@ Preserve local paths and add shared references when portable artifacts exist.
 - Resolved threads (addressed findings only):
 - Final-head GitHub checks SHA and results:
 - Merged certified SHA / Exact main certification evidence:
-- Migration: `N/A — no schema change` | `<backup, target, fingerprint, workflow, and pending=none evidence>`
-- Render service and Auto-Deploy-Off verification before merge:
+- Migration/backfill: `N/A — none required` | `<backup, target, fingerprint, guarded migration or backfill, and pending=none evidence>`
+- Render service and Auto-Deploy verification before merge: `Off required when
+  a migration or backfill is required`; otherwise record the allowed current
+  mode and, when temporarily changed, prior setting: `Off` (manual exact-
+  certified-SHA deployment after certification), `After CI Checks Pass`, or
+  `On Commit`.
+- Restored prior enabled Auto-Deploy mode after safe exact-SHA and health verification, when applicable:
 - Render deployment: `<known service, exact certified SHA, deploy ID, health/
   org-context/log evidence>`
 - Post-deploy tenant-isolation verification (same-org allowed / cross-org denied):
@@ -86,7 +94,7 @@ Preserve local paths and add shared references when portable artifacts exist.
 
 - Completion metrics (when available):
 - Cost metrics (when available; never estimate as fact):
-- Review readiness (internal Astra review and exactly one GitHub review; does not
+- Review readiness (internal Sol review and exactly one GitHub review; does not
   grant release authority by itself):
 - Branch and PR status:
 - Database, deployment, security, tenant, payment, or provider implications:
