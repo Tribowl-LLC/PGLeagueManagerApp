@@ -12,6 +12,9 @@ facts. The shipped visual system is documented in [`DESIGN.md`](DESIGN.md).
 ## Platform
 web
 
+The product uses a browser-based React interface packaged for iOS and Android with
+Capacitor; the wrappers do not make its design language native.
+
 ## Users
 
 LeagueVault serves a single bowling business that operates multiple physical
