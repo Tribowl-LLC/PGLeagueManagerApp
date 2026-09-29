@@ -253,7 +253,6 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
   const bowlerHeroStatus = bowlerConfirmed
     ? "Payment confirmed"
     : (evidence.reviewRequired || evidence.dispute.reviewRequired === true ? "Review required" : bowlerDisplayStatus);
-  const bowlerAppliedHeading = evidence.hasMultipleRecipients === true || hasRecipientNames ? "Applied to each bowler" : "Applied to";
   const showBowlerAppliedSection = evidence.hasMultipleRecipients === true;
 
   const openReceipt = async () => {
@@ -425,7 +424,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
             </dl>
 
             {showBowlerAppliedSection && <section data-payment-details-part="applied" aria-labelledby="bowler-payment-applied-heading">
-              <h3 id="bowler-payment-applied-heading">{bowlerAppliedHeading}</h3>
+              <h3 id="bowler-payment-applied-heading">Applied to each bowler</h3>
               {appliedAllocations.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{unusedShareCredit
                   ? "No confirmed league date has received credit from this amount."

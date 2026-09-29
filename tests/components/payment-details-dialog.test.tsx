@@ -277,7 +277,7 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.getByText("Review required")).toBeInTheDocument();
     expect(screen.queryByText("Payment confirmed")).not.toBeInTheDocument();
     expect(screen.queryByText("No canonical allocation is recorded.")).not.toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "applied" })).not.toBeInTheDocument();
+    expect(document.querySelector('[data-payment-details-part="applied"]')).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Payment operation evidence" })).toHaveTextContent("provider unknown");
     expect(screen.getByRole("region", { name: "Collection evidence" })).toHaveTextContent("Double payment");
     expect(screen.queryByText(/occ-internal|plan-internal/)).not.toBeInTheDocument();
@@ -356,7 +356,7 @@ describe("PaymentDetailsDialog", () => {
       onClose={() => {}}
     />);
 
-    expect(screen.queryByRole("region", { name: "applied" })).not.toBeInTheDocument();
+    expect(document.querySelector('[data-payment-details-part="applied"]')).not.toBeInTheDocument();
     expect(screen.queryByText("Applied to")).not.toBeInTheDocument();
   });
 
