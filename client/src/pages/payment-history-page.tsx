@@ -18,6 +18,7 @@ import { countCanonicalPaidWeeks, deriveBowlerFinancials } from "@/lib/financial
 import { paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
 import { resolveRotatingCreditDisplayState } from "@/components/payment-status-section";
 import { rotatingPaidTotalMinor } from "@/lib/rotating-paid-total";
+import { filterBowlerLeaguesForActiveLeagues } from "@/lib/bowler-league-utils";
 
 export default function PaymentHistoryPage() {
   const search = useSearch();
@@ -40,7 +41,14 @@ export default function PaymentHistoryPage() {
   });
   const details = detailsResponse?.data;
   const bowlerLeagues = useMemo(() => details?.bowlerLeagues ?? [], [details?.bowlerLeagues]);
-  const hasMultipleLeagues = bowlerLeagues.length > 1;
+  const leagueMap = useMemo(() => new Map((details?.leagues ?? []).map((league) => [league.id, league])), [details?.leagues]);
+  const activeSwitcherLeagues = useMemo(
+    () => filterBowlerLeaguesForActiveLeagues(
+      bowlerLeagues.filter((membership) => membership.active),
+      leagueMap,
+    ),
+    [bowlerLeagues, leagueMap],
+  );
 
   useEffect(() => {
     if (!bowlerLeagues.length) return;
@@ -49,7 +57,7 @@ export default function PaymentHistoryPage() {
   }, [bowlerLeagues, selectedLeagueId, setSelectedLeagueId]);
 
   const leagueId = selectedLeagueId ?? bowlerLeagues[0]?.leagueId;
-  const leagueMap = useMemo(() => new Map((details?.leagues ?? []).map((league) => [league.id, league])), [details?.leagues]);
+  const hasAlternativeActiveLeague = activeSwitcherLeagues.some((membership) => membership.leagueId !== leagueId);
   const teamMap = useMemo(() => new Map((details?.teams ?? []).map((team) => [team.id, team])), [details?.teams]);
   const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
   const activeMembership = leagueId === undefined ? undefined : bowlerLeagues.find((membership) => membership.leagueId === leagueId);
@@ -131,11 +139,11 @@ export default function PaymentHistoryPage() {
     bowlerName={bowlerName}
     league={league}
     leagueId={leagueId}
-    hasMultipleLeagues={hasMultipleLeagues}
+    hasMultipleLeagues={hasAlternativeActiveLeague}
     leagueSheetOpen={leagueSheetOpen}
     onOpenLeagueSheet={() => setLeagueSheetOpen(true)}
     onCloseLeagueSheet={() => setLeagueSheetOpen(false)}
-    bowlerLeagues={bowlerLeagues}
+    bowlerLeagues={activeSwitcherLeagues}
     leagueMap={leagueMap}
     teamMap={teamMap}
     teamName={activeTeam?.name}

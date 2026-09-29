@@ -15,6 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageErrorState, PageLoadingState } from "@/components/page-states";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { useSelectedLeague } from "@/hooks/use-selected-league";
+import { filterBowlerLeaguesForActiveLeagues } from "@/lib/bowler-league-utils";
 import { useSquarePayment } from "@/hooks/use-square-payment";
 import { usePaymentProvider } from "@/hooks/use-payment-provider";
 import { useWalletPayments } from "@/hooks/use-wallet-payments";
@@ -308,9 +309,16 @@ export default function MakePaymentPage() {
   }, [bowlerLeagues, selectedLeagueId, setSelectedLeagueId]);
   const leagueId = selectedLeagueId ?? bowlerLeagues[0]?.leagueId;
   const leagueMap = useMemo(() => new Map((details?.leagues ?? []).map((league) => [league.id, league])), [details?.leagues]);
+  const activeSwitcherLeagues = useMemo(
+    () => filterBowlerLeaguesForActiveLeagues(
+      bowlerLeagues.filter((membership) => membership.active),
+      leagueMap,
+    ),
+    [bowlerLeagues, leagueMap],
+  );
   const teamMap = useMemo(() => new Map((details?.teams ?? []).map((team) => [team.id, team])), [details?.teams]);
   const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
-  const hasMultipleLeagues = bowlerLeagues.length > 1;
+  const hasAlternativeActiveLeague = activeSwitcherLeagues.some((membership) => membership.leagueId !== leagueId);
   const openLeagueSheet = useCallback(() => {
     setLeagueSheetOpen(true);
   }, []);
@@ -1421,7 +1429,7 @@ export default function MakePaymentPage() {
   const showPaymentContext = paymentMode !== "upfront" && !isRotatingPoolMember;
   const activeBowlerLeague = bowlerLeagues.find((membership) => membership.leagueId === leagueId && membership.active);
   const bowlerTeam = details?.teams?.find((team) => team.id === activeBowlerLeague?.teamId);
-  return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId} onOpenLeagueSheet={openLeagueSheet} mobileLeagueSwitchEnabled={hasMultipleLeagues} teamName={bowlerTeam?.name} leagueStartTime={league.competitionStartTime}>
+  return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId} onOpenLeagueSheet={openLeagueSheet} mobileLeagueSwitchEnabled={hasAlternativeActiveLeague} teamName={bowlerTeam?.name} leagueStartTime={league.competitionStartTime}>
     <div className={`familiar-bowler-pay-page${hasPaymentPartner ? " familiar-bowler-pay-page-partner" : ""}${paymentMode === "upfront" ? " familiar-bowler-pay-page-upfront" : ""}${isRotatingPoolMember ? " familiar-bowler-pay-page-rotating" : ""}`}>
       <div className="familiar-bowler-pay-header">
         <h1 className="text-2xl font-bold mb-1">Make a payment</h1>
@@ -1512,6 +1520,6 @@ export default function MakePaymentPage() {
         </div></CardContent>
       </Card>}
     </div>
-    <LeagueSwitcherSheet open={leagueSheetOpen} onClose={() => setLeagueSheetOpen(false)} bowlerLeagues={bowlerLeagues} leagueMap={leagueMap} teamMap={teamMap} selectedLeagueId={leagueId} onSelect={(nextId) => { setSelectedLeagueId(nextId); intentAppliedRef.current = false; navigate(`/make-payment?leagueId=${nextId}`); }} />
+    <LeagueSwitcherSheet open={leagueSheetOpen} onClose={() => setLeagueSheetOpen(false)} bowlerLeagues={activeSwitcherLeagues} leagueMap={leagueMap} teamMap={teamMap} selectedLeagueId={leagueId} onSelect={(nextId) => { setSelectedLeagueId(nextId); intentAppliedRef.current = false; navigate(`/make-payment?leagueId=${nextId}`); }} />
   </BowlerLayout>;
 }
