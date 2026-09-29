@@ -1,8 +1,6 @@
-/* eslint-disable shadcn/no-unknown-classes, shadcn/no-restyle */
 import { useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import { Check } from "lucide-react";
 import {
   Dialog,
@@ -39,6 +37,13 @@ export function paymentEvidenceDisplayStatus(evidence: CanonicalPaymentRow): str
   return evidence.unresolved || evidence.source === "unresolved_operation"
     ? "Review required"
     : formatPaymentEvidenceStatus(evidence.status);
+}
+
+export function paymentEvidenceBowlerDisplayStatus(evidence: CanonicalPaymentRow): string {
+  const displayStatus = paymentEvidenceDisplayStatus(evidence);
+  return displayStatus === "Review required" || evidence.source !== "refunded_credit"
+    ? displayStatus
+    : "Refunded";
 }
 
 function formatCurrency(amountMinor: number, currency: string): string {
@@ -198,12 +203,13 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     || evidence.reviewRequired
     || evidence.dispute.reviewRequired === true
     || Boolean(evidence.correctionEvidence);
-  const bowlerConfirmed = displayStatus === "Confirmed paid"
+  const bowlerDisplayStatus = paymentEvidenceBowlerDisplayStatus(evidence);
+  const bowlerConfirmed = bowlerDisplayStatus === "Confirmed paid"
     && !evidence.reviewRequired
     && evidence.dispute.reviewRequired !== true;
   const bowlerHeroStatus = bowlerConfirmed
     ? "Payment confirmed"
-    : (evidence.reviewRequired || evidence.dispute.reviewRequired === true ? "Review required" : displayStatus);
+    : (evidence.reviewRequired || evidence.dispute.reviewRequired === true ? "Review required" : bowlerDisplayStatus);
   const bowlerAppliedHeading = hasRecipientNames ? "Applied to each bowler" : "Applied to";
 
   const openReceipt = async () => {
@@ -305,15 +311,15 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !correctionBusy) onClose(); }}>
-      <DialogContent aria-describedby={undefined} viewport="dialog" className={cn("overflow-y-auto sm:max-w-lg", variant === "bowler" && "familiar-payment-details-dialog")}>
+      <DialogContent aria-describedby={undefined} viewport="dialog" className="overflow-y-auto sm:max-w-lg" data-payment-details-variant={variant}>
         {variant === "bowler" ? (
           <>
-            <DialogHeader className="familiar-payment-details-dialog__header">
+            <DialogHeader data-payment-details-part="header">
               <DialogTitle>Payment details</DialogTitle>
             </DialogHeader>
 
-            <div className={cn("familiar-payment-details-dialog__hero", bowlerConfirmed ? "familiar-payment-details-dialog__hero--confirmed" : "familiar-payment-details-dialog__hero--exception")} aria-label={`${bowlerHeroStatus}, ${formatBowlerCurrency(evidence.amountMinor, evidence.currency)}`}>
-              {bowlerConfirmed && <span className="familiar-payment-details-dialog__hero-icon" aria-hidden="true"><Check size={24} /></span>}
+            <div data-payment-details-part="hero" data-payment-details-status={bowlerConfirmed ? "confirmed" : "exception"} aria-label={`${bowlerHeroStatus}, ${formatBowlerCurrency(evidence.amountMinor, evidence.currency)}`}>
+              {bowlerConfirmed && <span data-payment-details-part="hero-icon" aria-hidden="true"><Check size={24} /></span>}
               <strong>{formatBowlerCurrency(evidence.amountMinor, evidence.currency)}</strong>
               <span>{bowlerHeroStatus}</span>
               {unusedShareCredit && <small>Unused share credit</small>}
@@ -321,14 +327,14 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
               {refundedShareCredit && <small>Refunded share credit</small>}
             </div>
 
-            <dl className="familiar-payment-details-dialog__details">
+            <dl data-payment-details-part="details">
               {leagueName && <div><dt>League</dt><dd>{leagueName}</dd></div>}
               <div><dt>Date</dt><dd>{formatBowlerLocalDate(evidence.authoritativeLocalDate)}</dd></div>
               {evidence.paidByName && <div><dt>Paid by</dt><dd>{evidence.paidByName}</dd></div>}
               <div><dt>Method</dt><dd>{paymentTypeLabel(evidence.paymentType, payment?.checkNumber)}</dd></div>
             </dl>
 
-            <section className="familiar-payment-details-dialog__applied" aria-labelledby="bowler-payment-applied-heading">
+            <section data-payment-details-part="applied" aria-labelledby="bowler-payment-applied-heading">
               <h3 id="bowler-payment-applied-heading">{bowlerAppliedHeading}</h3>
               {appliedAllocations.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{unusedShareCredit
@@ -339,7 +345,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
                       ? "This share credit was refunded in full before it was applied to a league date."
                       : "No canonical allocation is recorded."}</p>
               ) : (
-                <div className="familiar-payment-details-dialog__applied-list">
+                <div data-payment-details-part="applied-list">
                   {appliedAllocations.map((allocation, index) => (
                     <div key={`${allocation.plannedOrdinal ?? "un-numbered"}-${allocation.occurrenceLocalDate ?? "undated"}-${index}`}>
                       <span>
@@ -359,7 +365,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
             </section>
 
             {showAdditionalSettlementEvidence && (
-              <section className="familiar-payment-details-dialog__evidence" aria-label="Additional settlement evidence">
+              <section data-payment-details-part="evidence" aria-label="Additional settlement evidence">
                 {evidence.unallocatedMinor > 0 && !unusedShareCredit && !refundedShareCredit && <p>Unallocated: {formatCurrency(evidence.unallocatedMinor, evidence.currency)}</p>}
                 {evidence.refund.present && <p>Refunded: {formatCurrency(evidence.refund.amountMinor, evidence.currency)}</p>}
                 {(evidence.creditRefunds?.heldAmountMinor ?? 0) > 0 && <p>Refund on hold: {formatCurrency(evidence.creditRefunds?.heldAmountMinor ?? 0, evidence.currency)}</p>}
@@ -371,7 +377,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
             )}
 
             {evidence.collectionEvidence && (
-              <section className="familiar-payment-details-dialog__evidence" aria-label="Collection evidence">
+              <section data-payment-details-part="evidence" aria-label="Collection evidence">
                 <h3>Collection evidence</h3>
                 <p>{evidence.collectionEvidence.grouping === "double_pay" ? "Double payment" : "Regular collection"} at the collection point.</p>
                 <p>Timing: {evidence.collectionEvidence.timing.replaceAll("_", " ")}</p>
@@ -379,7 +385,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
             )}
 
             {(evidence.operationType || evidence.operationStatus) && (
-              <section className="familiar-payment-details-dialog__evidence" aria-label="Payment operation evidence">
+              <section data-payment-details-part="evidence" aria-label="Payment operation evidence">
                 <h3>Payment operation</h3>
                 {evidence.operationType && <p>Type: {evidence.operationType.replaceAll("_", " ")}</p>}
                 {evidence.operationStatus && <p>Outcome: {evidence.operationStatus.replaceAll("_", " ")}</p>}
@@ -388,7 +394,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
 
             {receiptError && <p role="alert" className="text-sm text-destructive">{receiptError}</p>}
 
-            {canOpenReceipt && <DialogFooter className="familiar-payment-details-dialog__footer">
+            {canOpenReceipt && <DialogFooter data-payment-details-part="footer">
               <Button disabled={receiptLoading} onClick={() => void openReceipt()}>{receiptLoading ? "Loading receipt…" : "Receipt"}</Button>
             </DialogFooter>}
           </>

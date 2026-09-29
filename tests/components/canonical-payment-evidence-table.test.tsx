@@ -296,6 +296,31 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByRole("button", { name: "Receipt" })).toBeInTheDocument();
   });
 
+  it("shows refunded credit as refunded in the bowler history when status remains confirmed paid", async () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 55,
+      status: "confirmed_paid",
+      paymentType: "cash",
+      source: "refunded_credit",
+      unresolved: false,
+      reviewRequired: false,
+      allocatedMinor: 0,
+      unallocatedMinor: 0,
+      allocations: [],
+      refund: { present: true, amountMinor: 2000, providerRefundId: null },
+      creditRefunds: { completedAmountMinor: 2000, heldAmountMinor: 0, reviewRequired: false, providerRefundIds: [] },
+    })]} variant="bowler" leagueName="Wednesday Night" />);
+
+    const transaction = screen.getByRole("button", { name: "View payment details: Payment, Feb 3, 2038, $20, Refunded, Refunded share credit" });
+    expect(screen.getByText("Refunded", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("Paid", { exact: true })).not.toBeInTheDocument();
+    expect(transaction.querySelector("svg.lucide-check")).toBeNull();
+
+    await fireEvent.click(transaction);
+    expect(screen.getByLabelText("Refunded, $20")).toBeInTheDocument();
+    expect(screen.queryByText("Payment confirmed", { exact: true })).not.toBeInTheDocument();
+  });
+
   it("marks a fully held credit refund as on hold rather than refunded", async () => {
     render(<CanonicalPaymentEvidenceTable rows={[row({
       paymentId: 54,

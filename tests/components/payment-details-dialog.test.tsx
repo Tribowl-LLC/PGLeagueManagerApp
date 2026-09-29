@@ -136,7 +136,34 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.getByText("Applied to each bowler")).toBeInTheDocument();
     expect(screen.getByText("Partner Bowler")).toBeInTheDocument();
     expect(screen.queryByText(/4242|last4|sample/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Receipt" }).parentElement).toHaveClass("familiar-payment-details-dialog__footer");
+    expect(screen.getByRole("button", { name: "Receipt" }).parentElement).toHaveAttribute("data-payment-details-part", "footer");
+  });
+
+  it("presents refunded credit as refunded even when its canonical status is confirmed paid", () => {
+    const refundedCreditEvidence: CanonicalPaymentRow = {
+      ...evidence,
+      source: "refunded_credit",
+      status: "confirmed_paid",
+      refund: { present: true, amountMinor: evidence.amountMinor, providerRefundId: null },
+      creditRefunds: { completedAmountMinor: evidence.amountMinor, heldAmountMinor: 0, reviewRequired: false, providerRefundIds: [] },
+    };
+
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={refundedCreditEvidence}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      variant="bowler"
+      leagueName="Wednesday Night"
+      onClose={() => {}}
+    />);
+
+    const hero = screen.getByLabelText("Refunded, $50");
+    expect(screen.getByText("Refunded", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("Payment confirmed", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("Paid", { exact: true })).not.toBeInTheDocument();
+    expect(hero).toHaveAttribute("data-payment-details-status", "exception");
+    expect(hero.querySelector('[data-payment-details-part="hero-icon"]')).toBeNull();
   });
 
   it("keeps cents in the bowler amount hierarchy", () => {

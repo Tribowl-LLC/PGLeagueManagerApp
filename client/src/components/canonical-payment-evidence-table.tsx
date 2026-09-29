@@ -12,7 +12,7 @@ import {
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
-import { PaymentDetailsDialog, paymentEvidenceDisplayStatus } from "@/components/payment-details-dialog";
+import { PaymentDetailsDialog, paymentEvidenceBowlerDisplayStatus, paymentEvidenceDisplayStatus } from "@/components/payment-details-dialog";
 
 type Props = {
   rows: CanonicalPaymentRow[];
@@ -121,7 +121,7 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
       ) : bowlerPresentation ? (
           <div className="familiar-payment-history-bowler-list" aria-label="Payment transactions">
             {rows.map((row, index) => {
-              const displayStatus = paymentEvidenceDisplayStatus(row);
+              const displayStatus = paymentEvidenceBowlerDisplayStatus(row);
               const reviewRequired = row.reviewRequired || row.dispute.reviewRequired === true;
               const hasSeparateReviewIndicator = reviewRequired && displayStatus !== "Review required";
               const paymentPeriod = mobilePaymentPeriodLabel(row);
