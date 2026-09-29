@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { User, ApiResponse } from "@shared/schema";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { formatLeagueCompetitionTime } from "@/lib/league-display";
+import { formatScheduleLocalTime } from "@/lib/league-display";
 import "./familiar-bowler-shell.css";
 import "./familiar-bowler-desktop-header.css";
 
@@ -111,7 +111,7 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
   const profileItem = navItems[3];
   const isProfileActive = isNavItemActive(profileItem);
   const canSwitchLeagueOnMobile = mobileLeagueSwitchEnabled ?? Boolean(onOpenLeagueSheet);
-  const formattedLeagueStartTime = formatLeagueCompetitionTime(leagueStartTime);
+  const formattedLeagueStartTime = leagueStartTime ? formatScheduleLocalTime(leagueStartTime) : null;
   const leagueMeta = [teamName?.trim(), formattedLeagueStartTime].filter(Boolean).join(" · ");
 
   return (

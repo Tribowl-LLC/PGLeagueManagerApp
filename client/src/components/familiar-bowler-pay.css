@@ -1416,7 +1416,32 @@
   }
 
   .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-source-option.is-selected {
-    display: none;
+    /* Keep the selected role=option in the accessibility tree while the
+       editor owns the visible desktop card surface. It remains keyboard
+       focusable and is revealed when reached with a keyboard. */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-source-option.is-selected:focus-visible {
+    position: relative;
+    width: 100%;
+    height: auto;
+    margin: 0;
+    padding: 9px 12px;
+    overflow: visible;
+    clip: auto;
+    clip-path: none;
+    white-space: normal;
+    border-bottom: 1px solid var(--familiar-pay-line);
   }
 
   .familiar-source-picker.familiar-source-picker-inline-card:has(.familiar-card-editor) .familiar-card-editor {

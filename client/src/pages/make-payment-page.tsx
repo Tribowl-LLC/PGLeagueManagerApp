@@ -1420,7 +1420,7 @@ export default function MakePaymentPage() {
     : undefined;
   const showPaymentContext = paymentMode !== "upfront" && !isRotatingPoolMember;
   const activeBowlerLeague = bowlerLeagues.find((membership) => membership.leagueId === leagueId && membership.active);
-  const bowlerTeam = details?.teams.find((team) => team.id === activeBowlerLeague?.teamId);
+  const bowlerTeam = details?.teams?.find((team) => team.id === activeBowlerLeague?.teamId);
   return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId} onOpenLeagueSheet={openLeagueSheet} mobileLeagueSwitchEnabled={hasMultipleLeagues} teamName={bowlerTeam?.name} leagueStartTime={league.competitionStartTime}>
     <div className={`familiar-bowler-pay-page${hasPaymentPartner ? " familiar-bowler-pay-page-partner" : ""}${paymentMode === "upfront" ? " familiar-bowler-pay-page-upfront" : ""}${isRotatingPoolMember ? " familiar-bowler-pay-page-rotating" : ""}`}>
       <div className="familiar-bowler-pay-header">

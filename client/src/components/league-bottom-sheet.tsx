@@ -3,7 +3,7 @@ import { CanonicalSeasonProgress } from "./canonical-season-progress";
 import { X, Check } from "lucide-react";
 import type { League, BowlerLeague, Team } from "@shared/schema";
 import { getSeasonYearRange } from "@shared/season-utils";
-import { formatLeagueCompetitionTime } from "@/lib/league-display";
+import { formatScheduleLocalTime } from "@/lib/league-display";
 
 interface LeagueBottomSheetProps {
   open: boolean;
@@ -124,7 +124,10 @@ export const LeagueBottomSheet: FC<LeagueBottomSheetProps> = ({
               const leagueTitle = league?.seasonStart && league.seasonEnd
                 ? `${league.name} ${getSeasonYearRange(league.seasonStart, league.seasonEnd)}`
                 : league?.name ?? `League #${bl.leagueId}`;
-              const desktopMeta = [team?.name, formatLeagueCompetitionTime(league?.competitionStartTime)].filter(Boolean).join(" · ");
+              const desktopCompetitionTime = league?.competitionStartTime
+                ? formatScheduleLocalTime(league.competitionStartTime)
+                : null;
+              const desktopMeta = [team?.name, desktopCompetitionTime].filter(Boolean).join(" · ");
 
               return (
                 <button type="button"
@@ -138,7 +141,7 @@ export const LeagueBottomSheet: FC<LeagueBottomSheetProps> = ({
                   <div>
                     <div className={`font-medium familiar-league-switcher-name ${isSelected ? 'text-brand-accent-700' : 'text-navigation-900'}`}>
                       <span className="familiar-league-switcher-title-mobile">{leagueTitle}</span>
-                      <span className="familiar-league-switcher-title-desktop">{league?.name ?? `League #${bl.leagueId}`}</span>
+                      <span className="familiar-league-switcher-title-desktop">{leagueTitle}</span>
                     </div>
                     {desktopMeta && <div className="familiar-league-switcher-meta-desktop">{desktopMeta}</div>}
                     <div className="text-sm text-navigation-500 mt-0.5 familiar-league-switcher-meta-mobile">

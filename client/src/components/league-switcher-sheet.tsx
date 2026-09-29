@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef } from "react";
 import { X, Check } from "lucide-react";
 import type { League, BowlerLeague, Team } from "@shared/schema";
-import { formatLeagueCompetitionTime } from "@/lib/league-display";
+import { getSeasonYearRange } from "@shared/season-utils";
+import { formatScheduleLocalTime } from "@/lib/league-display";
 
 interface Props {
   open: boolean;
@@ -114,7 +115,13 @@ export function LeagueSwitcherSheet({
             {bowlerLeagues.map((bl) => {
               const l = leagueMap.get(bl.leagueId);
               const team = bl.teamId ? teamMap?.get(bl.teamId) : undefined;
-              const desktopMeta = [team?.name, formatLeagueCompetitionTime(l?.competitionStartTime)].filter(Boolean).join(" · ");
+              const desktopCompetitionTime = l?.competitionStartTime
+                ? formatScheduleLocalTime(l.competitionStartTime)
+                : null;
+              const desktopMeta = [team?.name, desktopCompetitionTime].filter(Boolean).join(" · ");
+              const leagueTitle = l?.seasonStart && l.seasonEnd
+                ? `${l.name} ${getSeasonYearRange(l.seasonStart, l.seasonEnd)}`
+                : l?.name ?? `League #${bl.leagueId}`;
               const isSelected = bl.leagueId === selectedLeagueId;
               return (
                 <button type="button"
@@ -127,7 +134,7 @@ export function LeagueSwitcherSheet({
                 >
                   <div>
                     <div className={`font-medium familiar-league-switcher-name ${isSelected ? "text-brand-accent-700" : "text-navigation-900"}`}>
-                      {l?.name ?? `League #${bl.leagueId}`}
+                      {leagueTitle}
                     </div>
                     {desktopMeta && <div className="familiar-league-switcher-meta-desktop">{desktopMeta}</div>}
                   </div>

@@ -424,8 +424,8 @@
     grid-template-rows: auto auto auto;
     column-gap: 1rem;
     align-items: center;
-    height: 7.1875rem;
     min-height: 7.1875rem;
+    height: auto;
     padding: 0;
     text-align: left;
   }
@@ -651,7 +651,8 @@ body > .fixed.inset-0.z-50:not([role="dialog"]):has(+ .familiar-profile-dialog) 
   border-radius: 0.4375rem;
   background: #fff;
   color: var(--familiar-ink, #0f172a);
-  padding: 0.625rem 0.6875rem;
+  padding-block: 0.625rem;
+  padding-left: 0.6875rem;
   font-size: 0.875rem;
 }
 
