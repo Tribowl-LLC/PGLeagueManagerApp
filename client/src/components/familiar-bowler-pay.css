@@ -1132,6 +1132,8 @@
 
   .familiar-bowler-pay-page-upfront {
     display: block;
+    width: min(762px, calc(100% - 32px));
+    max-width: 762px;
   }
 
   .familiar-bowler-pay-page-upfront .familiar-bowler-pay-header,
@@ -1269,7 +1271,7 @@
 }
 
 @media (min-width: 1024px) and (max-width: 1120px) {
-  .familiar-bowler-pay-page {
+  .familiar-bowler-pay-page:not(.familiar-bowler-pay-page-rotating):not(.familiar-bowler-pay-page-upfront) {
     width: min(754px, calc(100% - 32px));
     max-width: 754px;
     column-gap: 24px;
