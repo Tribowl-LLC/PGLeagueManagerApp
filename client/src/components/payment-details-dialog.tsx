@@ -45,9 +45,27 @@ function formatCurrency(amountMinor: number, currency: string): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(amountMinor / 100);
 }
 
+function formatBowlerCurrency(amountMinor: number, currency: string): string {
+  const hasCents = Number.isSafeInteger(amountMinor) && Math.abs(amountMinor) % 100 !== 0;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: hasCents ? 2 : 0,
+    maximumFractionDigits: 2,
+  }).format(amountMinor / 100);
+}
+
 function formatLocalDate(value: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
   return match ? `${match[2]}/${match[3]}/${match[1]}` : value;
+}
+
+function formatBowlerLocalDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) return value;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12));
+  if (!Number.isFinite(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }).format(date);
 }
 
 function allocationLabel(allocation: CanonicalPaymentRow["allocations"][number] | NonNullable<CanonicalPaymentRow["appliedTo"]>[number]): string {
@@ -294,9 +312,9 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
               <DialogTitle>Payment details</DialogTitle>
             </DialogHeader>
 
-            <div className={cn("familiar-payment-details-dialog__hero", bowlerConfirmed ? "familiar-payment-details-dialog__hero--confirmed" : "familiar-payment-details-dialog__hero--exception")} aria-label={`${bowlerHeroStatus}, ${formatCurrency(evidence.amountMinor, evidence.currency)}`}>
+            <div className={cn("familiar-payment-details-dialog__hero", bowlerConfirmed ? "familiar-payment-details-dialog__hero--confirmed" : "familiar-payment-details-dialog__hero--exception")} aria-label={`${bowlerHeroStatus}, ${formatBowlerCurrency(evidence.amountMinor, evidence.currency)}`}>
               {bowlerConfirmed && <span className="familiar-payment-details-dialog__hero-icon" aria-hidden="true"><Check size={24} /></span>}
-              <strong>{formatCurrency(evidence.amountMinor, evidence.currency)}</strong>
+              <strong>{formatBowlerCurrency(evidence.amountMinor, evidence.currency)}</strong>
               <span>{bowlerHeroStatus}</span>
               {unusedShareCredit && <small>Unused share credit</small>}
               {heldShareCredit && <small>Share credit refund on hold</small>}
@@ -305,7 +323,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
 
             <dl className="familiar-payment-details-dialog__details">
               {leagueName && <div><dt>League</dt><dd>{leagueName}</dd></div>}
-              <div><dt>Date</dt><dd>{formatLocalDate(evidence.authoritativeLocalDate)}</dd></div>
+              <div><dt>Date</dt><dd>{formatBowlerLocalDate(evidence.authoritativeLocalDate)}</dd></div>
               {evidence.paidByName && <div><dt>Paid by</dt><dd>{evidence.paidByName}</dd></div>}
               <div><dt>Method</dt><dd>{paymentTypeLabel(evidence.paymentType, payment?.checkNumber)}</dd></div>
             </dl>
@@ -327,13 +345,13 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
                       <span>
                         {allocation.bowlerName && <strong>{allocation.bowlerName}</strong>}
                         <span>{bowlerAllocationPeriodLabel(allocation)}</span>
-                        {allocation.plannedOrdinal !== null && allocation.plannedOrdinal !== undefined && allocation.occurrenceLocalDate && <small>{formatLocalDate(allocation.occurrenceLocalDate)}</small>}
+                        {allocation.plannedOrdinal !== null && allocation.plannedOrdinal !== undefined && allocation.occurrenceLocalDate && <small>{formatBowlerLocalDate(allocation.occurrenceLocalDate)}</small>}
                         {allocation.state !== "active" && <small>{allocation.state ?? "unresolved"}</small>}
                         {(allocation.refundedMinor ?? 0) > 0 && <small>Refunded: {formatCurrency(allocation.refundedMinor ?? 0, allocation.currency)}</small>}
                         {allocation.effectiveAmountMinor !== undefined && <small>Effective: {formatCurrency(allocation.effectiveAmountMinor, allocation.currency)}</small>}
                         {allocation.refundDisposition && <small>Refund disposition: {allocation.refundDisposition.replaceAll("_", " ")}</small>}
                       </span>
-                      <strong>{formatCurrency(allocation.amountMinor, allocation.currency)}</strong>
+                      <strong>{formatBowlerCurrency(allocation.amountMinor, allocation.currency)}</strong>
                     </div>
                   ))}
                 </div>
@@ -357,8 +375,6 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
                 <h3>Collection evidence</h3>
                 <p>{evidence.collectionEvidence.grouping === "double_pay" ? "Double payment" : "Regular collection"} at the collection point.</p>
                 <p>Timing: {evidence.collectionEvidence.timing.replaceAll("_", " ")}</p>
-                <p>Collection point: {evidence.collectionEvidence.collectionPointOccurrenceId}</p>
-                <p>Covered occurrences: {evidence.collectionEvidence.coveredOccurrenceIds.join(", ")}</p>
               </section>
             )}
 

@@ -128,15 +128,38 @@ describe("PaymentDetailsDialog", () => {
 
     expect(screen.getByRole("dialog", { name: "Payment details" })).toBeInTheDocument();
     expect(screen.getByText("Payment confirmed")).toBeInTheDocument();
-    expect(screen.getByText("$50.00")).toBeInTheDocument();
+    expect(screen.getByText("$50")).toBeInTheDocument();
     expect(screen.getByText("Wednesday Night")).toBeInTheDocument();
-    expect(screen.getAllByText("09/10/2034").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Sep 10, 2034").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Alex Payer").length).toBeGreaterThan(0);
     expect(screen.getByText("Cash")).toBeInTheDocument();
     expect(screen.getByText("Applied to each bowler")).toBeInTheDocument();
     expect(screen.getByText("Partner Bowler")).toBeInTheDocument();
     expect(screen.queryByText(/4242|last4|sample/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Receipt" }).parentElement).toHaveClass("familiar-payment-details-dialog__footer");
+  });
+
+  it("keeps cents in the bowler amount hierarchy", () => {
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={{
+        ...evidence,
+        amountMinor: 5050,
+        allocations: [
+          { ...evidence.allocations[0], amountMinor: 3025, plannedOrdinal: 1 },
+          { ...evidence.allocations[1], amountMinor: 2025, plannedOrdinal: 2 },
+        ],
+      }}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      variant="bowler"
+      leagueName="Wednesday Night"
+      onClose={() => {}}
+    />);
+
+    expect(screen.getByText("$50.50")).toBeInTheDocument();
+    expect(screen.getByText("$30.25")).toBeInTheDocument();
+    expect(screen.getByText("$20.25")).toBeInTheDocument();
   });
 
   it("keeps bowler exceptional states truthful and preserves no-allocation evidence", () => {
@@ -152,6 +175,14 @@ describe("PaymentDetailsDialog", () => {
         allocations: [],
         operationType: "interactive_charge",
         operationStatus: "provider_unknown",
+        collectionEvidence: {
+          d2PlanId: "plan-internal",
+          planVersion: 2,
+          collectionPointOccurrenceId: "occ-internal",
+          coveredOccurrenceIds: ["occ-internal", "occ-other-internal"],
+          timing: "at_collection_point",
+          grouping: "double_pay",
+        },
       }}
       bowlerName="Test Bowler"
       canCorrect={false}
@@ -164,6 +195,8 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.queryByText("Payment confirmed")).not.toBeInTheDocument();
     expect(screen.getByText("No canonical allocation is recorded.")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Payment operation evidence" })).toHaveTextContent("provider unknown");
+    expect(screen.getByRole("region", { name: "Collection evidence" })).toHaveTextContent("Double payment");
+    expect(screen.queryByText(/occ-internal|plan-internal/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Receipt" })).not.toBeInTheDocument();
   });
 

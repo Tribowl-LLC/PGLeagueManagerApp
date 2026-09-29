@@ -120,11 +120,12 @@ describe("CanonicalPaymentEvidenceTable", () => {
       unresolved: false,
       reviewRequired: false,
       source: "canonical_allocation",
+      amountMinor: 2500,
       allocations: [],
       appliedTo: [{ plannedOrdinal: 2, occurrenceLocalDate: "2026-09-01", amountMinor: 2500, currency: "USD", state: "active" }],
     })]} variant="bowler" leagueName="Wednesday Night" />);
 
-    const transaction = screen.getByRole("button", { name: "View payment details: Confirmed paid" });
+    const transaction = screen.getByRole("button", { name: "View payment details: Week 2 payment, Sep 1, 2026, $25, Confirmed paid" });
     expect(transaction.querySelectorAll("button, a")).toHaveLength(0);
     expect(screen.queryByRole("columnheader", { name: "Date" })).not.toBeInTheDocument();
 

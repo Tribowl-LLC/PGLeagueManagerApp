@@ -768,6 +768,10 @@ a.familiar-payment-summary__value:hover {
 }
 
 .familiar-payment-details-dialog {
+  --familiar-navy: #0f172a;
+  --familiar-ink: #0f172a;
+  --familiar-muted: #475569;
+  --familiar-line: rgb(100 116 139 / 0.34);
   width: calc(100% - 32px);
   max-width: 440px;
   max-height: calc(100dvh - 40px);
@@ -776,6 +780,7 @@ a.familiar-payment-summary__value:hover {
   border-radius: 16px;
   background: #fff;
   color: var(--familiar-ink);
+  font-family: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
   box-shadow: 0 25px 90px rgb(100 116 139 / 0.24);
 }
 

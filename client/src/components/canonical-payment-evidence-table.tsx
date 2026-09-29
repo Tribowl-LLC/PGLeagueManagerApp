@@ -138,12 +138,14 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
               const accessibleStatus = [displayStatus, creditLabel, hasSeparateReviewIndicator ? "Review required" : null, row.correctionEvidence?.status === "voided" ? "Voided" : null]
                 .filter(Boolean)
                 .join(", ");
+              const accessibleDate = paymentPeriod.date ?? formatLocalDate(row.authoritativeLocalDate);
+              const accessibleAmount = formatCurrency(row.amountMinor, row.currency);
               return (
                 <button
                   type="button"
                   className="familiar-payment-history-bowler-row"
                   key={`${row.paymentOperationId ?? row.paymentId ?? "unresolved"}:${row.bowlerId}:${index}`}
-                  aria-label={`View payment details: ${accessibleStatus}`}
+                  aria-label={`View payment details: ${[paymentPeriod.period, accessibleDate, accessibleAmount, accessibleStatus].join(", ")}`}
                   onClick={() => setDetailsTarget(row)}
                 >
                   <span className="familiar-payment-history-bowler-row__icon" aria-hidden="true"><ArrowUpRight size={19} /></span>
