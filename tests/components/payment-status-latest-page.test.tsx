@@ -1,17 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Bowler, League } from "@shared/schema";
 import { PaymentStatusSection } from "@/components/payment-status-section";
 
 const csrfFetchMock = vi.hoisted(() => vi.fn());
+const paymentDetailsDialogMock = vi.hoisted(() => vi.fn(() => null));
 
 vi.mock("@/lib/queryClient", () => ({ csrfFetch: csrfFetchMock }));
 vi.mock("@/components/payment-overview-card", () => ({ PaymentOverviewCard: () => <div>Payment overview</div> }));
-vi.mock("@/components/payment-details-dialog", () => ({
-  PaymentDetailsDialog: () => null,
-  paymentEvidenceDisplayStatus: () => "Confirmed paid",
-}));
+vi.mock("@/components/payment-details-dialog", async () => {
+  const actual = await vi.importActual<typeof import("@/components/payment-details-dialog")>("@/components/payment-details-dialog");
+  return { ...actual, PaymentDetailsDialog: paymentDetailsDialogMock };
+});
 
 const league: League = {
   id: 17,
@@ -64,11 +65,14 @@ const paymentRow = (day: number) => ({
   authoritativeLocalDate: `2026-01-${String(day).padStart(2, "0")}`,
   amountMinor: day * 100,
   currency: "USD",
+  status: "confirmed_paid",
+  unresolved: false,
   appliedTo: [],
   allocations: [],
 });
 
 beforeEach(() => {
+  paymentDetailsDialogMock.mockClear();
   csrfFetchMock.mockResolvedValue({
     ok: true,
     json: async () => ({
@@ -115,7 +119,7 @@ describe("dashboard latest payment", () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname === "/api/financials/f5/payments") {
-        const sameDay = { authoritativeLocalDate: "2026-01-25", amountMinor: 2_500, currency: "USD", appliedTo: [], allocations: [] };
+        const sameDay = { authoritativeLocalDate: "2026-01-25", amountMinor: 2_500, currency: "USD", status: "confirmed_paid", unresolved: false, appliedTo: [], allocations: [] };
         return { ok: true, json: async () => ({ success: true, data: { totalRows: 2, rows: [
           { ...sameDay, amountMinor: 1_500 },
           sameDay,
@@ -140,6 +144,125 @@ describe("dashboard latest payment", () => {
       expect(screen.getByRole("button", { name: /View latest payment of \$25 on Jan 25, 2026/ })).toBeInTheDocument();
     });
     expect(screen.queryByRole("button", { name: /View latest payment of \$15 on Jan 25, 2026/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the latest transaction with the bowler receipt dialog and league context", async () => {
+    const latest = {
+      authoritativeLocalDate: "2026-01-25",
+      amountMinor: 2_500,
+      currency: "USD",
+      status: "confirmed_paid",
+      unresolved: false,
+      appliedTo: [],
+      allocations: [],
+      source: "canonical_allocation",
+    };
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/financials/f5/payments") {
+        return { ok: true, json: async () => ({ success: true, data: { totalRows: 1, rows: [latest] } }) };
+      }
+      if (url.pathname.endsWith("/rotating-credit/1")) {
+        return { ok: true, json: async () => ({ success: true, data: { eligibleForCredit: false } }) };
+      }
+      if (url.pathname.endsWith("/occurrence-schedule")) {
+        return { ok: true, json: async () => ({ success: true, data: {} }) };
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}>
+      <PaymentStatusSection league={league} bowler={bowler} weeklyFee={2_500} />
+    </QueryClientProvider>);
+
+    const trigger = await screen.findByRole("button", { name: /View latest payment of \$25 on Jan 25, 2026/ });
+    fireEvent.click(trigger);
+
+    await waitFor(() => expect(paymentDetailsDialogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        evidence: latest,
+        bowlerName: bowler.name,
+        canCorrect: false,
+        variant: "bowler",
+        leagueName: league.name,
+      }),
+      undefined,
+    ));
+  });
+
+  it("uses the bowler exception status for a refunded share credit", async () => {
+    const refunded = {
+      authoritativeLocalDate: "2026-01-25",
+      amountMinor: 2_500,
+      currency: "USD",
+      status: "confirmed_paid",
+      unresolved: false,
+      appliedTo: [],
+      allocations: [],
+      source: "refunded_credit",
+    };
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/financials/f5/payments") {
+        return { ok: true, json: async () => ({ success: true, data: { totalRows: 1, rows: [refunded] } }) };
+      }
+      if (url.pathname.endsWith("/rotating-credit/1")) {
+        return { ok: true, json: async () => ({ success: true, data: { eligibleForCredit: false } }) };
+      }
+      if (url.pathname.endsWith("/occurrence-schedule")) {
+        return { ok: true, json: async () => ({ success: true, data: {} }) };
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}>
+      <PaymentStatusSection league={league} bowler={bowler} weeklyFee={2_500} />
+    </QueryClientProvider>);
+
+    await waitFor(() => expect(screen.getByText("Refunded", { exact: true })).toBeInTheDocument());
+    expect(screen.queryByText("✓ Paid")).not.toBeInTheDocument();
+  });
+
+  it("keeps a confirmed transaction's separate review indicator visible", async () => {
+    const reviewRequired = {
+      authoritativeLocalDate: "2026-01-25",
+      amountMinor: 2_500,
+      currency: "USD",
+      status: "confirmed_paid",
+      unresolved: false,
+      appliedTo: [],
+      allocations: [],
+      source: "canonical_allocation",
+      reviewRequired: true,
+      dispute: { reviewRequired: false },
+    };
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/financials/f5/payments") {
+        return { ok: true, json: async () => ({ success: true, data: { totalRows: 1, rows: [reviewRequired] } }) };
+      }
+      if (url.pathname.endsWith("/rotating-credit/1")) {
+        return { ok: true, json: async () => ({ success: true, data: { eligibleForCredit: false } }) };
+      }
+      if (url.pathname.endsWith("/occurrence-schedule")) {
+        return { ok: true, json: async () => ({ success: true, data: {} }) };
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}>
+      <PaymentStatusSection league={league} bowler={bowler} weeklyFee={2_500} />
+    </QueryClientProvider>);
+
+    await waitFor(() => expect(screen.getByText("Confirmed paid", { exact: true })).toBeInTheDocument());
+    expect(screen.getByText("Review required", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("✓ Paid")).not.toBeInTheDocument();
   });
 
   it("requires review when current outstanding evidence is unresolved", async () => {

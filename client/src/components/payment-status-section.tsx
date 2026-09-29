@@ -3,7 +3,7 @@ import { FC, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { csrfFetch } from "@/lib/queryClient";
 import { PaymentOverviewCard } from "@/components/payment-overview-card";
-import { PaymentDetailsDialog, paymentEvidenceDisplayStatus } from "@/components/payment-details-dialog";
+import { PaymentDetailsDialog, paymentEvidenceBowlerDisplayStatus } from "@/components/payment-details-dialog";
 import { Link } from "wouter";
 import type { ApiResponse, League, Bowler } from "@shared/schema";
 import type { CanonicalPaymentReport, CanonicalPaymentRow } from "@shared/canonical-payment-report";
@@ -235,6 +235,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({ league, bo
         payment={latestPayment(paymentReportResponse?.data?.rows ?? [])}
         leagueId={league.id}
         organizationId={league.organizationId}
+        leagueName={league.name}
         bowlerName={bowler.name}
         isLoading={isLoadingPayments}
         hasError={Boolean(paymentReportError)}
@@ -278,6 +279,7 @@ function LatestPaymentCard({
   payment,
   leagueId,
   organizationId,
+  leagueName,
   bowlerName,
   isLoading,
   hasError,
@@ -285,12 +287,15 @@ function LatestPaymentCard({
   payment: CanonicalPaymentRow | null;
   leagueId: number;
   organizationId?: number | null;
+  leagueName: string;
   bowlerName: string;
   isLoading: boolean;
   hasError: boolean;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const status = payment ? paymentEvidenceDisplayStatus(payment) : null;
+  const status = payment ? paymentEvidenceBowlerDisplayStatus(payment) : null;
+  const reviewRequired = Boolean(payment?.reviewRequired || payment?.dispute?.reviewRequired);
+  const isPaid = status === "Confirmed paid" && !reviewRequired;
 
   return (
     <section className="familiar-latest-payment" aria-labelledby="latest-payment-title">
@@ -303,14 +308,20 @@ function LatestPaymentCard({
       ) : hasError ? (
         <p className="familiar-latest-payment__message familiar-latest-payment__message--error">Latest payment is unavailable.</p>
       ) : payment ? (
-        <button type="button" className="familiar-latest-payment__row" onClick={() => setDetailsOpen(true)} aria-label={`View latest payment of ${formatPaymentAmount(payment.amountMinor, payment.currency)} on ${formatPaymentDate(payment.authoritativeLocalDate)}`}>
+        <button
+          type="button"
+          className="familiar-latest-payment__row"
+          onClick={() => setDetailsOpen(true)}
+          aria-label={`View latest payment of ${formatPaymentAmount(payment.amountMinor, payment.currency)} on ${formatPaymentDate(payment.authoritativeLocalDate)}: ${[latestPaymentTitle(payment), status, reviewRequired && status !== "Review required" ? "Review required" : null].filter(Boolean).join(", ")}`}
+        >
           <span className="familiar-latest-payment__copy">
             <strong>{latestPaymentTitle(payment)}</strong>
             <span>{formatPaymentDate(payment.authoritativeLocalDate)}</span>
           </span>
           <span className="familiar-latest-payment__amount">
             <strong>{formatPaymentAmount(payment.amountMinor, payment.currency)}</strong>
-            <span className={status === "Confirmed paid" ? "familiar-latest-payment__paid" : ""}>{status === "Confirmed paid" ? "✓ Paid" : status}</span>
+            <span className={isPaid ? "familiar-latest-payment__paid" : ""}>{isPaid ? "✓ Paid" : status}</span>
+            {reviewRequired && status !== "Review required" && <span>Review required</span>}
           </span>
         </button>
       ) : (
@@ -323,6 +334,8 @@ function LatestPaymentCard({
           bowlerName={bowlerName}
           canCorrect={false}
           organizationId={organizationId}
+          variant="bowler"
+          leagueName={leagueName}
           onClose={() => setDetailsOpen(false)}
         />
       )}
