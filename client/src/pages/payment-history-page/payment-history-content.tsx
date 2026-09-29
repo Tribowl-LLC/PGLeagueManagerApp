@@ -62,57 +62,62 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
       bowlerName={bowlerName}
       leagueName={league.name}
       currentLeagueId={leagueId}
-      onOpenLeagueSheet={hasMultipleLeagues ? onOpenLeagueSheet : undefined}
+      onOpenLeagueSheet={onOpenLeagueSheet}
+      mobileLeagueSwitchEnabled={hasMultipleLeagues}
     >
-      <div className="space-y-6">
+      <div className="familiar-payment-history-content space-y-6">
         <header className="familiar-bowler-page-heading">
           <h1>Payment history</h1>
           <p>Every payment, all in one place.</p>
         </header>
 
-        <ErrorBoundary level="section">
-          {rotatingCreditState === "loading" ? (
-            <p className="text-sm text-muted-foreground">Loading payment summary…</p>
-          ) : rotatingCreditState === "error" ? (
-            <p className="text-sm text-destructive">Payment summary requires review.</p>
-          ) : (
-            <PaymentSummaryCards
-              totalWeeksInSeason={totalWeeksInSeason}
-              fullSeasonAmount={fullSeasonAmount}
-              weeklyFee={league.weeklyFee || 0}
-              weeksDueCount={weeksDueCount}
-              totalSeasonDues={totalSeasonDues}
-              weeksPaid={weeksPaid}
-              totalPaidAmount={totalPaidAmount}
-              waivedAmount={waivedAmount}
-              amountPastDue={amountPastDue}
-              remainingBalance={remainingBalance}
-              doublePay={doublePay}
-              isRotating={isRotating}
-              onPayPastDue={() => undefined}
-              onPayRemaining={() => undefined}
-              pastDueHref={amountPastDue > 0 ? pastDueHref : undefined}
-              remainingHref={remainingBalance > 0 ? makePaymentHref : undefined}
-            />
-          )}
-        </ErrorBoundary>
+        <div className="familiar-payment-history-summary">
+          <ErrorBoundary level="section">
+            {rotatingCreditState === "loading" ? (
+              <p className="text-sm text-muted-foreground">Loading payment summary…</p>
+            ) : rotatingCreditState === "error" ? (
+              <p className="text-sm text-destructive">Payment summary requires review.</p>
+            ) : (
+              <PaymentSummaryCards
+                totalWeeksInSeason={totalWeeksInSeason}
+                fullSeasonAmount={fullSeasonAmount}
+                weeklyFee={league.weeklyFee || 0}
+                weeksDueCount={weeksDueCount}
+                totalSeasonDues={totalSeasonDues}
+                weeksPaid={weeksPaid}
+                totalPaidAmount={totalPaidAmount}
+                waivedAmount={waivedAmount}
+                amountPastDue={amountPastDue}
+                remainingBalance={remainingBalance}
+                doublePay={doublePay}
+                isRotating={isRotating}
+                onPayPastDue={() => undefined}
+                onPayRemaining={() => undefined}
+                pastDueHref={amountPastDue > 0 ? pastDueHref : undefined}
+                remainingHref={remainingBalance > 0 ? makePaymentHref : undefined}
+              />
+            )}
+          </ErrorBoundary>
+        </div>
 
-        <ErrorBoundary level="section">
-          {canonicalPaymentLoading ? (
-            <div className="text-sm text-muted-foreground">Loading payment history…</div>
-          ) : canonicalPaymentError ? (
-            <PageErrorState message="Payment history is unavailable; please try again." onRetry={onCanonicalReportRetry} />
-          ) : (
-            <CanonicalPaymentEvidenceTable rows={canonicalRows} organizationId={league.organizationId} bowlerName={bowlerName} title="Transactions" totalTransactions={canonicalReportTotalTransactions} variant="bowler" leagueName={league.name} totalWeeksInSeason={totalWeeksInSeason} />
-          )}
-          {!canonicalPaymentLoading && !canonicalPaymentError && canonicalReportPage !== undefined && canonicalReportTotalPages !== undefined && canonicalReportTotalPages > 1 && onCanonicalReportPageChange && (
-            <div className="mt-3 flex items-center justify-between text-sm">
-              <button type="button" className="underline disabled:opacity-50" disabled={canonicalReportPage <= 1} onClick={() => onCanonicalReportPageChange(Math.max(1, canonicalReportPage - 1))}>Previous</button>
-              <span>Page {canonicalReportPage} of {canonicalReportTotalPages}</span>
-              <button type="button" className="underline disabled:opacity-50" disabled={canonicalReportPage >= canonicalReportTotalPages} onClick={() => onCanonicalReportPageChange(canonicalReportPage + 1)}>Next</button>
-            </div>
-          )}
-        </ErrorBoundary>
+        <div className="familiar-payment-history-transactions">
+          <ErrorBoundary level="section">
+            {canonicalPaymentLoading ? (
+              <div className="text-sm text-muted-foreground">Loading payment history…</div>
+            ) : canonicalPaymentError ? (
+              <PageErrorState message="Payment history is unavailable; please try again." onRetry={onCanonicalReportRetry} />
+            ) : (
+              <CanonicalPaymentEvidenceTable rows={canonicalRows} organizationId={league.organizationId} bowlerName={bowlerName} title="Transactions" totalTransactions={canonicalReportTotalTransactions} variant="bowler" leagueName={league.name} totalWeeksInSeason={totalWeeksInSeason} />
+            )}
+            {!canonicalPaymentLoading && !canonicalPaymentError && canonicalReportPage !== undefined && canonicalReportTotalPages !== undefined && canonicalReportTotalPages > 1 && onCanonicalReportPageChange && (
+              <div className="mt-3 flex items-center justify-between text-sm">
+                <button type="button" className="underline disabled:opacity-50" disabled={canonicalReportPage <= 1} onClick={() => onCanonicalReportPageChange(Math.max(1, canonicalReportPage - 1))}>Previous</button>
+                <span>Page {canonicalReportPage} of {canonicalReportTotalPages}</span>
+                <button type="button" className="underline disabled:opacity-50" disabled={canonicalReportPage >= canonicalReportTotalPages} onClick={() => onCanonicalReportPageChange(canonicalReportPage + 1)}>Next</button>
+              </div>
+            )}
+          </ErrorBoundary>
+        </div>
       </div>
 
       <LeagueSwitcherSheet open={leagueSheetOpen} onClose={onCloseLeagueSheet} bowlerLeagues={bowlerLeagues} leagueMap={leagueMap} selectedLeagueId={leagueId} onSelect={onSelectLeague} />

@@ -485,6 +485,17 @@ with a responsive content width. This direction does not change the admin UI.
   header. Place the active league selector below it. Keep a white four-item
   bottom navigation for Overview, Pay, History, and Profile, with a restrained
   pale active state. Content scrolls independently of the navigation.
+- **Desktop extension (approved Familiar A):** At widths of 1024px and above,
+  use a persistent 224px navy sidebar with the Perfect Game logo, League
+  Manager label, Overview, Pay, and History links, and a bottom Profile row
+  showing the bowler avatar and name. Use a white top bar with the current
+  league name and show a right-aligned Switch league control when league
+  switching is available. Center the Overview and Pay content in a compact
+  rail, keep History in an approximately 802px rail with 270px totals, 112px
+  separation, and 420px transactions, and keep Profile as a narrow focused
+  stack. Preserve the mobile logo bar, league selector, and bottom navigation
+  below the desktop breakpoint; tablet widths retain a compact overflow-safe
+  layout.
 - **Typography and surfaces:** Use Instrument Sans, navy `#0f172a`, white
   page backgrounds on Pay, History, and Profile, and the approved light-slate
   Overview background. Use open space for sections; frame only the cards and

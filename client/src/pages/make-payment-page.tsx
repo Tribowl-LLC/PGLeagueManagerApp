@@ -310,6 +310,9 @@ export default function MakePaymentPage() {
   const leagueMap = useMemo(() => new Map((details?.leagues ?? []).map((league) => [league.id, league])), [details?.leagues]);
   const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
   const hasMultipleLeagues = bowlerLeagues.length > 1;
+  const openLeagueSheet = useCallback(() => {
+    setLeagueSheetOpen(true);
+  }, []);
 
   const {
     data: participantsResponse,
@@ -1414,20 +1417,23 @@ export default function MakePaymentPage() {
   const partnerAutopayNote = hasPaymentPartner && paymentPartner
     ? `Automatic payments apply to ${details?.bowler?.name ?? "you"} only. ${paymentPartner.name} is not included.`
     : undefined;
-  return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId} onOpenLeagueSheet={hasMultipleLeagues ? () => setLeagueSheetOpen(true) : undefined}>
-    <div className={`familiar-bowler-pay-page${hasPaymentPartner ? " familiar-bowler-pay-page-partner" : ""}${paymentMode === "upfront" ? " familiar-bowler-pay-page-upfront" : ""}`}>
+  const showPaymentContext = paymentMode !== "upfront" && !isRotatingPoolMember;
+  return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId} onOpenLeagueSheet={openLeagueSheet} mobileLeagueSwitchEnabled={hasMultipleLeagues}>
+    <div className={`familiar-bowler-pay-page${hasPaymentPartner ? " familiar-bowler-pay-page-partner" : ""}${paymentMode === "upfront" ? " familiar-bowler-pay-page-upfront" : ""}${isRotatingPoolMember ? " familiar-bowler-pay-page-rotating" : ""}`}>
       <div className="familiar-bowler-pay-header">
         <h1 className="text-2xl font-bold mb-1">Make a payment</h1>
         {hasPaymentPartner && paymentPartner && <p className="familiar-pay-partner">Payment partner: {paymentPartner.name}</p>}
       </div>
-      {paymentMode === "weekly" && !isRotatingPoolMember && selfParticipant && <section className={`familiar-payment-balance${hasPaymentPartner ? " familiar-payment-balance-partner" : ""}`} aria-label="Payment balance">
-        {hasPaymentPartner && <div className="familiar-balance-heading"><h2>Your balance</h2><small>{selfParticipant.weeklyOptions.at(-1)?.weeks ?? league.totalBowlingWeeks ?? 0} weeks left</small></div>}
-        <div className="familiar-payment-balance-grid">
-          <div><span>Due now</span><strong>{formatPayCurrency(dueNowMinor)}</strong><small>{dueNowCaption}</small></div>
-          <div><span>Remaining</span><strong>{formatPayCurrency(selfParticipant.remainingMinor)}</strong><small>{selfParticipant.weeklyOptions.at(-1)?.weeks ?? 0}{league.totalBowlingWeeks ? ` of ${league.totalBowlingWeeks}` : ""} weeks</small></div>
-        </div>
-      </section>}
-      {paymentMode !== "upfront" && !isRotatingPoolMember && <div className="familiar-autopay-section"><ErrorBoundary level="section"><StandingAutopayCard league={league} bowlerId={bowlerId} savedCards={savedCards} bowlerHasEmail={!!bowlerEmail} card={card} isInitialized={isInitialized && cardEditorMode === "autopay"} cardEditorMode={cardEditorMode} initializeCard={initializeCard} cleanupCard={cleanupCard} onCardEditorModeChange={selectEditorMode} dueNowMinor={selfParticipant?.catchUpAmountMinor ?? selfParticipant?.dueNowMinor} dueNowDataAvailable={selfParticipant !== undefined && ("catchUpAmountMinor" in selfParticipant || "dueNowMinor" in selfParticipant)} combinedCheckoutActive={combinedAutopayMode || !!combinedAutopayConsentRecovery} onPayDueNow={beginCombinedAutopay} partnerAutopayNote={partnerAutopayNote} /></ErrorBoundary></div>}
+      {showPaymentContext && <div className="familiar-pay-context-rail">
+        {paymentMode === "weekly" && selfParticipant && <section className={`familiar-payment-balance${hasPaymentPartner ? " familiar-payment-balance-partner" : ""}`} aria-label="Payment balance">
+          {hasPaymentPartner && <div className="familiar-balance-heading"><h2>Your balance</h2><small>{selfParticipant.weeklyOptions.at(-1)?.weeks ?? league.totalBowlingWeeks ?? 0} weeks left</small></div>}
+          <div className="familiar-payment-balance-grid">
+            <div><span>Due now</span><strong>{formatPayCurrency(dueNowMinor)}</strong><small>{dueNowCaption}</small></div>
+            <div><span>Remaining</span><strong>{formatPayCurrency(selfParticipant.remainingMinor)}</strong><small>{selfParticipant.weeklyOptions.at(-1)?.weeks ?? 0}{league.totalBowlingWeeks ? ` of ${league.totalBowlingWeeks}` : ""} weeks</small></div>
+          </div>
+        </section>}
+        {paymentMode !== "upfront" && <div className="familiar-autopay-section"><ErrorBoundary level="section"><StandingAutopayCard league={league} bowlerId={bowlerId} savedCards={savedCards} bowlerHasEmail={!!bowlerEmail} card={card} isInitialized={isInitialized && cardEditorMode === "autopay"} cardEditorMode={cardEditorMode} initializeCard={initializeCard} cleanupCard={cleanupCard} onCardEditorModeChange={selectEditorMode} dueNowMinor={selfParticipant?.catchUpAmountMinor ?? selfParticipant?.dueNowMinor} dueNowDataAvailable={selfParticipant !== undefined && ("catchUpAmountMinor" in selfParticipant || "dueNowMinor" in selfParticipant)} combinedCheckoutActive={combinedAutopayMode || !!combinedAutopayConsentRecovery} onPayDueNow={beginCombinedAutopay} partnerAutopayNote={partnerAutopayNote} /></ErrorBoundary></div>}
+      </div>}
       {!isRotatingPoolMember && <div className="familiar-one-time-section"><ErrorBoundary level="section">
         {isRecoveryBlocked ? <div role="status" className="rounded-lg border border-warning-500/50 bg-warning-500/5 p-6 text-center"><h2 className="text-lg font-semibold">Payment confirmation in progress</h2><p className="mt-1 text-sm text-muted-foreground">Your previous payment is still being confirmed. Check its status before trying another card.</p><button type="button" className="mt-3 text-sm underline disabled:opacity-50" onClick={retryRecoveryStatus} disabled={paymentRefreshState === "refreshing"}>Check payment status again</button></div> : combinedAutopayConsentRecovery ? <div role="alert" className="flex flex-col gap-3 rounded-lg border border-warning-300 bg-warning-50 p-6 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm text-warning-900">{combinedAutopayConsentRecovery.message}</p><Button type="button" variant="outline" onClick={() => void retryCombinedAutopayConsent()} disabled={isRetryingCombinedConsent}>{isRetryingCombinedConsent ? "Checking status…" : "Retry automatic payments"}</Button></div> : isNoBalanceAvailable && !completedCardPayment ? <div role="status" className="rounded-lg border bg-muted/30 p-6 text-center"><h2 className="text-lg font-semibold">No one-time balance available</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
           key={oneTimeCardEditorKey}
