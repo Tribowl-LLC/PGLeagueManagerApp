@@ -253,7 +253,8 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
   const bowlerHeroStatus = bowlerConfirmed
     ? "Payment confirmed"
     : (evidence.reviewRequired || evidence.dispute.reviewRequired === true ? "Review required" : bowlerDisplayStatus);
-  const bowlerAppliedHeading = hasRecipientNames ? "Applied to each bowler" : "Applied to";
+  const bowlerAppliedHeading = evidence.hasMultipleRecipients === true || hasRecipientNames ? "Applied to each bowler" : "Applied to";
+  const showBowlerAppliedSection = evidence.hasMultipleRecipients === true;
 
   const openReceipt = async () => {
     if (evidence.paymentId === null) return;
@@ -423,7 +424,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
               <div><dt>Method</dt><dd>{paymentTypeLabel(evidence.paymentType, payment?.checkNumber)}</dd></div>
             </dl>
 
-            <section data-payment-details-part="applied" aria-labelledby="bowler-payment-applied-heading">
+            {showBowlerAppliedSection && <section data-payment-details-part="applied" aria-labelledby="bowler-payment-applied-heading">
               <h3 id="bowler-payment-applied-heading">{bowlerAppliedHeading}</h3>
               {appliedAllocations.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{unusedShareCredit
@@ -443,7 +444,6 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
                         {allocation.plannedOrdinal !== null && allocation.plannedOrdinal !== undefined && allocation.occurrenceLocalDate && <small>{formatBowlerLocalDate(allocation.occurrenceLocalDate)}</small>}
                         {allocation.state !== "active" && <small>{allocation.state ?? "unresolved"}</small>}
                         {(allocation.refundedMinor ?? 0) > 0 && <small>Refunded: {formatCurrency(allocation.refundedMinor ?? 0, allocation.currency)}</small>}
-                        {allocation.effectiveAmountMinor !== undefined && <small>Effective: {formatCurrency(allocation.effectiveAmountMinor, allocation.currency)}</small>}
                         {allocation.refundDisposition && <small>Refund disposition: {allocation.refundDisposition.replaceAll("_", " ")}</small>}
                       </span>
                       <strong>{formatBowlerCurrency(allocation.amountMinor, allocation.currency)}</strong>
@@ -451,7 +451,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
                   ))}
                 </div>
               )}
-            </section>
+            </section>}
 
             {showAdditionalSettlementEvidence && (
               <section data-payment-details-part="evidence" aria-label="Additional settlement evidence">

@@ -145,6 +145,8 @@ export interface CanonicalPaymentRow {
   allocations: CanonicalPaymentAllocationRow[];
   /** Safe ordinary-reader summary of the owned canonical applications. */
   appliedTo?: CanonicalPaymentAppliedToRow[];
+  /** True only for an initiating payer whose tender has allocations for multiple bowlers. */
+  hasMultipleRecipients?: boolean;
   correctionEvidence?: { status: "voided"; voidId: string };
   collectionEvidence?: CanonicalCollectionEvidence;
   /** Internal role projection hint; ordinary responses remove it. */

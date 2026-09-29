@@ -110,9 +110,10 @@ describe("PaymentDetailsDialog", () => {
     const bowlerEvidence: NamedPaymentEvidence = {
       ...evidence,
       paidByName: "Alex Payer",
+      hasMultipleRecipients: true,
       allocations: [
-        { ...evidence.allocations[0], bowlerName: "Alex Payer", plannedOrdinal: 1 },
-        { ...evidence.allocations[1], bowlerName: "Partner Bowler", plannedOrdinal: 2 },
+        { ...evidence.allocations[0], bowlerName: "Alex Payer", plannedOrdinal: 1, bowlerId: 42 },
+        { ...evidence.allocations[1], bowlerName: "Partner Bowler", plannedOrdinal: 2, bowlerId: 43 },
       ],
     };
 
@@ -137,6 +138,38 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.getByText("Partner Bowler")).toBeInTheDocument();
     expect(screen.queryByText(/4242|last4|sample/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Receipt" }).parentElement).toHaveAttribute("data-payment-details-part", "footer");
+  });
+
+  it("omits effective child amounts from bowler details while preserving refund evidence", () => {
+    const bowlerEvidence: NamedPaymentEvidence = {
+      ...evidence,
+      allocations: [
+        {
+          ...evidence.allocations[0],
+          bowlerName: "Test Bowler",
+          bowlerId: 42,
+          plannedOrdinal: 1,
+          refundedMinor: 500,
+          effectiveAmountMinor: 2500,
+          refundDisposition: "still_owed",
+        },
+        { ...evidence.allocations[1], bowlerName: "Partner Bowler", bowlerId: 43, plannedOrdinal: 2 },
+      ],
+      hasMultipleRecipients: true,
+    };
+
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={bowlerEvidence}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      variant="bowler"
+      onClose={() => {}}
+    />);
+
+    expect(screen.queryByText("Effective: $25.00")).not.toBeInTheDocument();
+    expect(screen.getByText("Refunded: $5.00")).toBeInTheDocument();
+    expect(screen.getByText("Refund disposition: still owed")).toBeInTheDocument();
   });
 
   it("presents refunded credit as refunded even when its canonical status is confirmed paid", () => {
@@ -194,9 +227,10 @@ describe("PaymentDetailsDialog", () => {
       evidence={{
         ...evidence,
         amountMinor: 5050,
+        hasMultipleRecipients: true,
         allocations: [
           { ...evidence.allocations[0], amountMinor: 3025, plannedOrdinal: 1 },
-          { ...evidence.allocations[1], amountMinor: 2025, plannedOrdinal: 2 },
+          { ...evidence.allocations[1], amountMinor: 2025, plannedOrdinal: 2, bowlerId: 43 },
         ],
       }}
       bowlerName="Test Bowler"
@@ -242,7 +276,8 @@ describe("PaymentDetailsDialog", () => {
 
     expect(screen.getByText("Review required")).toBeInTheDocument();
     expect(screen.queryByText("Payment confirmed")).not.toBeInTheDocument();
-    expect(screen.getByText("No canonical allocation is recorded.")).toBeInTheDocument();
+    expect(screen.queryByText("No canonical allocation is recorded.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "applied" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Payment operation evidence" })).toHaveTextContent("provider unknown");
     expect(screen.getByRole("region", { name: "Collection evidence" })).toHaveTextContent("Double payment");
     expect(screen.queryByText(/occ-internal|plan-internal/)).not.toBeInTheDocument();
@@ -281,6 +316,48 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.getByText("Partner Bowler")).toBeInTheDocument();
     expect(screen.getByText("Week 2")).toBeInTheDocument();
     expect(screen.getByText("$20.00")).toBeInTheDocument();
+  });
+
+  it("keeps effective child amounts in the admin payment breakdown", () => {
+    const adminEvidence: NamedPaymentEvidence = {
+      ...evidence,
+      allocations: [{
+        ...evidence.allocations[0],
+        bowlerName: "Test Bowler",
+        plannedOrdinal: 1,
+        effectiveAmountMinor: 2500,
+      }],
+    };
+
+    render(<PaymentDetailsDialog payment={payment} evidence={adminEvidence} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
+
+    expect(screen.getByText("Effective: $25.00")).toBeInTheDocument();
+  });
+
+  it("hides the applied breakdown for a single-bowler payment", () => {
+    render(<PaymentDetailsDialog
+      payment={null}
+      evidence={{
+        ...evidence,
+        paymentId: null,
+        allocations: [],
+        appliedTo: [{
+          plannedOrdinal: 1,
+          occurrenceLocalDate: "2034-09-03",
+          amountMinor: 5000,
+          currency: "USD",
+          state: "active",
+        }],
+        hasMultipleRecipients: false,
+      }}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      variant="bowler"
+      onClose={() => {}}
+    />);
+
+    expect(screen.queryByRole("region", { name: "applied" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Applied to")).not.toBeInTheDocument();
   });
 
   it("explains unused share credit without presenting it as an unresolved payment or date allocation", () => {
@@ -528,6 +605,7 @@ describe("PaymentDetailsDialog", () => {
       expect.objectContaining({ plannedOrdinal: null, occurrenceLocalDate: "2034-10-01", amountMinor: 1000, state: null }),
     ]);
     expect(redacted.appliedTo?.[0]).not.toHaveProperty("allocationId");
+    expect(redacted.hasMultipleRecipients).toBe(true);
     render(<PaymentDetailsDialog payment={null} evidence={redacted} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
     expect(screen.getByText("Week 3")).toBeInTheDocument();
     expect(screen.getByText("Week 4")).toBeInTheDocument();

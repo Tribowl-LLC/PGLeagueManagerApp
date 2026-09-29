@@ -102,6 +102,48 @@ describe("F5 canonical payment report route", () => {
     expect(participantView.refund.amountMinor).toBe(0);
   });
 
+  it("marks shared recipient coverage only for the initiating payer", () => {
+    const row: CanonicalPaymentRow = {
+      paymentId: 21,
+      leagueId: 7,
+      bowlerId: 42,
+      amountMinor: 3_000,
+      currency: "USD",
+      status: "confirmed_paid",
+      paymentType: "square",
+      businessDate: "2038-01-01",
+      authoritativeLocalDate: "2038-01-01",
+      providerPaymentId: "provider-secret",
+      paymentOperationId: "operation-secret",
+      operationType: "interactive_charge",
+      operationStatus: "succeeded",
+      allocatedMinor: 3_000,
+      unallocatedMinor: 0,
+      reviewRequired: false,
+      source: "canonical_allocation",
+      refund: { present: false, amountMinor: 0, providerRefundId: null },
+      dispute: { present: false, amountMinor: 0, disputeId: null },
+      unresolved: false,
+      receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded" },
+      initiatingPayerBowlerId: 42,
+      allocations: [
+        { allocationId: "allocation-self", obligationId: "obligation-self", occurrenceId: "occurrence-self", bowlerId: 42, amountMinor: 2_000, currency: "USD", state: "active" },
+        { allocationId: "allocation-partner", obligationId: "obligation-partner", occurrenceId: "occurrence-partner", bowlerId: 43, amountMinor: 1_000, currency: "USD", state: "active" },
+      ],
+    };
+
+    const payerView = financialRoute.redactCanonicalPaymentRow(row, 42);
+    const partnerView = financialRoute.redactCanonicalPaymentRow(row, 43);
+    const soloPayerView = financialRoute.redactCanonicalPaymentRow({
+      ...row,
+      allocations: [row.allocations[0]],
+    }, 42);
+
+    expect(payerView.hasMultipleRecipients).toBe(true);
+    expect(partnerView.hasMultipleRecipients).toBe(false);
+    expect(soloPayerView.hasMultipleRecipients).toBe(false);
+  });
+
   it("requires a league and explicit system-admin organization scope", async () => {
     const missingLeague = await get("/payments", user("org_admin", 11));
     expect(missingLeague.status).toBe(400);
