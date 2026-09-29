@@ -53,7 +53,15 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
   const canOpenReceipt = isInitiatingPayer
     && row.paymentId !== null
     && ["confirmed_paid", "refunded", "disputed"].includes(row.status);
-  const { initiatingPayerBowlerId: _initiatingPayerBowlerId, creditRefunds, ...safeRow } = row;
+  const hasMultipleRecipients = isInitiatingPayer
+    ? new Set(row.allocations.map((allocation) => allocation.bowlerId)).size > 1
+    : undefined;
+  const {
+    initiatingPayerBowlerId: _initiatingPayerBowlerId,
+    hasMultipleRecipients: _hasMultipleRecipients,
+    creditRefunds,
+    ...safeRow
+  } = row;
   const appliedTo: CanonicalPaymentAppliedToRow[] = visibleAllocations.map((allocation) => ({
     plannedOrdinal: allocation.plannedOrdinal ?? null,
     occurrenceLocalDate: allocation.occurrenceLocalDate ?? null,
@@ -85,6 +93,7 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     // internal child allocation evidence or interactive controls.
     allocations: [],
     appliedTo,
+    hasMultipleRecipients: hasMultipleRecipients ?? false,
     ...(isInitiatingPayer && creditRefunds ? { creditRefunds } : {}),
     refund: { ...row.refund, amountMinor: safeRefundAmount, providerRefundId: null },
     dispute: { ...row.dispute, amountMinor: safeDisputeAmount, disputeId: null },
