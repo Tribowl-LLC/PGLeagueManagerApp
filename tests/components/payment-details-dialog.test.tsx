@@ -166,6 +166,28 @@ describe("PaymentDetailsDialog", () => {
     expect(hero.querySelector('[data-payment-details-part="hero-icon"]')).toBeNull();
   });
 
+  it("preserves a disputed status for refunded credit", () => {
+    const disputedRefundedCredit: CanonicalPaymentRow = {
+      ...evidence,
+      source: "refunded_credit",
+      status: "disputed",
+      dispute: { present: true, amountMinor: evidence.amountMinor, disputeId: "dispute-1", state: "OPEN" },
+    };
+
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={disputedRefundedCredit}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      variant="bowler"
+      onClose={() => {}}
+    />);
+
+    expect(screen.getByLabelText("Disputed, $50")).toBeInTheDocument();
+    expect(screen.getByText("Disputed", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("Refunded", { exact: true })).not.toBeInTheDocument();
+  });
+
   it("keeps cents in the bowler amount hierarchy", () => {
     render(<PaymentDetailsDialog
       payment={payment}

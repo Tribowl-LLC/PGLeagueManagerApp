@@ -41,9 +41,9 @@ export function paymentEvidenceDisplayStatus(evidence: CanonicalPaymentRow): str
 
 export function paymentEvidenceBowlerDisplayStatus(evidence: CanonicalPaymentRow): string {
   const displayStatus = paymentEvidenceDisplayStatus(evidence);
-  return displayStatus === "Review required" || evidence.source !== "refunded_credit"
-    ? displayStatus
-    : "Refunded";
+  return evidence.source === "refunded_credit" && displayStatus === "Confirmed paid"
+    ? "Refunded"
+    : displayStatus;
 }
 
 function formatCurrency(amountMinor: number, currency: string): string {
