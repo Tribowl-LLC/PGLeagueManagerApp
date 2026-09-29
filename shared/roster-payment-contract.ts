@@ -7,6 +7,7 @@ export const CANONICAL_DUE_PAST_DUE_CONTRACT_V2 = "canonical-due-past-due/2" as 
 export const CANONICAL_DUE_PAST_DUE_CONTRACT_V3 = "canonical-due-past-due/3" as const;
 export const INTERACTIVE_OBLIGATION_QUOTE_CONTRACT_V2 = "interactive-obligation-quote/2" as const;
 export const AUTOMATIC_FIFO_PAYMENT_CONTRACT_V1 = "automatic-fifo-payment/1" as const;
+export const CANONICAL_CASH_PAYMENT_DELETE_CONTRACT_V1 = "canonical-cash-payment-delete/1" as const;
 
 /** Centralized weekly obligation timing; safe for DB-free contract tests. */
 export function calculateRosterPaymentTiming(dueAt: string | Date): { dueAt: string; pastDueAt: string } {
@@ -210,6 +211,15 @@ export const canonicalCorrectionRequestSchema = z.object({
   }
 });
 
+/** Admin-only permanent deletion of a manual cash tender. The command keeps
+ * its idempotency evidence after the tender and allocation rows are removed. */
+export const canonicalCashPaymentDeleteRequestSchema = z.object({
+  paymentId: z.number().int().positive(),
+  reason: z.string().trim().min(1).max(500),
+  idempotencyKey: z.string().trim().min(1).max(255),
+  requestFingerprint: z.string().trim().min(1).max(128),
+}).strict();
+
 export type RosterPaymentResponsibilityRequest = z.infer<typeof rosterPaymentResponsibilityRequestSchema>;
 export type RosterPaymentResponsibilityRequestV2 = z.infer<typeof rosterPaymentResponsibilityRequestV2Schema>;
 export type RotatingOccurrenceAssignmentInput = z.infer<typeof rotatingOccurrenceAssignmentInputSchema>;
@@ -383,3 +393,4 @@ export type CanonicalManualRecordRequest = z.infer<typeof canonicalManualRecordR
 export type CanonicalManualRecordBatchQuoteRequest = z.infer<typeof canonicalManualRecordBatchQuoteRequestSchema>;
 export type CanonicalManualRecordBatchRequest = z.infer<typeof canonicalManualRecordBatchRequestSchema>;
 export type CanonicalCorrectionRequest = z.infer<typeof canonicalCorrectionRequestSchema>;
+export type CanonicalCashPaymentDeleteRequest = z.infer<typeof canonicalCashPaymentDeleteRequestSchema>;

@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => {
   saveRoster: vi.fn(),
   manual: vi.fn(),
   correct: vi.fn(),
+  deleteCash: vi.fn(),
   editCash: vi.fn(),
   repairHistoricalCash: vi.fn(),
   repairHistoricalSquare: vi.fn(),
@@ -57,6 +58,7 @@ vi.mock("../../server/services/roster-payment-core.js", () => ({
   recordOccurrenceResponsibilities: vi.fn(),
   recordCanonicalManualPayment: (...args: unknown[]) => mocks.manual(...args),
   correctCanonicalAllocation: (...args: unknown[]) => mocks.correct(...args),
+  deleteCanonicalCashPayment: (...args: unknown[]) => mocks.deleteCash(...args),
   editCanonicalCashPayment: (...args: unknown[]) => mocks.editCash(...args),
   repairHistoricalCashPaymentAllocation: (...args: unknown[]) => mocks.repairHistoricalCash(...args),
   RosterPaymentError: mocks.RosterPaymentError,
@@ -207,6 +209,75 @@ describe("roster payment route authorization", () => {
     const body = await response.json();
     expect(body.data).toMatchObject({ mode: "edit_cash", originalPaymentId: 12, replacementPaymentId: 13, payment: { id: 13, status: "paid", type: "cash" } });
     expect(body.data).not.toHaveProperty("allocations");
+  });
+
+  it("routes supported cash deletions to the admin-only league-scoped command", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    mocks.deleteCash.mockResolvedValue({
+      contractVersion: "canonical-cash-payment-delete/1",
+      deleted: true,
+      paymentId: 12,
+      paymentType: "cash",
+      previousStatus: "voided",
+      amountMinor: 5000,
+      currency: "USD",
+      reason: "duplicate record",
+      deletedAllocationCount: 2,
+      deletedVoidEvidence: true,
+      restoredObligationIds: ["obligation-1", "obligation-2"],
+    });
+    const response = await request("/leagues/7/canonical/cash-payment-deletions/1", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ paymentId: 12, reason: "duplicate record", idempotencyKey: "cash-delete-1", requestFingerprint: "q" }),
+    });
+    expect(response.status).toBe(201);
+    expect(mocks.deleteCash).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: 11,
+      leagueId: 7,
+      actorUserId: 1,
+      request: expect.objectContaining({ paymentId: 12, reason: "duplicate record", idempotencyKey: "cash-delete-1" }),
+    }));
+    expect((await response.json()).data).toMatchObject({
+      contractVersion: "canonical-cash-payment-delete/1",
+      deleted: true,
+      paymentId: 12,
+      previousStatus: "voided",
+      deletedAllocationCount: 2,
+      deletedVoidEvidence: true,
+      restoredObligationIds: ["obligation-1", "obligation-2"],
+    });
+  });
+
+  it.each([
+    ["user", false],
+    ["payment_manager", true],
+  ])("denies %s before invoking the cash deletion command", async (role, paymentManager) => {
+    mocks.hasAdmin.mockResolvedValue(false);
+    mocks.hasPaymentManager.mockResolvedValue(paymentManager);
+    const response = await request("/leagues/7/canonical/cash-payment-deletions/1", user(role, 11, 42), {
+      method: "POST",
+      body: JSON.stringify({ paymentId: 12, reason: "duplicate record", idempotencyKey: `cash-delete-denied-${role}`, requestFingerprint: "q" }),
+    });
+    expect(response.status).toBe(404);
+    expect(mocks.deleteCash).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed cash deletion requests and cross-tenant leagues before the command", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    const invalid = await request("/leagues/7/canonical/cash-payment-deletions/1", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ paymentId: 12, reason: "  ", idempotencyKey: "cash-delete-invalid", requestFingerprint: "q" }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(mocks.deleteCash).not.toHaveBeenCalled();
+
+    mocks.getLeague.mockResolvedValue({ id: 7, organizationId: 22, payingLineupSize: 3 });
+    const crossTenant = await request("/leagues/7/canonical/cash-payment-deletions/1", user("admin", 11), {
+      method: "POST",
+      body: JSON.stringify({ paymentId: 12, reason: "duplicate record", idempotencyKey: "cash-delete-cross-tenant", requestFingerprint: "q" }),
+    });
+    expect(crossTenant.status).toBe(404);
+    expect(mocks.deleteCash).not.toHaveBeenCalled();
   });
 
   it.each([
