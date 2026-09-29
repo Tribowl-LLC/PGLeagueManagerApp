@@ -324,6 +324,25 @@ describe("PaymentDetailsDialog", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("allows voiding a check without exposing cash-only edit or delete actions", async () => {
+    const user = userEvent.setup();
+    const checkPayment = { ...payment, type: "check" as const, checkNumber: "CHECK-17" };
+    const checkEvidence = { ...evidence, paymentType: "check" as const };
+    render(<PaymentDetailsDialog payment={checkPayment} evidence={checkEvidence} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    expect(screen.getByRole("button", { name: "Void check payment" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Void check payment" }));
+    await user.type(screen.getByRole("textbox", { name: "Correction reason" }), "Entered for the wrong bowler");
+    await user.click(screen.getByRole("button", { name: "Void payment" }));
+
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledTimes(1));
+    const [path, init] = mocks.csrfFetch.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/financials/leagues/7/canonical/corrections/1");
+    expect(JSON.parse(String(init.body))).toMatchObject({ paymentId: 12, correctionMode: "void_only", reason: "Entered for the wrong bowler" });
+  });
+
   it("requires a reason and confirms permanent cash deletion before submitting", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();

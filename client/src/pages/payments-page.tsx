@@ -250,7 +250,7 @@ export default function PaymentsPage() {
         leagueId: row.leagueId,
         amount: row.amountMinor,
         currency: row.currency,
-        status: row.status === "confirmed_paid" ? "paid" : row.status === "disputed" || row.status === "failed" || row.status === "pending" || row.status === "refunded" ? row.status : "pending",
+        status: row.correctionEvidence?.status === "voided" ? "voided" : row.status === "confirmed_paid" ? "paid" : row.status === "disputed" || row.status === "failed" || row.status === "pending" || row.status === "refunded" ? row.status : "pending",
         type: row.paymentType,
         providerPaymentId: null,
         receiptUrl: null,

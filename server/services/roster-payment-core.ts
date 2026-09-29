@@ -2457,6 +2457,10 @@ export async function deleteCanonicalCashPayment(input: {
       eq(refundAllocationAdjustments.leagueId, input.leagueId),
       inArray(refundAllocationAdjustments.sourceAllocationId, allocationIds),
     )).limit(1).for("update");
+    const [refundSnapshot] = await tx.select({ operationId: refundPaymentOperationSnapshots.operationId }).from(refundPaymentOperationSnapshots).where(and(
+      eq(refundPaymentOperationSnapshots.paymentId, payment.id),
+      eq(refundPaymentOperationSnapshots.leagueId, input.leagueId),
+    )).limit(1).for("update");
     const [creditApplication] = await tx.select({ id: rotatingCreditApplications.id }).from(rotatingCreditApplications).where(and(
       eq(rotatingCreditApplications.organizationId, input.organizationId),
       eq(rotatingCreditApplications.leagueId, input.leagueId),
@@ -2467,7 +2471,7 @@ export async function deleteCanonicalCashPayment(input: {
       eq(rotatingCreditApplicationReversals.leagueId, input.leagueId),
       or(eq(rotatingCreditApplicationReversals.fundingPaymentId, payment.id), inArray(rotatingCreditApplicationReversals.allocationId, allocationIds)),
     )).limit(1).for("update");
-    if (correction || refundAdjustment || creditApplication || creditReversal) {
+    if (correction || refundAdjustment || refundSnapshot || creditApplication || creditReversal) {
       throw new RosterPaymentError("CASH_PAYMENT_DELETE_HAS_DEPENDENT_EVIDENCE", "The payment has dependent financial evidence and cannot be permanently deleted", 409);
     }
 
@@ -2490,12 +2494,78 @@ export async function deleteCanonicalCashPayment(input: {
       throw new RosterPaymentError("CASH_PAYMENT_DELETE_UNAVAILABLE", "An affected obligation is no longer available", 409);
     }
 
-    // Existing append-only triggers allow proven payment cleanup only behind
-    // this transaction-local marker. All target rows and dependencies are
-    // already scoped, locked, and validated; keep the marker confined to the
-    // child deletes, balance recomputation, and parent delete below.
+    let voidEvidenceCreated = false;
+    if (payment.status === "paid") {
+      const [voidEvidence] = await tx.insert(paymentVoids).values({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: payment.id,
+        reason: input.request.reason,
+        recordedByUserId: input.actorUserId,
+      }).returning({ id: paymentVoids.id });
+      if (!voidEvidence) throw new RosterPaymentError("PAYMENT_VOID_FAILED", "The payment void could not be recorded", 503);
+      voidEvidenceCreated = true;
+      await tx.update(payments).set({ status: "voided" }).where(and(
+        eq(payments.id, payment.id),
+        eq(payments.organizationId, input.organizationId),
+        eq(payments.leagueId, input.leagueId),
+      ));
+      await tx.update(paymentAllocations).set({ state: "voided" }).where(and(
+        eq(paymentAllocations.organizationId, input.organizationId),
+        eq(paymentAllocations.leagueId, input.leagueId),
+        eq(paymentAllocations.paymentId, payment.id),
+        eq(paymentAllocations.state, "active"),
+      ));
+
+      // Use the ordinary evidence-backed state transitions before deletion.
+      // With the teardown marker enabled the append-only guard returns OLD for
+      // obligation updates, which would leave stale settled/partial balances.
+      for (const obligation of obligations) {
+        const active = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
+          eq(paymentAllocations.organizationId, input.organizationId),
+          eq(paymentAllocations.leagueId, input.leagueId),
+          eq(paymentAllocations.obligationId, obligation.id),
+          eq(paymentAllocations.state, "active"),
+        ));
+        const adjustments = active.length === 0 ? [] : await tx.select({
+          sourceAllocationId: refundAllocationAdjustments.sourceAllocationId,
+          amountMinor: refundAllocationAdjustments.amountMinor,
+          disposition: refundAllocationAdjustments.disposition,
+        }).from(refundAllocationAdjustments).where(and(
+          eq(refundAllocationAdjustments.organizationId, input.organizationId),
+          eq(refundAllocationAdjustments.leagueId, input.leagueId),
+          inArray(refundAllocationAdjustments.sourceAllocationId, active.map((row) => row.id)),
+        ));
+        const balance = canonicalObligationBalance({
+          amountMinor: obligation.amountMinor,
+          state: obligation.state,
+          grossAllocatedMinor: active.reduce((sum, row) => sum + row.amountMinor, 0),
+          adjustments,
+        });
+        const nextState = obligation.state === "voided"
+          ? "voided"
+          : balance.outstandingMinor === 0 ? "settled" : balance.effectiveAllocatedMinor > 0 ? "partially_settled" : "open";
+        const [updatedObligation] = await tx.update(paymentObligations).set({ state: nextState }).where(and(
+          eq(paymentObligations.id, obligation.id),
+          eq(paymentObligations.organizationId, input.organizationId),
+          eq(paymentObligations.leagueId, input.leagueId),
+        )).returning({ id: paymentObligations.id, state: paymentObligations.state });
+        if (!updatedObligation || updatedObligation.state !== nextState) {
+          throw new RosterPaymentError("CASH_PAYMENT_DELETE_REBALANCE_FAILED", "An affected balance could not be restored", 409);
+        }
+      }
+
+      // Conservation guards are deferred so they can validate the complete
+      // temporary void before the evidence is removed below.
+      await tx.execute(sql`SET CONSTRAINTS payment_allocations_conservation, payments_allocation_conservation, payment_voids_allocation_conservation IMMEDIATE`);
+    }
+
+    // Existing append-only triggers permit the narrowly validated child and
+    // parent cleanup only behind this transaction-local marker. Obligation
+    // balances were already restored through their normal evidence-backed
+    // transitions above; previously voided payments need no second update.
     await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
-    if (voidRows.length > 0) {
+    if (voidRows.length > 0 || voidEvidenceCreated) {
       await tx.delete(paymentVoids).where(and(
         eq(paymentVoids.organizationId, input.organizationId),
         eq(paymentVoids.leagueId, input.leagueId),
@@ -2507,39 +2577,6 @@ export async function deleteCanonicalCashPayment(input: {
       eq(paymentAllocations.leagueId, input.leagueId),
       eq(paymentAllocations.paymentId, payment.id),
     ));
-
-    for (const obligation of obligations) {
-      const active = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
-        eq(paymentAllocations.organizationId, input.organizationId),
-        eq(paymentAllocations.leagueId, input.leagueId),
-        eq(paymentAllocations.obligationId, obligation.id),
-        eq(paymentAllocations.state, "active"),
-      ));
-      const adjustments = active.length === 0 ? [] : await tx.select({
-        sourceAllocationId: refundAllocationAdjustments.sourceAllocationId,
-        amountMinor: refundAllocationAdjustments.amountMinor,
-        disposition: refundAllocationAdjustments.disposition,
-      }).from(refundAllocationAdjustments).where(and(
-        eq(refundAllocationAdjustments.organizationId, input.organizationId),
-        eq(refundAllocationAdjustments.leagueId, input.leagueId),
-        inArray(refundAllocationAdjustments.sourceAllocationId, active.map((row) => row.id)),
-      ));
-      const balance = canonicalObligationBalance({
-        amountMinor: obligation.amountMinor,
-        state: obligation.state,
-        grossAllocatedMinor: active.reduce((sum, row) => sum + row.amountMinor, 0),
-        adjustments,
-      });
-      await tx.update(paymentObligations).set({
-        state: obligation.state === "voided"
-          ? "voided"
-          : balance.outstandingMinor === 0 ? "settled" : balance.effectiveAllocatedMinor > 0 ? "partially_settled" : "open",
-      }).where(and(
-        eq(paymentObligations.id, obligation.id),
-        eq(paymentObligations.organizationId, input.organizationId),
-        eq(paymentObligations.leagueId, input.leagueId),
-      ));
-    }
 
     const [deletedPayment] = await tx.delete(payments).where(and(
       eq(payments.id, payment.id),
@@ -2559,6 +2596,9 @@ export async function deleteCanonicalCashPayment(input: {
       currency: payment.currency,
       reason: input.request.reason,
       deletedAllocationCount: allocations.length,
+      // Report whether the payment already had a void record before this
+      // deletion command. Active-payment void evidence is temporary and is
+      // removed together with the payment in this same transaction.
       deletedVoidEvidence: voidRows.length === 1,
       restoredObligationIds: obligationIds,
     };
@@ -2572,7 +2612,12 @@ export async function deleteCanonicalCashPayment(input: {
     return result;
     });
   } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "23503") {
+    const databaseErrorCode = (candidate: unknown): string | null => {
+      if (typeof candidate !== "object" || candidate === null || !("code" in candidate)) return null;
+      return typeof candidate.code === "string" ? candidate.code : null;
+    };
+    const cause = typeof error === "object" && error !== null && "cause" in error ? error.cause : undefined;
+    if (databaseErrorCode(error) === "23503" || databaseErrorCode(cause) === "23503") {
       throw new RosterPaymentError("CASH_PAYMENT_DELETE_HAS_DEPENDENT_EVIDENCE", "The payment has dependent financial evidence and cannot be permanently deleted", 409);
     }
     throw error;

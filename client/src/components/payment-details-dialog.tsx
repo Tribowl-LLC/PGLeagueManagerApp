@@ -157,7 +157,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     || evidence?.source === "prepaid_credit"
     || evidence?.source === "held_credit"
     || evidence?.source === "refunded_credit";
-  const concreteManualCashEvidence = Boolean(
+  const concreteManualTenderEvidence = Boolean(
     canCorrect
       && payment
       && payment.id > 0
@@ -165,8 +165,8 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
       && evidence.paymentId === payment.id
       && evidence.leagueId === payment.leagueId
       && evidence.bowlerId === payment.bowlerId
-      && evidence.paymentType === "cash"
-      && payment.type === "cash"
+      && (payment.type === "cash" || payment.type === "check")
+      && evidence.paymentType === payment.type
       && !isRotatingCreditFunding
       && evidence.source === "canonical_allocation"
       && !evidence.unresolved
@@ -186,6 +186,9 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
       && payment.disputedAt === null
       && evidence.allocations.length > 0,
   );
+  const concreteManualCashEvidence = concreteManualTenderEvidence
+    && payment?.type === "cash"
+    && evidence?.paymentType === "cash";
   const canEditCash = Boolean(
     concreteManualCashEvidence
       && payment?.status === "paid"
@@ -209,7 +212,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
 
   if (!evidence) return null;
 
-  const canVoid = Boolean(concreteManualCashEvidence
+  const canVoid = Boolean(concreteManualTenderEvidence
     && payment?.status === "paid"
     && evidence?.status === "confirmed_paid"
     && evidence?.allocations.every((allocation) => allocation.state === "active"));
@@ -615,7 +618,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
             ) : (
               <div className="flex flex-wrap gap-2">
                 {canEditCash && <Button variant="outline" size="sm" onClick={beginCashEdit}>Edit cash payment</Button>}
-                {canVoid && <Button variant="outline" size="sm" onClick={() => { setEditingMode("void_only"); setEditingCorrection(true); }}>Void cash payment</Button>}
+                {canVoid && <Button variant="outline" size="sm" onClick={() => { setEditingMode("void_only"); setEditingCorrection(true); }}>{payment?.type === "check" ? "Void check payment" : "Void cash payment"}</Button>}
                 {canDeleteCash && <Button variant="destructive" size="sm" onClick={beginCashDelete}>Delete cash payment</Button>}
               </div>
             )}

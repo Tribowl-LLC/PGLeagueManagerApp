@@ -25,6 +25,40 @@ const orphanRow: CanonicalPaymentRow = {
   allocations: [],
 };
 
+const voidedCashRow: CanonicalPaymentRow = {
+  ...orphanRow,
+  paymentId: 73,
+  bowlerId: 42,
+  amountMinor: 3000,
+  currency: "USD",
+  status: "review_required",
+  paymentType: "cash",
+  businessDate: "2034-09-03",
+  authoritativeLocalDate: "2034-09-03",
+  providerPaymentId: null,
+  paymentOperationId: null,
+  operationType: null,
+  operationStatus: null,
+  allocatedMinor: 3000,
+  unallocatedMinor: 0,
+  reviewRequired: false,
+  source: "canonical_allocation",
+  unresolved: false,
+  refund: { present: false, amountMinor: 0, providerRefundId: null },
+  dispute: { present: false, amountMinor: 0, disputeId: null },
+  allocations: [{
+    allocationId: "voided-cash-allocation",
+    obligationId: "voided-cash-obligation",
+    occurrenceId: "voided-cash-occurrence",
+    occurrenceLocalDate: "2034-09-03",
+    bowlerId: 42,
+    amountMinor: 3000,
+    currency: "USD",
+    state: "voided",
+  }],
+  correctionEvidence: { status: "voided", voidId: "voided-cash-void" },
+};
+
 function report(rows: CanonicalPaymentRow[]): CanonicalPaymentReport {
   return {
     contractVersion: "canonical-payment-report/2",
@@ -75,6 +109,17 @@ describe("PaymentsPage canonical evidence presentation", () => {
     renderPage([]);
     expect(await screen.findByRole("heading", { name: "Payments" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Payments needing review" })).not.toBeInTheDocument();
+  });
+
+  it("preserves voided status for canonical-only rows and exposes cash deletion", async () => {
+    const user = userEvent.setup();
+    renderPage([voidedCashRow]);
+
+    await user.click(await screen.findByRole("button", { name: "Void or delete cash payment" }));
+
+    expect(await screen.findByRole("button", { name: "Delete cash payment" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
   });
 
   it("lists only active leagues in the financial scope selector", async () => {
