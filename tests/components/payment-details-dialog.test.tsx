@@ -312,7 +312,7 @@ describe("PaymentDetailsDialog", () => {
     const onClose = vi.fn();
     render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect onClose={onClose} />);
 
-    await user.click(screen.getByRole("button", { name: "Void cash/check payment" }));
+    await user.click(screen.getByRole("button", { name: "Void cash payment" }));
     await user.type(screen.getByRole("textbox", { name: "Correction reason" }), "Entered for the wrong bowler");
     await user.click(screen.getByRole("button", { name: "Void payment" }));
 
@@ -322,6 +322,99 @@ describe("PaymentDetailsDialog", () => {
     expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["/api/payments"] });
     expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["/api/financials/f5/payments"] });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("allows voiding a check without exposing cash-only edit or delete actions", async () => {
+    const user = userEvent.setup();
+    const checkPayment = { ...payment, type: "check" as const, checkNumber: "CHECK-17" };
+    const checkEvidence = { ...evidence, paymentType: "check" as const };
+    render(<PaymentDetailsDialog payment={checkPayment} evidence={checkEvidence} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    expect(screen.getByRole("button", { name: "Void check payment" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Void check payment" }));
+    await user.type(screen.getByRole("textbox", { name: "Correction reason" }), "Entered for the wrong bowler");
+    await user.click(screen.getByRole("button", { name: "Void payment" }));
+
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledTimes(1));
+    const [path, init] = mocks.csrfFetch.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/financials/leagues/7/canonical/corrections/1");
+    expect(JSON.parse(String(init.body))).toMatchObject({ paymentId: 12, correctionMode: "void_only", reason: "Entered for the wrong bowler" });
+  });
+
+  it("requires a reason and confirms permanent cash deletion before submitting", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect onClose={onClose} />);
+
+    await user.click(screen.getByRole("button", { name: "Delete cash payment" }));
+    expect(screen.getByText("Permanently delete this cash payment?")).toBeInTheDocument();
+    expect(screen.getByText(/removes the payment, its allocations, and any void record/i)).toBeInTheDocument();
+    const confirm = screen.getByRole("button", { name: "Permanently delete cash payment" });
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByRole("textbox", { name: "Reason for permanent deletion" }), "Duplicate cash entry");
+    expect(confirm).toBeEnabled();
+    await user.click(confirm);
+
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledTimes(1));
+    const [path, init] = mocks.csrfFetch.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/financials/leagues/7/canonical/cash-payment-deletions/1");
+    expect(init.method).toBe("POST");
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ paymentId: 12, reason: "Duplicate cash entry" });
+    expect(body.idempotencyKey).toEqual((init.headers as Record<string, string>)["Idempotency-Key"]);
+    expect(body.requestFingerprint).toMatch(/^lvcashdelete:v1:[0-9a-f]{64}$/);
+    expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["/api/payments"] });
+    expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["/api/financials/f5/payments"] });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("shows pending and recoverable error states for permanent deletion", async () => {
+    const user = userEvent.setup();
+    let resolveResponse: ((response: Response) => void) | undefined;
+    const pendingRequest = new Promise<Response>((resolve) => { resolveResponse = resolve; });
+    mocks.csrfFetch.mockReturnValueOnce(pendingRequest);
+    render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    await user.click(screen.getByRole("button", { name: "Delete cash payment" }));
+    const reasonInput = screen.getByRole("textbox", { name: "Reason for permanent deletion" });
+    await user.type(reasonInput, "Duplicate cash entry");
+    await user.click(screen.getByRole("button", { name: "Permanently delete cash payment" }));
+
+    expect(screen.getByRole("button", { name: "Deleting…" })).toBeDisabled();
+    expect(reasonInput).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+
+    resolveResponse?.(new Response(JSON.stringify({ error: { message: "Dependent financial evidence prevents deletion" } }), { status: 409 }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Dependent financial evidence prevents deletion");
+    expect(screen.getByRole("textbox", { name: "Reason for permanent deletion" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Permanently delete cash payment" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("allows deleting an already-voided cash row only when canonical void evidence is present", () => {
+    const voidedEvidence = {
+      ...evidence,
+      status: "failed" as const,
+      correctionEvidence: { status: "voided" as const, voidId: "void-1" },
+      allocations: evidence.allocations.map((allocation) => ({ ...allocation, state: "voided" as const })),
+    };
+    render(<PaymentDetailsDialog payment={{ ...payment, status: "voided" }} evidence={voidedEvidence} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    expect(screen.getByRole("button", { name: "Delete cash payment" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+  });
+
+  it("does not offer permanent deletion for a voided payment without matching void evidence", () => {
+    const voidedEvidence = {
+      ...evidence,
+      status: "failed" as const,
+      allocations: evidence.allocations.map((allocation) => ({ ...allocation, state: "voided" as const })),
+    };
+    render(<PaymentDetailsDialog payment={{ ...payment, status: "voided" }} evidence={voidedEvidence} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
   });
 
   it("edits cash amount and date with one retry-stable command", async () => {
@@ -358,7 +451,8 @@ describe("PaymentDetailsDialog", () => {
 
   it("does not offer corrections without permission", () => {
     render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
-    expect(screen.queryByRole("button", { name: "Void cash/check payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
   });
 
   it("hides cash edit and void controls for an allocated rotating-credit funding tender", () => {
@@ -370,7 +464,8 @@ describe("PaymentDetailsDialog", () => {
 
     expect(screen.queryByRole("region", { name: "Payment correction" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Void cash/check payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
   });
 
   it("renders evidence-only details without manufacturing a payment", () => {
@@ -386,7 +481,8 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.getByText("Payment type").parentElement).toHaveTextContent("Check");
     expect(screen.getByText(/Waived roster amount: \$5\.00/)).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Payment operation evidence" })).toHaveTextContent("provider unknown");
-    expect(screen.queryByRole("button", { name: "Void cash/check payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Receipt" })).not.toBeInTheDocument();
   });
 
@@ -442,14 +538,17 @@ describe("PaymentDetailsDialog", () => {
   });
 
   it("fails closed when a paid row has unresolved canonical evidence", () => {
-    render(<PaymentDetailsDialog payment={payment} evidence={{ ...evidence, source: "unresolved_operation", unresolved: true, reviewRequired: true }} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
+    render(<PaymentDetailsDialog payment={payment} evidence={{ ...evidence, source: "unresolved_operation", unresolved: true, reviewRequired: true }} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
     expect(screen.getAllByText("Review required").length).toBeGreaterThan(0);
     expect(screen.queryByText("Confirmed paid")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
   });
 
   it("does not offer manual correction for provider payments", () => {
     render(<PaymentDetailsDialog payment={{ ...payment, type: "credit_card" }} evidence={{ ...evidence, paymentType: "credit_card" }} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
-    expect(screen.queryByRole("button", { name: "Void cash/check payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
   });
 
   it("labels provider card evidence as Credit Card", () => {

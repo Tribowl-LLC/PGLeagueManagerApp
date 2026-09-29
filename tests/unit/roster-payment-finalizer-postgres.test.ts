@@ -17,6 +17,7 @@ import {
   paymentOperationRosterSnapshotItems,
   paymentOperations,
   paymentVoids,
+  refundPaymentOperationSnapshots,
   paymentOperationRosterSnapshots,
   payments,
   rotatingCreditFundings,
@@ -37,7 +38,7 @@ import {
 } from "../../server/services/roster-payment-finalizer";
 import { recoverRosterPaymentOperation, recoverRosterPaymentOperationByRequestKey } from "../../server/services/roster-payment-recovery";
 import { acquireInteractivePaymentOperationDispatchCutoff } from "../../server/storage/payment-operations";
-import { canonicalCashPaymentEditFingerprint, canonicalCorrectionFingerprint, canonicalHistoricalCashAllocationRepairFingerprint, canonicalResponsibilityFingerprint, canonicalRosterFingerprint, chargeInteractiveObligations, correctCanonicalAllocation, editCanonicalCashPayment, historicalCashAllocationFingerprint, quoteInteractiveObligations, recordOccurrenceResponsibilities, repairHistoricalCashPaymentAllocation, saveTeamRoster, type HistoricalCashAllocationRepairRequest } from "../../server/services/roster-payment-core";
+import { canonicalCashPaymentDeleteFingerprint, canonicalCashPaymentEditFingerprint, canonicalCorrectionFingerprint, canonicalHistoricalCashAllocationRepairFingerprint, canonicalResponsibilityFingerprint, canonicalRosterFingerprint, chargeInteractiveObligations, correctCanonicalAllocation, deleteCanonicalCashPayment, editCanonicalCashPayment, historicalCashAllocationFingerprint, quoteInteractiveObligations, recordCanonicalManualPayment, recordOccurrenceResponsibilities, repairHistoricalCashPaymentAllocation, saveTeamRoster, type HistoricalCashAllocationRepairRequest } from "../../server/services/roster-payment-core";
 import { interactivePaymentOperationExecutor } from "../../server/services/interactive-payment-operation-executor";
 import { paymentOperationRetryExecutor } from "../../server/services/payment-operation-retry-executor";
 import { prepareInteractivePaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
@@ -488,6 +489,17 @@ function cashEditRequest(paymentId: number, amountMinor: number, paymentDate: st
   };
   request.requestFingerprint = canonicalCashPaymentEditFingerprint(request);
   return request;
+}
+
+function cashDeleteRequest(paymentId: number, reason = "duplicate cash entry", idempotencyKey = `cash-delete-${randomUUID()}`) {
+  const request = { paymentId, reason, idempotencyKey, requestFingerprint: "" };
+  request.requestFingerprint = canonicalCashPaymentDeleteFingerprint(request);
+  return request;
+}
+
+async function expectCashDeletionMarkerOff() {
+  const marker = await db.execute(sql`SELECT current_setting('leaguevault.organization_teardown', true) AS marker`);
+  expect(marker.rows[0]?.marker).not.toBe("on");
 }
 
 function historicalCashRepairRequest(
@@ -2939,6 +2951,363 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       await expect(editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request })).rejects.toMatchObject({ code: "CASH_EDIT_UNAVAILABLE" });
       const [payment] = await db.select({ status: payments.status }).from(payments).where(eq(payments.id, source.payment.id));
       expect(payment?.status).toBe("paid");
+    });
+  });
+
+  describe("permanent cash payment deletion", () => {
+    it("deletes an active cash payment, preserves another tender, restores the partial balance, and guards both replays", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const manualIdempotencyKey = `manual-delete-${randomUUID()}`;
+      const quote = await quoteInteractiveObligations({ organizationId, leagueId, amountMinor: 1_000, payerBowlerId: bowlerId });
+      const manualRequest = {
+        amountMinor: 1_000,
+        payerBowlerId: bowlerId,
+        type: "cash" as const,
+        idempotencyKey: manualIdempotencyKey,
+        requestFingerprint: quote.fingerprint,
+      };
+      const created = await recordCanonicalManualPayment({ organizationId, leagueId, actorUserId, request: manualRequest });
+      const deletedPayment = created.records[0]?.payment;
+      if (!deletedPayment) throw new Error("manual cash fixture was not created");
+      const remainingTender = await createCashEvidence(fixture.obligation.id, 1_000, "2038-02-02T12:00:00.000Z");
+      const request = cashDeleteRequest(deletedPayment.id);
+      const paymentHistoryBefore = await readCanonicalPaymentReport({ organizationId, leagueId, bowlerId, page: 1, limit: 100 });
+      expect(paymentHistoryBefore.rows.map((row) => row.paymentId)).toContain(deletedPayment.id);
+
+      const result = await deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request });
+
+      expect(result).toMatchObject({
+        contractVersion: "canonical-cash-payment-delete/1",
+        deleted: true,
+        paymentId: deletedPayment.id,
+        previousStatus: "paid",
+        amountMinor: 1_000,
+        reason: request.reason,
+        deletedAllocationCount: 1,
+        deletedVoidEvidence: false,
+        restoredObligationIds: [fixture.obligation.id],
+      });
+      expect(await db.select({ id: payments.id }).from(payments).where(and(
+        eq(payments.organizationId, organizationId),
+        eq(payments.leagueId, leagueId),
+        eq(payments.id, deletedPayment.id),
+      ))).toHaveLength(0);
+      expect(await db.select({ id: paymentVoids.id }).from(paymentVoids).where(eq(paymentVoids.paymentId, deletedPayment.id))).toHaveLength(0);
+      const paymentHistoryAfter = await readCanonicalPaymentReport({ organizationId, leagueId, bowlerId, page: 1, limit: 100 });
+      expect(paymentHistoryAfter.rows.map((row) => row.paymentId)).not.toContain(deletedPayment.id);
+      const activeAllocations = await db.select({ paymentId: paymentAllocations.paymentId, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, leagueId),
+        eq(paymentAllocations.obligationId, fixture.obligation.id),
+        eq(paymentAllocations.state, "active"),
+      ));
+      expect(activeAllocations).toEqual([{ paymentId: remainingTender.payment.id, amountMinor: 1_000 }]);
+      const [obligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
+      expect(obligation?.state).toBe("partially_settled");
+
+      const [deleteCommand] = await db.select({ state: financialCommands.state, result: financialCommands.result }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        eq(financialCommands.commandType, "roster_payment.delete_cash_payment"),
+        eq(financialCommands.idempotencyKey, request.idempotencyKey),
+      ));
+      expect(deleteCommand).toMatchObject({ state: "applied", result: { paymentId: deletedPayment.id, reason: request.reason } });
+      await expect(deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request })).rejects.toMatchObject({ code: "IDEMPOTENCY_REPLAY" });
+      await expect(recordCanonicalManualPayment({ organizationId, leagueId, actorUserId, request: manualRequest })).rejects.toMatchObject({ code: "PAYMENT_COMMAND_TARGET_DELETED" });
+      await expectCashDeletionMarkerOff();
+    });
+
+    it("restores a settled obligation to open when deleting its sole active cash tender", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const source = await createCashEvidence(fixture.obligation.id, 2_000);
+      const [before] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
+      expect(before?.state).toBe("settled");
+
+      await deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: cashDeleteRequest(source.payment.id) });
+
+      const [after] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
+      expect(after?.state).toBe("open");
+      expect(await db.select({ id: paymentVoids.id }).from(paymentVoids).where(eq(paymentVoids.paymentId, source.payment.id))).toHaveLength(0);
+      await expectCashDeletionMarkerOff();
+    });
+
+    it("reopens a partially settled obligation when its only partial cash tender is deleted", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const source = await createCashEvidence(fixture.obligation.id, 1_000);
+      const [before] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
+      expect(before?.state).toBe("partially_settled");
+
+      await deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: cashDeleteRequest(source.payment.id) });
+
+      const [after] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
+      expect(after?.state).toBe("open");
+      await expectCashDeletionMarkerOff();
+    });
+
+    it("does not resolve a payment ID from another league in the same organization", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const otherLeague = await createUpfrontFallbackFixture();
+      const fixture = await otherLeague.createOccurrence();
+      const otherPayment = await db.transaction(async (tx) => {
+        const [payment] = await tx.insert(payments).values({
+          organizationId,
+          bowlerId,
+          leagueId: otherLeague.leagueId,
+          amount: 2_000,
+          currency: "USD",
+          status: "paid",
+          type: "cash",
+        }).returning({ id: payments.id });
+        if (!payment) throw new Error("cross-league payment fixture was not created");
+        await tx.insert(paymentAllocations).values({
+          organizationId,
+          leagueId: otherLeague.leagueId,
+          paymentId: payment.id,
+          obligationId: fixture.obligation.id,
+          amountMinor: 2_000,
+          currency: "USD",
+          recordedByUserId: actorUserId,
+        });
+        await tx.update(paymentObligations).set({ state: "settled" }).where(and(
+          eq(paymentObligations.organizationId, organizationId),
+          eq(paymentObligations.leagueId, otherLeague.leagueId),
+          eq(paymentObligations.id, fixture.obligation.id),
+        ));
+        return payment;
+      });
+      const request = cashDeleteRequest(otherPayment.id);
+
+      await expect(deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request })).rejects.toMatchObject({ code: "NOT_FOUND", status: 404 });
+
+      expect(await db.select({ id: payments.id, status: payments.status }).from(payments).where(eq(payments.id, otherPayment.id))).toEqual([{ id: otherPayment.id, status: "paid" }]);
+      expect(await db.select({ state: paymentAllocations.state }).from(paymentAllocations).where(eq(paymentAllocations.paymentId, otherPayment.id))).toEqual([{ state: "active" }]);
+      expect(await db.select({ id: financialCommands.id }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        eq(financialCommands.commandType, "roster_payment.delete_cash_payment"),
+        eq(financialCommands.idempotencyKey, request.idempotencyKey),
+      ))).toHaveLength(0);
+      await expectCashDeletionMarkerOff();
+
+      await deleteCanonicalCashPayment({ organizationId, leagueId: otherLeague.leagueId, actorUserId, request });
+    });
+
+    it("removes a voided cash payment without restoring its balances twice and rejects an old void replay", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const source = await createCashEvidence(fixture.obligation.id, 2_000);
+      const voidRequest = {
+        paymentId: source.payment.id,
+        correctionMode: "void_only" as const,
+        reason: "duplicate tender",
+        idempotencyKey: `void-before-delete-${randomUUID()}`,
+        requestFingerprint: "",
+      };
+      voidRequest.requestFingerprint = canonicalCorrectionFingerprint(voidRequest);
+      await correctCanonicalAllocation({ organizationId, leagueId, actorUserId, request: voidRequest });
+      const voidedHistory = await readCanonicalPaymentReport({ organizationId, leagueId, bowlerId, page: 1, limit: 100 });
+      expect(voidedHistory.rows.find((row) => row.paymentId === source.payment.id)).toMatchObject({ correctionEvidence: { status: "voided" } });
+      const request = cashDeleteRequest(source.payment.id, "remove the voided duplicate");
+
+      const result = await deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request });
+
+      expect(result).toMatchObject({ previousStatus: "voided", deletedVoidEvidence: true, deletedAllocationCount: 1 });
+      expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.id, source.payment.id))).toHaveLength(0);
+      expect(await db.select({ id: paymentAllocations.id }).from(paymentAllocations).where(eq(paymentAllocations.paymentId, source.payment.id))).toHaveLength(0);
+      expect(await db.select({ id: paymentVoids.id }).from(paymentVoids).where(eq(paymentVoids.paymentId, source.payment.id))).toHaveLength(0);
+      const [obligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
+      expect(obligation?.state).toBe("open");
+      expect(await db.select({ id: financialCommands.id }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        eq(financialCommands.commandType, "roster_payment.void_payment"),
+        eq(financialCommands.idempotencyKey, voidRequest.idempotencyKey),
+      ))).toHaveLength(1);
+      await expect(correctCanonicalAllocation({ organizationId, leagueId, actorUserId, request: voidRequest })).rejects.toMatchObject({ code: "PAYMENT_COMMAND_TARGET_DELETED" });
+      await expectCashDeletionMarkerOff();
+    });
+
+    it("preserves the cash-edit original visibility link and rejects an edit replay after deleting its replacement", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const source = await createCashEvidence(fixture.obligation.id, 2_000);
+      const editRequest = cashEditRequest(source.payment.id, 2_000, "2038-02-20");
+      const edited = await editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: editRequest });
+      const deletion = cashDeleteRequest(edited.replacementPaymentId);
+
+      await deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: deletion });
+
+      const [editCommand] = await db.select({ result: financialCommands.result }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        eq(financialCommands.commandType, "roster_payment.edit_cash_payment"),
+        eq(financialCommands.idempotencyKey, editRequest.idempotencyKey),
+      ));
+      expect(editCommand?.result).toMatchObject({ originalPaymentId: source.payment.id, replacementPaymentId: edited.replacementPaymentId });
+      expect(await getVisiblePaymentByIdForOrganization(source.payment.id, organizationId)).toBeUndefined();
+      expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.id, edited.replacementPaymentId))).toHaveLength(0);
+      await expect(editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: editRequest })).rejects.toMatchObject({ code: "PAYMENT_COMMAND_TARGET_DELETED" });
+    });
+
+    it("rejects rotating-credit funding evidence and retains the tender", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const creditFundingKey = `cash-delete-credit-${randomUUID()}`;
+      const paymentId = await db.transaction(async (tx) => {
+        const [payment] = await tx.insert(payments).values({
+          organizationId,
+          bowlerId,
+          leagueId,
+          amount: 2_000,
+          currency: "USD",
+          status: "paid",
+          type: "cash",
+          idempotencyKey: `${creditFundingKey}:payment`,
+        }).returning({ id: payments.id });
+        if (!payment) throw new Error("rotating-credit dependency fixture was not created");
+        await tx.insert(rotatingCreditFundings).values({
+          organizationId,
+          leagueId,
+          bowlerId,
+          paymentId: payment.id,
+          amountMinor: 2_000,
+          currency: "USD",
+          fundingKind: "cash",
+          idempotencyKey: creditFundingKey,
+          requestFingerprint: `lvrotcrreq:v1:${"a".repeat(64)}`,
+          quoteFingerprint: `lvrotcrquote:v1:${"b".repeat(64)}`,
+          actorUserId,
+        });
+        return payment.id;
+      });
+      const request = cashDeleteRequest(paymentId);
+
+      try {
+        await expect(deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request })).rejects.toMatchObject({ code: "ROTATING_CREDIT_TENDER_IMMUTABLE", status: 409 });
+
+        expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.id, paymentId))).toHaveLength(1);
+        expect(await db.select({ paymentId: rotatingCreditFundings.paymentId }).from(rotatingCreditFundings).where(eq(rotatingCreditFundings.paymentId, paymentId))).toEqual([{ paymentId }]);
+        expect(await db.select({ id: financialCommands.id }).from(financialCommands).where(and(
+          eq(financialCommands.organizationId, organizationId),
+          eq(financialCommands.leagueId, leagueId),
+          eq(financialCommands.commandType, "roster_payment.delete_cash_payment"),
+          eq(financialCommands.idempotencyKey, request.idempotencyKey),
+        ))).toHaveLength(0);
+        await expectCashDeletionMarkerOff();
+      } finally {
+        await db.transaction(async (tx) => {
+          await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+          await tx.delete(rotatingCreditFundings).where(eq(rotatingCreditFundings.paymentId, paymentId));
+          await tx.delete(payments).where(eq(payments.id, paymentId));
+        });
+      }
+    });
+
+    it("rejects restrictive refund snapshot evidence before changing the payment", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const source = await createCashEvidence(fixture.obligation.id, 2_000);
+      const operationId = randomUUID();
+      await db.transaction(async (tx) => {
+        await tx.insert(paymentOperations).values({
+          id: operationId,
+          organizationId,
+          authorizingUserId: actorUserId,
+          operationType: "refund",
+          targetKey: `cash-delete-refund:${operationId}`,
+          leagueId,
+          amountMinor: 2_000,
+          currency: "USD",
+          requestFingerprint: `lvpayreq:v1:${"d".repeat(64)}`,
+          providerIdempotencyKey: `cash-delete-refund-${operationId}`.slice(0, 45),
+          providerName: "square",
+          status: "pending",
+        });
+        await tx.insert(refundPaymentOperationSnapshots).values({
+          operationId,
+          snapshotVersion: 2,
+          snapshotFingerprint: `lvpayexecrf:v2:${"e".repeat(64)}`,
+          paymentId: source.payment.id,
+          leagueId,
+          locationId,
+          encryptedProviderPaymentId: "fixture-encrypted-provider-payment-id",
+          reason: "linked refund operation",
+          requestedByUserId: actorUserId,
+          requestedByRole: "org_admin",
+          requestedByOrganizationId: organizationId,
+          disposition: "still_owed",
+          allocationSnapshot: [{ allocationId: source.allocation.id, obligationId: fixture.obligation.id, amountMinor: 2_000, currency: "USD" }],
+        });
+      });
+      const request = cashDeleteRequest(source.payment.id);
+
+      await expect(deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request })).rejects.toMatchObject({ code: "CASH_PAYMENT_DELETE_HAS_DEPENDENT_EVIDENCE", status: 409 });
+
+      expect(await db.select({ id: payments.id, status: payments.status }).from(payments).where(eq(payments.id, source.payment.id))).toEqual([{ id: source.payment.id, status: "paid" }]);
+      expect(await db.select({ state: paymentAllocations.state }).from(paymentAllocations).where(eq(paymentAllocations.id, source.allocation.id))).toEqual([{ state: "active" }]);
+      expect(await db.select({ operationId: refundPaymentOperationSnapshots.operationId }).from(refundPaymentOperationSnapshots).where(eq(refundPaymentOperationSnapshots.paymentId, source.payment.id))).toEqual([{ operationId }]);
+      await expectCashDeletionMarkerOff();
+    });
+
+    it("rejects reserved obligations before creating temporary void evidence", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const source = await createCashEvidence(fixture.obligation.id, 1_000);
+      await createRosterOperation(fixture.obligation.id, fixture.responsibility.id, 1_000, { withCanonicalPayment: false });
+      const request = cashDeleteRequest(source.payment.id);
+
+      await expect(deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request })).rejects.toMatchObject({ code: "OBLIGATION_RESERVED", status: 409 });
+
+      expect(await db.select({ status: payments.status }).from(payments).where(eq(payments.id, source.payment.id))).toEqual([{ status: "paid" }]);
+      expect(await db.select({ id: paymentVoids.id }).from(paymentVoids).where(eq(paymentVoids.paymentId, source.payment.id))).toHaveLength(0);
+      await expectCashDeletionMarkerOff();
+    });
+
+    it("rejects allocation review flags without changing the cash payment", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const source = await createCashEvidence(fixture.obligation.id, 2_000);
+      await db.update(paymentAllocations).set({ reviewRequired: true, reviewReason: "fixture review" }).where(eq(paymentAllocations.id, source.allocation.id));
+
+      await expect(deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: cashDeleteRequest(source.payment.id) })).rejects.toMatchObject({ code: "CASH_PAYMENT_DELETE_UNAVAILABLE", status: 409 });
+
+      expect(await db.select({ status: payments.status }).from(payments).where(eq(payments.id, source.payment.id))).toEqual([{ status: "paid" }]);
+      expect(await db.select({ state: paymentAllocations.state }).from(paymentAllocations).where(eq(paymentAllocations.id, source.allocation.id))).toEqual([{ state: "active" }]);
+      await expectCashDeletionMarkerOff();
+    });
+
+    it("rolls back removed allocations and restored balances when the final parent delete fails", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const fixture = await createOccurrence();
+      const source = await createCashEvidence(fixture.obligation.id, 2_000);
+      const request = cashDeleteRequest(source.payment.id);
+      await db.execute(sql`CREATE OR REPLACE FUNCTION cash_payment_delete_test_failure()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'simulated restrictive foreign-key dependency' USING ERRCODE = '23503'; END; $$`);
+      await db.execute(sql`CREATE TRIGGER cash_payment_delete_test_failure_trigger
+        BEFORE DELETE ON payments FOR EACH ROW
+        EXECUTE FUNCTION cash_payment_delete_test_failure()`);
+      try {
+        await expect(deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request })).rejects.toMatchObject({ code: "CASH_PAYMENT_DELETE_HAS_DEPENDENT_EVIDENCE", status: 409 });
+      } finally {
+        await db.execute(sql`DROP TRIGGER IF EXISTS cash_payment_delete_test_failure_trigger ON payments`);
+        await db.execute(sql`DROP FUNCTION IF EXISTS cash_payment_delete_test_failure()`);
+      }
+
+      expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.id, source.payment.id))).toHaveLength(1);
+      expect(await db.select({ state: paymentAllocations.state }).from(paymentAllocations).where(eq(paymentAllocations.id, source.allocation.id))).toEqual([{ state: "active" }]);
+      expect(await db.select({ id: paymentVoids.id }).from(paymentVoids).where(eq(paymentVoids.paymentId, source.payment.id))).toHaveLength(0);
+      const [obligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(paymentObligations.id, fixture.obligation.id));
+      expect(obligation?.state).toBe("settled");
+      expect(await db.select({ id: financialCommands.id }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        eq(financialCommands.commandType, "roster_payment.delete_cash_payment"),
+        eq(financialCommands.idempotencyKey, request.idempotencyKey),
+      ))).toHaveLength(0);
+      await expectCashDeletionMarkerOff();
     });
   });
 });

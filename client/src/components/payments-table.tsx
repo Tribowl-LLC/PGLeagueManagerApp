@@ -123,14 +123,43 @@ export function PaymentsTable({
               const canResend = isAdmin
                 && payment.status === 'paid'
                 && (payment.type === 'square' || payment.type === 'credit_card');
-              const canEditCash = isAdmin
+              const hasConcreteCashEvidence = Boolean(isAdmin
                 && !isPaymentManager
-                && payment.status === "paid"
+                && payment.id > 0
                 && payment.type === "cash"
-                && canonicalRow?.status === "confirmed_paid"
+                && canonicalRow
+                && canonicalRow.paymentId === payment.id
+                && canonicalRow.leagueId === payment.leagueId
+                && canonicalRow.bowlerId === payment.bowlerId
+                && canonicalRow.paymentType === "cash"
+                && canonicalRow.source === "canonical_allocation"
+                && !canonicalRow.unresolved
                 && !canonicalRow.reviewRequired
-                && canonicalRow.allocations.length > 0
-                && canonicalRow.allocations.every((allocation) => allocation.state === "active");
+                && canonicalRow.providerPaymentId === null
+                && canonicalRow.paymentOperationId === null
+                && canonicalRow.operationType === null
+                && canonicalRow.operationStatus === null
+                && canonicalRow.creditRefunds === undefined
+                && !canonicalRow.refund.present
+                && !canonicalRow.dispute.present
+                && payment.providerPaymentId === null
+                && payment.paymentOperationId === null
+                && payment.refundedAt === null
+                && payment.squareRefundId === null
+                && payment.refundReason === null
+                && payment.disputeId === null
+                && payment.disputedAt === null
+                && canonicalRow.allocations.length > 0);
+              const canOpenCashActions = Boolean(hasConcreteCashEvidence && canonicalRow && (
+                (payment.status === "paid"
+                  && canonicalRow.status === "confirmed_paid"
+                  && canonicalRow.correctionEvidence === undefined
+                  && canonicalRow.allocations.every((allocation) => allocation.state === "active"))
+                || (payment.status === "voided"
+                  && canonicalRow.correctionEvidence?.status === "voided"
+                  && canonicalRow.allocations.every((allocation) => allocation.state === "voided"))
+              ));
+              const canEditCash = canOpenCashActions && payment.status === "paid";
               const disputes = payment.disputes ?? [];
               const expanded = expandedPaymentIds.has(payment.id);
               return (
@@ -199,6 +228,17 @@ export function PaymentsTable({
                           onClick={() => { setStartDetailsInEdit(true); setDetailsTarget(payment); }}
                         >
                           <Pencil className="size-4" />
+                        </Button>
+                      )}
+                      {canOpenCashActions && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          title="Open cash payment actions"
+                          aria-label="Void or delete cash payment"
+                          onClick={() => { setStartDetailsInEdit(false); setDetailsTarget(payment); }}
+                        >
+                          Void / delete
                         </Button>
                       )}
                       {payment.status === "paid" && isCardPaymentType(payment.type) && isAdmin && !isPaymentManager && (
