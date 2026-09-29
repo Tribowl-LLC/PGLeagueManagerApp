@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Router } from "wouter";
 import { BowlerLayout } from "@/components/bowler-layout";
@@ -17,12 +17,32 @@ afterEach(() => vi.clearAllMocks());
 describe("BowlerLayout payment navigation", () => {
   it("renders four equal navigation items with deterministic league links and active state", () => {
     renderLayout();
-    expect(screen.getByRole("navigation").firstElementChild).toHaveClass("grid-cols-4");
-    expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("href", "/bowler-dashboard");
-    expect(screen.getByRole("link", { name: "Make Payment" })).toHaveAttribute("href", "/make-payment?leagueId=17");
-    expect(screen.getByRole("link", { name: "Payment History" })).toHaveAttribute("href", "/payment-history?leagueId=17");
-    expect(screen.getByRole("link", { name: "Profile" })).toHaveAttribute("href", "/profile");
-    expect(screen.getByRole("link", { name: "Make Payment" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "Payment History" })).not.toHaveAttribute("aria-current", "page");
+    const navigations = screen.getAllByRole("navigation", { name: "Bowler navigation" });
+    expect(navigations).toHaveLength(2);
+
+    const desktopNavigation = navigations.find((navigation) => navigation.classList.contains("familiar-bowler-desktop-nav"));
+    const mobileNavigation = navigations.find((navigation) => navigation.classList.contains("familiar-bowler-mobile-nav"));
+    expect(desktopNavigation).toBeDefined();
+    expect(mobileNavigation).toBeDefined();
+    if (!desktopNavigation || !mobileNavigation) return;
+
+    const desktopLinks = within(desktopNavigation);
+    const mobileLinks = within(mobileNavigation);
+    expect(mobileNavigation.firstElementChild).toHaveClass("grid-cols-4");
+
+    expect(mobileLinks.getByRole("link", { name: "Overview" })).toHaveAttribute("href", "/bowler-dashboard");
+    expect(mobileLinks.getByRole("link", { name: "Make Payment" })).toHaveAttribute("href", "/make-payment?leagueId=17");
+    expect(mobileLinks.getByRole("link", { name: "Payment History" })).toHaveAttribute("href", "/payment-history?leagueId=17");
+    expect(mobileLinks.getByRole("link", { name: "Profile" })).toHaveAttribute("href", "/profile");
+    expect(mobileLinks.getByRole("link", { name: "Make Payment" })).toHaveAttribute("aria-current", "page");
+    expect(mobileLinks.getByRole("link", { name: "Payment History" })).not.toHaveAttribute("aria-current", "page");
+
+    expect(desktopLinks.getByRole("link", { name: "Overview" })).toHaveAttribute("href", "/bowler-dashboard");
+    expect(desktopLinks.getByRole("link", { name: "Pay" })).toHaveAttribute("href", "/make-payment?leagueId=17");
+    expect(desktopLinks.getByRole("link", { name: "History" })).toHaveAttribute("href", "/payment-history?leagueId=17");
+    expect(desktopLinks.getByRole("link", { name: "Pay" })).toHaveAttribute("aria-current", "page");
+    expect(desktopLinks.getByRole("link", { name: "History" })).not.toHaveAttribute("aria-current", "page");
+    expect(desktopLinks.getByRole("link", { name: "Profile for Bowler" })).toHaveAttribute("href", "/profile");
+    expect(desktopLinks.getByRole("link", { name: "Profile for Bowler" })).not.toHaveAttribute("aria-current", "page");
   });
 });

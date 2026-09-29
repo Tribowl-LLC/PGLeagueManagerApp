@@ -440,7 +440,7 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(reviewButton).not.toHaveClass("ml-auto");
     expect(reviewButton.querySelector("svg")).toBeInTheDocument();
     expect(reviewButton.querySelector("svg")).not.toHaveClass("size-4");
-    expect(document.querySelector(".familiar-one-time-card > div:last-child > button:last-child")).toBe(reviewButton);
+    expect(document.querySelector(".familiar-one-time-card")).toContainElement(reviewButton);
   });
 
   it("shows Save card for later only when a new card is selected and stored", () => {

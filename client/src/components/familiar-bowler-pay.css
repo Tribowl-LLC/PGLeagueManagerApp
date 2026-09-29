@@ -28,6 +28,10 @@
   margin-top: 0 !important;
 }
 
+.familiar-bowler-pay-page-partner .familiar-autopay-section {
+  margin-top: 0 !important;
+}
+
 .familiar-bowler-pay-page-upfront.familiar-bowler-pay-page-partner {
   gap: 23px;
 }
@@ -571,6 +575,34 @@
   overflow: hidden;
 }
 
+.familiar-payment-method-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.familiar-payment-details-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.familiar-payment-method-column > button:last-child {
+  align-items: center;
+  display: flex;
+  font-size: 15px;
+  font-weight: 650;
+  gap: 10px;
+  justify-content: center;
+  min-height: 50px;
+}
+
+.familiar-payment-method-column > button:last-child > svg {
+  height: 18px;
+  width: 18px;
+}
+
 .familiar-source-label {
   color: var(--familiar-pay-ink);
   font-size: 12px;
@@ -1010,5 +1042,256 @@
   .familiar-recipient-card,
   .familiar-source-trigger > svg {
     transition: none;
+  }
+}
+
+/* Familiar A desktop Pay composition. The context rail is kept as a real
+   grouping in the page markup so its balance and automatic-payment sections
+   stay together when the checkout moves beside it. */
+.familiar-pay-context-rail {
+  display: contents;
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .familiar-bowler-pay-page {
+    width: min(100%, 680px);
+    max-width: 680px;
+    margin-inline: auto;
+  }
+}
+
+@media (min-width: 1024px) {
+  .familiar-bowler-pay-page {
+    width: min(762px, calc(100% - 32px));
+    max-width: 762px;
+    margin-inline: auto;
+    display: grid;
+    grid-template-columns: 270px minmax(0, 460px);
+    column-gap: 32px;
+    row-gap: 18px;
+    align-items: start;
+    padding-bottom: 48px;
+  }
+
+  .familiar-bowler-pay-header {
+    grid-column: 1 / -1;
+    padding-top: 24px;
+    margin-bottom: 0;
+  }
+
+  .familiar-pay-context-rail {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 24px;
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .familiar-pay-context-rail > .familiar-payment-balance,
+  .familiar-pay-context-rail > .familiar-autopay-section {
+    width: 100%;
+    min-width: 0;
+    margin: 0 !important;
+  }
+
+  .familiar-one-time-section {
+    grid-column: 2;
+    grid-row: 2;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .familiar-one-time-card,
+  .familiar-rotating-card {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .familiar-payment-balance-grid {
+    background: rgb(100 116 139 / 0.045);
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .familiar-payment-balance-grid > div {
+    padding: 15px 16px;
+  }
+
+  .familiar-payment-balance-grid > div + div {
+    border-top: 1px solid var(--familiar-pay-line);
+    border-left: 0;
+  }
+
+  .familiar-payment-balance-grid strong {
+    font-size: 25px;
+  }
+
+  .familiar-payment-balance-partner .familiar-payment-balance-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .familiar-payment-balance-partner .familiar-payment-balance-grid > div + div {
+    border-top: 0;
+    border-left: 1px solid var(--familiar-pay-line);
+  }
+
+  .familiar-standing-autopay-card {
+    width: 100%;
+  }
+
+  .familiar-bowler-pay-page-upfront {
+    display: block;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-bowler-pay-header,
+  .familiar-bowler-pay-page-upfront .familiar-one-time-section {
+    width: 100%;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-bowler-pay-header {
+    margin-bottom: 18px;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] {
+    display: grid;
+    grid-template-columns: minmax(250px, 280px) minmax(0, 1fr);
+    column-gap: 32px;
+    align-items: start;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:first-child {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(250px, 280px) minmax(0, 1fr);
+    column-gap: 32px;
+    margin-bottom: 16px;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:first-child > h3 {
+    grid-column: 1 / -1;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:first-child > p {
+    grid-column: 1;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:last-child {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(250px, 280px) minmax(0, 1fr);
+    column-gap: 32px;
+    row-gap: 0;
+    align-items: start;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:last-child > * {
+    margin-top: 0 !important;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:last-child > .familiar-payment-details-column {
+    align-content: start;
+    grid-column: 1;
+    grid-row: 1;
+    margin-top: 0 !important;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:last-child > .familiar-payment-method-column {
+    align-content: start;
+    display: grid;
+    gap: 16px;
+    grid-column: 2;
+    grid-row: 1;
+    margin-top: 0 !important;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] > div:last-child > .familiar-payment-method-column > * {
+    grid-column: auto;
+    margin-top: 0 !important;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-header-payment-total {
+    border-bottom: 1px solid var(--familiar-pay-line);
+    margin-top: 0 !important;
+    padding-bottom: 14px;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-payment-coverage {
+    margin: 14px 0 2px !important;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-wallets {
+    display: grid;
+    gap: 9px;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-source-label {
+    margin-top: 0 !important;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-source-picker {
+    margin-top: 0 !important;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-source-picker:has(.familiar-source-menu) {
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-source-picker:has(.familiar-source-menu) > .familiar-source-trigger {
+    display: none;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-source-menu {
+    display: grid;
+    gap: 7px;
+    border-top: 0;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-source-option {
+    border: 1px solid var(--familiar-pay-line);
+    border-radius: 8px;
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-source-option:last-of-type {
+    border-bottom: 1px solid var(--familiar-pay-line);
+  }
+
+  .familiar-bowler-pay-page-upfront .familiar-one-time-card[data-full-balance="true"] .familiar-card-editor {
+    border: 1px solid var(--familiar-pay-line);
+    border-radius: 8px;
+  }
+
+  .familiar-bowler-pay-page-rotating {
+    display: block;
+    width: min(440px, calc(100% - 32px));
+    max-width: 440px;
+  }
+
+  .familiar-bowler-pay-page-rotating .familiar-bowler-pay-header {
+    margin-bottom: 18px;
+  }
+
+  .familiar-bowler-pay-page-rotating .familiar-rotating-card {
+    max-width: 440px;
+  }
+}
+
+@media (max-width: 1023px) {
+  .familiar-payment-details-column,
+  .familiar-payment-method-column {
+    display: contents;
+  }
+
+  .familiar-payment-details-column > *:not(.familiar-payment-coverage) {
+    margin-bottom: 16px;
+  }
+
+  .familiar-payment-method-column > *:not(:last-child):not(.familiar-source-label) {
+    margin-bottom: 16px;
+  }
+
+  .familiar-payment-method-column > .familiar-source-label {
+    margin-bottom: 6px;
   }
 }

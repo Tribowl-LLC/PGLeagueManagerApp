@@ -400,6 +400,8 @@
 @utility familiar-profile-fields { --lv-familiar-profile-component: 1; }
 @utility familiar-profile-field-row { --lv-familiar-profile-component: 1; }
 @utility familiar-profile-field-row--last { --lv-familiar-profile-component: 1; }
+@utility familiar-bowler-league-sheet { --lv-familiar-shell-component: 1; }
+@utility familiar-bowler-league-panel { --lv-familiar-shell-component: 1; }
 @utility familiar-payment-review-dialog { --lv-familiar-pay-component: 1; }
 @utility familiar-payment-review-header { --lv-familiar-pay-component: 1; }
 @utility familiar-payment-review-details { --lv-familiar-pay-component: 1; }
@@ -477,3 +479,7 @@
 @utility familiar-upfront-recipient-row { --lv-familiar-pay-component: 1; }
 @utility familiar-upfront-recipient-summary { --lv-familiar-pay-component: 1; }
 @utility familiar-primary-payment-total { --lv-familiar-pay-component: 1; }
+@utility familiar-bowler-pay-page-rotating { --lv-familiar-pay-component: 1; }
+@utility familiar-pay-context-rail { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-details-column { --lv-familiar-pay-component: 1; }
+@utility familiar-payment-method-column { --lv-familiar-pay-component: 1; }

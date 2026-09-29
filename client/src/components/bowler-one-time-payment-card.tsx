@@ -423,13 +423,14 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     <Card data-testid="one-time-payment-card" data-full-balance={fullBalanceOnly ? "true" : undefined} data-rotating-mode={rotatingMode ? "true" : undefined} className="familiar-one-time-card familiar-partner-one-time-card">
       <CardHeader>
         <CardTitle>{fullBalanceOnly ? "Full season payment" : "One-time payment"}</CardTitle>
-        {fullBalanceOnly && <div className="familiar-header-payment-total"><span>Payment total</span><strong>{formatPayCurrency(paymentAmountMinor)}</strong></div>}
         {showRecipientChooser && !fullBalanceOnly && <CardDescription>Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.</CardDescription>}
         {showRecipientChooser && fullBalanceOnly && <CardDescription>Pay for</CardDescription>}
         {!showRecipientChooser && !fullBalanceOnly && <CardDescription>Payments cover your oldest unpaid weeks first.</CardDescription>}
         {dueNowOnly && <CardDescription>Pay the amount needed to get up to date and enable automatic payments in one checkout.</CardDescription>}
       </CardHeader>
       <CardContent spacing="normal">
+        <div className="familiar-payment-details-column">
+        {fullBalanceOnly && <div className="familiar-header-payment-total"><span>Payment total</span><strong>{formatPayCurrency(paymentAmountMinor)}</strong></div>}
         {dueNowOnly && <Alert role="status"><AlertDescription><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><span>We'll confirm automatic-payment setup after this payment.</span>{onCancelDueNow && <Button type="button" variant="ghost" size="sm" onClick={onCancelDueNow} disabled={paymentInFlight}>Cancel</Button>}</div></AlertDescription></Alert>}
         {combinedConsentRecovery && <Alert variant="destructive" role="alert"><AlertDescription><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><span>{combinedConsentRecovery.message}</span><Button type="button" variant="outline" size="sm" onClick={combinedConsentRecovery.onRetry} disabled={combinedConsentRecovery.isRetrying}>{combinedConsentRecovery.isRetrying ? "Checking status…" : "Retry automatic payments"}</Button></div></AlertDescription></Alert>}
         <fieldset className="flex flex-col gap-3" aria-label="Payment recipients">
@@ -512,7 +513,9 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
             </div>
           )}
         </div>
+        </div>
 
+        <div className="familiar-payment-method-column">
         {!dueNowOnly && <div className="familiar-wallets" aria-label="Device wallets">
           {!applePayTokenizeOnly && applePayRef && <div ref={applePayRef} className={applePayAvailable ? "min-h-12 overflow-hidden rounded-md bg-black" : "hidden"} />}
           {applePayAvailable && applePayTokenizeOnly && <button type="button" aria-label="Pay with Apple Pay" onClick={() => void onApplePayClick()} disabled={paymentInFlight} className="wallet-button h-12 disabled:opacity-50"><span className="text-xl font-medium text-white"> Pay</span></button>}
@@ -563,6 +566,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
         <Button type="button" onClick={openReview} disabled={reviewDisabled} aria-haspopup="dialog" className="w-full">
           {isSubmitting ? <><Loader2 className="mr-2 size-4 animate-spin" />Processing…</> : <>{fullBalanceOnly ? "Review payment" : paymentAmountMinor > 0 ? `Review payment of ${formatPayCurrency(paymentAmountMinor)}` : "Review payment"}<ArrowRight aria-hidden="true" /></>}
         </Button>
+        </div>
       </CardContent>
     </Card>
   );
