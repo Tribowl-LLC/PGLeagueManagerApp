@@ -28,7 +28,7 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
-    variant?: "default" | "flush"
+    variant?: "default" | "flush" | "bowlerReceipt"
     viewport?: "dialog" | "tall"
   }
 >(({ className, children, variant, viewport, ...props }, ref) => (
@@ -43,6 +43,7 @@ const DialogContent = React.forwardRef<
         viewport === "tall" && "max-h-tall-dialog-viewport",
         className
       )}
+      data-payment-details-variant={variant === "bowlerReceipt" ? "bowler" : undefined}
       {...props}
     >
       {children}

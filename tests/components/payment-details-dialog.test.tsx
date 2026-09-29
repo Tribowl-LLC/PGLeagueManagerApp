@@ -126,7 +126,7 @@ describe("PaymentDetailsDialog", () => {
       onClose={() => {}}
     />);
 
-    expect(screen.getByRole("dialog", { name: "Payment details" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Payment details" })).toHaveAttribute("data-payment-details-variant", "bowler");
     expect(screen.getByText("Payment confirmed")).toBeInTheDocument();
     expect(screen.getByText("$50")).toBeInTheDocument();
     expect(screen.getByText("Wednesday Night")).toBeInTheDocument();

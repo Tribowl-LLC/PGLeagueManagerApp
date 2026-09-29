@@ -311,7 +311,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !correctionBusy) onClose(); }}>
-      <DialogContent aria-describedby={undefined} viewport="dialog" className="overflow-y-auto sm:max-w-lg" data-payment-details-variant={variant}>
+      <DialogContent aria-describedby={undefined} viewport="dialog" className="overflow-y-auto sm:max-w-lg" variant={variant === "bowler" ? "bowlerReceipt" : undefined}>
         {variant === "bowler" ? (
           <>
             <DialogHeader data-payment-details-part="header">
