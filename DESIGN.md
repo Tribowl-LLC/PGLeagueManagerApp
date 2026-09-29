@@ -511,6 +511,9 @@ with a responsive content width. This direction does not change the admin UI.
   when positive. Rotating bowlers see Paid and Past Due only. The next bowling
   date does not appear between these cards.
 - **Pay:** Place Automatic payments above One-time payment when eligible.
+  On desktop weekly-payment pages, Automatic payments starts below the page
+  title in the left column. Due now and Remaining sit above One-time payment
+  in the right column. Keep the approved mobile order.
   The one-time selector changes a single coverage sentence as weeks are added;
   double-pay weeks include the applicable final weeks. Saved-card selection
   also offers an available device wallet and a new-card path. Upfront leagues
@@ -519,6 +522,9 @@ with a responsive content width. This direction does not change the admin UI.
   summary boxes or automatic-payment setup; its coverage sentence describes
   the selected number of weeks. Provider-generated wallet confirmation remains
   native to the provider.
+- **League switching:** Across bowler pages, list only active bowler memberships
+  in active leagues. Archived leagues do not appear in the switcher; this does
+  not change existing direct links to archived History views.
 - **History:** Show a Weeks paid line (`x/y weeks`) above the Season totals,
   using active canonical obligations rather than money or weekly-fee math.
   Follow it with Transactions. A confirmed self-only payment covering several

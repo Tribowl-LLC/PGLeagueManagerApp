@@ -1035,9 +1035,8 @@
   }
 }
 
-/* Familiar A desktop Pay composition. The context rail is kept as a real
-   grouping in the page markup so its balance and automatic-payment sections
-   stay together when the checkout moves beside it. */
+/* Familiar A desktop Pay composition. Keep the context rail in the markup for
+   mobile order, then let its sections occupy the desktop page grid directly. */
 .familiar-pay-context-rail {
   display: contents;
 }
@@ -1069,25 +1068,27 @@
     margin-bottom: 0;
   }
 
-  .familiar-pay-context-rail {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 24px;
-    grid-column: 1;
-    grid-row: 2;
-  }
-
-  .familiar-pay-context-rail > .familiar-payment-balance,
-  .familiar-pay-context-rail > .familiar-autopay-section {
+  .familiar-payment-balance,
+  .familiar-autopay-section {
     width: 100%;
     min-width: 0;
     margin: 0 !important;
   }
 
-  .familiar-one-time-section {
+  .familiar-payment-balance {
     grid-column: 2;
     grid-row: 2;
+  }
+
+  .familiar-autopay-section {
+    grid-column: 1;
+    grid-row: 2 / span 2;
+    align-self: start;
+  }
+
+  .familiar-one-time-section {
+    grid-column: 2;
+    grid-row: 3;
     width: 100%;
     min-width: 0;
   }
