@@ -204,7 +204,7 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
           </div>
         </main>
 
-        <nav className="familiar-bowler-mobile-nav flex-none bg-white border-t border-navigation-200 z-20 mobile-navigation-shadow">
+        <nav className="familiar-bowler-mobile-nav flex-none bg-white border-t border-navigation-200 z-20 mobile-navigation-shadow" aria-label="Bowler navigation">
           <div className="grid grid-cols-4 w-full items-center gap-1 px-2 pt-2 pb-safe-area">
             {navItems.map((item) => {
               const isActive = isNavItemActive(item);

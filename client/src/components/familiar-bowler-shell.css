@@ -1471,10 +1471,17 @@ a.familiar-payment-summary__value:hover {
   }
 
   .familiar-bowler-shell .familiar-bowler-league-panel {
+    display: flex;
+    flex-direction: column;
     width: min(100%, 480px);
     max-height: min(640px, calc(100vh - 64px));
     border-radius: 16px;
     pointer-events: auto;
+  }
+
+  .familiar-bowler-shell .familiar-bowler-league-panel > .overflow-y-auto {
+    min-height: 0;
+    flex: 1 1 auto;
   }
 
   .familiar-bowler-shell .familiar-bowler-league-panel .bg-brand-accent-50 {
