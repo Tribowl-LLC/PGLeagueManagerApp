@@ -4,9 +4,12 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   bowlers,
   bowlerLeagues,
+  canonicalCollectionGroupMembers,
+  canonicalCollectionGroups,
   financialCommands,
   leagueOccurrences,
   leagueOccurrenceBillingTerms,
+  leagueOccurrenceGenerationRuns,
   leagueScheduleCommands,
   leagues,
   locations,
@@ -60,6 +63,9 @@ let teamId: number;
 let bowlerId: number;
 let actorUserId: number;
 let occurrenceOrdinal = 0;
+let occurrenceFixtureIdentity = 0;
+let historyProjectionFixtureState: { canonicalScheduleRevision: number } | null = null;
+const activeTestGenerationRunIds: string[] = [];
 
 function requirePayerBowlerId(payerBowlerId: number | null): number {
   if (payerBowlerId === null) throw new Error("Expected a bowler-owned roster obligation");
@@ -118,6 +124,33 @@ afterAll(async () => {
 // with no historical debt; settled/payment evidence remains immutable.
 afterEach(async () => {
   if (!organizationId) return;
+  for (const runId of activeTestGenerationRunIds.splice(0)) {
+    const [run] = await db.select({ state: leagueOccurrenceGenerationRuns.state }).from(leagueOccurrenceGenerationRuns).where(and(
+      eq(leagueOccurrenceGenerationRuns.organizationId, organizationId),
+      eq(leagueOccurrenceGenerationRuns.leagueId, leagueId),
+      eq(leagueOccurrenceGenerationRuns.id, runId),
+    ));
+    if (run?.state !== "approved" && run?.state !== "applied") continue;
+    const commandId = randomUUID();
+    await db.insert(leagueScheduleCommands).values({
+      id: commandId,
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandType: "edit_schedule",
+      idempotencyKey: `roster-finalizer-run-cleanup-${runId}`,
+      requestFingerprint: `roster-finalizer-run-cleanup-${randomUUID()}`,
+    });
+    await db.update(leagueOccurrenceGenerationRuns).set({
+      state: "superseded",
+      supersededAt: new Date().toISOString(),
+      supersededByCommandId: commandId,
+    }).where(and(
+      eq(leagueOccurrenceGenerationRuns.organizationId, organizationId),
+      eq(leagueOccurrenceGenerationRuns.leagueId, leagueId),
+      eq(leagueOccurrenceGenerationRuns.id, runId),
+    ));
+  }
   await db.update(paymentOperationRosterSnapshotItems).set({ state: "released" }).where(and(
     eq(paymentOperationRosterSnapshotItems.organizationId, organizationId),
     eq(paymentOperationRosterSnapshotItems.state, "reserved"),
@@ -146,10 +179,23 @@ afterEach(async () => {
     eq(occurrencePaymentResponsibilities.organizationId, organizationId),
     eq(occurrencePaymentResponsibilities.state, "active"),
   ));
+  if (historyProjectionFixtureState) {
+    await db.update(leagues).set({ canonicalScheduleRevision: historyProjectionFixtureState.canonicalScheduleRevision }).where(and(
+      eq(leagues.id, leagueId),
+      eq(leagues.organizationId, organizationId),
+    ));
+    historyProjectionFixtureState = null;
+  }
 });
 
-async function createOccurrence() {
-  occurrenceOrdinal += 1;
+async function createOccurrence(options: {
+  preserveOccurrenceOrdinal?: boolean;
+  plannedOrdinal?: number;
+  authoritativeLocalDate?: string;
+} = {}) {
+  if (!options.preserveOccurrenceOrdinal) occurrenceOrdinal += 1;
+  occurrenceFixtureIdentity += 1;
+  const plannedOrdinal = options.plannedOrdinal ?? occurrenceOrdinal;
   const commandId = randomUUID();
   await db.insert(leagueScheduleCommands).values({
     id: commandId,
@@ -157,33 +203,35 @@ async function createOccurrence() {
     leagueId,
     actorUserId,
     commandType: "publish",
-    idempotencyKey: `roster-finalizer-publish-${suffix}-${occurrenceOrdinal}`,
-    requestFingerprint: `roster-finalizer-fingerprint-${occurrenceOrdinal}`,
+    idempotencyKey: `roster-finalizer-publish-${suffix}-${occurrenceFixtureIdentity}`,
+    requestFingerprint: `roster-finalizer-fingerprint-${occurrenceFixtureIdentity}`,
   });
-  const startAt = new Date(Date.UTC(2038, 1, occurrenceOrdinal + 1, 19, 0, 0)).toISOString();
+  const authoritativeLocalDate = options.authoritativeLocalDate
+    ?? new Date(Date.UTC(2038, 1, occurrenceOrdinal + 1, 19, 0, 0)).toISOString().slice(0, 10);
+  const startAt = new Date(`${authoritativeLocalDate}T19:00:00.000Z`).toISOString();
   const [occurrence] = await db.insert(leagueOccurrences).values({
     organizationId,
     leagueId,
     locationId,
-    generationKey: `roster-finalizer-occurrence-${suffix}-${occurrenceOrdinal}`,
+    generationKey: `roster-finalizer-occurrence-${suffix}-${occurrenceFixtureIdentity}`,
     kind: "regular",
     status: "scheduled",
     lifecycle: "published",
-    authoritativeLocalDate: startAt.slice(0, 10),
+    authoritativeLocalDate,
     authoritativeLocalStartTime: "19:00:00",
     timezone: "UTC",
     startAt,
     selectedUtcOffsetMinutes: 0,
     foldResolution: "unambiguous",
     resolverVersion: "roster-finalizer-test",
-    plannedOrdinal: occurrenceOrdinal,
-    competitionNumber: occurrenceOrdinal,
+    plannedOrdinal,
+    competitionNumber: plannedOrdinal,
     competitive: true,
     countsInStandings: true,
     publishedAt: startAt,
     publishedByUserId: actorUserId,
     publicationCommandId: commandId,
-  }).returning({ id: leagueOccurrences.id });
+  }).returning({ id: leagueOccurrences.id, authoritativeLocalDate: leagueOccurrences.authoritativeLocalDate, startAt: leagueOccurrences.startAt });
   await db.insert(leagueOccurrenceBillingTerms).values({
     organizationId,
     leagueId,
@@ -192,7 +240,7 @@ async function createOccurrence() {
     obligationPolicy: "eligible_bowlers",
     defaultAmountMinor: 2_000,
     currency: "USD",
-    billingOrdinal: occurrenceOrdinal,
+    billingOrdinal: plannedOrdinal,
     version: 1,
     state: "published",
     publishedAt: startAt,
@@ -215,10 +263,160 @@ async function createOccurrence() {
   return { occurrence, responsibility, obligation };
 }
 
-async function resetBaseRosterToWeeklyMain(): Promise<void> {
+async function createAppliedGenerationRun(occurrences: Awaited<ReturnType<typeof createOccurrence>>[], sourceScheduleRevision = 1) {
+  const originatingCommandId = randomUUID();
+  const approvalCommandId = randomUUID();
+  const generationRunId = randomUUID();
+  const commandPrefix = `roster-finalizer-generation-${suffix}-${randomUUID()}`;
+  await db.insert(leagueScheduleCommands).values([
+    {
+      id: originatingCommandId,
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandType: "generate",
+      idempotencyKey: `${commandPrefix}:generate`,
+      requestFingerprint: `${commandPrefix}:generate-fingerprint`,
+    },
+    {
+      id: approvalCommandId,
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandType: "approve_generation",
+      idempotencyKey: `${commandPrefix}:approve`,
+      requestFingerprint: `${commandPrefix}:approve-fingerprint`,
+    },
+  ]);
+  const dates = occurrences.map(({ occurrence }) => occurrence.authoritativeLocalDate).sort();
+  const rangeStartDate = dates[0] ?? "2038-01-01";
+  const rangeEndDate = dates.at(-1) ?? rangeStartDate;
+  const generatedCount = occurrences.length;
+  await db.insert(leagueOccurrenceGenerationRuns).values({
+    id: generationRunId,
+    organizationId,
+    leagueId,
+    originatingCommandId,
+    generatorVersion: `roster-finalizer-history-paid-weeks-${randomUUID()}`,
+    inputFingerprint: `history-paid-weeks-${randomUUID()}`,
+    sourceScheduleRevision,
+    normalizedInputSnapshot: { fixture: "history-paid-weeks" },
+    rangeStartDate,
+    rangeEndDate,
+    candidateOccurrenceCount: generatedCount,
+    generatedOccurrenceCount: generatedCount,
+    skippedDateCount: 0,
+    discrepancyCount: 0,
+    state: "applied",
+    approvedAt: new Date().toISOString(),
+    approvedByUserId: actorUserId,
+    approvalCommandId,
+  });
+  activeTestGenerationRunIds.push(generationRunId);
+  if (occurrences.length > 0) {
+    await db.update(leagueOccurrences).set({ generationRunId }).where(and(
+      eq(leagueOccurrences.organizationId, organizationId),
+      eq(leagueOccurrences.leagueId, leagueId),
+      inArray(leagueOccurrences.id, occurrences.map(({ occurrence }) => occurrence.id)),
+    ));
+  }
+  return generationRunId;
+}
+
+async function createPublishedDoublePayGroup(input: {
+  generationRunId: string;
+  trigger: Awaited<ReturnType<typeof createOccurrence>>;
+  paired: Awaited<ReturnType<typeof createOccurrence>>;
+  groupOrdinal: number;
+  sourceScheduleRevision?: number;
+}) {
+  const groupId = randomUUID();
+  const commandId = randomUUID();
+  const fingerprint = `lvcollectiongroup:v1:${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
+  await db.insert(leagueScheduleCommands).values({
+    id: commandId,
+    organizationId,
+    leagueId,
+    actorUserId,
+    commandType: "publish_collection_group",
+    idempotencyKey: `roster-finalizer-history-pair-${suffix}-${randomUUID()}`,
+    requestFingerprint: `roster-finalizer-history-pair-${randomUUID()}`,
+  });
+  const terms = await db.select().from(leagueOccurrenceBillingTerms).where(and(
+    eq(leagueOccurrenceBillingTerms.organizationId, organizationId),
+    eq(leagueOccurrenceBillingTerms.leagueId, leagueId),
+    inArray(leagueOccurrenceBillingTerms.occurrenceId, [input.trigger.occurrence.id, input.paired.occurrence.id]),
+    eq(leagueOccurrenceBillingTerms.state, "published"),
+  ));
+  const termByOccurrenceId = new Map(terms.map((term) => [term.occurrenceId, term]));
+  const triggerTerm = termByOccurrenceId.get(input.trigger.occurrence.id);
+  const pairedTerm = termByOccurrenceId.get(input.paired.occurrence.id);
+  if (!triggerTerm || !pairedTerm || triggerTerm.billingOrdinal === null || pairedTerm.billingOrdinal === null) {
+    throw new Error("history final-pair fixture is missing current billing terms");
+  }
+  await db.insert(canonicalCollectionGroups).values({
+    id: groupId,
+    organizationId,
+    leagueId,
+    generationRunId: input.generationRunId,
+    sourceScheduleRevision: input.sourceScheduleRevision ?? 1,
+    kind: "double_pay",
+    state: "published",
+    groupOrdinal: input.groupOrdinal,
+    triggerLocalDate: input.trigger.occurrence.authoritativeLocalDate,
+    pairedLocalDate: input.paired.occurrence.authoritativeLocalDate,
+    contractVersion: "history-paid-weeks-test",
+    fingerprintVersion: "v1",
+    fingerprint,
+    currentRevision: 1,
+    lastCommandId: commandId,
+    publishedAt: input.trigger.occurrence.startAt,
+    publishedByUserId: actorUserId,
+    publicationCommandId: commandId,
+  });
+  await db.insert(canonicalCollectionGroupMembers).values([
+    {
+      organizationId,
+      leagueId,
+      groupId,
+      generationRunId: input.generationRunId,
+      occurrenceId: input.trigger.occurrence.id,
+      billingTermId: triggerTerm.id,
+      role: "trigger",
+      memberOrdinal: 1,
+      localDate: input.trigger.occurrence.authoritativeLocalDate,
+      billingOrdinal: triggerTerm.billingOrdinal,
+      amountMinor: triggerTerm.defaultAmountMinor,
+      currency: triggerTerm.currency,
+      active: true,
+      currentRevision: 1,
+      lastCommandId: commandId,
+    },
+    {
+      organizationId,
+      leagueId,
+      groupId,
+      generationRunId: input.generationRunId,
+      occurrenceId: input.paired.occurrence.id,
+      billingTermId: pairedTerm.id,
+      role: "paired",
+      memberOrdinal: 2,
+      localDate: input.paired.occurrence.authoritativeLocalDate,
+      billingOrdinal: pairedTerm.billingOrdinal,
+      amountMinor: pairedTerm.defaultAmountMinor,
+      currency: pairedTerm.currency,
+      active: true,
+      currentRevision: 1,
+      lastCommandId: commandId,
+    },
+  ]);
+  return groupId;
+}
+
+async function resetBaseRosterToWeeklyMain(options: { preserveOccurrenceOrdinal?: boolean } = {}): Promise<void> {
   // Earlier lifecycle tests intentionally move one fixture to 2038-03-15;
   // keep these additional season-batch fixtures outside that date range.
-  occurrenceOrdinal = Math.max(occurrenceOrdinal, 100);
+  if (!options.preserveOccurrenceOrdinal) occurrenceOrdinal = Math.max(occurrenceOrdinal, 100);
   await db.update(leagues).set({ paymentMode: "weekly", timezone: "UTC" }).where(and(
     eq(leagues.organizationId, organizationId),
     eq(leagues.id, leagueId),
@@ -537,6 +735,96 @@ function historicalCashRepairAllowlist(paymentId: number, amountMinor: number) {
 }
 
 describe("PR1 roster snapshot finalization on PostgreSQL", () => {
+  it("projects final-pair flags only from current published group membership", async () => {
+    const [leagueBeforeProjection] = await db.select({ canonicalScheduleRevision: leagues.canonicalScheduleRevision }).from(leagues).where(and(
+      eq(leagues.id, leagueId),
+      eq(leagues.organizationId, organizationId),
+    ));
+    if (!leagueBeforeProjection) throw new Error("history projection league fixture is missing");
+    historyProjectionFixtureState = {
+      canonicalScheduleRevision: leagueBeforeProjection.canonicalScheduleRevision,
+    };
+    await resetBaseRosterToWeeklyMain({ preserveOccurrenceOrdinal: true });
+    const triggerA = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_001, authoritativeLocalDate: "2038-05-01" });
+    const pairedA = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_002, authoritativeLocalDate: "2038-05-02" });
+    const triggerB = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_003, authoritativeLocalDate: "2038-05-03" });
+    const pairedB = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_004, authoritativeLocalDate: "2038-05-04" });
+    const triggerPartial = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_005, authoritativeLocalDate: "2038-05-05" });
+    const pairedPartial = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_006, authoritativeLocalDate: "2038-05-06" });
+    const generationRunId = await createAppliedGenerationRun([triggerA, pairedA, triggerB, pairedB, triggerPartial, pairedPartial], 1);
+    const groupAId = await createPublishedDoublePayGroup({ generationRunId, trigger: triggerA, paired: pairedA, groupOrdinal: 1, sourceScheduleRevision: 2 });
+    const groupBId = await createPublishedDoublePayGroup({ generationRunId, trigger: triggerB, paired: pairedB, groupOrdinal: 2, sourceScheduleRevision: 2 });
+    await createPublishedDoublePayGroup({ generationRunId, trigger: triggerPartial, paired: pairedPartial, groupOrdinal: 3, sourceScheduleRevision: 2 });
+    await db.update(leagues).set({ canonicalScheduleRevision: 2 }).where(and(
+      eq(leagues.id, leagueId),
+      eq(leagues.organizationId, organizationId),
+    ));
+    const paymentA = await createCashEvidence(pairedA.obligation.id, 2_000, "2038-02-01T12:00:00.000Z");
+    const paymentB = await createCashEvidence(pairedB.obligation.id, 2_000, "2038-02-02T12:00:00.000Z");
+    const partialTailPayment = await createCashEvidenceForAllocations([
+      { obligationId: triggerPartial.obligation.id, amountMinor: 2_000 },
+      { obligationId: pairedPartial.obligation.id, amountMinor: 1_000 },
+    ], "2038-02-03T12:00:00.000Z");
+
+    const currentReport = await readCanonicalPaymentReport({ organizationId, leagueId, bowlerId, page: 1, limit: 20 });
+    const currentRowA = currentReport.rows.find((row) => row.paymentId === paymentA.payment.id);
+    const currentRowB = currentReport.rows.find((row) => row.paymentId === paymentB.payment.id);
+    const partialTailRow = currentReport.rows.find((row) => row.paymentId === partialTailPayment.payment.id);
+    expect(currentRowA?.allocations[0]?.isFinalPairedWeek).toBe(true);
+    expect(currentRowB?.allocations[0]?.isFinalPairedWeek).toBe(true);
+    expect(partialTailRow?.allocations.find((allocation) => allocation.occurrenceId === triggerPartial.occurrence.id)?.isFullyCoveredWeek).toBe(true);
+    expect(partialTailRow?.allocations.find((allocation) => allocation.occurrenceId === pairedPartial.occurrence.id)).toMatchObject({ isFinalPairedWeek: true });
+    expect(partialTailRow?.allocations.find((allocation) => allocation.occurrenceId === pairedPartial.occurrence.id)?.isFullyCoveredWeek).toBeUndefined();
+
+    const revokeCommandId = randomUUID();
+    await db.insert(leagueScheduleCommands).values({
+      id: revokeCommandId,
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandType: "revoke_collection_group",
+      idempotencyKey: `roster-finalizer-revoke-history-pair-${randomUUID()}`,
+      requestFingerprint: `roster-finalizer-revoke-history-pair-${randomUUID()}`,
+    });
+    await db.update(canonicalCollectionGroups).set({
+      state: "revoked",
+      revokedAt: new Date().toISOString(),
+      revokedByUserId: actorUserId,
+      revocationCommandId: revokeCommandId,
+    }).where(and(
+      eq(canonicalCollectionGroups.organizationId, organizationId),
+      eq(canonicalCollectionGroups.leagueId, leagueId),
+      eq(canonicalCollectionGroups.id, groupBId),
+    ));
+    const afterRevocation = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: paymentB.payment.id, page: 1, limit: 1 });
+    expect(afterRevocation.rows[0]?.allocations[0]?.isFinalPairedWeek).toBeUndefined();
+
+    const supersedeCommandId = randomUUID();
+    await db.insert(leagueScheduleCommands).values({
+      id: supersedeCommandId,
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandType: "edit_schedule",
+      idempotencyKey: `roster-finalizer-supersede-history-run-${randomUUID()}`,
+      requestFingerprint: `roster-finalizer-supersede-history-run-${randomUUID()}`,
+    });
+    await db.update(leagueOccurrenceGenerationRuns).set({
+      state: "superseded",
+      supersededAt: new Date().toISOString(),
+      supersededByCommandId: supersedeCommandId,
+    }).where(and(
+      eq(leagueOccurrenceGenerationRuns.organizationId, organizationId),
+      eq(leagueOccurrenceGenerationRuns.leagueId, leagueId),
+      eq(leagueOccurrenceGenerationRuns.id, generationRunId),
+    ));
+    await createAppliedGenerationRun([], 2);
+    const afterSupersededGeneration = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: paymentA.payment.id, page: 1, limit: 1 });
+    expect(afterSupersededGeneration.rows[0]?.allocations[0]?.isFinalPairedWeek).toBeUndefined();
+    const [staleGroup] = await db.select({ state: canonicalCollectionGroups.state }).from(canonicalCollectionGroups).where(eq(canonicalCollectionGroups.id, groupAId));
+    expect(staleGroup?.state).toBe("published");
+  });
+
   it("reports valid unused rotating credit without labeling it unresolved evidence", async () => {
     const idempotencyKey = `unused-credit-${randomUUID()}`;
     const paymentId = await db.transaction(async (tx) => {

@@ -65,6 +65,8 @@ describe("PaymentHistoryContent", () => {
     />);
     expect(screen.getByRole("link", { name: /Amount Past Due/ })).toHaveAttribute("href", "/make-payment?leagueId=17&intent=past-due");
     expect(screen.getByRole("link", { name: /Remaining Balance/ })).toHaveAttribute("href", "/make-payment?leagueId=17");
+    expect(screen.getByTestId("history-weeks-paid")).toHaveTextContent("Weeks paid");
+    expect(screen.getByTestId("history-weeks-paid")).toHaveTextContent("1/10 weeks");
     expect(screen.queryByRole("button", { name: /revoke|enable|replace|pay/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/Square|card details|automatic weekly payments/i)).not.toBeInTheDocument();
   });
@@ -180,9 +182,14 @@ describe("PaymentHistoryContent", () => {
 
     view.rerender(<PaymentHistoryContent {...props} rotatingCreditState="standard" isRotating={false} />);
     expect(screen.getByText("Season totals")).toBeInTheDocument();
+    expect(screen.getByTestId("history-weeks-paid")).toHaveTextContent("1/10 weeks");
+
+    view.rerender(<PaymentHistoryContent {...props} totalWeeksInSeason={32} weeksPaid={32} rotatingCreditState="standard" isRotating={false} />);
+    expect(screen.getByTestId("history-weeks-paid")).toHaveTextContent("32/32 weeks");
 
     view.rerender(<PaymentHistoryContent {...props} rotatingCreditState="standard" isRotating />);
     expect(screen.getByText("Paid")).toBeInTheDocument();
+    expect(screen.queryByTestId("history-weeks-paid")).not.toBeInTheDocument();
     expect(screen.queryByText("Remaining")).not.toBeInTheDocument();
     expect(screen.queryByText("Season", { selector: ".familiar-payment-summary__label" })).not.toBeInTheDocument();
   });

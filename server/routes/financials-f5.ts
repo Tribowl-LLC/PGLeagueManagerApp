@@ -38,6 +38,9 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
   const isInitiatingPayer = row.initiatingPayerBowlerId !== null
     && row.initiatingPayerBowlerId !== undefined
     && row.initiatingPayerBowlerId === viewerBowlerId;
+  const isSelfOnlyPayment = isInitiatingPayer
+    && row.allocations.length > 0
+    && row.allocations.every((allocation) => allocation.bowlerId === viewerBowlerId);
   const visibleAllocations = isInitiatingPayer ? row.allocations : ownAllocations;
   const nonVoidedVisibleAllocations = visibleAllocations.filter((allocation) => allocation.state !== "voided");
   const activeVisibleAllocations = visibleAllocations.filter((allocation) => allocation.state === "active");
@@ -70,6 +73,8 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     refundedMinor: allocation.refundedMinor ?? 0,
     ...(allocation.effectiveAmountMinor === undefined ? {} : { effectiveAmountMinor: allocation.effectiveAmountMinor }),
     refundDisposition: allocation.refundDisposition ?? null,
+    ...(isSelfOnlyPayment && allocation.isFinalPairedWeek === true ? { isFinalPairedWeek: true } : {}),
+    ...(isSelfOnlyPayment && allocation.isFullyCoveredWeek === true ? { isFullyCoveredWeek: true } : {}),
     currency: allocation.currency,
     state: allocation.state,
   }));
@@ -94,6 +99,7 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     allocations: [],
     appliedTo,
     hasMultipleRecipients: hasMultipleRecipients ?? false,
+    isSelfOnlyPayment,
     ...(isInitiatingPayer && creditRefunds ? { creditRefunds } : {}),
     refund: { ...row.refund, amountMinor: safeRefundAmount, providerRefundId: null },
     dispute: { ...row.dispute, amountMinor: safeDisputeAmount, disputeId: null },

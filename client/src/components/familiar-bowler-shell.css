@@ -476,6 +476,24 @@ a.familiar-payment-summary__value:hover {
   letter-spacing: -0.02em;
 }
 
+.familiar-payment-summary__weeks-paid {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 11px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--familiar-line);
+}
+
+.familiar-payment-summary__weeks-paid strong {
+  color: var(--familiar-ink);
+  font-size: 1rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .familiar-payment-summary__grid {
   margin-top: 14px;
 }

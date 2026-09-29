@@ -90,6 +90,10 @@ export interface CanonicalPaymentAllocationRow {
   refundedMinor?: number;
   effectiveAmountMinor?: number;
   refundDisposition?: "still_owed" | "waived" | null;
+  /** Server-verified membership in the current published final paired week. */
+  isFinalPairedWeek?: boolean;
+  /** Set only when this payment and the current canonical balance fully cover the bowler's week. */
+  isFullyCoveredWeek?: boolean;
   currency: string;
   state: "active" | "voided" | "reversed" | null;
 }
@@ -108,6 +112,10 @@ export interface CanonicalPaymentAppliedToRow {
   refundedMinor?: number;
   effectiveAmountMinor?: number;
   refundDisposition?: "still_owed" | "waived" | null;
+  /** Safe summary; membership IDs and collection-group identities stay private. */
+  isFinalPairedWeek?: boolean;
+  /** Safe summary; true only when this payment fully covers the bowler's week. */
+  isFullyCoveredWeek?: boolean;
   currency: string;
   state: "active" | "voided" | "reversed" | null;
 }
@@ -147,6 +155,8 @@ export interface CanonicalPaymentRow {
   appliedTo?: CanonicalPaymentAppliedToRow[];
   /** True only for an initiating payer whose tender has allocations for multiple bowlers. */
   hasMultipleRecipients?: boolean;
+  /** Safe ordinary-reader flag derived from payer/allocation identities. */
+  isSelfOnlyPayment?: boolean;
   correctionEvidence?: { status: "voided"; voidId: string };
   collectionEvidence?: CanonicalCollectionEvidence;
   /** Internal role projection hint; ordinary responses remove it. */

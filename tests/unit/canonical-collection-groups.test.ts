@@ -1,8 +1,45 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CanonicalCollectionGroupingError,
   deriveCanonicalCollectionPairs,
 } from "@shared/canonical-collection-groups";
+vi.mock("../../server/db.js", () => ({ db: {} }));
+import {
+  deriveCurrentFinalPairedOccurrenceIds,
+  type CurrentPublishedPairMemberEvidence,
+} from "../../server/services/roster-payment-archive-report.js";
+import { countCanonicalPaidWeeks } from "@/lib/financial-utils";
+import type { CanonicalDuePastDueRowV2 } from "@shared/roster-payment-contract";
+
+let nextObligationId = 1;
+
+function paidWeekRow(overrides: Partial<CanonicalDuePastDueRowV2> = {}): CanonicalDuePastDueRowV2 {
+  const id = `week-obligation-${nextObligationId++}`;
+  return {
+    id,
+    organizationId: 1,
+    leagueId: 2,
+    occurrenceId: `week-${id}`,
+    responsibilityId: `responsibility-${id}`,
+    teamId: 3,
+    component: "full",
+    payerBowlerId: 4,
+    amountMinor: 2_500,
+    currency: "USD",
+    dueAt: "2038-02-01T00:00:00.000Z",
+    pastDueAt: "2038-02-08T00:00:00.000Z",
+    state: "open",
+    allocatedMinor: 0,
+    grossAllocatedMinor: 0,
+    refundedMinor: 0,
+    waivedMinor: 0,
+    stillOwed: true,
+    outstandingMinor: 2_500,
+    classification: "future",
+    reviewRequired: false,
+    ...overrides,
+  };
+}
 
 function occurrence(index: number, overrides: Partial<Parameters<typeof deriveCanonicalCollectionPairs>[0]["occurrences"][number]> = {}) {
   const date = `2027-0${index + 1}-0${index + 1}`;
@@ -67,5 +104,133 @@ describe("canonical double-pay collection pairing", () => {
       .toThrow(/unique/);
     expect(() => deriveCanonicalCollectionPairs({ doublePayDates: ["2027-02-30"], occurrences: [] }))
       .toThrow(/invalid double-pay date/);
+  });
+});
+
+describe("current published final-pair payment evidence", () => {
+  const currentRun = { id: "run-current", state: "applied", supersededAt: null };
+  const member = (role: "trigger" | "paired", overrides: Partial<CurrentPublishedPairMemberEvidence> = {}): CurrentPublishedPairMemberEvidence => ({
+    groupId: "group-current",
+    groupGenerationRunId: "run-current",
+    groupState: "published",
+    groupKind: "double_pay",
+    groupSourceScheduleRevision: 5,
+    groupCurrentRevision: 1,
+    groupPublishedAt: "2038-01-01T00:00:00.000Z",
+    groupPublishedByUserId: 9,
+    groupPublicationCommandId: "command-publish",
+    groupRevokedAt: null,
+    groupRevokedByUserId: null,
+    groupRevocationCommandId: null,
+    memberGenerationRunId: "run-current",
+    memberActive: true,
+    memberRole: role,
+    memberOrdinal: role === "trigger" ? 1 : 2,
+    memberCurrentRevision: 1,
+    occurrenceId: role === "trigger" ? "occ-trigger" : "occ-final",
+    memberLocalDate: role === "trigger" ? "2038-01-01" : "2038-04-01",
+    memberBillingTermId: role === "trigger" ? "term-trigger" : "term-final",
+    memberBillingOrdinal: role === "trigger" ? 1 : 14,
+    memberAmountMinor: 3_000,
+    memberCurrency: "USD",
+    occurrenceGenerationRunId: "run-current",
+    occurrenceLifecycle: "published",
+    occurrenceStatus: "scheduled",
+    occurrenceLocalDate: role === "trigger" ? "2038-01-01" : "2038-04-01",
+    termId: role === "trigger" ? "term-trigger" : "term-final",
+    termPurpose: "league_weekly_fee",
+    termObligationPolicy: "eligible_bowlers",
+    termDefaultAmountMinor: 3_000,
+    termCurrency: "USD",
+    termBillingOrdinal: role === "trigger" ? 1 : 14,
+    termState: "published",
+    termPublishedAt: "2037-12-01T00:00:00.000Z",
+    termPublishedByUserId: 9,
+    termPublicationCommandId: "command-term-publish",
+    termSupersededAt: null,
+    termSupersededByCommandId: null,
+    ...overrides,
+  });
+  const validPair = () => [member("trigger"), member("paired")];
+
+  it("marks only the paired occurrence from a complete current published group", () => {
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 5, validPair())).toEqual(new Set(["occ-final"]));
+  });
+
+  it("uses the league's current schedule revision when a replacement group supersedes its run revision", () => {
+    const replacementPair = validPair().map((row) => ({ ...row, groupSourceScheduleRevision: 6 }));
+
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 6, replacementPair)).toEqual(new Set(["occ-final"]));
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 6, validPair())).toEqual(new Set());
+  });
+
+  it("fails closed for missing or ambiguous current generation evidence", () => {
+    expect(deriveCurrentFinalPairedOccurrenceIds(null, 5, validPair())).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds({ ...currentRun, supersededAt: "2038-02-01T00:00:00.000Z" }, 5, validPair())).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 0, validPair())).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 5, [member("trigger")])).toEqual(new Set());
+  });
+
+  it("ignores revoked, stale-generation, and superseded-term memberships", () => {
+    const revoked = validPair().map((row) => ({ ...row, groupState: "revoked" }));
+    const previousGeneration = validPair().map((row) => ({ ...row, groupGenerationRunId: "run-old" }));
+    const supersededTerm = validPair().map((row, index) => index === 1 ? { ...row, termSupersededAt: "2038-02-01T00:00:00.000Z" } : row);
+
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 5, revoked)).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 5, previousGeneration)).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 5, supersededTerm)).toEqual(new Set());
+  });
+});
+
+describe("canonical paid-week counts", () => {
+  it("counts unique self-owned settled occurrences, including the final pair", () => {
+    const fifteenOfThirtyTwo = Array.from({ length: 32 }, (_, index) => paidWeekRow({
+      occurrenceId: `canonical-week-${index + 1}`,
+      state: index < 15 ? "settled" : "open",
+      classification: index < 15 ? "settled" : "future",
+      allocatedMinor: index < 15 ? 2_500 : 0,
+      outstandingMinor: index < 15 ? 0 : 2_500,
+      stillOwed: index >= 15,
+    }));
+    expect(countCanonicalPaidWeeks(fifteenOfThirtyTwo, 4)).toBe(15);
+
+    const allThirtyTwoPaid = fifteenOfThirtyTwo.map((row, index) => ({
+      ...row,
+      occurrenceId: index === 30 ? "canonical-week-31" : index === 31 ? "canonical-week-32" : `canonical-week-${index + 1}`,
+      state: "settled" as const,
+      classification: "settled" as const,
+      allocatedMinor: 2_500,
+      outstandingMinor: 0,
+      stillOwed: false,
+    }));
+    expect(countCanonicalPaidWeeks(allThirtyTwoPaid, 4)).toBe(32);
+  });
+
+  it("excludes partial, waived-only, refunded, review-required, voided, and partner rows", () => {
+    const paid = paidWeekRow({ occurrenceId: "paid", state: "settled", classification: "settled", allocatedMinor: 2_500, outstandingMinor: 0, stillOwed: false });
+    const invalidRows = [
+      paidWeekRow({ occurrenceId: "partial", state: "partially_settled", classification: "due", allocatedMinor: 1_000, outstandingMinor: 1_500, stillOwed: true }),
+      paidWeekRow({ occurrenceId: "waived-only", state: "settled", classification: "settled", waivedMinor: 2_500, outstandingMinor: 0, stillOwed: false }),
+      paidWeekRow({ occurrenceId: "refunded", state: "settled", classification: "settled", grossAllocatedMinor: 2_500, refundedMinor: 2_500, outstandingMinor: 2_500, stillOwed: true }),
+      paidWeekRow({ occurrenceId: "review", state: "settled", classification: "review_required", allocatedMinor: 2_500, outstandingMinor: 0, stillOwed: false, reviewRequired: true }),
+      paidWeekRow({ occurrenceId: "voided", state: "voided", classification: "voided", allocatedMinor: 2_500, outstandingMinor: 0, stillOwed: false }),
+      paidWeekRow({ occurrenceId: "partner", payerBowlerId: 8, state: "settled", classification: "settled", allocatedMinor: 2_500, outstandingMinor: 0, stillOwed: false }),
+    ];
+    expect(countCanonicalPaidWeeks([paid, ...invalidRows], 4)).toBe(1);
+  });
+
+  it("counts a refunded overpayment when canonical effective payment still covers the obligation", () => {
+    const refundedOverpayment = paidWeekRow({
+      occurrenceId: "refunded-overpayment-still-settled",
+      state: "settled",
+      classification: "settled",
+      grossAllocatedMinor: 3_000,
+      allocatedMinor: 2_500,
+      refundedMinor: 500,
+      outstandingMinor: 0,
+      stillOwed: false,
+    });
+
+    expect(countCanonicalPaidWeeks([refundedOverpayment], 4)).toBe(1);
   });
 });
