@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 import { canonicalCreditFundingSource } from "@shared/canonical-payment-report";
 import { paymentReceiptContract } from "@shared/payment-receipt";
@@ -109,6 +110,47 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByRole("button", { name: "View payment details: Confirmed paid" })).toHaveClass("familiar-payment-history-status--paid");
     await fireEvent.click(screen.getByRole("button", { name: "View payment details: Confirmed paid" }));
     expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
+  });
+
+  it("uses one accessible bowler row target for pointer, Enter, and Space activation", async () => {
+    const user = userEvent.setup();
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 12,
+      status: "confirmed_paid",
+      unresolved: false,
+      reviewRequired: false,
+      source: "canonical_allocation",
+      amountMinor: 2500,
+      allocations: [],
+      appliedTo: [{ plannedOrdinal: 2, occurrenceLocalDate: "2026-09-01", amountMinor: 2500, currency: "USD", state: "active" }],
+    })]} variant="bowler" leagueName="Wednesday Night" />);
+
+    const transaction = screen.getByRole("button", { name: "View payment details: Week 2 payment, Sep 1, 2026, $25, Confirmed paid" });
+    expect(transaction.querySelectorAll("button, a")).toHaveLength(0);
+    expect(screen.queryByRole("columnheader", { name: "Date" })).not.toBeInTheDocument();
+
+    await user.click(transaction);
+    expect(screen.getByRole("dialog", { name: "Payment details" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Payment details" })).not.toBeInTheDocument());
+
+    transaction.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("dialog", { name: "Payment details" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Payment details" })).not.toBeInTheDocument());
+
+    transaction.focus();
+    await user.keyboard(" ");
+    expect(screen.getByRole("dialog", { name: "Payment details" })).toBeInTheDocument();
+  });
+
+  it("keeps the default admin table and audit status action unchanged", () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row()]} />);
+
+    expect(screen.getByRole("columnheader", { name: "Date" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View payment details: Review required" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Payment of/ })).not.toBeInTheDocument();
   });
 
   it("keeps exceptional review status visible in the mobile row", () => {
@@ -252,6 +294,31 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByText("Refunded: $20.00")).toBeInTheDocument();
     expect(screen.queryByText(/Unallocated:/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Receipt" })).toBeInTheDocument();
+  });
+
+  it("shows refunded credit as refunded in the bowler history when status remains confirmed paid", async () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 55,
+      status: "confirmed_paid",
+      paymentType: "cash",
+      source: "refunded_credit",
+      unresolved: false,
+      reviewRequired: false,
+      allocatedMinor: 0,
+      unallocatedMinor: 0,
+      allocations: [],
+      refund: { present: true, amountMinor: 2000, providerRefundId: null },
+      creditRefunds: { completedAmountMinor: 2000, heldAmountMinor: 0, reviewRequired: false, providerRefundIds: [] },
+    })]} variant="bowler" leagueName="Wednesday Night" />);
+
+    const transaction = screen.getByRole("button", { name: "View payment details: Payment, Feb 3, 2038, $20, Refunded, Refunded share credit" });
+    expect(screen.getByText("Refunded", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("Paid", { exact: true })).not.toBeInTheDocument();
+    expect(transaction.querySelector("svg.lucide-check")).toBeNull();
+
+    await fireEvent.click(transaction);
+    expect(screen.getByLabelText("Refunded, $20")).toBeInTheDocument();
+    expect(screen.queryByText("Payment confirmed", { exact: true })).not.toBeInTheDocument();
   });
 
   it("marks a fully held credit refund as on hold rather than refunded", async () => {

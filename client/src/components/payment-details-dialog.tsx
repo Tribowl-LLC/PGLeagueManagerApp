@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Check } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -19,6 +20,8 @@ type Props = {
   canCorrect: boolean;
   organizationId?: number | null;
   startInEdit?: boolean;
+  variant?: "admin" | "bowler";
+  leagueName?: string;
   onClose: () => void;
 };
 
@@ -36,8 +39,25 @@ export function paymentEvidenceDisplayStatus(evidence: CanonicalPaymentRow): str
     : formatPaymentEvidenceStatus(evidence.status);
 }
 
+export function paymentEvidenceBowlerDisplayStatus(evidence: CanonicalPaymentRow): string {
+  const displayStatus = paymentEvidenceDisplayStatus(evidence);
+  return evidence.source === "refunded_credit" && displayStatus === "Confirmed paid"
+    ? "Refunded"
+    : displayStatus;
+}
+
 function formatCurrency(amountMinor: number, currency: string): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(amountMinor / 100);
+}
+
+function formatBowlerCurrency(amountMinor: number, currency: string): string {
+  const hasCents = Number.isSafeInteger(amountMinor) && Math.abs(amountMinor) % 100 !== 0;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: hasCents ? 2 : 0,
+    maximumFractionDigits: 2,
+  }).format(amountMinor / 100);
 }
 
 function formatLocalDate(value: string): string {
@@ -45,9 +65,23 @@ function formatLocalDate(value: string): string {
   return match ? `${match[2]}/${match[3]}/${match[1]}` : value;
 }
 
+function formatBowlerLocalDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) return value;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12));
+  if (!Number.isFinite(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }).format(date);
+}
+
 function allocationLabel(allocation: CanonicalPaymentRow["allocations"][number] | NonNullable<CanonicalPaymentRow["appliedTo"]>[number]): string {
   if (allocation.plannedOrdinal !== null && allocation.plannedOrdinal !== undefined) return `Week ${allocation.plannedOrdinal}`;
   return allocation.occurrenceLocalDate ? formatLocalDate(allocation.occurrenceLocalDate) : "Applied week";
+}
+
+function bowlerAllocationPeriodLabel(allocation: CanonicalPaymentRow["allocations"][number] | NonNullable<CanonicalPaymentRow["appliedTo"]>[number]): string {
+  if (Number.isSafeInteger(allocation.plannedOrdinal) && (allocation.plannedOrdinal as number) > 0) return `Week ${allocation.plannedOrdinal}`;
+  if (allocation.occurrenceLocalDate) return formatLocalDate(allocation.occurrenceLocalDate);
+  return "Period unavailable";
 }
 
 function paymentTypeLabel(paymentType: CanonicalPaymentRow["paymentType"], checkNumber?: string | null): string {
@@ -95,7 +129,7 @@ function invalidateCashEditViews(leagueId: number, bowlerId: number): Promise<un
   return Promise.all(requests);
 }
 
-export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizationId, startInEdit = false, onClose }: Props) {
+export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizationId, startInEdit = false, variant = "admin", leagueName, onClose }: Props) {
   const [editingCorrection, setEditingCorrection] = useState(false);
   const [editingMode, setEditingMode] = useState<"void_only" | "edit_cash" | null>(null);
   const [reason, setReason] = useState("");
@@ -169,6 +203,14 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     || evidence.reviewRequired
     || evidence.dispute.reviewRequired === true
     || Boolean(evidence.correctionEvidence);
+  const bowlerDisplayStatus = paymentEvidenceBowlerDisplayStatus(evidence);
+  const bowlerConfirmed = bowlerDisplayStatus === "Confirmed paid"
+    && !evidence.reviewRequired
+    && evidence.dispute.reviewRequired !== true;
+  const bowlerHeroStatus = bowlerConfirmed
+    ? "Payment confirmed"
+    : (evidence.reviewRequired || evidence.dispute.reviewRequired === true ? "Review required" : bowlerDisplayStatus);
+  const bowlerAppliedHeading = hasRecipientNames ? "Applied to each bowler" : "Applied to";
 
   const openReceipt = async () => {
     if (evidence.paymentId === null) return;
@@ -269,10 +311,98 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !correctionBusy) onClose(); }}>
-      <DialogContent aria-describedby={undefined} viewport="dialog" className="overflow-y-auto sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Payment Details</DialogTitle>
-        </DialogHeader>
+      <DialogContent aria-describedby={undefined} viewport="dialog" className="overflow-y-auto sm:max-w-lg" variant={variant === "bowler" ? "bowlerReceipt" : undefined}>
+        {variant === "bowler" ? (
+          <>
+            <DialogHeader data-payment-details-part="header">
+              <DialogTitle>Payment details</DialogTitle>
+            </DialogHeader>
+
+            <div data-payment-details-part="hero" data-payment-details-status={bowlerConfirmed ? "confirmed" : "exception"} aria-label={`${bowlerHeroStatus}, ${formatBowlerCurrency(evidence.amountMinor, evidence.currency)}`}>
+              {bowlerConfirmed && <span data-payment-details-part="hero-icon" aria-hidden="true"><Check size={24} /></span>}
+              <strong>{formatBowlerCurrency(evidence.amountMinor, evidence.currency)}</strong>
+              <span>{bowlerHeroStatus}</span>
+              {unusedShareCredit && <small>Unused share credit</small>}
+              {heldShareCredit && <small>Share credit refund on hold</small>}
+              {refundedShareCredit && <small>Refunded share credit</small>}
+            </div>
+
+            <dl data-payment-details-part="details">
+              {leagueName && <div><dt>League</dt><dd>{leagueName}</dd></div>}
+              <div><dt>Date</dt><dd>{formatBowlerLocalDate(evidence.authoritativeLocalDate)}</dd></div>
+              {evidence.paidByName && <div><dt>Paid by</dt><dd>{evidence.paidByName}</dd></div>}
+              <div><dt>Method</dt><dd>{paymentTypeLabel(evidence.paymentType, payment?.checkNumber)}</dd></div>
+            </dl>
+
+            <section data-payment-details-part="applied" aria-labelledby="bowler-payment-applied-heading">
+              <h3 id="bowler-payment-applied-heading">{bowlerAppliedHeading}</h3>
+              {appliedAllocations.length === 0 ? (
+                <p className="text-sm text-muted-foreground">{unusedShareCredit
+                  ? "No confirmed league date has received credit from this amount."
+                  : heldShareCredit
+                    ? "A share credit refund is unresolved. The remaining credit stays held until its outcome is confirmed."
+                    : refundedShareCredit
+                      ? "This share credit was refunded in full before it was applied to a league date."
+                      : "No canonical allocation is recorded."}</p>
+              ) : (
+                <div data-payment-details-part="applied-list">
+                  {appliedAllocations.map((allocation, index) => (
+                    <div key={`${allocation.plannedOrdinal ?? "un-numbered"}-${allocation.occurrenceLocalDate ?? "undated"}-${index}`}>
+                      <span>
+                        {allocation.bowlerName && <strong>{allocation.bowlerName}</strong>}
+                        <span>{bowlerAllocationPeriodLabel(allocation)}</span>
+                        {allocation.plannedOrdinal !== null && allocation.plannedOrdinal !== undefined && allocation.occurrenceLocalDate && <small>{formatBowlerLocalDate(allocation.occurrenceLocalDate)}</small>}
+                        {allocation.state !== "active" && <small>{allocation.state ?? "unresolved"}</small>}
+                        {(allocation.refundedMinor ?? 0) > 0 && <small>Refunded: {formatCurrency(allocation.refundedMinor ?? 0, allocation.currency)}</small>}
+                        {allocation.effectiveAmountMinor !== undefined && <small>Effective: {formatCurrency(allocation.effectiveAmountMinor, allocation.currency)}</small>}
+                        {allocation.refundDisposition && <small>Refund disposition: {allocation.refundDisposition.replaceAll("_", " ")}</small>}
+                      </span>
+                      <strong>{formatBowlerCurrency(allocation.amountMinor, allocation.currency)}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {showAdditionalSettlementEvidence && (
+              <section data-payment-details-part="evidence" aria-label="Additional settlement evidence">
+                {evidence.unallocatedMinor > 0 && !unusedShareCredit && !refundedShareCredit && <p>Unallocated: {formatCurrency(evidence.unallocatedMinor, evidence.currency)}</p>}
+                {evidence.refund.present && <p>Refunded: {formatCurrency(evidence.refund.amountMinor, evidence.currency)}</p>}
+                {(evidence.creditRefunds?.heldAmountMinor ?? 0) > 0 && <p>Refund on hold: {formatCurrency(evidence.creditRefunds?.heldAmountMinor ?? 0, evidence.currency)}</p>}
+                {(evidence.waivedMinor ?? 0) > 0 && <p>Waived roster amount: {formatCurrency(evidence.waivedMinor ?? 0, evidence.currency)} (not counted as paid)</p>}
+                {evidence.dispute.present && <p>Dispute: {evidence.dispute.state ?? "Review required"}{evidence.dispute.amountMinor > 0 ? ` · ${formatCurrency(evidence.dispute.amountMinor, evidence.currency)}` : ""}</p>}
+                {(evidence.reviewRequired || evidence.dispute.reviewRequired === true) && <p className="font-medium text-destructive">This payment requires review.</p>}
+                {evidence.correctionEvidence?.status === "voided" && <p>Correction: Payment voided.</p>}
+              </section>
+            )}
+
+            {evidence.collectionEvidence && (
+              <section data-payment-details-part="evidence" aria-label="Collection evidence">
+                <h3>Collection evidence</h3>
+                <p>{evidence.collectionEvidence.grouping === "double_pay" ? "Double payment" : "Regular collection"} at the collection point.</p>
+                <p>Timing: {evidence.collectionEvidence.timing.replaceAll("_", " ")}</p>
+              </section>
+            )}
+
+            {(evidence.operationType || evidence.operationStatus) && (
+              <section data-payment-details-part="evidence" aria-label="Payment operation evidence">
+                <h3>Payment operation</h3>
+                {evidence.operationType && <p>Type: {evidence.operationType.replaceAll("_", " ")}</p>}
+                {evidence.operationStatus && <p>Outcome: {evidence.operationStatus.replaceAll("_", " ")}</p>}
+              </section>
+            )}
+
+            {receiptError && <p role="alert" className="text-sm text-destructive">{receiptError}</p>}
+
+            {canOpenReceipt && <DialogFooter data-payment-details-part="footer">
+              <Button disabled={receiptLoading} onClick={() => void openReceipt()}>{receiptLoading ? "Loading receipt…" : "Receipt"}</Button>
+            </DialogFooter>}
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Payment Details</DialogTitle>
+            </DialogHeader>
 
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
           <div><dt className="text-muted-foreground">Collected</dt><dd>{formatLocalDate(evidence.authoritativeLocalDate)}</dd></div>
@@ -396,6 +526,8 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
         {canOpenReceipt && <DialogFooter>
           <Button variant="outline" disabled={receiptLoading} onClick={() => void openReceipt()}>{receiptLoading ? "Loading receipt…" : "Receipt"}</Button>
         </DialogFooter>}
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );

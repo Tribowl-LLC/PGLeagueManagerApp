@@ -106,6 +106,163 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.queryByText(/Canonical settlement and allocation details/)).not.toBeInTheDocument();
   });
 
+  it("renders the Familiar A bowler payment details hierarchy from authoritative fields", () => {
+    const bowlerEvidence: NamedPaymentEvidence = {
+      ...evidence,
+      paidByName: "Alex Payer",
+      allocations: [
+        { ...evidence.allocations[0], bowlerName: "Alex Payer", plannedOrdinal: 1 },
+        { ...evidence.allocations[1], bowlerName: "Partner Bowler", plannedOrdinal: 2 },
+      ],
+    };
+
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={bowlerEvidence}
+      bowlerName="Alex Payer"
+      canCorrect={false}
+      variant="bowler"
+      leagueName="Wednesday Night"
+      onClose={() => {}}
+    />);
+
+    expect(screen.getByRole("dialog", { name: "Payment details" })).toHaveAttribute("data-payment-details-variant", "bowler");
+    expect(screen.getByText("Payment confirmed")).toBeInTheDocument();
+    expect(screen.getByText("$50")).toBeInTheDocument();
+    expect(screen.getByText("Wednesday Night")).toBeInTheDocument();
+    expect(screen.getAllByText("Sep 10, 2034").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Alex Payer").length).toBeGreaterThan(0);
+    expect(screen.getByText("Cash")).toBeInTheDocument();
+    expect(screen.getByText("Applied to each bowler")).toBeInTheDocument();
+    expect(screen.getByText("Partner Bowler")).toBeInTheDocument();
+    expect(screen.queryByText(/4242|last4|sample/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Receipt" }).parentElement).toHaveAttribute("data-payment-details-part", "footer");
+  });
+
+  it("presents refunded credit as refunded even when its canonical status is confirmed paid", () => {
+    const refundedCreditEvidence: CanonicalPaymentRow = {
+      ...evidence,
+      source: "refunded_credit",
+      status: "confirmed_paid",
+      refund: { present: true, amountMinor: evidence.amountMinor, providerRefundId: null },
+      creditRefunds: { completedAmountMinor: evidence.amountMinor, heldAmountMinor: 0, reviewRequired: false, providerRefundIds: [] },
+    };
+
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={refundedCreditEvidence}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      variant="bowler"
+      leagueName="Wednesday Night"
+      onClose={() => {}}
+    />);
+
+    const hero = screen.getByLabelText("Refunded, $50");
+    expect(screen.getByText("Refunded", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("Payment confirmed", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("Paid", { exact: true })).not.toBeInTheDocument();
+    expect(hero).toHaveAttribute("data-payment-details-status", "exception");
+    expect(hero.querySelector('[data-payment-details-part="hero-icon"]')).toBeNull();
+  });
+
+  it("preserves a disputed status for refunded credit", () => {
+    const disputedRefundedCredit: CanonicalPaymentRow = {
+      ...evidence,
+      source: "refunded_credit",
+      status: "disputed",
+      dispute: { present: true, amountMinor: evidence.amountMinor, disputeId: "dispute-1", state: "OPEN" },
+    };
+
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={disputedRefundedCredit}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      variant="bowler"
+      onClose={() => {}}
+    />);
+
+    expect(screen.getByLabelText("Disputed, $50")).toBeInTheDocument();
+    expect(screen.getByText("Disputed", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("Refunded", { exact: true })).not.toBeInTheDocument();
+  });
+
+  it("keeps cents in the bowler amount hierarchy", () => {
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={{
+        ...evidence,
+        amountMinor: 5050,
+        allocations: [
+          { ...evidence.allocations[0], amountMinor: 3025, plannedOrdinal: 1 },
+          { ...evidence.allocations[1], amountMinor: 2025, plannedOrdinal: 2 },
+        ],
+      }}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      variant="bowler"
+      leagueName="Wednesday Night"
+      onClose={() => {}}
+    />);
+
+    expect(screen.getByText("$50.50")).toBeInTheDocument();
+    expect(screen.getByText("$30.25")).toBeInTheDocument();
+    expect(screen.getByText("$20.25")).toBeInTheDocument();
+  });
+
+  it("keeps bowler exceptional states truthful and preserves no-allocation evidence", () => {
+    render(<PaymentDetailsDialog
+      payment={null}
+      evidence={{
+        ...evidence,
+        paymentId: 13,
+        status: "review_required",
+        source: "unresolved_operation",
+        unresolved: true,
+        reviewRequired: true,
+        allocations: [],
+        operationType: "interactive_charge",
+        operationStatus: "provider_unknown",
+        collectionEvidence: {
+          d2PlanId: "plan-internal",
+          planVersion: 2,
+          collectionPointOccurrenceId: "occ-internal",
+          coveredOccurrenceIds: ["occ-internal", "occ-other-internal"],
+          timing: "at_collection_point",
+          grouping: "double_pay",
+        },
+      }}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      variant="bowler"
+      leagueName="Wednesday Night"
+      onClose={() => {}}
+    />);
+
+    expect(screen.getByText("Review required")).toBeInTheDocument();
+    expect(screen.queryByText("Payment confirmed")).not.toBeInTheDocument();
+    expect(screen.getByText("No canonical allocation is recorded.")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Payment operation evidence" })).toHaveTextContent("provider unknown");
+    expect(screen.getByRole("region", { name: "Collection evidence" })).toHaveTextContent("Double payment");
+    expect(screen.queryByText(/occ-internal|plan-internal/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Receipt" })).not.toBeInTheDocument();
+  });
+
+  it("honors the bowler receipt permission on the familiar action", () => {
+    render(<PaymentDetailsDialog
+      payment={payment}
+      evidence={{ ...evidence, receipt: { ...evidence.receipt, canOpenReceipt: false } }}
+      bowlerName="Test Bowler"
+      canCorrect={false}
+      variant="bowler"
+      leagueName="Wednesday Night"
+      onClose={() => {}}
+    />);
+
+    expect(screen.queryByRole("button", { name: "Receipt" })).not.toBeInTheDocument();
+  });
+
   it("labels a payer tender and renders the server-provided recipient breakdown", () => {
     const payerEvidence: NamedPaymentEvidence = {
       ...evidence,
