@@ -1,6 +1,6 @@
 /* eslint-disable shadcn/no-unknown-classes, shadcn/no-restyle */
 import { useState } from "react";
-import { ArrowUpRight, ChevronRight } from "lucide-react";
+import { ArrowUpRight, Check, ChevronRight } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -20,6 +20,8 @@ type Props = {
   bowlerName?: string;
   title?: string;
   totalTransactions?: number;
+  variant?: "admin" | "bowler";
+  leagueName?: string;
 };
 
 function formatLocalDate(value: string, timezone = "UTC"): string {
@@ -104,8 +106,9 @@ function statusVariant(row: CanonicalPaymentRow) {
  * row remains visible, including operation evidence without a payment id;
  * selecting its status opens the evidence-only details dialog.
  */
-export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName = "Bowler", title = "Payment history", totalTransactions }: Props) {
+export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName = "Bowler", title = "Payment history", totalTransactions, variant = "admin", leagueName }: Props) {
   const [detailsTarget, setDetailsTarget] = useState<CanonicalPaymentRow | null>(null);
+  const bowlerPresentation = variant === "bowler";
 
   return (
     <section aria-label={title} data-testid="canonical-payment-evidence-table" className="familiar-payment-history-section space-y-2">
@@ -115,72 +118,127 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
       </div>
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">No payments yet.</p>
-      ) : (
-        <div className="familiar-payment-history-table overflow-x-auto rounded-md border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Amount</TableHead>
-                <TableHead className="hidden md:table-cell">Payment Method</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((row, index) => {
-                const displayStatus = paymentEvidenceDisplayStatus(row);
-                const reviewRequired = row.reviewRequired || row.dispute.reviewRequired === true;
-                const hasSeparateReviewIndicator = reviewRequired && displayStatus !== "Review required";
-                const paidByName = row.paidByName;
-                const paymentPeriod = mobilePaymentPeriodLabel(row);
-                return (
-                  <TableRow className="familiar-payment-history-table__row" key={`${row.paymentOperationId ?? row.paymentId ?? "unresolved"}:${row.bowlerId}:${index}`}>
-                    <TableCell className="whitespace-nowrap">
-                      <div className="familiar-payment-history-mobile-main">
-                        <span className="familiar-payment-history-mobile-icon" aria-hidden="true"><ArrowUpRight size={17} /></span>
-                        <span className="familiar-payment-history-mobile-copy">
-                          <strong className="familiar-payment-history-mobile-period">{paymentPeriod.period}</strong>
-                          {paymentPeriod.date && <span className="familiar-payment-history-mobile-date">{paymentPeriod.date}</span>}
-                        </span>
-                      </div>
-                      <span className="familiar-payment-history-desktop-date">{formatLocalDate(row.authoritativeLocalDate)}</span>
-                      <div className="familiar-payment-history-mobile-method text-xs text-muted-foreground md:hidden">{paymentTypeLabel(row.paymentType)}</div>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap" font="mono">
-                      {formatCurrency(row.amountMinor, row.currency)}
-                      {paidByName && <div className="font-sans text-xs font-normal text-muted-foreground">Paid by {paidByName}</div>}
-                    </TableCell>
-                    <TableCell className="hidden whitespace-nowrap md:table-cell">{paymentTypeLabel(row.paymentType)}</TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          className={cn(
-                            badgeVariants({ variant: statusVariant(row) }),
-                            "cursor-pointer",
-                            displayStatus === "Confirmed paid" && "familiar-payment-history-status--paid",
-                            displayStatus === "Review required" && "familiar-payment-history-status--review",
-                          )}
-                          aria-label={`View payment details: ${displayStatus}`}
-                          onClick={() => setDetailsTarget(row)}
-                        >
-                          <span className="familiar-payment-history-status-label">{displayStatus}</span>
-                          <ChevronRight className="familiar-payment-history-mobile-chevron" aria-hidden="true" size={17} />
-                        </button>
-                        {row.source === "prepaid_credit" && <Badge variant="secondary">Unused share credit</Badge>}
-                        {row.source === "held_credit" && <Badge variant="secondary">Share credit refund on hold</Badge>}
-                        {row.source === "refunded_credit" && <Badge variant="secondary">Refunded share credit</Badge>}
-                        {hasSeparateReviewIndicator && <Badge variant="destructive">Review required</Badge>}
-                        {row.correctionEvidence?.status === "voided" && <Badge variant="secondary">Voided</Badge>}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
-      )}
+      ) : bowlerPresentation ? (
+          <div className="familiar-payment-history-bowler-list" aria-label="Payment transactions">
+            {rows.map((row, index) => {
+              const displayStatus = paymentEvidenceDisplayStatus(row);
+              const reviewRequired = row.reviewRequired || row.dispute.reviewRequired === true;
+              const hasSeparateReviewIndicator = reviewRequired && displayStatus !== "Review required";
+              const paymentPeriod = mobilePaymentPeriodLabel(row);
+              const creditLabel = row.source === "prepaid_credit"
+                ? "Unused share credit"
+                : row.source === "held_credit"
+                  ? "Share credit refund on hold"
+                  : row.source === "refunded_credit"
+                    ? "Refunded share credit"
+                    : null;
+              const statusLabel = displayStatus === "Confirmed paid" && !hasSeparateReviewIndicator
+                ? "Paid"
+                : displayStatus;
+              const accessibleStatus = [displayStatus, creditLabel, hasSeparateReviewIndicator ? "Review required" : null, row.correctionEvidence?.status === "voided" ? "Voided" : null]
+                .filter(Boolean)
+                .join(", ");
+              return (
+                <button
+                  type="button"
+                  className="familiar-payment-history-bowler-row"
+                  key={`${row.paymentOperationId ?? row.paymentId ?? "unresolved"}:${row.bowlerId}:${index}`}
+                  aria-label={`View payment details: ${accessibleStatus}`}
+                  onClick={() => setDetailsTarget(row)}
+                >
+                  <span className="familiar-payment-history-bowler-row__icon" aria-hidden="true"><ArrowUpRight size={19} /></span>
+                  <span className="familiar-payment-history-bowler-row__info">
+                    <strong>{paymentPeriod.period}</strong>
+                    {paymentPeriod.date && <span>{paymentPeriod.date}</span>}
+                  </span>
+                  <span className="familiar-payment-history-bowler-row__value">
+                    <strong>{formatCurrency(row.amountMinor, row.currency)}</strong>
+                    <span className={cn(
+                      "familiar-payment-history-bowler-row__status",
+                      displayStatus === "Confirmed paid" && !hasSeparateReviewIndicator && "familiar-payment-history-bowler-row__status--paid",
+                      (displayStatus === "Review required" || hasSeparateReviewIndicator) && "familiar-payment-history-bowler-row__status--review",
+                    )}>
+                      {displayStatus === "Confirmed paid" && !hasSeparateReviewIndicator && <Check aria-hidden="true" size={12} />}
+                      {statusLabel}
+                    </span>
+                    {(creditLabel || hasSeparateReviewIndicator || row.correctionEvidence?.status === "voided") && (
+                      <span className="familiar-payment-history-bowler-row__secondary-status">
+                        {[creditLabel, hasSeparateReviewIndicator ? "Review required" : null, row.correctionEvidence?.status === "voided" ? "Voided" : null].filter(Boolean).join(" · ")}
+                      </span>
+                    )}
+                  </span>
+                  <ChevronRight className="familiar-payment-history-bowler-row__chevron" aria-hidden="true" size={17} />
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="familiar-payment-history-table overflow-x-auto rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Amount</TableHead>
+                  <TableHead className="hidden md:table-cell">Payment Method</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((row, index) => {
+                  const displayStatus = paymentEvidenceDisplayStatus(row);
+                  const reviewRequired = row.reviewRequired || row.dispute.reviewRequired === true;
+                  const hasSeparateReviewIndicator = reviewRequired && displayStatus !== "Review required";
+                  const paidByName = row.paidByName;
+                  const paymentPeriod = mobilePaymentPeriodLabel(row);
+                  return (
+                    <TableRow className="familiar-payment-history-table__row" key={`${row.paymentOperationId ?? row.paymentId ?? "unresolved"}:${row.bowlerId}:${index}`}>
+                      <TableCell className="whitespace-nowrap">
+                        <div className="familiar-payment-history-mobile-main">
+                          <span className="familiar-payment-history-mobile-icon" aria-hidden="true"><ArrowUpRight size={17} /></span>
+                          <span className="familiar-payment-history-mobile-copy">
+                            <strong className="familiar-payment-history-mobile-period">{paymentPeriod.period}</strong>
+                            {paymentPeriod.date && <span className="familiar-payment-history-mobile-date">{paymentPeriod.date}</span>}
+                          </span>
+                        </div>
+                        <span className="familiar-payment-history-desktop-date">{formatLocalDate(row.authoritativeLocalDate)}</span>
+                        <div className="familiar-payment-history-mobile-method text-xs text-muted-foreground md:hidden">{paymentTypeLabel(row.paymentType)}</div>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap" font="mono">
+                        {formatCurrency(row.amountMinor, row.currency)}
+                        {paidByName && <div className="font-sans text-xs font-normal text-muted-foreground">Paid by {paidByName}</div>}
+                      </TableCell>
+                      <TableCell className="hidden whitespace-nowrap md:table-cell">{paymentTypeLabel(row.paymentType)}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            className={cn(
+                              badgeVariants({ variant: statusVariant(row) }),
+                              "cursor-pointer",
+                              displayStatus === "Confirmed paid" && "familiar-payment-history-status--paid",
+                              displayStatus === "Review required" && "familiar-payment-history-status--review",
+                            )}
+                            aria-label={`View payment details: ${displayStatus}`}
+                            onClick={() => setDetailsTarget(row)}
+                          >
+                            <span className="familiar-payment-history-status-label">{displayStatus}</span>
+                            <ChevronRight className="familiar-payment-history-mobile-chevron" aria-hidden="true" size={17} />
+                          </button>
+                          {row.source === "prepaid_credit" && <Badge variant="secondary">Unused share credit</Badge>}
+                          {row.source === "held_credit" && <Badge variant="secondary">Share credit refund on hold</Badge>}
+                          {row.source === "refunded_credit" && <Badge variant="secondary">Refunded share credit</Badge>}
+                          {hasSeparateReviewIndicator && <Badge variant="destructive">Review required</Badge>}
+                          {row.correctionEvidence?.status === "voided" && <Badge variant="secondary">Voided</Badge>}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        )
+      }
       <PaymentDetailsDialog
         key={detailsTarget?.paymentOperationId ?? detailsTarget?.paymentId ?? "closed"}
         payment={null}
@@ -188,6 +246,8 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
         bowlerName={bowlerName}
         canCorrect={false}
         organizationId={organizationId}
+        variant={variant}
+        leagueName={leagueName}
         onClose={() => setDetailsTarget(null)}
       />
     </section>

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 import { canonicalCreditFundingSource } from "@shared/canonical-payment-report";
 import { paymentReceiptContract } from "@shared/payment-receipt";
@@ -109,6 +110,46 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByRole("button", { name: "View payment details: Confirmed paid" })).toHaveClass("familiar-payment-history-status--paid");
     await fireEvent.click(screen.getByRole("button", { name: "View payment details: Confirmed paid" }));
     expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
+  });
+
+  it("uses one accessible bowler row target for pointer, Enter, and Space activation", async () => {
+    const user = userEvent.setup();
+    render(<CanonicalPaymentEvidenceTable rows={[row({
+      paymentId: 12,
+      status: "confirmed_paid",
+      unresolved: false,
+      reviewRequired: false,
+      source: "canonical_allocation",
+      allocations: [],
+      appliedTo: [{ plannedOrdinal: 2, occurrenceLocalDate: "2026-09-01", amountMinor: 2500, currency: "USD", state: "active" }],
+    })]} variant="bowler" leagueName="Wednesday Night" />);
+
+    const transaction = screen.getByRole("button", { name: "View payment details: Confirmed paid" });
+    expect(transaction.querySelectorAll("button, a")).toHaveLength(0);
+    expect(screen.queryByRole("columnheader", { name: "Date" })).not.toBeInTheDocument();
+
+    await user.click(transaction);
+    expect(screen.getByRole("dialog", { name: "Payment details" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Payment details" })).not.toBeInTheDocument());
+
+    transaction.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("dialog", { name: "Payment details" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Payment details" })).not.toBeInTheDocument());
+
+    transaction.focus();
+    await user.keyboard(" ");
+    expect(screen.getByRole("dialog", { name: "Payment details" })).toBeInTheDocument();
+  });
+
+  it("keeps the default admin table and audit status action unchanged", () => {
+    render(<CanonicalPaymentEvidenceTable rows={[row()]} />);
+
+    expect(screen.getByRole("columnheader", { name: "Date" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View payment details: Review required" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Payment of/ })).not.toBeInTheDocument();
   });
 
   it("keeps exceptional review status visible in the mobile row", () => {

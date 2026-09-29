@@ -103,7 +103,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
           ) : canonicalPaymentError ? (
             <PageErrorState message="Payment history is unavailable; please try again." onRetry={onCanonicalReportRetry} />
           ) : (
-            <CanonicalPaymentEvidenceTable rows={canonicalRows} organizationId={league.organizationId} bowlerName={bowlerName} title="Transactions" totalTransactions={canonicalReportTotalTransactions} />
+            <CanonicalPaymentEvidenceTable rows={canonicalRows} organizationId={league.organizationId} bowlerName={bowlerName} title="Transactions" totalTransactions={canonicalReportTotalTransactions} variant="bowler" leagueName={league.name} />
           )}
           {!canonicalPaymentLoading && !canonicalPaymentError && canonicalReportPage !== undefined && canonicalReportTotalPages !== undefined && canonicalReportTotalPages > 1 && onCanonicalReportPageChange && (
             <div className="mt-3 flex items-center justify-between text-sm">
