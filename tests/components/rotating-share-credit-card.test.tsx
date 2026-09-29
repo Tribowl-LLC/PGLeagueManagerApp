@@ -126,15 +126,19 @@ afterEach(() => {
 });
 
 describe("RotatingShareCreditCard", () => {
-  it("shows the exact one-time quote and explains that date application stays server-authoritative", () => {
+  it("shows the exact one-time quote and preserves server-authoritative application guidance in review", async () => {
+    const user = userEvent.setup();
     mocks.balanceResponse = { success: true, data: balance() };
     mocks.quoteResponse = { success: true, data: quote };
+    mocks.providerConfigured = true;
+    mocks.squareInitialized = true;
     renderCreditCard();
 
     expect(screen.getByText("One-time payment")).toBeInTheDocument();
     expect(screen.getByText("$20")).toBeInTheDocument();
-    expect(screen.getByText("Payment application details")).toBeInTheDocument();
-    expect(screen.getByText(/Dates are not reserved/)).toBeInTheDocument();
+    expect(screen.getByText("Payments are applied to eligible bowling weeks as they become due.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Review payment of \$20/ }));
+    expect(screen.getByText(/Funds may apply to eligible weeks later and are not reserved to specific dates/)).toBeInTheDocument();
   });
 
   it("initializes the new-card form when credit balance arrives after provider configuration", async () => {
@@ -164,7 +168,7 @@ describe("RotatingShareCreditCard", () => {
       bowlerEmail="bowler@example.test"
       savedCards={[]}
     />);
-    expect(screen.getByRole("button", { name: /Preview payment of \$20/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Review payment of \$20/ })).toBeEnabled();
   });
 
   it("reattaches the card editor after closing and reopening the source picker", async () => {
@@ -175,24 +179,24 @@ describe("RotatingShareCreditCard", () => {
     renderCreditCard();
 
     await waitFor(() => expect(mocks.initializeCard).toHaveBeenCalledTimes(1));
-    const firstContainer = screen.getByRole("group", { name: "Card details" }).querySelector<HTMLDivElement>("#rotating-credit-card-17");
+    const firstContainer = screen.getByRole("group", { name: "Debit or credit card entry" }).querySelector<HTMLDivElement>("#rotating-credit-card-17");
     expect(mocks.initializeCard).toHaveBeenLastCalledWith(firstContainer);
 
     await user.click(screen.getByRole("button", { name: /Enter a new card/ }));
-    expect(screen.queryByRole("group", { name: "Card details" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Debit or credit card entry" })).not.toBeInTheDocument();
     const cleanupCount = mocks.cleanupCard.mock.calls.length;
     expect(cleanupCount).toBeGreaterThan(0);
 
     await user.click(screen.getByRole("button", { name: /Enter a new card/ }));
     await waitFor(() => expect(mocks.initializeCard).toHaveBeenCalledTimes(2));
-    const secondContainer = screen.getByRole("group", { name: "Card details" }).querySelector<HTMLDivElement>("#rotating-credit-card-17");
+    const secondContainer = screen.getByRole("group", { name: "Debit or credit card entry" }).querySelector<HTMLDivElement>("#rotating-credit-card-17");
     expect(secondContainer).not.toBe(firstContainer);
     expect(mocks.initializeCard).toHaveBeenLastCalledWith(secondContainer);
 
     await user.click(screen.getByRole("option", { name: /Enter a new card/ }));
     expect(mocks.cleanupCard).toHaveBeenCalledTimes(cleanupCount);
     expect(mocks.initializeCard).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole("group", { name: "Card details" })).toContainElement(secondContainer);
+    expect(screen.getByRole("group", { name: "Debit or credit card entry" })).toContainElement(secondContainer);
   });
 
   it("clears the purchase intent after a confirmed no-charge card decline", async () => {
@@ -217,13 +221,13 @@ describe("RotatingShareCreditCard", () => {
     mocks.csrfFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true, data: declinedOperation }), { status: 202 }));
     renderCreditCard("bowler@example.test", [{ id: "saved-card-1", last4: "4242", brand: "Visa", expMonth: 8, expYear: 2030 }]);
 
-    await user.click(screen.getByRole("button", { name: /Preview payment of \$20/ }));
+    await user.click(screen.getByRole("button", { name: /Review payment of \$20/ }));
     await user.click(screen.getByRole("button", { name: "Pay $20" }));
 
     await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("rotating-credit:17:42", "request-key-000000000000"));
     expect(mocks.storedPaymentIntent).toBeNull();
     expect(screen.getAllByText(/The card was declined and no payment was completed/).length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /Preview payment of \$20/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Review payment of \$20/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Pay one more week" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /Visa ending in 4242/ }));
     expect(screen.getByRole("option", { name: /Enter a new card/ })).toBeEnabled();
@@ -253,7 +257,7 @@ describe("RotatingShareCreditCard", () => {
 
     await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("rotating-credit:17:42", "persisted-request-key"));
     expect(mocks.storedPaymentIntent).toBeNull();
-    expect(screen.getByRole("button", { name: /Preview payment of \$20/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Review payment of \$20/ })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Check payment status" })).not.toBeInTheDocument();
   });
 
@@ -281,7 +285,7 @@ describe("RotatingShareCreditCard", () => {
     await waitFor(() => expect(screen.getByText(/needs further review/)).toBeInTheDocument());
     expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
     expect(mocks.storedPaymentIntent).toBe("ambiguous-request-key");
-    expect(screen.getByRole("button", { name: /Preview payment of \$20/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Review payment of \$20/ })).toBeDisabled();
   });
 
   it("keeps an ineligible member's existing balance and applied dates visible with purchases disabled", () => {
@@ -302,7 +306,7 @@ describe("RotatingShareCreditCard", () => {
     expect(screen.getByText("Applied to dates").parentElement).toHaveTextContent("$10");
     expect(screen.getByText(/2038-01-02/)).toHaveTextContent("paid ahead");
     expect(screen.getByText(/Contact league staff for help with a refund or account change/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Preview payment of \$20/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Review payment of \$20/ })).not.toBeInTheDocument();
   });
 
   it("shows an explicit retryable error when the balance response reports failure", () => {

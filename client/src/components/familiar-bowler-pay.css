@@ -708,6 +708,10 @@
   display: none;
 }
 
+.familiar-source-helper-desktop {
+  display: none;
+}
+
 .familiar-source-menu {
   border-top: 1px solid var(--familiar-pay-line);
   display: grid;

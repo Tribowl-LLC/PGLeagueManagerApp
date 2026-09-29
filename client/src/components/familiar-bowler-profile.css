@@ -540,7 +540,8 @@
 
 /* Familiar A dialog surfaces use the same quiet slate line, navy action, and
    restrained depth as the approved preview. The selectors stay scoped to
-   profile-owned dialogs so shared dialogs keep their existing contracts. */
+   profile-owned dialogs and desktop widths so mobile keeps its approved UI. */
+@media (min-width: 1024px) {
 body > .fixed.inset-0.z-50:not([role="dialog"]):has(+ .familiar-profile-dialog) {
   background: rgb(100 116 139 / 0.4);
   backdrop-filter: blur(3px);
@@ -706,35 +707,7 @@ body > .fixed.inset-0.z-50:not([role="dialog"]):has(+ .familiar-profile-dialog) 
   background: rgb(100 116 139 / 0.03);
 }
 
-@media (min-width: 1024px) {
-  .familiar-profile-dialog .text-destructive {
-    color: #dc2626;
-  }
+.familiar-profile-dialog .text-destructive {
+  color: #dc2626;
 }
-
-@media (max-width: 47.5rem) {
-  .familiar-profile-dialog {
-    padding: 1.3125rem;
-  }
-
-  .familiar-profile-dialog > .flex.flex-col > h2 {
-    font-size: 1.125rem;
-  }
-}
-
-@media (max-width: 22.5rem) {
-  .familiar-password-dialog,
-  .familiar-payment-method-dialog,
-  .familiar-payment-links-dialog,
-  .familiar-deletion-dialog {
-    padding: 1.125rem;
-  }
-}
-
-@media (pointer: coarse) {
-  .familiar-profile-dialog input:not([type="checkbox"]):not([type="hidden"]),
-  .familiar-profile-dialog textarea,
-  .familiar-profile-dialog [role="combobox"] {
-    font-size: 1rem;
-  }
 }
