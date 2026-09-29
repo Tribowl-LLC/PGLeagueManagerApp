@@ -32,18 +32,31 @@ LeagueVault has four production control planes:
 
 ```mermaid
 flowchart LR
-    PR["Reviewed pull request"] --> CI["PR CI"]
+    PR["Reviewed PR; migration/backfill requires Auto-Deploy Off before merge"] --> CI["Required PR checks"]
     CI --> MAIN["Merge to GitHub main"]
     MAIN --> CERT["Exact main certification"]
-    CERT --> MIGRATE["Reviewed migration, when required"]
+    MAIN -. code-only auto-deploy enabled .-> AUTO["Auto-deploy: On Commit starts immediately; After CI Checks Pass waits for detected checks"]
+    CERT -->|code-only with Auto-Deploy Off| MANUAL_CODE["Manually deploy exact certified SHA"]
+    CERT -->|migration/backfill kept Off since before merge| MIGRATE["Guarded migration or backfill"]
+    MIGRATE --> MANUAL_SCHEMA["Manually deploy exact certified SHA"]
     MIGRATE --> NEON["Neon PostgreSQL"]
-    CERT --> RENDER["Render web service"]
+    AUTO --> RENDER["Render web service"]
+    MANUAL_CODE --> RENDER
+    MANUAL_SCHEMA --> RENDER
+    CERT --> VERIFY
+    RENDER --> VERIFY["After certification and rollout, verify exact running SHA, health, and workflow"]
     RENDER --> NEON
-    RENDER --> HEALTH["/healthz liveness; /api/health and workflow verification"]
 ```
 
-Deploy the exact `main` commit certified by GitHub. Do not deploy a local build,
-an unreviewed branch, or a different commit that merely appears equivalent.
+Exact main certification identifies the `main` commit eligible for deployment.
+For code-only releases with Auto-Deploy enabled, Render may start rollout before
+certification; after both certification and rollout complete, verify that the
+running SHA matches the certified commit. With code-only Auto-Deploy Off, wait
+for certification, then manually deploy that exact SHA. A release requiring a
+migration or backfill keeps Auto-Deploy Off through certification and the
+guarded operation, then manually deploys the same certified SHA. Never deploy a
+local build, an unreviewed branch, or a different commit that merely appears
+equivalent.
 
 ## 2. Render services
 
@@ -52,7 +65,7 @@ in the live dashboard on 2026-07-21):
 
 | Service | Purpose and type | Trigger and scaling | Interactions |
 | --- | --- | --- | --- |
-| `LeagueVault` | Render **Node Web Service** in the Ohio region, serving the React application and Express API on the Starter plan | Tracks GitHub `main`; Auto-Deploy is `After CI Checks Pass`. Production runs one instance. A schema release uses the runbook's verified [auto-deploy hold and restoration procedure](production-runbook.md#schema-release-auto-deploy-hold) so migration precedes rollout. | Receives all HTTP requests, opens the PostgreSQL connection pool to Neon, serves the built frontend, and starts the in-process payment scheduler, retry sweeps, Apple Pay recovery worker, catalog audit, and provider probes. |
+| `LeagueVault` | Render **Node Web Service** in the Ohio region, serving the React application and Express API on the Starter plan | Tracks GitHub `main`; the recorded Auto-Deploy setting is `After CI Checks Pass`. Code-only releases may use Off with manual deployment, `After CI Checks Pass`, or `On Commit`. A release requiring a migration or data backfill uses the runbook's verified [schema-release auto-deploy hold](production-runbook.md#schema-release-auto-deploy-hold) so migration precedes rollout. | Receives all HTTP requests, opens the PostgreSQL connection pool to Neon, serves the built frontend, and starts the in-process payment scheduler, retry sweeps, Apple Pay recovery worker, catalog audit, and provider probes. |
 
 There is no checked-in Render Blueprint and no separately documented production
 Render worker or cron service. Render dashboard state is therefore an external
@@ -239,14 +252,16 @@ Render must be held and which recovery evidence is required:
 
 | Release type | Production migration | Render auto-deploy | Backup and recovery requirement |
 | --- | --- | --- | --- |
-| Code-only | No | May remain `After CI Checks Pass` | Follow normal operational backup policy; no migration-specific backup is introduced by the release. |
-| Expand migration | Yes; apply the reviewed forward migration before application rollout | Temporarily switch to manual | Current Neon backup or restorable branch and approved recovery plan required. |
-| Data migration or backfill | Yes, often as a separately reviewed, restartable operation | Manual coordination for every application/data compatibility boundary | Current Neon backup or restorable branch and a data-recovery/restart plan required. |
-| Contract or destructive migration | Yes; only in a later release after compatibility is proven | Manual coordination; never allow an automatic schema-dependent rollout | Current Neon backup plus a mandatory, reviewed restore plan that accounts for writes after the backup. |
+| Code-only | No | May be Off, `After CI Checks Pass`, or `On Commit`. Off does not block merge after review/check gates and requires manual deployment of the exact certified SHA after certification. `On Commit` starts immediately; `After CI Checks Pass` waits for Render-detected CI checks. Do not rely on either mode as the Exact main certification gate: rollout may start before certification, so verify the exact certified SHA and health after it completes. | Follow normal operational backup policy; no migration-specific backup is introduced by the release. |
+| Expand migration | Yes; apply the reviewed forward migration before application rollout | Verify Off before merge; keep Off through certification, guarded migration, manual deployment of the exact certified SHA, and SHA/health verification. Restore the prior enabled mode only after the safe SHA check. | Current Neon backup or restorable branch and approved recovery plan required. |
+| Data migration or backfill | Yes, often as a separately reviewed, restartable operation | Verify Off before merge; keep Off through certification, guarded backfill, manual deployment of the exact certified SHA, and SHA/health verification. Restore the prior enabled mode only after the safe SHA check. | Current Neon backup or restorable branch and a data-recovery/restart plan required. |
+| Contract or destructive migration | Yes; only in a later release after compatibility is proven | Verify Off before merge; keep Off through certification, guarded migration, manual deployment of the exact certified SHA, and SHA/health verification. Restore the prior enabled mode only after the safe SHA check. | Current Neon backup plus a mandatory, reviewed restore plan that accounts for writes after the backup. |
 
-When a release combines categories, use the strictest applicable controls. Do
-not classify a schema or data change as code-only because its SQL runs from a
-separate operator command.
+When a release combines categories, use the strictest applicable controls. Any
+required schema migration or data backfill makes Auto-Deploy Off a pre-merge
+gate, even when its SQL runs from a separate operator command. Preserve the
+PR review and required-check gates for every release; Auto-Deploy does not
+replace them.
 
 Phase 3B durable-refund cutover has an additional mandatory control: enter
 Maintenance Mode and suspend/drain every old application instance before
@@ -258,43 +273,53 @@ which carries forward the Migration 0012 release boundary.
 
 Use this order for every release:
 
-1. Determine whether the reviewed release contains a schema migration. For a
-   schema release, switch Render Auto-Deploy from `After CI Checks Pass` to
-   `Off` before merge using the runbook's
-   [verified hold procedure](production-runbook.md#schema-release-auto-deploy-hold)
-   so the application cannot outrun its schema. A code-only release keeps the
-   normal auto-deploy setting.
-2. Merge the reviewed pull request into `main`; never push a normal release
-   directly to `main`.
-3. Confirm the PR's ruleset-required checks and the manually release-blocking
-   migration/race checks succeeded. Review relevant security results.
-4. Wait for Exact main certification on the merged SHA and record that exact
-   deployable commit.
-5. Verify the target Render web service and its deployment trigger. Prevent an
+1. Classify the release before merge. If it requires any schema migration or
+   data backfill, record the prior Render Auto-Deploy mode and verify it is Off
+   using the runbook's [schema-release auto-deploy hold](production-runbook.md#schema-release-auto-deploy-hold).
+   Keep it Off through exact-main certification, the guarded operation, manual
+   deployment of the exact certified SHA, and SHA/health verification. A
+   code-only release may use Off, `After CI Checks Pass`, or `On Commit`. Off
+   does not block merge after the required review and checks pass; manually
+   deploy the exact certified SHA after certification. `On Commit` starts
+   immediately; `After CI Checks Pass` waits for Render-detected CI checks. Do
+   not rely on either mode as the Exact main certification gate: rollout may
+   start before certification, so verify the deployed SHA after it completes.
+2. Confirm the required GitHub review, ruleset checks, manually release-blocking
+   migration/race checks, and relevant security results, then merge the reviewed
+   pull request into `main`. Never push a normal release directly to `main`.
+3. Wait for Exact main certification on the merged SHA and record that exact
+   deployable commit. If certification fails after a code-only rollout has
+   already started or completed, treat it as a live-release incident: capture
+   the deployed SHA, health state, and logs, then follow the incident and
+   recovery process before continuing.
+4. Verify the target Render web service and its deployment trigger. Prevent an
    uncertified newer commit from being selected.
-6. For a code-only release, skip to step 10 and verify that Auto-Deploy selects
-   the exact certified commit. For a schema release, continue below.
-7. Independently verify the intended Neon project, branch, endpoint, database,
+5. For a code-only release, skip to step 9. For a schema or backfill release,
+   continue below.
+6. Independently verify the intended Neon project, branch, endpoint, database,
    and role.
-8. Confirm a current Neon backup or restorable branch and an approved recovery
+7. Confirm a current Neon backup or restorable branch and an approved recovery
    plan are available.
-9. From the exact certified revision, run the reviewed migration once with the
-   guarded procedure in [`DATABASE.md`](DATABASE.md#production-migration-process).
-   Stop on any identity, fingerprint, journal, checksum, or SQL failure.
-10. For a schema release, manually deploy the matching certified application
-    revision. For a code-only release, verify Render's `After CI Checks Pass`
-    auto-deploy selected that revision.
-11. Wait for the rollout, call `/api/health` explicitly, and verify the running
-    commit using the two-source procedure in
-    [Running commit verification](#running-commit-verification).
-12. Verify authentication, database-backed reads/writes, the affected critical
-    workflow, and relevant payment-provider or webhook behavior.
-13. Verify scheduler/background-job behavior and inspect Render and Sentry logs
-    for new errors.
-14. For a schema release, restore `After CI Checks Pass` only after verification
-    and confirm the persisted setting as specified by the runbook. If the
-    release stops or fails, leave Auto-Deploy `Off` and record the active hold.
-15. Declare the deployment complete only after all applicable checks pass.
+8. From the exact certified revision, run the reviewed migration or approved
+   backfill with its guarded procedure. For schema migrations, use
+   [`DATABASE.md`](DATABASE.md#production-migration-process). Stop on any
+   identity, fingerprint, journal, checksum, or operation failure.
+9. For a schema or backfill release, manually deploy the matching certified
+   application revision. For a code-only release with Auto-Deploy Off, manually
+   deploy the exact certified SHA. With `After CI Checks Pass` or `On Commit`,
+   verify that auto-deploy selected the certified revision.
+10. Wait for the rollout, call `/api/health` explicitly, and verify the running
+   commit using the two-source procedure in
+   [Running commit verification](#running-commit-verification).
+11. Verify authentication, database-backed reads/writes, the affected critical
+   workflow, and relevant payment-provider or webhook behavior.
+12. Verify scheduler/background-job behavior and inspect Render and Sentry logs
+   for new errors.
+13. For a schema or backfill release, restore the prior enabled Auto-Deploy
+    mode only after the running service SHA and current `main` SHA both match
+    the certified SHA and all health and workflow checks pass. If any check is
+    unsafe or `main` has advanced, leave Auto-Deploy Off and record the hold.
+14. Declare the deployment complete only after all applicable checks pass.
 
 Migrating before the matching application rollout prevents new code from
 starting against a schema it cannot use. Backward-compatible, forward-only

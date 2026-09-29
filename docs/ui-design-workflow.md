@@ -28,10 +28,21 @@ Keep these concerns in separate artifacts:
 | Artifact | Owns | Does not own |
 | --- | --- | --- |
 | `PRODUCT.md` | Users, product purpose, workflows, positioning, durable constraints, confirmed product facts, and accessibility commitments | Visual styling, component recipes, or implementation procedure |
-| `DESIGN.md` | The incumbent or approved visual system: typography, color and surface treatment, spacing, layout, component patterns, responsive behavior, interaction principles, and motion principles | Product claims, agent orchestration, or every implementation lint rule |
+| `DESIGN.md` | Current production visual systems: typography, color and surface treatment, spacing, layout, component patterns, responsive behavior, interaction principles, and motion principles | Product claims, agent orchestration, or every implementation lint rule |
 | `docs/ui-design-workflow.md` | The sequence, stage ownership, handoffs, approval gates, conditional stages, and QA evidence | Product or visual decisions for a particular screen |
 | `AGENTS.md` | The short mandatory routing rule that makes this workflow discoverable to agents and contributors | The full workflow or a duplicate design system |
 | `docs/lint.md` and source code | Enforceable implementation constraints, theme tokens, shared variants, and component contracts | The complete rationale for the product's visual direction |
+
+### Production Familiar A authority
+
+Familiar A is already shipped for public account flows and authenticated
+bowler pages. For this established design, production code is the behavioral
+and responsive source of truth, and `DESIGN.md` records the current visual
+system. Shared components, theme tokens, and implementation rules remain
+enforced by source code and `docs/lint.md`. The standalone bowler preview is a
+fictional reference and experiment lab; its sample data and simulated flows
+do not define production behavior or business rules. Keep its sample-data and
+screenshot-provenance disclaimers when updating preview copy.
 
 When `PRODUCT.md` or `DESIGN.md` is missing, do not treat the repository as a
 blank slate. Inspect the existing product, routes, components, tokens, and
@@ -44,7 +55,7 @@ it. Do not invent product claims, testimonials, metrics, or capabilities.
 | Work type | Required path | Notes |
 | --- | --- | --- |
 | New app, new major surface, redesign, restyle, or modernization | Full pipeline below | Concept approval is required before implementation proceeds. |
-| Targeted UI refinement inside the existing system | Impeccable targeted work → applicable motion stages → frontend testing | Skip `frontend-app-builder` unless a new visual direction or concept is needed. |
+| Targeted UI refinement inside the existing system, including shipped Familiar A | Impeccable targeted work → applicable motion stages → frontend testing | Use production code plus `DESIGN.md` as authority. Do not require a new concept or concept-approval gate for maintenance that stays within the shipped system. |
 | UI change with no motion or state-transition impact | Design stage → frontend testing | Skip animation discovery and transition implementation/polish. |
 | Backend-only or non-rendered change | Repository engineering workflow | Do not invoke the UI pipeline. |
 | Mobile, touch, PWA, full-screen, sheet, carousel, or phone-specific work | Add `mobile-native` before final device QA | The phone and a real device, not desktop emulation, are the source of truth. |
@@ -109,7 +120,9 @@ continues.
 
 For a small refinement inside an established system, this stage may be
 skipped. Do not generate a competing concept merely to make a small fix look
-more elaborate.
+more elaborate. Targeted maintenance of shipped Familiar A does not need a new
+concept approval gate; use the production routes and current design system as
+the reference.
 
 ## Stage 2: Impeccable
 
@@ -235,8 +248,10 @@ The final check must define the target flow and verify:
 5. desktop and at least one mobile-sized viewport when practical;
 6. no clipping, overlap, overflow, unreadable text, missing assets, broken
    focus behavior, or scroll traps are present;
-7. the accepted concept and latest rendered screenshot agree on copy, layout,
-   typography, palette, spacing, assets, responsive behavior, and motion.
+7. the accepted concept, when one exists, or the current `DESIGN.md` and
+   production behavior agree with the latest rendered screenshot on copy,
+   layout, typography, palette, spacing, assets, responsive behavior, and
+   motion.
 
 Use the Browser plugin first when it is available. If it is unavailable or a
 permitted fallback is required, use Playwright and record the reason. Do not

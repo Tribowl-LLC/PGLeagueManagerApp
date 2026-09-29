@@ -1,12 +1,12 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-19T05:00:02Z",
+  "generatedAt": "2026-09-29T14:53:10Z",
   "title": "Design System: LeagueVault",
   "extensions": {
     "colorMeta": {
       "primary": {
         "role": "primary",
-        "displayName": "Deep Navy Primary",
+        "displayName": "Shared Deep Navy Primary",
         "canonical": "hsl(222 47% 11%)",
         "tonalRamp": [
           "oklch(15% 0.04 260)",
@@ -21,7 +21,7 @@
       },
       "app-shell": {
         "role": "neutral",
-        "displayName": "Cool App Shell",
+        "displayName": "Admin Cool App Shell",
         "canonical": "#f8fafc",
         "tonalRamp": [
           "#0f172a",
@@ -51,7 +51,7 @@
       },
       "brand-accent-500": {
         "role": "primary",
-        "displayName": "Blue-Violet Active Accent",
+        "displayName": "Admin Blue-Violet Active Accent",
         "canonical": "oklch(58.5% 0.233 277.117)",
         "tonalRamp": [
           "oklch(18% 0.09 277)",
@@ -97,16 +97,20 @@
     },
     "typographyMeta": {
       "body": {
-        "displayName": "System Sans Body",
-        "purpose": "Default readable copy across public, admin, and bowler surfaces."
+        "displayName": "Familiar A Body",
+        "purpose": "Instrument Sans body copy in shipped public account and authenticated bowler surfaces; the separate admin interface retains system sans."
       },
       "title": {
-        "displayName": "Compact Operational Title",
-        "purpose": "Page, card, and primary flow headings."
+        "displayName": "Familiar A Page Title",
+        "purpose": "Page, card, and primary-flow headings in public and bowler surfaces."
       },
       "label": {
-        "displayName": "Control Label",
-        "purpose": "Form labels, buttons, navigation rows, and table headings."
+        "displayName": "Familiar A Control Label",
+        "purpose": "Form labels, buttons, navigation rows, and table headings in Familiar A surfaces."
+      },
+      "admin-body": {
+        "displayName": "Admin System Sans Body",
+        "purpose": "The incumbent authenticated staff/admin interface keeps its existing system-sans body type."
       }
     },
     "shadows": [
@@ -116,9 +120,14 @@
         "purpose": "Quiet separation below the sticky content header."
       },
       {
-        "name": "mobile-navigation",
+        "name": "legacy-mobile-navigation-default",
         "value": "0 -4px 12px rgba(0, 0, 0, 0.06)",
-        "purpose": "Separation above the fixed bowler navigation."
+        "purpose": "Legacy global utility default; the Familiar A bowler shell overrides it with its scoped shadow."
+      },
+      {
+        "name": "familiar-bowler-mobile-navigation",
+        "value": "0 -4px 12px rgb(100 116 139 / 0.08)",
+        "purpose": "Route-scoped separation above the fixed Familiar A bowler navigation."
       }
     ],
     "motion": [
@@ -163,7 +172,7 @@
       "name": "Primary Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "Default high-confidence action.",
+      "description": "Default high-confidence admin action; Familiar A public and bowler controls inherit Instrument Sans from their scoped shell.",
       "html": "<button class=\"ds-btn-primary\" type=\"button\">Save changes</button>",
       "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; height: 2.5rem; padding: 0.5rem 1rem; border: 0; border-radius: calc(var(--radius) - 2px); background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); font: 500 0.875rem/1 ui-sans-serif, system-ui, sans-serif; transition: background-color 200ms, color 200ms; } .ds-btn-primary:hover { background: hsl(var(--primary) / 0.9); } .ds-btn-primary:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }"
     },
@@ -171,7 +180,7 @@
       "name": "Outline Button",
       "kind": "button",
       "refersTo": "button-outline",
-      "description": "Lower-emphasis action that retains a clear boundary.",
+      "description": "Lower-emphasis admin action with a clear boundary; Familiar A controls inherit their scoped type.",
       "html": "<button class=\"ds-btn-outline\" type=\"button\">Cancel</button>",
       "css": ".ds-btn-outline { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; height: 2.5rem; padding: 0.5rem 1rem; border: 1px solid hsl(var(--input)); border-radius: calc(var(--radius) - 2px); background: hsl(var(--background)); color: hsl(var(--foreground)); font: 500 0.875rem/1 ui-sans-serif, system-ui, sans-serif; transition: background-color 200ms, color 200ms; } .ds-btn-outline:hover { background: hsl(var(--accent)); color: hsl(var(--accent-foreground)); } .ds-btn-outline:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }"
     },
@@ -179,7 +188,7 @@
       "name": "Text Input",
       "kind": "input",
       "refersTo": "input",
-      "description": "Standard form field for public and operational forms.",
+      "description": "Shared form-field structure; Familiar A public and bowler screens use their route-scoped type and control styling.",
       "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Enter a value\" aria-label=\"Example field\" />",
       "css": ".ds-input { display: flex; width: 100%; height: 2.5rem; padding: 0.5rem 0.75rem; border: 1px solid hsl(var(--input)); border-radius: calc(var(--radius) - 2px); background: hsl(var(--background)); color: hsl(var(--foreground)); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; } .ds-input::placeholder { color: hsl(var(--muted-foreground)); } .ds-input:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; } .ds-input:disabled { cursor: not-allowed; opacity: 0.5; }"
     },
@@ -187,7 +196,7 @@
       "name": "Card",
       "kind": "card",
       "refersTo": "card",
-      "description": "White operational surface over the app shell.",
+      "description": "White operational surface over the admin app shell; Familiar A bowler pages use their scoped page surfaces.",
       "html": "<article class=\"ds-card\"><h3>League health</h3><p>Current operational status.</p></article>",
       "css": ".ds-card { padding: 1.5rem; border: 1px solid hsl(var(--border)); border-radius: var(--radius); background: hsl(var(--card)); color: hsl(var(--card-foreground)); box-shadow: 0 1px 2px rgb(0 0 0 / 0.05); } .ds-card h3 { margin: 0; font: 600 1.125rem/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: -0.025em; } .ds-card p { margin: 0.375rem 0 0; color: hsl(var(--muted-foreground)); font: 400 0.875rem/1.5 ui-sans-serif, system-ui, sans-serif; }"
     },
@@ -195,7 +204,7 @@
       "name": "Status Badge",
       "kind": "chip",
       "refersTo": "badge",
-      "description": "Compact semantic status or context marker.",
+      "description": "Compact semantic status or context marker; color communicates meaning across both interface systems.",
       "html": "<span class=\"ds-badge\">Active</span>",
       "css": ".ds-badge { display: inline-flex; align-items: center; border: 1px solid transparent; border-radius: 9999px; padding: 0.125rem 0.625rem; background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); font: 600 0.75rem/1.5 ui-sans-serif, system-ui, sans-serif; transition: background-color 200ms, color 200ms; } .ds-badge:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }"
     },
@@ -210,21 +219,21 @@
     {
       "name": "Bowler Mobile Navigation Item",
       "kind": "nav",
-      "refersTo": "navigation-item",
-      "description": "One of four touch-oriented bottom-navigation items.",
+      "refersTo": "bowler-mobile-navigation-item",
+      "description": "One of four touch-oriented bottom-navigation items in the shipped Familiar A bowler shell.",
       "html": "<a class=\"ds-bowler-nav-item\" href=\"#\" aria-current=\"page\"><span class=\"ds-bowler-nav-icon\" aria-hidden=\"true\">◆</span><span>Overview</span></a>",
-      "css": ".ds-bowler-nav-item { display: flex; min-width: 0; width: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 0.125rem; border-radius: calc(var(--radius) - 2px); color: oklch(70.4% 0.04 256.788); text-decoration: none; font: 500 0.625rem/1.5 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.025em; } .ds-bowler-nav-icon { display: flex; width: 2.5rem; height: 1.75rem; align-items: center; justify-content: center; border-radius: 9999px; } .ds-bowler-nav-item:hover { color: oklch(44.6% 0.043 257.281); } .ds-bowler-nav-item[aria-current=\"page\"] { color: oklch(51.1% 0.262 276.966); font-weight: 700; } .ds-bowler-nav-item[aria-current=\"page\"] .ds-bowler-nav-icon { background: oklch(96.2% 0.018 272.314); } .ds-bowler-nav-item:focus-visible { outline: 2px solid oklch(58.5% 0.233 277.117); outline-offset: 2px; }"
+      "css": ".ds-bowler-nav-item { display: flex; min-width: 0; width: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 0.125rem; border-radius: 7px; color: #475569; text-decoration: none; font: 500 0.75rem/1.2 \"Instrument Sans\", ui-sans-serif, system-ui, sans-serif; } .ds-bowler-nav-icon { display: flex; width: auto; min-width: 42px; height: 29px; align-items: center; justify-content: center; padding: 0 10px; border-radius: 7px; } .ds-bowler-nav-item:hover { color: #0f172a; } .ds-bowler-nav-item[aria-current=\"page\"] { color: #0f172a; font-weight: 650; } .ds-bowler-nav-item[aria-current=\"page\"] .ds-bowler-nav-icon { background: rgb(15 23 42 / 0.08); } .ds-bowler-nav-item:focus-visible { outline: 3px solid rgb(30 58 138 / 0.34); outline-offset: 2px; }"
     }
   ],
   "narrative": {
-    "northStar": "The Quiet Operations Console",
-    "overview": "The current interface is restrained, utility-first, and built for repeated operational work. It uses white and cool-slate surfaces, dark navy structural chrome, and a blue-violet accent for active and focus states. The visual hierarchy comes from spacing, modest type-weight changes, borders, and tonal separation rather than decorative imagery or expressive typography.\n\nThe desktop experience is an admin console with a persistent dark sidebar, sticky light header, responsive content area, tables, cards, forms, and dialogs. The bowler experience is more phone-oriented: a compact white header, centered content, and a four-item bottom navigation. Public account flows use a centered white card on a plain background and can adopt organization-provided logos.",
+    "northStar": "Familiar A Production Design with a Distinct Admin Interface",
+    "overview": "LeagueVault has two production interface systems. Public account pages and authenticated bowler pages use Familiar A: Instrument Sans, navy structure, cool-gray and white surfaces, and responsive branded framing. The staff/admin interface retains its incumbent system-sans typography, dark navy navigation, and blue-violet active-navigation accent.\n\nOn phones, the Familiar A bowler shell centers the official Perfect Game logo on a navy brand bar, places the league selector below it, and uses a white four-item bottom navigation. At desktop widths it uses a navy sidebar and white league header. Public account pages use a desktop story-and-form layout that collapses to a compact branded navy bar on phones. Production code defines behavior and responsive implementation; DESIGN.md records the current visual system. The standalone preview is a fictional reference and experiment lab.",
     "keyCharacteristics": [
-      "Cool neutral surfaces and dark navy structural chrome.",
-      "Blue-violet accent for active, focus, and primary action states.",
-      "Compact-to-medium operational density with small-to-medium rounded corners.",
-      "Restrained borders and shadows; depth is mostly tonal.",
-      "Responsive desktop admin shell and mobile bowler navigation."
+      "Familiar A uses Instrument Sans, navy primary actions, cool-gray surfaces, and restrained borders and shadows.",
+      "Public account pages use a desktop story panel and form canvas, collapsing to a branded navy bar on phones.",
+      "The mobile bowler shell has a navy logo bar, league selector, and white four-item bottom navigation; desktop uses a navy sidebar and white league header.",
+      "Bowler active navigation uses navy on a pale navy-gray surface; admin active navigation retains the blue-violet accent.",
+      "The admin interface retains its incumbent system-sans type and compact operational layout."
     ],
     "rules": [
       {
@@ -233,8 +242,8 @@
         "section": "colors"
       },
       {
-        "name": "The Utility-First Type Rule",
-        "body": "Use the system sans stack and a restrained weight/size hierarchy. Do not introduce display typography into operational surfaces without an approved redesign direction.",
+        "name": "The Scoped Type Rule",
+        "body": "Use Instrument Sans for shipped Familiar A public and bowler surfaces and retain the system-sans stack for staff/admin surfaces. Keep a restrained hierarchy and do not introduce additional fonts without a design decision.",
         "section": "typography"
       },
       {
@@ -244,19 +253,20 @@
       }
     ],
     "dos": [
-      "Do use semantic CSS tokens from client/src/index.css instead of inventing one-off colors.",
-      "Do preserve the distinction between dark navigation chrome, light content surfaces, and semantic state colors.",
+      "Do use shared semantic tokens from client/src/index.css and the existing route-scoped Familiar A stylesheets, including familiar-bowler-shell.css, familiar-bowler-pay.css, and public-page-layout.css, instead of inventing one-off colors.",
+      "Do preserve the distinct admin and Familiar A surface, typography, and navigation rules.",
       "Do make keyboard focus visible with the established ring-and-offset treatment.",
-      "Do keep admin and bowler responsive behavior distinct where their usage scenes differ.",
+      "Do keep public, bowler, and admin responsive behavior aligned with their shipped production routes.",
       "Do use borders and tonal layering before stronger shadows on operational content.",
       "Do honor reduced-motion behavior and provider-required payment control styling."
     ],
     "donts": [
-      "Don't treat this incumbent palette or layout as the approved future visual world; replace it only after an explicit redesign direction is chosen.",
-      "Don't introduce a new font family, decorative display treatment, or marketing-style visual language into routine operations without updating the design direction first.",
-      "Don't use danger, warning, success, or information colors decoratively or interchangeably.",
-      "Don't remove semantic labels, focus states, responsive behavior, or loading/empty/error/recovery states while changing visual styling.",
-      "Don't normalize Square wallet and payment-provider controls without checking their provider requirements."
+      "Do not treat the Familiar A bowler and public system as a pending concept; it is shipped in production.",
+      "Do not apply Familiar A styling to admin pages or admin blue-violet active navigation to bowler navigation without a design decision.",
+      "Do not replace Familiar A Instrument Sans or the admin system-sans stack without a design decision.",
+      "Do not use danger, warning, success, or information colors decoratively or interchangeably.",
+      "Do not remove semantic labels, focus states, responsive behavior, or loading/empty/error/recovery states while changing visual styling.",
+      "Do not normalize Square wallet and payment-provider controls without checking their provider requirements."
     ]
   }
 }
