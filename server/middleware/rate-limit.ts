@@ -72,12 +72,13 @@ export const paymentLimiter = rateLimit({
 });
 
 export const adminWriteLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 30,
+  windowMs: 10 * 60 * 1000,
+  max: 100,
   keyGenerator: userKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false,
-  store: createSharedRateLimitStore('admin-write'),
+  // This namespace starts fresh instead of inheriting persisted 30-per-15-minute buckets.
+  store: createSharedRateLimitStore('admin-write-100-10m'),
   message: rateLimitMessage("Too many admin requests, please try again later"),
   skip: testBypassSkip,
 });
