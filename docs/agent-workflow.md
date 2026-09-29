@@ -25,12 +25,18 @@ The default release lifecycle is the single numbered procedure in
 [`docs/production-runbook.md`](production-runbook.md#default-release-lifecycle).
 It applies to every PR-required change. The active user's standing
 authorization permits the accountable root/Sol to merge after review and
-final-head checks, run the guarded Neon migration when needed after exact-main
-certification, and deploy the exact certified `main` commit after the
-preceding migration gate. A task-specific hold, draft, no-deploy instruction,
+final-head checks. Code-only releases may merge with Render Auto-Deploy On or
+Off. With Auto-Deploy On, rollout may start before Exact main certification;
+after certification, verify the running service is the exact certified SHA and
+passes health checks. If certification fails after an automatic rollout starts
+or completes, treat it as a live-release incident. With Auto-Deploy Off, wait
+for certification, then manually deploy and verify the exact certified SHA.
+For a required migration or data backfill, verify Auto-Deploy Off before merge,
+keep it Off through certification and the guarded operation, then manually
+deploy and verify the exact certified SHA before restoring the prior enabled
+mode after a safe SHA check. A task-specific hold, draft, no-deploy instruction,
 or explicit approval rule overrides that default. PR-ready status alone never
-authorizes release actions; the root owns merge, migration, and deployment
-decisions.
+authorizes release actions; Sol owns merge, migration, and deployment decisions.
 
 After successful deployment verification, follow step 8 of the
 [default release lifecycle](production-runbook.md#default-release-lifecycle)
@@ -43,17 +49,19 @@ select or change the running root model, reasoning effort, or service tier,
 enforce a watchdog, or run after the session ends. The launcher/runtime must
 select the actual values and provide collaboration tools, capacity, and a live
 process for these defaults to operate. Verify actual values when reported. The
-current `collaboration.spawn_agent` schema exposes `model` and
-`reasoning_effort`, but no fast-tier field; ask the launcher for the preferred
-fast tier when supported, and report it as unverified when the runtime does not
-expose evidence. Do not imply a tier guarantee from this document alone.
+exposed `collaboration.spawn_agent` schema can vary by runtime. Inspect it for
+each call and use only accepted fields. Some runtimes expose `model` and
+`reasoning_effort`; others may require launcher configuration. Request the
+preferred fast tier through the launcher when supported and report it as
+unverified when the runtime provides no evidence. Do not imply a tier guarantee
+from this document alone.
 
 ## 1. Sol makes the initial plan
 
 Sol uses the `gpt-6-sol` / `max` default and preferred fast tier to define the
 work, then delegates bounded concrete coding tasks to GPT-6 Luna agents. Sol
-retains coordination and integration. Use parallel agents when tasks are
-independent, with disjoint write ownership and a separate task handoff for each.
+retains coordination and integration. Use parallel agents only for independent
+tasks with disjoint write ownership and a separate task handoff for each.
 
 Before delegation, Sol records a concise plan with:
 
@@ -72,19 +80,30 @@ a deliberate reviewed base update follows repository policy and updates the
 handoff. A resume first verifies the current branch, `HEAD`, status, diff, and
 handoff state.
 
+Sol owns the single PR integration branch and PR. For parallel tasks, give each
+Luna a separate temporary local worktree and task branch based on that
+integration branch, plus a distinct handoff. Each agent reports its commit and
+evidence; Sol cherry-picks selected changes into the PR branch, resolves
+conflicts, and owns the final integrated checks and PR. Delegated agents do not
+push or open separate PRs. If separate worktrees are unavailable, serialize all
+edits, Git/index operations, builds, tests, and validation in the shared
+worktree. Do not run these activities concurrently even when agents own
+disjoint source paths; the worktree still shares its index and generated
+outputs.
+
 ## 2. Sol delegates bounded Luna tasks
 
 Give each Luna agent a self-contained brief: objective, acceptance criteria,
 constraints, owned paths, validation, escalation rules, and absolute worktree
 and handoff paths. Use a safe task slug of lowercase letters, digits, and
-underscores only (for example, `payment_retry_audit`). Launch parallel agents
-only for independent tasks with disjoint write ownership; Sol sequences
-dependent work and coordinates integration. At startup, inspect the exposed
+underscores only (for example, `payment_retry_audit`). Sol sequences dependent
+work and coordinates integration. At startup, inspect the exposed
 `collaboration.spawn_agent` schema and use only its accepted fields and enum
 values. A role label in the prompt cannot select a model, reasoning effort, or
-service tier. Use the minimal call below only after the launcher has verified
-the requested model and effort. Where supported, add the explicit overrides
-described below to `request` before invoking the tool:
+service tier. The minimal call below uses only base fields. Before invoking it,
+verify that the actual assignment is GPT-6 Luna at max reasoning: inspect the
+schema and add supported overrides, or configure and verify the role through the
+launcher. Do not invoke it with an unverified or inherited model assignment.
 
 ```js
 const request = {
@@ -97,33 +116,35 @@ Handoff: /absolute/path/to/worktree/.local/agent-tasks/<task-slug>/handoff.md
 Owned paths: <files or directories>
 Constraints: <invariants and out-of-scope paths>
 Validation: <commands and required evidence>
-PR: ready for review; after pushing verify it is not a draft; follow the
-standing release policy and runbook gates for merge/migration/deploy.
+PR: Sol owns the single PR and ensures it is ready for review. After pushing,
+verify it is not a draft and mark it ready if needed. Delegated agents return
+commits and evidence. Follow the standing release policy and runbook gates for
+merge/migration/deploy.
 Escalate: <triggers and how to pause safely>`
 };
-// Add these only when the inspected schema accepts both fields.
-request.model = "gpt-6-luna";
-request.reasoning_effort = "max";
-// The current schema has no tier field; request the preferred fast tier through
-// the launcher when available instead of passing an unknown argument.
+// After inspecting the schema, uncomment only the supported overrides:
+// request.model = "gpt-6-luna";
+// request.reasoning_effort = "max";
+// Request the preferred fast tier through the launcher when supported; do not
+// pass a tier field unless the inspected schema accepts it.
 await collaboration.spawn_agent(request);
 ```
 
-If the inspected schema explicitly exposes `model` and
-`reasoning_effort`, set them before the call (for example,
+If the inspected schema exposes `model` and `reasoning_effort`, add them before
+the call (for example,
 `request.model = "gpt-6-luna"` and
 `request.reasoning_effort = "max"`). Request the preferred fast tier through
-the launcher when it supports that choice; the current collaboration schema
-does not expose a tier argument. Record requested and actual model, reasoning,
-and tier values reported by the runtime, or the launcher's verification when
-available. If overrides are not accepted, the launcher must preconfigure and
-verify the role's model and reasoning effort before startup; do not pass
-unknown arguments. If the requested model or effort is unavailable, report
-that limitation and stop the delegation decision. If the preferred fast tier
-cannot be selected or verified, record that limitation without claiming the
-tier is guaranteed. Do not silently substitute a model, inherit Sol for Luna
-(or Luna for Sol), or assign Sol's decomposition and coordination duties to a
-bounded coding executor.
+the launcher when it supports that choice; do not assume every schema has a
+tier argument. Record requested and actual model, reasoning, and tier values
+reported by the runtime, or the launcher's verification when available. If
+overrides are not accepted, the launcher must preconfigure and verify the
+role's model and reasoning effort before startup; do not pass unknown
+arguments. If the requested model or effort is unavailable, report that
+limitation and stop the delegation decision. If the preferred fast tier cannot
+be selected or verified, record that limitation without claiming the tier is
+guaranteed. Do not silently substitute a model, inherit Sol for Luna (or Luna
+for Sol), or assign Sol's decomposition and coordination duties to a bounded
+coding executor.
 
 Every bounded child startup must detect its assigned role (Luna executor, Sol
 blocker resolver, Sol final reviewer, or another explicitly named role) and
@@ -215,13 +236,16 @@ not invent artifact paths or snapshots. The reviewer verifies the supplied
 snapshot against the current tree, and Luna pauses relevant edits while the
 snapshot is consumed.
 
-The minimal example below also requires verified Sol/max launcher selection
-and a request for the preferred fast tier when supported; otherwise add
-supported overrides before invoking it.
+The portable example below uses only base fields. Before invoking it, verify
+that the actual assignment is GPT-6 Sol at max reasoning: inspect the schema
+and add supported overrides, or configure and verify the role through the
+launcher. Do not invoke it with an unverified or inherited model assignment.
+Request the preferred fast tier through the launcher when supported.
 
 ```js
-await collaboration.spawn_agent({ task_name: "sol_review_<task_slug>", fork_turns: "none",
-  model: "gpt-6-sol", reasoning_effort: "max",
+const request = {
+  task_name: "sol_review_<task_slug>",
+  fork_turns: "none",
   message: `Role: GPT-6 Sol reviewer/resolver at max reasoning; request the preferred fast tier through the launcher when supported. Read-only; no recursive coordinator startup.
 Worktree: /absolute/path/to/worktree
 Base commit / head commit: <base SHA> / <head SHA>
@@ -229,8 +253,15 @@ Dirty diff evidence if applicable: <existing absolute artifact path>
 Relevant untracked source references if applicable: <reviewed paths/content references>
 Question/review goal: <bounded blocker or internal diff+code+tests review>
 Evidence: findings with severity, file/line, commands, commit IDs, and dirty-diff state.
-PR: ready for review; after push verify not draft; follow the standing release
-policy and runbook gates for merge/migration/deploy.` });
+PR: Sol owns the single PR and ensures it is ready for review. After pushing,
+verify it is not a draft and mark it ready if needed. Follow the standing
+release policy and runbook gates for
+merge/migration/deploy.`
+};
+// After inspecting the schema, uncomment only the supported overrides:
+// request.model = "gpt-6-sol";
+// request.reasoning_effort = "max";
+await collaboration.spawn_agent(request);
 ```
 
 ## 5. Internal Sol review

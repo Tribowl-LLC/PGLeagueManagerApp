@@ -1,7 +1,10 @@
 # Agent handoff
 
-Keep this file concise. The agent assigned to this task is its single writer;
-parallel tasks use distinct handoffs, and Sol coordinates their combined status.
+Keep this file concise. The agent assigned to this task is its single writer.
+Parallel tasks use separate temporary local worktrees, task branches, and
+handoffs; if separate worktrees are unavailable, serialize shared-worktree
+edits, Git/index operations, builds, tests, and validation. Sol coordinates
+their status and integrates selected changes into one PR branch.
 Store verbose raw logs separately. Never include secrets, tokens, credentials,
 or personal information. `.local/` is local evidence; paths are not portable by
 default. Preserve local paths and add shared references when portable artifacts
@@ -14,6 +17,8 @@ exist.
 - Objective and acceptance criteria:
 - Worktree (absolute path):
 - Target branch:
+- Sol-owned PR integration branch / PR:
+- Agent task branch (when using a separate worktree):
 - Requested role / model / reasoning effort / preferred service tier:
 - Actual runtime-reported role / model / reasoning effort / service tier (or
   launcher verification when available):

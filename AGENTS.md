@@ -47,6 +47,13 @@ uses npm. Do not introduce Yarn, pnpm, or an additional lockfile.
 - Do not reuse a merged branch for new work.
 - Do not combine unrelated changes in one branch or pull request.
 - Do not push normal work directly to `main`.
+- Sol owns one PR integration branch and one PR. For parallel coding tasks,
+  use separate temporary local worktrees and task branches based on that PR
+  branch; agents return commits and evidence, and Sol cherry-picks selected
+  work into the PR branch. Delegated agents do not open or push separate PRs.
+  If separate worktrees are unavailable, serialize all edits, Git/index
+  operations, builds, tests, and validation in the shared worktree; disjoint
+  source paths do not isolate its shared index or outputs.
 - The default agent assignments are GPT-6 Sol (`gpt-6-sol`) at maximum
   reasoning with the preferred fast tier for the primary root, architect,
   reviewer, and release authority, and GPT-6 Luna (`gpt-6-luna`) at maximum
@@ -59,10 +66,17 @@ uses npm. Do not introduce Yarn, pnpm, or an additional lockfile.
   [`docs/production-runbook.md`](docs/production-runbook.md#default-release-lifecycle).
   Standing user authorization covers routine scoped LeagueVault changes at
   each stage once its preceding lifecycle gates pass: after review and
-  final-head checks, the accountable root/Sol may merge; after exact-main
-  certification, it may run the guarded Neon migration when required and
-  deploy the exact certified `main` commit after the preceding migration gate;
-  after successful deployment verification, it may perform the safe
+  final-head checks, the accountable root/Sol may merge. A code-only release
+  may merge whether Render Auto-Deploy is On or Off. If it is On, rollout may
+  start before Exact main certification; after certification, verify the
+  running service SHA and health. If it is Off, manually deploy the exact
+  certified SHA after certification and verify it. If certification fails after
+  an automatic rollout starts or completes, treat it as a live-release incident.
+  If a migration or data backfill is required,
+  verify Auto-Deploy Off before merge, retain Off through certification and the
+  guarded operation, then manually deploy the exact certified `main` SHA and
+  verify it before restoring the prior enabled mode after a safe SHA check.
+  After successful deployment verification, root/Sol may perform the safe
   post-release fast-forward and worktree cleanup in step 8.
   PR-ready status alone never authorizes merge, migration, or deployment. A
   task-specific hold, draft, no-deploy instruction, or explicit approval rule
@@ -75,8 +89,11 @@ uses npm. Do not introduce Yarn, pnpm, or an additional lockfile.
   defined in [step 8 of the production runbook](docs/production-runbook.md#default-release-lifecycle).
 - Never force-push `main` or rewrite published history unless explicitly
   instructed.
-- Deploy the exact `main` commit that passed the required checks. Do not deploy
-  a different local commit or an unverified branch.
+- Verify that production runs the exact `main` SHA certified by Exact main
+  certification. Code-only Auto-Deploy may begin rollout earlier; releases
+  requiring migration or backfill keep it Off and manually deploy that exact
+  SHA after the guarded operation. Do not deploy a different local commit or an
+  unverified branch.
 - Keep production secrets in the appropriate provider: Render, Neon, Square,
   SendGrid, Sentry, or GitHub Actions secrets.
 - Never put production credentials in Codex prompts, source files, commits,
