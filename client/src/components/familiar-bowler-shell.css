@@ -1511,9 +1511,21 @@ a.familiar-payment-summary__value:hover {
     padding-bottom: 18px;
   }
 
+  /* The desktop reference treats the page heading and first content module as
+     one rhythm. The shared `space-y-6` utility is useful on mobile, but its
+     extra desktop margin pushes both approved rails down by one step. */
+  .familiar-bowler-content > .space-y-6 > .familiar-bowler-page-heading,
+  .familiar-bowler-content > .familiar-payment-history-content > .familiar-bowler-page-heading {
+    margin-bottom: 0;
+  }
+
   .familiar-bowler-page-heading h1 {
     font-size: 34px;
     letter-spacing: -1.3px;
+  }
+
+  .familiar-bowler-page-heading p {
+    margin-top: 8px;
   }
 
   .familiar-bowler-content > .space-y-6 {
@@ -1541,25 +1553,48 @@ a.familiar-payment-summary__value:hover {
 
   .familiar-bowler-shell[data-bowler-screen="overview"] .familiar-payment-overview__header {
     grid-column: 1 / -1;
+    padding: 25px 30px 0;
+  }
+
+  .familiar-bowler-shell[data-bowler-screen="overview"] .familiar-payment-overview__actions {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    grid-template-columns: minmax(0, 1fr) 190px;
+    align-items: center;
+    column-gap: 24px;
+    margin: 0 30px;
+  }
+
+  .familiar-bowler-shell[data-bowler-screen="overview"] .familiar-latest-payment {
+    padding: 24px 26px;
   }
 
   .familiar-bowler-shell[data-bowler-screen="overview"] .familiar-payment-overview__status {
     grid-column: 1;
-    grid-row: 2;
-    padding: 10px 30px 4px;
+    grid-row: 1;
+    padding: 15px 0 19px;
   }
 
   .familiar-bowler-shell[data-bowler-screen="overview"] .familiar-payment-overview__cta {
     grid-column: 2;
-    grid-row: 2;
+    grid-row: 1;
     align-self: center;
     width: auto;
-    margin: 0 30px 0 0;
+    margin: 0;
+  }
+
+  .familiar-bowler-shell[data-bowler-screen="overview"] .familiar-payment-overview__status-title {
+    margin: 1px 0 11px;
+    font-size: 25px;
+    line-height: 1.2;
   }
 
   .familiar-bowler-shell[data-bowler-screen="overview"] .familiar-payment-overview__summary {
     grid-column: 1 / -1;
     grid-row: 3;
+    margin-right: 30px;
+    margin-left: 30px;
   }
 
   .familiar-bowler-shell[data-bowler-screen="overview"] .familiar-payment-overview__amount {
@@ -1568,6 +1603,10 @@ a.familiar-payment-summary__value:hover {
 
   .familiar-bowler-shell[data-bowler-screen="overview"] .familiar-payment-overview__summary-grid {
     gap: 0;
+  }
+
+  .familiar-bowler-shell[data-bowler-screen="overview"] .familiar-payment-overview__summary-grid--past-due {
+    column-gap: 8px;
   }
 
   .familiar-bowler-shell[data-bowler-screen="overview"] .familiar-payment-overview__summary-grid > div {
@@ -1608,15 +1647,74 @@ a.familiar-payment-summary__value:hover {
   }
 
   .familiar-payment-history-summary .familiar-payment-summary {
-    padding-top: 0;
+    padding-top: 20px;
   }
 
   .familiar-payment-history-transactions .familiar-history-heading {
-    margin-top: 0;
+    margin-top: 24px;
+  }
+
+  .familiar-payment-summary__heading,
+  .familiar-history-heading h2 {
+    line-height: normal;
+  }
+
+  .familiar-payment-summary__weeks-paid {
+    margin-top: 14px;
+    padding-bottom: 12px;
+  }
+
+  .familiar-payment-summary__weeks-paid .familiar-payment-summary__label {
+    font-size: 0.75rem;
+    line-height: normal;
+  }
+
+  .familiar-payment-summary__weeks-paid strong,
+  .familiar-payment-summary__grid,
+  .familiar-payment-summary__grid .familiar-payment-summary__label,
+  .familiar-payment-summary__grid .familiar-payment-summary__value {
+    line-height: normal;
+  }
+
+  .familiar-payment-summary__grid {
+    gap: 16px;
   }
 
   .familiar-payment-history-transactions .familiar-payment-history-bowler-row {
     min-width: 0;
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+
+  .familiar-payment-history-bowler-row__info strong,
+  .familiar-payment-history-bowler-row__info > span {
+    font-size: 0.75rem;
+  }
+
+  .familiar-payment-history-bowler-row__status {
+    font-size: 0.625rem;
+  }
+
+  .familiar-payment-history-bowler-row__status--paid,
+  .familiar-latest-payment__amount .familiar-latest-payment__paid,
+  .familiar-payment-overview__success-icon {
+    color: #166534;
+  }
+
+  .familiar-payment-history-bowler-row__status--review,
+  .familiar-latest-payment__message--error {
+    color: #dc2626;
+  }
+
+  /* The receipt dialog is portalled to body, so scope its desktop palette
+     directly to the dialog rather than relying on the shell ancestor. */
+  [data-payment-details-variant="bowler"] [data-payment-details-part="hero-icon"],
+  [data-payment-details-variant="bowler"] [data-payment-details-part="hero"][data-payment-details-status="confirmed"] > span:not([data-payment-details-part="hero-icon"]) {
+    color: #166534;
+  }
+
+  [data-payment-details-variant="bowler"] [data-payment-details-part="hero"][data-payment-details-status="exception"] > span:not([data-payment-details-part="hero-icon"]) {
+    color: #dc2626;
   }
 }
 

@@ -59,36 +59,38 @@ export const PaymentOverviewCard: FC<PaymentOverviewCardProps> = ({
         <h2 id="payment-overview-title" className="familiar-payment-overview__title">Payment overview</h2>
       </header>
 
-      <div className="familiar-payment-overview__status" aria-live="polite">
-        {hasDueStatus ? (
-          <>
-            <strong className="familiar-payment-overview__amount">{formatFamiliarCurrency(statusAmount)}</strong>
-            <h3 className="familiar-payment-overview__status-title">Due now</h3>
-            {duePeriod && <p className="familiar-payment-overview__status-copy">{duePeriod}</p>}
-          </>
-        ) : (
-          <>
-            {isPaidInFull && <span aria-hidden="true" className="familiar-payment-overview__success-icon"><Check size={24} /></span>}
-            <h3 className="familiar-payment-overview__status-title">
-              {isPaidInFull ? "Season paid in full" : "You’re up to date"}
-            </h3>
-            <p className="familiar-payment-overview__status-copy">
-              {isPaidInFull ? "Your full season balance is settled." : "No payment is due right now."}
-            </p>
-          </>
+      <div className="familiar-payment-overview__actions">
+        <div className="familiar-payment-overview__status" aria-live="polite">
+          {hasDueStatus ? (
+            <>
+              <strong className="familiar-payment-overview__amount">{formatFamiliarCurrency(statusAmount)}</strong>
+              <h3 className="familiar-payment-overview__status-title">Due now</h3>
+              {duePeriod && <p className="familiar-payment-overview__status-copy">{duePeriod}</p>}
+            </>
+          ) : (
+            <>
+              {isPaidInFull && <span aria-hidden="true" className="familiar-payment-overview__success-icon"><Check size={24} /></span>}
+              <h3 className="familiar-payment-overview__status-title">
+                {isPaidInFull ? "Season paid in full" : "You’re up to date"}
+              </h3>
+              <p className="familiar-payment-overview__status-copy">
+                {isPaidInFull ? "Your full season balance is settled." : "No payment is due right now."}
+              </p>
+            </>
+          )}
+        </div>
+
+        {leagueId !== undefined && (
+          <Link
+            href={`/make-payment?leagueId=${leagueId}`}
+            className="familiar-payment-overview__cta"
+            aria-label={hasDueStatus ? `Pay ${formatFamiliarCurrency(statusAmount)}` : "Make a payment"}
+          >
+            {hasDueStatus ? `Pay ${formatFamiliarCurrency(statusAmount)}` : "Make a payment"}
+            <ArrowRight aria-hidden="true" size={18} />
+          </Link>
         )}
       </div>
-
-      {leagueId !== undefined && (
-        <Link
-          href={`/make-payment?leagueId=${leagueId}`}
-          className="familiar-payment-overview__cta"
-          aria-label={hasDueStatus ? `Pay ${formatFamiliarCurrency(statusAmount)}` : "Make a payment"}
-        >
-          {hasDueStatus ? `Pay ${formatFamiliarCurrency(statusAmount)}` : "Make a payment"}
-          <ArrowRight aria-hidden="true" size={18} />
-        </Link>
-      )}
 
       <div className="familiar-payment-overview__summary">
         <span className="familiar-payment-overview__summary-label">Season totals</span>

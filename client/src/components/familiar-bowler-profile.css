@@ -387,8 +387,10 @@
     width: min(100%, 820px);
     max-width: 820px;
     margin: 0;
-    padding-top: 1.5rem;
+    padding-top: 2rem;
     padding-bottom: 3rem;
+    --familiar-muted: rgb(71 85 105 / 0.78);
+    --familiar-line: rgb(100 116 139 / 0.34);
     grid-template-columns: minmax(0, 318px) minmax(360px, 420px);
     column-gap: 2rem;
     align-items: start;
@@ -398,6 +400,8 @@
     grid-column: 1;
     grid-row: 1;
     padding: 0;
+    position: relative;
+    top: -0.25rem;
   }
 
   .familiar-bowler-profile-page .familiar-bowler-page-heading h1 {
@@ -416,10 +420,12 @@
 
   .familiar-profile-intro {
     display: grid;
-    grid-template-columns: 4rem minmax(0, 1fr);
+    grid-template-columns: 4.0625rem minmax(0, 1fr);
     grid-template-rows: auto auto auto;
     column-gap: 1rem;
     align-items: center;
+    height: 7.1875rem;
+    min-height: 7.1875rem;
     padding: 0;
     text-align: left;
   }
@@ -427,10 +433,10 @@
   .familiar-profile-avatar {
     grid-column: 1;
     grid-row: 1 / span 2;
-    width: 4rem;
-    height: 4rem;
+    width: 4.0625rem;
+    height: 4.0625rem;
     margin: 0;
-    font-size: 1.375rem;
+    font-size: 1.4375rem;
   }
 
   .familiar-profile-name {
@@ -440,6 +446,11 @@
     min-width: 0;
     overflow-wrap: anywhere;
     text-align: left;
+    font-size: 1.4375rem;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--familiar-ink, #0f172a) !important;
+    line-height: 1.22;
   }
 
   .familiar-profile-intro > p {
@@ -453,7 +464,10 @@
     grid-column: 1 / -1;
     grid-row: 3;
     justify-self: start;
+    min-height: 2.25rem;
     margin: 0.875rem 0 0;
+    padding: 0.4375rem 0;
+    font-size: 0.6875rem;
   }
 
   .familiar-profile-info-content {
@@ -470,7 +484,7 @@
   }
 
   .familiar-profile-security {
-    margin-top: 1.25rem;
+    margin-top: 0;
   }
 
   .familiar-profile-setting-row {
@@ -491,8 +505,26 @@
   }
 
   .familiar-profile-row-action {
-    min-width: 8.25rem;
+    min-width: 8rem;
     min-height: 2.75rem;
+    padding: 0.6875rem;
+    border-color: var(--familiar-line, rgb(100 116 139 / 0.34));
+    border-radius: 0.4375rem;
+    background: transparent;
+    font-weight: 400;
+  }
+
+  .familiar-profile-setting-row .familiar-profile-danger-action {
+    border-color: rgb(220 38 38 / 0.32);
+    color: rgb(220 38 38) !important;
+  }
+
+  .familiar-profile-signout button {
+    padding: 0.6875rem;
+    border-color: var(--familiar-line, rgb(100 116 139 / 0.34));
+    border-radius: 0.4375rem;
+    background: transparent;
+    font-weight: 400;
   }
 
   .familiar-profile-signout {
@@ -502,9 +534,207 @@
 
 @media (min-width: 1024px) and (max-width: 1199px) {
   .familiar-bowler-profile-page {
-    width: 100%;
-    max-width: none;
-    grid-template-columns: minmax(0, 1fr) minmax(360px, 420px);
-    column-gap: 1.5rem;
+    column-gap: 2.0625rem;
+  }
+}
+
+/* Familiar A dialog surfaces use the same quiet slate line, navy action, and
+   restrained depth as the approved preview. The selectors stay scoped to
+   profile-owned dialogs so shared dialogs keep their existing contracts. */
+body > .fixed.inset-0.z-50:not([role="dialog"]):has(+ .familiar-profile-dialog) {
+  background: rgb(100 116 139 / 0.4);
+  backdrop-filter: blur(3px);
+}
+
+.familiar-profile-dialog {
+  --familiar-ink: #0f172a;
+  --familiar-muted: rgb(71 85 105 / 0.78);
+  --familiar-line: rgb(100 116 139 / 0.34);
+  --familiar-navy: #0f172a;
+  width: calc(100% - 2rem);
+  max-width: 27.5rem;
+  max-height: calc(100dvh - 2.5rem);
+  border: 1px solid rgb(100 116 139 / 0.2);
+  border-radius: 1rem;
+  background: #fff;
+  color: var(--familiar-ink, #0f172a);
+  font-family: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  padding: 1.5625rem;
+  box-shadow: 0 25px 90px rgb(100 116 139 / 0.24);
+}
+
+.familiar-password-dialog,
+.familiar-payment-method-dialog,
+.familiar-payment-links-dialog,
+.familiar-deletion-dialog {
+  max-width: 26.25rem;
+}
+
+.familiar-profile-dialog > .flex.flex-col {
+  gap: 0.375rem;
+  margin-bottom: 0.75rem;
+  text-align: left;
+}
+
+.familiar-profile-dialog > .flex.flex-col > h2 {
+  color: var(--familiar-ink, #0f172a);
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.0375rem;
+  line-height: 1.2;
+}
+
+.familiar-profile-dialog > .flex.flex-col > p,
+.familiar-profile-dialog .text-muted-foreground {
+  color: var(--familiar-muted, rgb(71 85 105 / 0.78));
+}
+
+.familiar-profile-dialog > .flex.flex-col > p {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.8;
+}
+
+.familiar-profile-dialog > button:last-child {
+  top: 1.5625rem;
+  right: 1.5625rem;
+  display: grid;
+  width: 2.125rem;
+  height: 2.125rem;
+  place-items: center;
+  border-radius: 0.4375rem;
+  background: rgb(100 116 139 / 0.06);
+  color: var(--familiar-ink, #0f172a);
+  opacity: 1;
+}
+
+.familiar-profile-dialog > form:not(.familiar-profile-dialog-form) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8125rem;
+}
+
+.familiar-profile-dialog > form:not(.familiar-profile-dialog-form) > :not([hidden]) {
+  margin-block-end: 0 !important;
+}
+
+.familiar-profile-dialog > form:not(.familiar-profile-dialog-form) > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0 !important;
+  margin-block-start: 0 !important;
+  margin-block-end: 0 !important;
+}
+
+.familiar-profile-dialog form .space-y-2 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0.375rem !important;
+  margin-block-start: 0.375rem !important;
+  margin-block-end: 0 !important;
+}
+
+.familiar-profile-dialog form .space-y-2 > :not([hidden]) {
+  margin-block-end: 0 !important;
+}
+
+.familiar-profile-dialog form label,
+.familiar-profile-dialog form .text-sm.font-medium {
+  color: var(--familiar-ink, #0f172a);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.familiar-profile-dialog input:not([type="checkbox"]):not([type="hidden"]),
+.familiar-profile-dialog textarea,
+.familiar-profile-dialog [role="combobox"] {
+  width: 100%;
+  min-height: 2.75rem;
+  border: 1px solid var(--familiar-line, rgb(100 116 139 / 0.34));
+  border-radius: 0.4375rem;
+  background: #fff;
+  color: var(--familiar-ink, #0f172a);
+  padding: 0.625rem 0.6875rem;
+  font-size: 0.875rem;
+}
+
+.familiar-profile-dialog input:not([type="checkbox"]):focus,
+.familiar-profile-dialog textarea:focus,
+.familiar-profile-dialog [role="combobox"]:focus-visible {
+  border-color: #1e3a8a;
+  box-shadow: 0 0 0 3px rgb(30 58 138 / 0.14);
+  outline: none;
+}
+
+.familiar-profile-dialog form > .flex.gap-2 {
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.25rem;
+}
+
+.familiar-profile-dialog form > .flex.gap-2 > button,
+.familiar-profile-dialog form > button {
+  width: 100%;
+  min-height: 2.75rem;
+  border-radius: 0.4375rem;
+  padding: 0.6875rem;
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+
+.familiar-profile-dialog form > .flex.gap-2 > button[type="submit"],
+.familiar-profile-dialog form > button[type="submit"] {
+  min-height: 2.9375rem;
+  padding: 0.8125rem 1rem;
+  background: var(--familiar-navy, #0f172a);
+  color: #fff;
+  font-size: 0.9375rem;
+  font-weight: 650;
+}
+
+.familiar-profile-dialog form > .flex.gap-2 > button[type="button"],
+.familiar-profile-dialog form > button[type="button"] {
+  border: 1px solid var(--familiar-line, rgb(100 116 139 / 0.34));
+  background: transparent;
+  color: var(--familiar-ink, #0f172a);
+}
+
+.familiar-profile-dialog .familiar-profile-data-list {
+  border-color: rgb(100 116 139 / 0.22);
+}
+
+.familiar-profile-dialog .familiar-payment-method-row,
+.familiar-payment-links-content [data-testid^="row-"] {
+  border-color: rgb(100 116 139 / 0.22);
+  border-radius: 0.5rem;
+  background: rgb(100 116 139 / 0.03);
+}
+
+@media (min-width: 1024px) {
+  .familiar-profile-dialog .text-destructive {
+    color: #dc2626;
+  }
+}
+
+@media (max-width: 47.5rem) {
+  .familiar-profile-dialog {
+    padding: 1.3125rem;
+  }
+
+  .familiar-profile-dialog > .flex.flex-col > h2 {
+    font-size: 1.125rem;
+  }
+}
+
+@media (max-width: 22.5rem) {
+  .familiar-password-dialog,
+  .familiar-payment-method-dialog,
+  .familiar-payment-links-dialog,
+  .familiar-deletion-dialog {
+    padding: 1.125rem;
+  }
+}
+
+@media (pointer: coarse) {
+  .familiar-profile-dialog input:not([type="checkbox"]):not([type="hidden"]),
+  .familiar-profile-dialog textarea,
+  .familiar-profile-dialog [role="combobox"] {
+    font-size: 1rem;
   }
 }

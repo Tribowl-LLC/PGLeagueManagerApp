@@ -282,6 +282,8 @@ const ProfileSettingsPage: FC = () => {
     <BowlerLayout
       bowlerName={currentUser.name}
       leagueName={activeLeague?.name ?? "No League"}
+      teamName={activeTeam?.name}
+      leagueStartTime={activeLeague?.competitionStartTime}
       currentLeagueId={activeBowlerLeague?.leagueId}
       onOpenLeagueSheet={activeLeague ? () => setLeagueSheetOpen(true) : undefined}
     >

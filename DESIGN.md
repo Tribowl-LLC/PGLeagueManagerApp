@@ -489,10 +489,11 @@ with a responsive content width. This direction does not change the admin UI.
   use a persistent 224px navy sidebar with the Perfect Game logo, League
   Manager label, Overview, Pay, and History links, and a bottom Profile row
   showing the bowler avatar and name. Use a white top bar with the current
-  league name and show a right-aligned Switch league control when league
-  switching is available. Center the Overview and Pay content in a compact
-  rail, keep History in an approximately 802px rail with 270px totals, 112px
-  separation, and 420px transactions, and keep Profile as a narrow focused
+  league name, team, and configured league start time; show a right-aligned
+  Switch league control when league switching is available. Center Overview and
+  Pay content in a compact rail; keep History in an approximately 802px rail
+  with 270px totals, 112px separation, and 420px transactions; keep Profile as
+  a narrow focused
   stack. Preserve the mobile logo bar, league selector, and bottom navigation
   below the desktop breakpoint; tablet widths retain a compact overflow-safe
   layout.
@@ -500,7 +501,11 @@ with a responsive content width. This direction does not change the admin UI.
   page backgrounds on Pay, History, and Profile, and the approved light-slate
   Overview background. Use open space for sections; frame only the cards and
   controls that the preview frames. Financial amounts use natural proportional
-  numerals and an ordinary-sized dollar sign.
+  numerals and an ordinary-sized dollar sign. On desktop, use `#0f172a` for
+  primary text and actions, `rgb(71 85 105 / 0.78)` for muted copy,
+  `rgb(100 116 139 / 0.34)` for standard dividers and control borders,
+  `#166534` for paid/success states, and `#dc2626` for danger states. Keep
+  provider-branded wallet controls in their provider colors.
 - **Overview:** Keep the Payment overview card and Latest payment card.
   Season totals show Paid, Remaining, and Season, with Past Due inserted only
   when positive. Rotating bowlers see Paid and Past Due only. The next bowling

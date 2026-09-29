@@ -50,7 +50,10 @@ export default function PaymentHistoryPage() {
 
   const leagueId = selectedLeagueId ?? bowlerLeagues[0]?.leagueId;
   const leagueMap = useMemo(() => new Map((details?.leagues ?? []).map((league) => [league.id, league])), [details?.leagues]);
+  const teamMap = useMemo(() => new Map((details?.teams ?? []).map((team) => [team.id, team])), [details?.teams]);
   const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
+  const activeMembership = leagueId === undefined ? undefined : bowlerLeagues.find((membership) => membership.leagueId === leagueId);
+  const activeTeam = activeMembership?.teamId != null ? teamMap.get(activeMembership.teamId) : undefined;
   const { data: reportResponse, isLoading: loadingReport, error: reportError, refetch: refetchReport } = useQuery<ApiResponse<CanonicalPaymentReport>>({
     queryKey: ["/api/financials/f5/payments", { bowlerId, leagueId, page: canonicalReportPage }],
     queryFn: async ({ signal }) => {
@@ -134,6 +137,9 @@ export default function PaymentHistoryPage() {
     onCloseLeagueSheet={() => setLeagueSheetOpen(false)}
     bowlerLeagues={bowlerLeagues}
     leagueMap={leagueMap}
+    teamMap={teamMap}
+    teamName={activeTeam?.name}
+    leagueStartTime={league.competitionStartTime}
     onSelectLeague={(nextId) => { setSelectedLeagueId(nextId); setCanonicalReportPage(1); navigate(`/payment-history?leagueId=${nextId}`); }}
     totalWeeksInSeason={financials.totalWeeksInSeason}
     fullSeasonAmount={financials.fullSeasonAmount}
