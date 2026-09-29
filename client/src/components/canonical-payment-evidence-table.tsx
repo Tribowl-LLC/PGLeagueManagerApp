@@ -103,6 +103,7 @@ function multiWeekPaidPeriod(row: CanonicalPaymentRow, totalWeeksInSeason?: numb
     || totalWeeksInSeason <= 0
     || !row.appliedTo?.length
     || row.appliedTo.some((allocation) => allocation.state !== "active"
+      || allocation.isFullyCoveredWeek !== true
       || !Number.isSafeInteger(allocation.plannedOrdinal)
       || (allocation.plannedOrdinal ?? 0) <= 0
       || allocation.amountMinor <= 0

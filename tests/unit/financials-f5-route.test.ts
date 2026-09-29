@@ -127,7 +127,7 @@ describe("F5 canonical payment report route", () => {
       receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded" },
       initiatingPayerBowlerId: 42,
       allocations: [
-        { allocationId: "allocation-self", obligationId: "obligation-self", occurrenceId: "occurrence-self", plannedOrdinal: 31, bowlerId: 42, amountMinor: 2_000, currency: "USD", state: "active", isFinalPairedWeek: true },
+        { allocationId: "allocation-self", obligationId: "obligation-self", occurrenceId: "occurrence-self", plannedOrdinal: 31, bowlerId: 42, amountMinor: 2_000, currency: "USD", state: "active", isFinalPairedWeek: true, isFullyCoveredWeek: true },
         { allocationId: "allocation-partner", obligationId: "obligation-partner", occurrenceId: "occurrence-partner", bowlerId: 43, amountMinor: 1_000, currency: "USD", state: "active" },
       ],
     };
@@ -144,10 +144,12 @@ describe("F5 canonical payment report route", () => {
     expect(payerView.isSelfOnlyPayment).toBe(false);
     expect(partnerView.isSelfOnlyPayment).toBe(false);
     expect(payerView.appliedTo?.[0]).not.toHaveProperty("isFinalPairedWeek");
+    expect(payerView.appliedTo?.[0]).not.toHaveProperty("isFullyCoveredWeek");
     expect(partnerView.appliedTo?.[0]).not.toHaveProperty("isFinalPairedWeek");
+    expect(partnerView.appliedTo?.[0]).not.toHaveProperty("isFullyCoveredWeek");
     expect(soloPayerView.hasMultipleRecipients).toBe(false);
     expect(soloPayerView.isSelfOnlyPayment).toBe(true);
-    expect(soloPayerView.appliedTo?.[0]).toMatchObject({ plannedOrdinal: 31, isFinalPairedWeek: true });
+    expect(soloPayerView.appliedTo?.[0]).toMatchObject({ plannedOrdinal: 31, isFinalPairedWeek: true, isFullyCoveredWeek: true });
     expect(JSON.stringify(soloPayerView)).not.toContain("allocation-self");
     expect(JSON.stringify(soloPayerView)).not.toContain("obligation-self");
     expect(JSON.stringify(soloPayerView)).not.toContain("occurrence-self");

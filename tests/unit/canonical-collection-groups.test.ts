@@ -108,7 +108,7 @@ describe("canonical double-pay collection pairing", () => {
 });
 
 describe("current published final-pair payment evidence", () => {
-  const currentRun = { id: "run-current", state: "applied", sourceScheduleRevision: 5, supersededAt: null };
+  const currentRun = { id: "run-current", state: "applied", supersededAt: null };
   const member = (role: "trigger" | "paired", overrides: Partial<CurrentPublishedPairMemberEvidence> = {}): CurrentPublishedPairMemberEvidence => ({
     groupId: "group-current",
     groupGenerationRunId: "run-current",
@@ -154,13 +154,21 @@ describe("current published final-pair payment evidence", () => {
   const validPair = () => [member("trigger"), member("paired")];
 
   it("marks only the paired occurrence from a complete current published group", () => {
-    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, validPair())).toEqual(new Set(["occ-final"]));
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 5, validPair())).toEqual(new Set(["occ-final"]));
+  });
+
+  it("uses the league's current schedule revision when a replacement group supersedes its run revision", () => {
+    const replacementPair = validPair().map((row) => ({ ...row, groupSourceScheduleRevision: 6 }));
+
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 6, replacementPair)).toEqual(new Set(["occ-final"]));
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 6, validPair())).toEqual(new Set());
   });
 
   it("fails closed for missing or ambiguous current generation evidence", () => {
-    expect(deriveCurrentFinalPairedOccurrenceIds(null, validPair())).toEqual(new Set());
-    expect(deriveCurrentFinalPairedOccurrenceIds({ ...currentRun, supersededAt: "2038-02-01T00:00:00.000Z" }, validPair())).toEqual(new Set());
-    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, [member("trigger")])).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds(null, 5, validPair())).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds({ ...currentRun, supersededAt: "2038-02-01T00:00:00.000Z" }, 5, validPair())).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 0, validPair())).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 5, [member("trigger")])).toEqual(new Set());
   });
 
   it("ignores revoked, stale-generation, and superseded-term memberships", () => {
@@ -168,9 +176,9 @@ describe("current published final-pair payment evidence", () => {
     const previousGeneration = validPair().map((row) => ({ ...row, groupGenerationRunId: "run-old" }));
     const supersededTerm = validPair().map((row, index) => index === 1 ? { ...row, termSupersededAt: "2038-02-01T00:00:00.000Z" } : row);
 
-    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, revoked)).toEqual(new Set());
-    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, previousGeneration)).toEqual(new Set());
-    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, supersededTerm)).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 5, revoked)).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 5, previousGeneration)).toEqual(new Set());
+    expect(deriveCurrentFinalPairedOccurrenceIds(currentRun, 5, supersededTerm)).toEqual(new Set());
   });
 });
 

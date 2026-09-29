@@ -120,6 +120,7 @@ describe("CanonicalPaymentEvidenceTable", () => {
       currency: "USD",
       state: "active" as const,
       isFinalPairedWeek: true,
+      isFullyCoveredWeek: true,
     }));
     const confirmedSelfPayment = {
       paymentId: 90,
@@ -141,6 +142,42 @@ describe("CanonicalPaymentEvidenceTable", () => {
     render(<CanonicalPaymentEvidenceTable rows={[row(confirmedSelfPayment)]} variant="bowler" totalWeeksInSeason={32} />);
 
     expect(screen.getByText("2 weeks paid (includes Weeks 31 and 32)")).toBeInTheDocument();
+  });
+
+  it("keeps the single-week label when a FIFO tail or final paired tail is only partially covered", () => {
+    const base = row({
+      paymentId: 91,
+      status: "confirmed_paid",
+      unresolved: false,
+      reviewRequired: false,
+      source: "canonical_allocation",
+      amountMinor: 3_000,
+      allocatedMinor: 3_000,
+      allocations: [],
+      isSelfOnlyPayment: true,
+      hasMultipleRecipients: false,
+    });
+    const fifoTail = {
+      ...base,
+      paymentId: 91,
+      appliedTo: [
+        { plannedOrdinal: 1, occurrenceLocalDate: "2038-01-01", amountMinor: 2_000, currency: "USD", state: "active" as const, isFullyCoveredWeek: true },
+        { plannedOrdinal: 2, occurrenceLocalDate: "2038-01-08", amountMinor: 1_000, currency: "USD", state: "active" as const },
+      ],
+    };
+    const finalPairedTail = {
+      ...base,
+      paymentId: 92,
+      appliedTo: [
+        { plannedOrdinal: 31, occurrenceLocalDate: "2038-04-01", amountMinor: 2_000, currency: "USD", state: "active" as const, isFullyCoveredWeek: true },
+        { plannedOrdinal: 32, occurrenceLocalDate: "2038-04-08", amountMinor: 1_000, currency: "USD", state: "active" as const, isFinalPairedWeek: true },
+      ],
+    };
+    render(<CanonicalPaymentEvidenceTable rows={[fifoTail, finalPairedTail]} variant="bowler" totalWeeksInSeason={32} />);
+
+    expect(screen.getByText("Week 1 payment")).toBeInTheDocument();
+    expect(screen.getByText("Week 31 payment")).toBeInTheDocument();
+    expect(screen.queryByText(/weeks paid/)).not.toBeInTheDocument();
   });
 
   it("keeps legacy period labels for single-week, full-season, partner, credit, and unresolved rows", () => {

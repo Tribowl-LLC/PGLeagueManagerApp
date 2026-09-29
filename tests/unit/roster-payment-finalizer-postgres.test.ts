@@ -63,6 +63,7 @@ let teamId: number;
 let bowlerId: number;
 let actorUserId: number;
 let occurrenceOrdinal = 0;
+let historyProjectionFixtureState: { occurrenceOrdinal: number; canonicalScheduleRevision: number } | null = null;
 const activeTestGenerationRunIds: string[] = [];
 
 function requirePayerBowlerId(payerBowlerId: number | null): number {
@@ -177,6 +178,14 @@ afterEach(async () => {
     eq(occurrencePaymentResponsibilities.organizationId, organizationId),
     eq(occurrencePaymentResponsibilities.state, "active"),
   ));
+  if (historyProjectionFixtureState) {
+    occurrenceOrdinal = historyProjectionFixtureState.occurrenceOrdinal;
+    await db.update(leagues).set({ canonicalScheduleRevision: historyProjectionFixtureState.canonicalScheduleRevision }).where(and(
+      eq(leagues.id, leagueId),
+      eq(leagues.organizationId, organizationId),
+    ));
+    historyProjectionFixtureState = null;
+  }
 });
 
 async function createOccurrence() {
@@ -295,6 +304,10 @@ async function createAppliedGenerationRun(occurrences: Awaited<ReturnType<typeof
     approvedByUserId: actorUserId,
     approvalCommandId,
   });
+  await db.update(leagues).set({ canonicalScheduleRevision: sourceScheduleRevision }).where(and(
+    eq(leagues.id, leagueId),
+    eq(leagues.organizationId, organizationId),
+  ));
   activeTestGenerationRunIds.push(generationRunId);
   if (occurrences.length > 0) {
     await db.update(leagueOccurrences).set({ generationRunId }).where(and(
@@ -311,6 +324,7 @@ async function createPublishedDoublePayGroup(input: {
   trigger: Awaited<ReturnType<typeof createOccurrence>>;
   paired: Awaited<ReturnType<typeof createOccurrence>>;
   groupOrdinal: number;
+  sourceScheduleRevision?: number;
 }) {
   const groupId = randomUUID();
   const commandId = randomUUID();
@@ -341,7 +355,7 @@ async function createPublishedDoublePayGroup(input: {
     organizationId,
     leagueId,
     generationRunId: input.generationRunId,
-    sourceScheduleRevision: 1,
+    sourceScheduleRevision: input.sourceScheduleRevision ?? 1,
     kind: "double_pay",
     state: "published",
     groupOrdinal: input.groupOrdinal,
@@ -718,22 +732,46 @@ function historicalCashRepairAllowlist(paymentId: number, amountMinor: number) {
 
 describe("PR1 roster snapshot finalization on PostgreSQL", () => {
   it("projects final-pair flags only from current published group membership", async () => {
+    const [leagueBeforeProjection] = await db.select({ canonicalScheduleRevision: leagues.canonicalScheduleRevision }).from(leagues).where(and(
+      eq(leagues.id, leagueId),
+      eq(leagues.organizationId, organizationId),
+    ));
+    if (!leagueBeforeProjection) throw new Error("history projection league fixture is missing");
+    historyProjectionFixtureState = {
+      occurrenceOrdinal,
+      canonicalScheduleRevision: leagueBeforeProjection.canonicalScheduleRevision,
+    };
     await resetBaseRosterToWeeklyMain();
     const triggerA = await createOccurrence();
     const pairedA = await createOccurrence();
     const triggerB = await createOccurrence();
     const pairedB = await createOccurrence();
-    const generationRunId = await createAppliedGenerationRun([triggerA, pairedA, triggerB, pairedB]);
-    const groupAId = await createPublishedDoublePayGroup({ generationRunId, trigger: triggerA, paired: pairedA, groupOrdinal: 1 });
-    const groupBId = await createPublishedDoublePayGroup({ generationRunId, trigger: triggerB, paired: pairedB, groupOrdinal: 2 });
+    const triggerPartial = await createOccurrence();
+    const pairedPartial = await createOccurrence();
+    const generationRunId = await createAppliedGenerationRun([triggerA, pairedA, triggerB, pairedB, triggerPartial, pairedPartial], 1);
+    const groupAId = await createPublishedDoublePayGroup({ generationRunId, trigger: triggerA, paired: pairedA, groupOrdinal: 1, sourceScheduleRevision: 2 });
+    const groupBId = await createPublishedDoublePayGroup({ generationRunId, trigger: triggerB, paired: pairedB, groupOrdinal: 2, sourceScheduleRevision: 2 });
+    await createPublishedDoublePayGroup({ generationRunId, trigger: triggerPartial, paired: pairedPartial, groupOrdinal: 3, sourceScheduleRevision: 2 });
+    await db.update(leagues).set({ canonicalScheduleRevision: 2 }).where(and(
+      eq(leagues.id, leagueId),
+      eq(leagues.organizationId, organizationId),
+    ));
     const paymentA = await createCashEvidence(pairedA.obligation.id, 2_000, "2038-02-01T12:00:00.000Z");
     const paymentB = await createCashEvidence(pairedB.obligation.id, 2_000, "2038-02-02T12:00:00.000Z");
+    const partialTailPayment = await createCashEvidenceForAllocations([
+      { obligationId: triggerPartial.obligation.id, amountMinor: 2_000 },
+      { obligationId: pairedPartial.obligation.id, amountMinor: 1_000 },
+    ], "2038-02-03T12:00:00.000Z");
 
     const currentReport = await readCanonicalPaymentReport({ organizationId, leagueId, bowlerId, page: 1, limit: 20 });
     const currentRowA = currentReport.rows.find((row) => row.paymentId === paymentA.payment.id);
     const currentRowB = currentReport.rows.find((row) => row.paymentId === paymentB.payment.id);
+    const partialTailRow = currentReport.rows.find((row) => row.paymentId === partialTailPayment.payment.id);
     expect(currentRowA?.allocations[0]?.isFinalPairedWeek).toBe(true);
     expect(currentRowB?.allocations[0]?.isFinalPairedWeek).toBe(true);
+    expect(partialTailRow?.allocations.find((allocation) => allocation.occurrenceId === triggerPartial.occurrence.id)?.isFullyCoveredWeek).toBe(true);
+    expect(partialTailRow?.allocations.find((allocation) => allocation.occurrenceId === pairedPartial.occurrence.id)).toMatchObject({ isFinalPairedWeek: true });
+    expect(partialTailRow?.allocations.find((allocation) => allocation.occurrenceId === pairedPartial.occurrence.id)?.isFullyCoveredWeek).toBeUndefined();
 
     const revokeCommandId = randomUUID();
     await db.insert(leagueScheduleCommands).values({

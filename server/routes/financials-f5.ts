@@ -74,6 +74,7 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     ...(allocation.effectiveAmountMinor === undefined ? {} : { effectiveAmountMinor: allocation.effectiveAmountMinor }),
     refundDisposition: allocation.refundDisposition ?? null,
     ...(isSelfOnlyPayment && allocation.isFinalPairedWeek === true ? { isFinalPairedWeek: true } : {}),
+    ...(isSelfOnlyPayment && allocation.isFullyCoveredWeek === true ? { isFullyCoveredWeek: true } : {}),
     currency: allocation.currency,
     state: allocation.state,
   }));
