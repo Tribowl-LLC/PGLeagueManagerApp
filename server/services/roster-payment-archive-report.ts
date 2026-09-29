@@ -498,7 +498,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         payerBowlerId: paymentObligations.payerBowlerId,
         bowlerId: input.bowlerId,
       }),
-    )) : [];
+    ));
     const selfBalanceAllocations = selfObligations.length === 0 || input.bowlerId === undefined ? [] : await tx.select({
       allocation: paymentAllocations,
       adjustment: {
@@ -529,7 +529,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           payerBowlerId: paymentObligations.payerBowlerId,
           bowlerId: input.bowlerId,
         }),
-      )) : [];
+      ));
     const activeSelfObligations = selfObligations.filter((obligation) => obligation.state !== "voided");
     const selfObligationsByOccurrence = new Map<string, typeof activeSelfObligations>();
     for (const obligation of activeSelfObligations) {

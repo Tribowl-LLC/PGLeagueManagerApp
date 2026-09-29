@@ -63,7 +63,8 @@ let teamId: number;
 let bowlerId: number;
 let actorUserId: number;
 let occurrenceOrdinal = 0;
-let historyProjectionFixtureState: { occurrenceOrdinal: number; canonicalScheduleRevision: number } | null = null;
+let occurrenceFixtureIdentity = 0;
+let historyProjectionFixtureState: { canonicalScheduleRevision: number } | null = null;
 const activeTestGenerationRunIds: string[] = [];
 
 function requirePayerBowlerId(payerBowlerId: number | null): number {
@@ -179,7 +180,6 @@ afterEach(async () => {
     eq(occurrencePaymentResponsibilities.state, "active"),
   ));
   if (historyProjectionFixtureState) {
-    occurrenceOrdinal = historyProjectionFixtureState.occurrenceOrdinal;
     await db.update(leagues).set({ canonicalScheduleRevision: historyProjectionFixtureState.canonicalScheduleRevision }).where(and(
       eq(leagues.id, leagueId),
       eq(leagues.organizationId, organizationId),
@@ -188,8 +188,14 @@ afterEach(async () => {
   }
 });
 
-async function createOccurrence() {
-  occurrenceOrdinal += 1;
+async function createOccurrence(options: {
+  preserveOccurrenceOrdinal?: boolean;
+  plannedOrdinal?: number;
+  authoritativeLocalDate?: string;
+} = {}) {
+  if (!options.preserveOccurrenceOrdinal) occurrenceOrdinal += 1;
+  occurrenceFixtureIdentity += 1;
+  const plannedOrdinal = options.plannedOrdinal ?? occurrenceOrdinal;
   const commandId = randomUUID();
   await db.insert(leagueScheduleCommands).values({
     id: commandId,
@@ -197,27 +203,29 @@ async function createOccurrence() {
     leagueId,
     actorUserId,
     commandType: "publish",
-    idempotencyKey: `roster-finalizer-publish-${suffix}-${occurrenceOrdinal}`,
-    requestFingerprint: `roster-finalizer-fingerprint-${occurrenceOrdinal}`,
+    idempotencyKey: `roster-finalizer-publish-${suffix}-${occurrenceFixtureIdentity}`,
+    requestFingerprint: `roster-finalizer-fingerprint-${occurrenceFixtureIdentity}`,
   });
-  const startAt = new Date(Date.UTC(2038, 1, occurrenceOrdinal + 1, 19, 0, 0)).toISOString();
+  const authoritativeLocalDate = options.authoritativeLocalDate
+    ?? new Date(Date.UTC(2038, 1, occurrenceOrdinal + 1, 19, 0, 0)).toISOString().slice(0, 10);
+  const startAt = new Date(`${authoritativeLocalDate}T19:00:00.000Z`).toISOString();
   const [occurrence] = await db.insert(leagueOccurrences).values({
     organizationId,
     leagueId,
     locationId,
-    generationKey: `roster-finalizer-occurrence-${suffix}-${occurrenceOrdinal}`,
+    generationKey: `roster-finalizer-occurrence-${suffix}-${occurrenceFixtureIdentity}`,
     kind: "regular",
     status: "scheduled",
     lifecycle: "published",
-    authoritativeLocalDate: startAt.slice(0, 10),
+    authoritativeLocalDate,
     authoritativeLocalStartTime: "19:00:00",
     timezone: "UTC",
     startAt,
     selectedUtcOffsetMinutes: 0,
     foldResolution: "unambiguous",
     resolverVersion: "roster-finalizer-test",
-    plannedOrdinal: occurrenceOrdinal,
-    competitionNumber: occurrenceOrdinal,
+    plannedOrdinal,
+    competitionNumber: plannedOrdinal,
     competitive: true,
     countsInStandings: true,
     publishedAt: startAt,
@@ -232,7 +240,7 @@ async function createOccurrence() {
     obligationPolicy: "eligible_bowlers",
     defaultAmountMinor: 2_000,
     currency: "USD",
-    billingOrdinal: occurrenceOrdinal,
+    billingOrdinal: plannedOrdinal,
     version: 1,
     state: "published",
     publishedAt: startAt,
@@ -304,10 +312,6 @@ async function createAppliedGenerationRun(occurrences: Awaited<ReturnType<typeof
     approvedByUserId: actorUserId,
     approvalCommandId,
   });
-  await db.update(leagues).set({ canonicalScheduleRevision: sourceScheduleRevision }).where(and(
-    eq(leagues.id, leagueId),
-    eq(leagues.organizationId, organizationId),
-  ));
   activeTestGenerationRunIds.push(generationRunId);
   if (occurrences.length > 0) {
     await db.update(leagueOccurrences).set({ generationRunId }).where(and(
@@ -409,10 +413,10 @@ async function createPublishedDoublePayGroup(input: {
   return groupId;
 }
 
-async function resetBaseRosterToWeeklyMain(): Promise<void> {
+async function resetBaseRosterToWeeklyMain(options: { preserveOccurrenceOrdinal?: boolean } = {}): Promise<void> {
   // Earlier lifecycle tests intentionally move one fixture to 2038-03-15;
   // keep these additional season-batch fixtures outside that date range.
-  occurrenceOrdinal = Math.max(occurrenceOrdinal, 100);
+  if (!options.preserveOccurrenceOrdinal) occurrenceOrdinal = Math.max(occurrenceOrdinal, 100);
   await db.update(leagues).set({ paymentMode: "weekly", timezone: "UTC" }).where(and(
     eq(leagues.organizationId, organizationId),
     eq(leagues.id, leagueId),
@@ -738,16 +742,15 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     ));
     if (!leagueBeforeProjection) throw new Error("history projection league fixture is missing");
     historyProjectionFixtureState = {
-      occurrenceOrdinal,
       canonicalScheduleRevision: leagueBeforeProjection.canonicalScheduleRevision,
     };
-    await resetBaseRosterToWeeklyMain();
-    const triggerA = await createOccurrence();
-    const pairedA = await createOccurrence();
-    const triggerB = await createOccurrence();
-    const pairedB = await createOccurrence();
-    const triggerPartial = await createOccurrence();
-    const pairedPartial = await createOccurrence();
+    await resetBaseRosterToWeeklyMain({ preserveOccurrenceOrdinal: true });
+    const triggerA = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_001, authoritativeLocalDate: "2038-05-01" });
+    const pairedA = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_002, authoritativeLocalDate: "2038-05-02" });
+    const triggerB = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_003, authoritativeLocalDate: "2038-05-03" });
+    const pairedB = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_004, authoritativeLocalDate: "2038-05-04" });
+    const triggerPartial = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_005, authoritativeLocalDate: "2038-05-05" });
+    const pairedPartial = await createOccurrence({ preserveOccurrenceOrdinal: true, plannedOrdinal: 1_000_006, authoritativeLocalDate: "2038-05-06" });
     const generationRunId = await createAppliedGenerationRun([triggerA, pairedA, triggerB, pairedB, triggerPartial, pairedPartial], 1);
     const groupAId = await createPublishedDoublePayGroup({ generationRunId, trigger: triggerA, paired: pairedA, groupOrdinal: 1, sourceScheduleRevision: 2 });
     const groupBId = await createPublishedDoublePayGroup({ generationRunId, trigger: triggerB, paired: pairedB, groupOrdinal: 2, sourceScheduleRevision: 2 });
