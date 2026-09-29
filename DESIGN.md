@@ -585,13 +585,14 @@ component system. This design remains distinct from the admin UI.
   league name, team, and configured league start time; show a right-aligned
   Switch league control when league switching is available. The sidebar is
   204px through 1120px and 224px above that. Center Overview and
-  Pay content in a compact rail. On wider desktop, keep History in an
-  approximately 802px rail with 270px totals, 112px separation, and 420px
-  transactions; from 1024px through 1120px, use 240px totals and a 24px gap.
-  Keep Profile as a narrow focused
-  stack. Preserve the mobile logo bar, league selector, and bottom navigation
-  below the desktop breakpoint; tablet widths retain a compact overflow-safe
-  layout.
+  Pay content in a compact rail. On wider desktop, give Pay's Automatic
+  payments and checkout columns the same 112px separation as History; use a
+  24px gap for both pages from 1024px through 1120px. Keep History in an
+  approximately 802px rail with 270px totals and 420px transactions on wider
+  desktop, and 240px totals from 1024px through 1120px. Keep Profile as a
+  narrow focused stack. Preserve the mobile logo bar, league selector, and
+  bottom navigation below the desktop breakpoint; tablet widths retain a
+  compact overflow-safe layout.
 - **Typography and surfaces:** Use Instrument Sans, navy `#0f172a`, white
   page backgrounds on Pay, History, and Profile, and the light-slate
   Overview background. Use open space for sections; frame only the cards and
