@@ -104,6 +104,11 @@ async function cashEditFingerprint(payload: Record<string, unknown>) {
   return `lvcashedit:v1:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
 }
 
+async function cashDeleteFingerprint(payload: Record<string, unknown>) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(payload)));
+  return `lvcashdelete:v1:${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
+}
+
 function parseAmountMinor(value: string): number | null {
   if (!/^\d+(?:\.\d{1,2})?$/.test(value.trim())) return null;
   const [whole, fraction = ""] = value.trim().split(".");
@@ -138,6 +143,12 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
   const [editRequestKey, setEditRequestKey] = useState<string | null>(null);
   const [correctionBusy, setCorrectionBusy] = useState(false);
   const [correctionError, setCorrectionError] = useState<string | null>(null);
+  const [deletingCash, setDeletingCash] = useState(false);
+  const [deleteReason, setDeleteReason] = useState("");
+  const [deleteRequestKey, setDeleteRequestKey] = useState<string | null>(null);
+  const [deleteSubmissionStarted, setDeleteSubmissionStarted] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [receiptLoading, setReceiptLoading] = useState(false);
   const [receiptError, setReceiptError] = useState<string | null>(null);
   const initialEditStarted = useRef(false);
@@ -146,18 +157,40 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     || evidence?.source === "prepaid_credit"
     || evidence?.source === "held_credit"
     || evidence?.source === "refunded_credit";
-  const canEditCash = Boolean(
+  const concreteManualCashEvidence = Boolean(
     canCorrect
       && payment
-      && evidence?.paymentId !== null
-      && evidence?.paymentType === "cash"
-      && !isRotatingCreditFunding
+      && payment.id > 0
+      && evidence
+      && evidence.paymentId === payment.id
+      && evidence.leagueId === payment.leagueId
+      && evidence.bowlerId === payment.bowlerId
+      && evidence.paymentType === "cash"
       && payment.type === "cash"
-      && payment.status === "paid"
-      && evidence.status === "confirmed_paid"
+      && !isRotatingCreditFunding
+      && evidence.source === "canonical_allocation"
+      && !evidence.unresolved
       && !evidence.reviewRequired
-      && evidence.allocations.length > 0
-      && evidence.allocations.every((allocation) => allocation.state === "active"),
+      && evidence.providerPaymentId === null
+      && evidence.paymentOperationId === null
+      && evidence.operationType === null
+      && evidence.operationStatus === null
+      && !evidence.refund.present
+      && !evidence.dispute.present
+      && payment.providerPaymentId === null
+      && payment.paymentOperationId === null
+      && payment.refundedAt === null
+      && payment.squareRefundId === null
+      && payment.refundReason === null
+      && payment.disputeId === null
+      && payment.disputedAt === null
+      && evidence.allocations.length > 0,
+  );
+  const canEditCash = Boolean(
+    concreteManualCashEvidence
+      && payment?.status === "paid"
+      && evidence?.status === "confirmed_paid"
+      && evidence?.allocations.every((allocation) => allocation.state === "active"),
   );
 
   useEffect(() => {
@@ -176,12 +209,19 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
 
   if (!evidence) return null;
 
-  const canVoid = canCorrect
-    && payment !== null
-    && evidence.paymentId !== null
-    && !isRotatingCreditFunding
-    && (evidence.paymentType === "cash" || evidence.paymentType === "check")
-    && evidence.allocations.some((allocation) => allocation.state === "active");
+  const canVoid = Boolean(concreteManualCashEvidence
+    && payment?.status === "paid"
+    && evidence?.status === "confirmed_paid"
+    && evidence?.allocations.every((allocation) => allocation.state === "active"));
+  const canDeleteCash = Boolean(concreteManualCashEvidence && payment && evidence && (
+    (payment.status === "paid"
+      && evidence.status === "confirmed_paid"
+      && evidence.correctionEvidence === undefined
+      && evidence.allocations.every((allocation) => allocation.state === "active"))
+    || (payment.status === "voided"
+      && evidence.correctionEvidence?.status === "voided"
+      && evidence.allocations.every((allocation) => allocation.state === "voided"))
+  ));
   const displayStatus = paymentEvidenceDisplayStatus(evidence);
   const unusedShareCredit = evidence.source === "prepaid_credit";
   const heldShareCredit = evidence.source === "held_credit";
@@ -237,6 +277,52 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     setEditPaymentDate(evidence.authoritativeLocalDate);
     setEditRequestKey(crypto.randomUUID());
     setCorrectionError(null);
+  };
+
+  const beginCashDelete = () => {
+    if (!canDeleteCash) return;
+    setDeletingCash(true);
+    setDeleteReason("");
+    setDeleteRequestKey(crypto.randomUUID());
+    setDeleteSubmissionStarted(false);
+    setDeleteError(null);
+  };
+
+  const cancelCashDelete = () => {
+    if (deleteBusy) return;
+    setDeletingCash(false);
+    setDeleteReason("");
+    setDeleteRequestKey(null);
+    setDeleteSubmissionStarted(false);
+    setDeleteError(null);
+  };
+
+  const submitCashDelete = async () => {
+    const trimmedReason = deleteReason.trim();
+    if (!canDeleteCash || !evidence || evidence.paymentId === null || !deleteRequestKey || !trimmedReason) return;
+    const fingerprintPayload = { paymentId: evidence.paymentId, reason: trimmedReason };
+    setDeleteSubmissionStarted(true);
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      const response = await csrfFetch(`/api/financials/leagues/${evidence.leagueId}/canonical/cash-payment-deletions/1`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": deleteRequestKey },
+        body: JSON.stringify({
+          ...fingerprintPayload,
+          idempotencyKey: deleteRequestKey,
+          requestFingerprint: await cashDeleteFingerprint(fingerprintPayload),
+        }),
+      });
+      const body = await response.json().catch(() => ({})) as { error?: { message?: string } };
+      if (!response.ok) throw new Error(body.error?.message || "Cash payment could not be permanently deleted");
+      await invalidateCashEditViews(evidence.leagueId, evidence.bowlerId);
+      onClose();
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Cash payment could not be permanently deleted");
+    } finally {
+      setDeleteBusy(false);
+    }
   };
 
   const submitCorrection = async () => {
@@ -310,7 +396,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
   };
 
   return (
-    <Dialog open onOpenChange={(open) => { if (!open && !correctionBusy) onClose(); }}>
+    <Dialog open onOpenChange={(open) => { if (!open && !correctionBusy && !deleteBusy) onClose(); }}>
       <DialogContent aria-describedby={undefined} viewport="dialog" className="overflow-y-auto sm:max-w-lg" variant={variant === "bowler" ? "bowlerReceipt" : undefined}>
         {variant === "bowler" ? (
           <>
@@ -481,7 +567,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
           </section>
         )}
 
-        {(canEditCash || canVoid) && (
+        {(canEditCash || canVoid || canDeleteCash) && (
           <section className="space-y-2 border-t pt-4" aria-label="Payment correction">
             {editingCorrection && editingMode === "edit_cash" ? (
               <>
@@ -500,6 +586,20 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
                   <Button variant="outline" size="sm" disabled={correctionBusy} onClick={() => { setEditingCorrection(false); setEditingMode(null); setEditRequestKey(null); setCorrectionError(null); }}>Cancel</Button>
                 </div>
               </>
+            ) : deletingCash ? (
+              <div className="space-y-2" aria-label="Permanent cash payment deletion">
+                <p className="text-sm font-medium text-destructive">Permanently delete this cash payment?</p>
+                <p className="text-sm text-muted-foreground">This removes the payment, its allocations, and any void record. Affected balances will be recalculated. This action cannot be undone.</p>
+                <label className="grid gap-1 text-sm">
+                  Reason for permanent deletion
+                  <input aria-label="Reason for permanent deletion" maxLength={500} required className="rounded-md border bg-background px-3 py-2" value={deleteReason} onChange={(event) => setDeleteReason(event.target.value)} disabled={deleteBusy || deleteSubmissionStarted} />
+                </label>
+                {deleteError && <p role="alert" className="text-sm text-destructive">{deleteError}</p>}
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="destructive" size="sm" disabled={deleteBusy || !deleteReason.trim()} onClick={() => void submitCashDelete()}>{deleteBusy ? "Deleting…" : "Permanently delete cash payment"}</Button>
+                  <Button variant="outline" size="sm" disabled={deleteBusy} onClick={cancelCashDelete}>Cancel</Button>
+                </div>
+              </div>
             ) : editingCorrection ? (
               <>
                 <label className="grid gap-1 text-sm">
@@ -515,7 +615,8 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
             ) : (
               <div className="flex flex-wrap gap-2">
                 {canEditCash && <Button variant="outline" size="sm" onClick={beginCashEdit}>Edit cash payment</Button>}
-                {canVoid && <Button variant="outline" size="sm" onClick={() => { setEditingMode("void_only"); setEditingCorrection(true); }}>Void cash/check payment</Button>}
+                {canVoid && <Button variant="outline" size="sm" onClick={() => { setEditingMode("void_only"); setEditingCorrection(true); }}>Void cash payment</Button>}
+                {canDeleteCash && <Button variant="destructive" size="sm" onClick={beginCashDelete}>Delete cash payment</Button>}
               </div>
             )}
           </section>

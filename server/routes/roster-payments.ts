@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import {
+  canonicalCashPaymentDeleteRequestSchema,
   canonicalCorrectionRequestSchema,
   canonicalManualRecordBatchQuoteRequestSchema,
   canonicalManualRecordBatchRequestSchema,
@@ -23,6 +24,7 @@ import { storage } from "../storage/index.js";
 import { adminWriteLimiter, paymentWriteLimiter } from "../middleware/rate-limit.js";
 import {
   correctCanonicalAllocation,
+  deleteCanonicalCashPayment,
   editCanonicalCashPayment,
   chargeInteractiveObligations,
   quoteInteractiveObligations,
@@ -166,7 +168,7 @@ function wireObject(value: unknown): WireObject | null {
 function rosterWireResult(value: unknown): Record<string, unknown> {
   const source = wireObject(value) ?? {};
   const base: Record<string, unknown> = {};
-  for (const key of ["contractVersion", "automaticContractVersion", "organizationId", "leagueId", "teamId", "ready", "commandKey", "requestFingerprint", "mode", "restoredObligationId", "payerBowlerId", "amountMinor", "currency", "fingerprint", "originalPaymentId", "replacementPaymentId", "oldAmountMinor", "newAmountMinor", "oldPaymentDate", "newPaymentDate", "allocationMode", "allocationCount", "eligibleRotatingBowlerIds"]) {
+  for (const key of ["contractVersion", "automaticContractVersion", "organizationId", "leagueId", "teamId", "ready", "commandKey", "requestFingerprint", "mode", "restoredObligationId", "payerBowlerId", "amountMinor", "currency", "fingerprint", "originalPaymentId", "replacementPaymentId", "oldAmountMinor", "newAmountMinor", "oldPaymentDate", "newPaymentDate", "allocationMode", "allocationCount", "eligibleRotatingBowlerIds", "deleted", "paymentId", "previousStatus", "deletedAllocationCount", "deletedVoidEvidence", "restoredObligationIds"]) {
     if (source[key] !== undefined) base[key] = source[key];
   }
   if (source.operationId !== undefined) {
@@ -689,6 +691,24 @@ router.post("/leagues/:leagueId/canonical/corrections/1", adminWriteLimiter, asy
     const result = parsed.data.correctionMode === "edit_cash"
       ? await editCanonicalCashPayment({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, request: parsed.data })
       : await correctCanonicalAllocation({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, request: parsed.data });
+    return sendSuccess(res, rosterWireResult(result), 201);
+  } catch (error) { return handleError(res, error); }
+});
+
+router.post("/leagues/:leagueId/canonical/cash-payment-deletions/1", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId, true, true);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = canonicalCashPaymentDeleteRequestSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid cash payment deletion request", 400, "INVALID_REQUEST");
+  try {
+    const result = await deleteCanonicalCashPayment({
+      organizationId: league.organizationId,
+      leagueId,
+      actorUserId: req.user.id,
+      request: parsed.data,
+    });
     return sendSuccess(res, rosterWireResult(result), 201);
   } catch (error) { return handleError(res, error); }
 });

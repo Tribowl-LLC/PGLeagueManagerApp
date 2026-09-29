@@ -127,4 +127,53 @@ describe("PaymentsTable dispute visibility", () => {
     expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
     expect(screen.getByText("02/28/2034")).toBeInTheDocument();
   });
+
+  it("keeps cash void and delete actions discoverable in the Payments table", async () => {
+    const user = userEvent.setup();
+    const rawCash = { ...payment(1, 10), paymentOperationId: null, disputes: [] };
+    const evidence: CanonicalPaymentRow = {
+      paymentId: 1, leagueId: 7, bowlerId: 10, amountMinor: 2500, currency: "USD",
+      status: "confirmed_paid", paymentType: "cash", businessDate: "2034-03-01",
+      authoritativeLocalDate: "2034-03-01", providerPaymentId: null,
+      paymentOperationId: null, operationType: null, operationStatus: null,
+      allocatedMinor: 2500, unallocatedMinor: 0, reviewRequired: false,
+      source: "canonical_allocation", unresolved: false,
+      refund: { present: false, amountMinor: 0, providerRefundId: null },
+      dispute: { present: false, amountMinor: 0, disputeId: null },
+      receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded" },
+      allocations: [{ allocationId: "allocation-1", obligationId: "obligation-1", occurrenceId: "occurrence-1", occurrenceLocalDate: "2034-02-28", bowlerId: 10, amountMinor: 2500, currency: "USD", state: "active" }],
+    };
+    const view = render(
+      <PaymentsTable
+        payments={[rawCash]}
+        filteredPayments={[rawCash]}
+        bowlers={[{ id: 10, name: "First Bowler" }] as never}
+        isAdmin
+        onRefund={() => {}}
+        isRefundPending={false}
+        paymentCanonicalRows={new Map([[1, evidence]])}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Void or delete cash payment" }));
+    expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Void cash payment" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete cash payment" })).toBeInTheDocument();
+
+    view.rerender(
+      <PaymentsTable
+        payments={[rawCash]}
+        filteredPayments={[rawCash]}
+        bowlers={[{ id: 10, name: "First Bowler" }] as never}
+        isAdmin
+        isPaymentManager
+        onRefund={() => {}}
+        isRefundPending={false}
+        paymentCanonicalRows={new Map([[1, evidence]])}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Void or delete cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
+  });
 });

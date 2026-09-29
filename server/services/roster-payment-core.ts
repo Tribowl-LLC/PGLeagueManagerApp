@@ -29,6 +29,7 @@ import {
   rotatingCreditFundings,
   rotatingCreditApplications,
   rotatingCreditApplicationReversals,
+  paymentAllocationCorrections,
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
   canonicalCollectionGroupMembers,
@@ -40,12 +41,14 @@ import {
   type TeamPaymentPolicy,
 } from "@shared/schema";
 import {
+  CANONICAL_CASH_PAYMENT_DELETE_CONTRACT_V1,
   serializeCanonicalResponsibilityFingerprint,
   serializeCanonicalRotatingRosterFingerprint,
   serializeRotatingOccurrenceAssignmentFingerprint,
 } from "@shared/roster-payment-contract";
 import type {
   CanonicalCorrectionRequest,
+  CanonicalCashPaymentDeleteRequest,
   CanonicalManualRecordRequest,
   OccurrenceResponsibilityInput,
   RosterPaymentResponsibilityRequest,
@@ -146,7 +149,15 @@ async function beginFinancialCommand(
   if (existing) {
     if (existing.actorUserId !== input.actorUserId) throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key belongs to another actor", 409);
     if (existing.requestFingerprint !== input.requestFingerprint) throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different request", 409);
-    if (existing.state === "applied" && existing.result !== null) throw new RosterPaymentReplay(existing.result);
+    if (existing.state === "applied" && existing.result !== null) {
+      await assertCommandReplayPaymentsExist(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        commandType: input.commandType,
+        result: existing.result,
+      });
+      throw new RosterPaymentReplay(existing.result);
+    }
     if (existing.state === "failed") throw new RosterPaymentError(existing.errorCode ?? "COMMAND_FAILED", "The command previously failed", 409);
     return;
   }
@@ -159,6 +170,56 @@ async function beginFinancialCommand(
     requestFingerprint: input.requestFingerprint,
     state: "accepted",
   });
+}
+
+/** Applied manual-record, void, and cash-edit commands can outlive a direct
+ * cash deletion. Keep their audit rows, but never replay a result containing
+ * a payment that no longer exists. */
+async function assertCommandReplayPaymentsExist(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; commandType: string; result: unknown },
+): Promise<void> {
+  const result = typeof input.result === "object" && input.result !== null
+    ? input.result as Record<string, unknown>
+    : null;
+  const paymentIds: number[] = [];
+  const addPaymentId = (value: unknown) => {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) return false;
+    paymentIds.push(value);
+    return true;
+  };
+
+  if (input.commandType === "roster_payment.manual_record") {
+    const records = result?.records;
+    if (!Array.isArray(records) || records.length === 0 || records.some((record) => {
+      if (typeof record !== "object" || record === null) return true;
+      const payment = (record as Record<string, unknown>).payment;
+      return typeof payment !== "object" || payment === null || !addPaymentId((payment as Record<string, unknown>).id);
+    })) {
+      throw new RosterPaymentError("COMMAND_RESULT_UNVERIFIABLE", "The earlier payment command cannot be replayed because its stored result is incomplete", 409);
+    }
+  } else if (input.commandType === "roster_payment.void_payment") {
+    const payment = result?.payment;
+    if (typeof payment !== "object" || payment === null || !addPaymentId((payment as Record<string, unknown>).id)) {
+      throw new RosterPaymentError("COMMAND_RESULT_UNVERIFIABLE", "The earlier payment command cannot be replayed because its stored result is incomplete", 409);
+    }
+  } else if (input.commandType === "roster_payment.edit_cash_payment") {
+    if (!addPaymentId(result?.originalPaymentId) || !addPaymentId(result?.replacementPaymentId)) {
+      throw new RosterPaymentError("COMMAND_RESULT_UNVERIFIABLE", "The earlier payment command cannot be replayed because its stored result is incomplete", 409);
+    }
+  } else {
+    return;
+  }
+
+  const distinctIds = [...new Set(paymentIds)];
+  const rows = await tx.select({ id: payments.id }).from(payments).where(and(
+    eq(payments.organizationId, input.organizationId),
+    eq(payments.leagueId, input.leagueId),
+    inArray(payments.id, distinctIds),
+  ));
+  if (rows.length !== distinctIds.length) {
+    throw new RosterPaymentError("PAYMENT_COMMAND_TARGET_DELETED", "A payment referenced by this earlier command was permanently deleted; the command cannot be replayed", 409);
+  }
 }
 
 async function completeFinancialCommand(tx: RosterPaymentTransaction, input: { organizationId: number; leagueId: number; commandType: string; idempotencyKey: string; result: unknown }): Promise<void> {
@@ -232,6 +293,13 @@ export function canonicalCashPaymentEditFingerprint(request: Pick<CanonicalCorre
     correctionMode: request.correctionMode,
     amountMinor: request.amountMinor,
     paymentDate: request.paymentDate,
+    reason: request.reason,
+  });
+}
+
+export function canonicalCashPaymentDeleteFingerprint(request: Pick<CanonicalCashPaymentDeleteRequest, "paymentId" | "reason">): string {
+  return commandFingerprint("lvcashdelete:v1", {
+    paymentId: request.paymentId,
     reason: request.reason,
   });
 }
@@ -2313,6 +2381,202 @@ export async function correctCanonicalAllocation(input: { organizationId: number
     await completeFinancialCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: "roster_payment.void_payment", idempotencyKey: input.request.idempotencyKey, result });
     return result;
   });
+}
+
+/** Permanently remove a supported manual cash tender while restoring each
+ * affected obligation from its remaining active allocations and adjustments.
+ * Existing financial command rows stay in place as the audit/idempotency log. */
+export async function deleteCanonicalCashPayment(input: {
+  organizationId: number;
+  leagueId: number;
+  actorUserId: number;
+  request: CanonicalCashPaymentDeleteRequest;
+}) {
+  try {
+    return await db.transaction(async (tx) => {
+    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    await beginFinancialCommand(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      actorUserId: input.actorUserId,
+      commandType: "roster_payment.delete_cash_payment",
+      idempotencyKey: input.request.idempotencyKey,
+      requestFingerprint: input.request.requestFingerprint,
+    });
+
+    if (input.request.requestFingerprint !== canonicalCashPaymentDeleteFingerprint(input.request)) {
+      throw new RosterPaymentError("INVALID_FINGERPRINT", "The cash payment deletion fingerprint is invalid", 422);
+    }
+    const [payment] = await tx.select().from(payments).where(and(
+      eq(payments.id, input.request.paymentId),
+      eq(payments.organizationId, input.organizationId),
+      eq(payments.leagueId, input.leagueId),
+    )).limit(1).for("update");
+    if (!payment) throw new RosterPaymentError("NOT_FOUND", "Payment not found", 404);
+    if (payment.type !== "cash" || (payment.status !== "paid" && payment.status !== "voided")
+      || payment.paymentOperationId !== null || payment.providerPaymentId !== null
+      || payment.refundedAt !== null || payment.squareRefundId !== null || payment.refundReason !== null
+      || payment.disputeId !== null || payment.disputedAt !== null) {
+      throw new RosterPaymentError("CASH_PAYMENT_DELETE_UNAVAILABLE", "Only supported manual cash payments can be permanently deleted", 409);
+    }
+    await assertPaymentIsNotRotatingCreditFundingInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      paymentId: payment.id,
+    });
+
+    const voidRows = await tx.select().from(paymentVoids).where(and(
+      eq(paymentVoids.organizationId, input.organizationId),
+      eq(paymentVoids.leagueId, input.leagueId),
+      eq(paymentVoids.paymentId, payment.id),
+    )).for("update");
+    if ((payment.status === "paid" && voidRows.length !== 0) || (payment.status === "voided" && voidRows.length !== 1)) {
+      throw new RosterPaymentError("CASH_PAYMENT_DELETE_UNAVAILABLE", "The payment status and void evidence do not match", 409);
+    }
+
+    const allocations = await tx.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, input.organizationId),
+      eq(paymentAllocations.leagueId, input.leagueId),
+      eq(paymentAllocations.paymentId, payment.id),
+    )).for("update");
+    const expectedAllocationState = payment.status === "paid" ? "active" : "voided";
+    if (allocations.length === 0 || allocations.some((allocation) => allocation.state !== expectedAllocationState
+      || allocation.allocationKind !== "ordinary" || allocation.reviewRequired || allocation.reviewReason !== null)) {
+      throw new RosterPaymentError("CASH_PAYMENT_DELETE_UNAVAILABLE", "The payment allocation evidence is incomplete or unsupported", 409);
+    }
+
+    const allocationIds = allocations.map((allocation) => allocation.id);
+    const obligationIds = [...new Set(allocations.map((allocation) => allocation.obligationId))];
+    const [correction] = await tx.select({ id: paymentAllocationCorrections.id }).from(paymentAllocationCorrections).where(and(
+      eq(paymentAllocationCorrections.organizationId, input.organizationId),
+      eq(paymentAllocationCorrections.leagueId, input.leagueId),
+      eq(paymentAllocationCorrections.paymentId, payment.id),
+    )).limit(1).for("update");
+    const [refundAdjustment] = await tx.select({ id: refundAllocationAdjustments.id }).from(refundAllocationAdjustments).where(and(
+      eq(refundAllocationAdjustments.organizationId, input.organizationId),
+      eq(refundAllocationAdjustments.leagueId, input.leagueId),
+      inArray(refundAllocationAdjustments.sourceAllocationId, allocationIds),
+    )).limit(1).for("update");
+    const [creditApplication] = await tx.select({ id: rotatingCreditApplications.id }).from(rotatingCreditApplications).where(and(
+      eq(rotatingCreditApplications.organizationId, input.organizationId),
+      eq(rotatingCreditApplications.leagueId, input.leagueId),
+      or(eq(rotatingCreditApplications.paymentId, payment.id), inArray(rotatingCreditApplications.allocationId, allocationIds)),
+    )).limit(1).for("update");
+    const [creditReversal] = await tx.select({ id: rotatingCreditApplicationReversals.id }).from(rotatingCreditApplicationReversals).where(and(
+      eq(rotatingCreditApplicationReversals.organizationId, input.organizationId),
+      eq(rotatingCreditApplicationReversals.leagueId, input.leagueId),
+      or(eq(rotatingCreditApplicationReversals.fundingPaymentId, payment.id), inArray(rotatingCreditApplicationReversals.allocationId, allocationIds)),
+    )).limit(1).for("update");
+    if (correction || refundAdjustment || creditApplication || creditReversal) {
+      throw new RosterPaymentError("CASH_PAYMENT_DELETE_HAS_DEPENDENT_EVIDENCE", "The payment has dependent financial evidence and cannot be permanently deleted", 409);
+    }
+
+    const reservations = await tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).where(and(
+      eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+      eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+      inArray(paymentOperationRosterSnapshotItems.obligationId, obligationIds),
+      eq(paymentOperationRosterSnapshotItems.state, "reserved"),
+    )).limit(1).for("update");
+    if (reservations.length > 0) {
+      throw new RosterPaymentError("OBLIGATION_RESERVED", "A provider operation has reserved an affected balance", 409);
+    }
+
+    const obligations = await tx.select().from(paymentObligations).where(and(
+      eq(paymentObligations.organizationId, input.organizationId),
+      eq(paymentObligations.leagueId, input.leagueId),
+      inArray(paymentObligations.id, obligationIds),
+    )).for("update");
+    if (obligations.length !== obligationIds.length) {
+      throw new RosterPaymentError("CASH_PAYMENT_DELETE_UNAVAILABLE", "An affected obligation is no longer available", 409);
+    }
+
+    // Existing append-only triggers allow proven payment cleanup only behind
+    // this transaction-local marker. All target rows and dependencies are
+    // already scoped, locked, and validated; keep the marker confined to the
+    // child deletes, balance recomputation, and parent delete below.
+    await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+    if (voidRows.length > 0) {
+      await tx.delete(paymentVoids).where(and(
+        eq(paymentVoids.organizationId, input.organizationId),
+        eq(paymentVoids.leagueId, input.leagueId),
+        eq(paymentVoids.paymentId, payment.id),
+      ));
+    }
+    await tx.delete(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, input.organizationId),
+      eq(paymentAllocations.leagueId, input.leagueId),
+      eq(paymentAllocations.paymentId, payment.id),
+    ));
+
+    for (const obligation of obligations) {
+      const active = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, input.organizationId),
+        eq(paymentAllocations.leagueId, input.leagueId),
+        eq(paymentAllocations.obligationId, obligation.id),
+        eq(paymentAllocations.state, "active"),
+      ));
+      const adjustments = active.length === 0 ? [] : await tx.select({
+        sourceAllocationId: refundAllocationAdjustments.sourceAllocationId,
+        amountMinor: refundAllocationAdjustments.amountMinor,
+        disposition: refundAllocationAdjustments.disposition,
+      }).from(refundAllocationAdjustments).where(and(
+        eq(refundAllocationAdjustments.organizationId, input.organizationId),
+        eq(refundAllocationAdjustments.leagueId, input.leagueId),
+        inArray(refundAllocationAdjustments.sourceAllocationId, active.map((row) => row.id)),
+      ));
+      const balance = canonicalObligationBalance({
+        amountMinor: obligation.amountMinor,
+        state: obligation.state,
+        grossAllocatedMinor: active.reduce((sum, row) => sum + row.amountMinor, 0),
+        adjustments,
+      });
+      await tx.update(paymentObligations).set({
+        state: obligation.state === "voided"
+          ? "voided"
+          : balance.outstandingMinor === 0 ? "settled" : balance.effectiveAllocatedMinor > 0 ? "partially_settled" : "open",
+      }).where(and(
+        eq(paymentObligations.id, obligation.id),
+        eq(paymentObligations.organizationId, input.organizationId),
+        eq(paymentObligations.leagueId, input.leagueId),
+      ));
+    }
+
+    const [deletedPayment] = await tx.delete(payments).where(and(
+      eq(payments.id, payment.id),
+      eq(payments.organizationId, input.organizationId),
+      eq(payments.leagueId, input.leagueId),
+    )).returning({ id: payments.id });
+    if (!deletedPayment) throw new RosterPaymentError("CASH_PAYMENT_DELETE_FAILED", "The payment could not be permanently deleted", 503);
+    await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'off', true)`);
+
+    const result = {
+      contractVersion: CANONICAL_CASH_PAYMENT_DELETE_CONTRACT_V1,
+      deleted: true as const,
+      paymentId: payment.id,
+      paymentType: payment.type,
+      previousStatus: payment.status,
+      amountMinor: payment.amount,
+      currency: payment.currency,
+      reason: input.request.reason,
+      deletedAllocationCount: allocations.length,
+      deletedVoidEvidence: voidRows.length === 1,
+      restoredObligationIds: obligationIds,
+    };
+    await completeFinancialCommand(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      commandType: "roster_payment.delete_cash_payment",
+      idempotencyKey: input.request.idempotencyKey,
+      result,
+    });
+    return result;
+    });
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "23503") {
+      throw new RosterPaymentError("CASH_PAYMENT_DELETE_HAS_DEPENDENT_EVIDENCE", "The payment has dependent financial evidence and cannot be permanently deleted", 409);
+    }
+    throw error;
+  }
 }
 
 /**
