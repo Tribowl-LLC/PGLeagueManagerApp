@@ -512,8 +512,9 @@ with a responsive content width. This direction does not change the admin UI.
   date does not appear between these cards.
 - **Pay:** Place Automatic payments above One-time payment when eligible.
   On desktop weekly-payment pages, Automatic payments starts below the page
-  title in the left column. Due now and Remaining sit above One-time payment
-  in the right column. Keep the approved mobile order.
+  title in the left column. Place Due now on the left and Remaining on the
+  right in a two-column summary above One-time payment in the right column.
+  Keep the approved mobile order.
   The one-time selector changes a single coverage sentence as weeks are added;
   double-pay weeks include the applicable final weeks. Saved-card selection
   also offers an available device wallet and a new-card path. Upfront leagues
