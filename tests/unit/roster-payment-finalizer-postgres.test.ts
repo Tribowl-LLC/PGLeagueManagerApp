@@ -703,20 +703,23 @@ async function expectCashDeletionMarkerOff() {
 
 function historicalCashRepairRequest(
   paymentId: number,
-  sourceAllocation: { id: string; obligationId: string; amountMinor: number },
-  targetObligationId: string,
+  sourceAllocations: { id: string; obligationId: string; amountMinor: number } | Array<{ id: string; obligationId: string; amountMinor: number }>,
+  targetObligation: string | Array<{ obligationId: string; amountMinor: number }>,
   idempotencyKey = `cash-repair-${randomUUID()}`,
 ): HistoricalCashAllocationRepairRequest {
-  const targetAllocations = [{ obligationId: targetObligationId, amountMinor: sourceAllocation.amountMinor }];
+  const oldAllocations = Array.isArray(sourceAllocations) ? sourceAllocations : [sourceAllocations];
+  const targetAllocations = typeof targetObligation === "string"
+    ? [{ obligationId: targetObligation, amountMinor: oldAllocations.reduce((sum, row) => sum + row.amountMinor, 0) }]
+    : targetObligation;
   const request: HistoricalCashAllocationRepairRequest = {
     paymentId,
-    expectedOldAllocationFingerprint: historicalCashAllocationFingerprint([{
+    expectedOldAllocationFingerprint: historicalCashAllocationFingerprint(oldAllocations.map((sourceAllocation) => ({
       allocationId: sourceAllocation.id,
       obligationId: sourceAllocation.obligationId,
       amountMinor: sourceAllocation.amountMinor,
       state: "active",
       allocationKind: "ordinary",
-    }]),
+    }))),
     expectedTargetAllocationFingerprint: historicalCashAllocationFingerprint(targetAllocations.map((allocation) => ({
       ...allocation,
       state: "active" as const,
@@ -3137,6 +3140,167 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         oldAllocationFingerprint: request.expectedOldAllocationFingerprint,
         targetAllocationFingerprint: request.expectedTargetAllocationFingerprint,
       });
+    });
+
+    it("atomically moves prepaid cash to the payer's next open date before recording a sub-pays-full responsibility", async () => {
+      await resetBaseRosterToWeeklyMain();
+      const septemberDate = await createOccurrence({ authoritativeLocalDate: "2038-09-29", plannedOrdinal: 1_009_029 });
+      const retainedDate = await createOccurrence({ authoritativeLocalDate: "2038-10-06", plannedOrdinal: 1_010_006 });
+      const nextOpenDate = await createOccurrence({ authoritativeLocalDate: "2038-10-13", plannedOrdinal: 1_010_013 });
+      const [substitute] = await db.insert(bowlers).values({ name: `Credit fixture substitute ${randomUUID()}`, organizationId }).returning({ id: bowlers.id });
+      const source = await createCashEvidenceForAllocations([
+        { obligationId: septemberDate.obligation.id, amountMinor: 2_000 },
+        { obligationId: retainedDate.obligation.id, amountMinor: 2_000 },
+      ], "2038-09-28T12:00:00.000Z");
+      const request = historicalCashRepairRequest(source.payment.id, source.allocations, [
+        { obligationId: retainedDate.obligation.id, amountMinor: 2_000 },
+        { obligationId: nextOpenDate.obligation.id, amountMinor: 2_000 },
+      ], `cash-credit-composition-${randomUUID()}`);
+      const allowlist = historicalCashRepairAllowlist(source.payment.id, source.payment.amount);
+      const responsibility = {
+        occurrenceId: septemberDate.occurrence.id,
+        teamId,
+        slotIndex: 0,
+        positionIndex: 0,
+        kind: "substitute" as const,
+        mainBowlerId: bowlerId,
+        substituteBowlerId: substitute.id,
+        payerBowlerId: substitute.id,
+        policy: "sub_pays_full" as const,
+        amountMinor: 2_000,
+        lineageAmountMinor: null,
+        prizeFundAmountMinor: null,
+        dueAt: septemberDate.obligation.dueAt,
+        pastDueAt: septemberDate.obligation.pastDueAt,
+        assignmentNote: "credit composition fixture",
+      };
+      const responsibilities = [responsibility];
+      const requestFingerprint = canonicalResponsibilityFingerprint(responsibilities);
+      const commandKey = `credit-substitute-composition-${randomUUID()}`;
+      const obligationIds = [septemberDate.obligation.id, retainedDate.obligation.id, nextOpenDate.obligation.id];
+      const compose = () => db.transaction(async (tx) => {
+        const repair = await repairHistoricalCashPaymentAllocation({ organizationId, leagueId, actorUserId, allowlist, request, transaction: tx });
+        const assignment = await recordOccurrenceResponsibilities({
+          organizationId,
+          leagueId,
+          actorUserId,
+          commandKey,
+          requestFingerprint,
+          responsibilities,
+          transaction: tx,
+        });
+        return { repair, assignment };
+      });
+
+      await expect(compose()).rejects.toMatchObject({ code: "SUBSTITUTE_ACCESS_DENIED" });
+
+      const [paymentAfterRollback] = await db.select({ status: payments.status, amount: payments.amount }).from(payments).where(and(
+        eq(payments.organizationId, organizationId),
+        eq(payments.leagueId, leagueId),
+        eq(payments.id, source.payment.id),
+      ));
+      expect(paymentAfterRollback).toEqual({ status: "paid", amount: 4_000 });
+      const allocationsAfterRollback = await db.select({ obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, state: paymentAllocations.state }).from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, leagueId),
+        eq(paymentAllocations.paymentId, source.payment.id),
+      ));
+      expect(Object.fromEntries(allocationsAfterRollback.map((allocation) => [allocation.obligationId, { amountMinor: allocation.amountMinor, state: allocation.state }]))).toEqual({
+        [septemberDate.obligation.id]: { amountMinor: 2_000, state: "active" },
+        [retainedDate.obligation.id]: { amountMinor: 2_000, state: "active" },
+      });
+      expect(Object.fromEntries((await db.select({ id: paymentObligations.id, state: paymentObligations.state }).from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        inArray(paymentObligations.id, obligationIds),
+      ))).map((row) => [row.id, row.state]))).toEqual({
+        [septemberDate.obligation.id]: "settled",
+        [retainedDate.obligation.id]: "settled",
+        [nextOpenDate.obligation.id]: "open",
+      });
+      expect(await db.select({ id: financialCommands.id }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        inArray(financialCommands.idempotencyKey, [request.idempotencyKey, commandKey]),
+      ))).toHaveLength(0);
+      expect(await db.select({ id: paymentVoids.id }).from(paymentVoids).where(and(
+        eq(paymentVoids.organizationId, organizationId),
+        eq(paymentVoids.leagueId, leagueId),
+        eq(paymentVoids.paymentId, source.payment.id),
+      ))).toHaveLength(0);
+
+      await db.insert(bowlerLeagues).values({ bowlerId: substitute.id, leagueId, teamId });
+      const { repair, assignment } = await compose();
+
+      expect(repair).toMatchObject({
+        originalPaymentId: source.payment.id,
+        amountMinor: source.payment.amount,
+        allocationCount: 2,
+      });
+      expect(assignment.responsibilities).toHaveLength(1);
+      expect(repair.replacementPayment.amount).toBe(source.payment.amount);
+      expect(Object.fromEntries(repair.allocations.map((allocation) => [allocation.obligationId, { amountMinor: allocation.amountMinor, state: allocation.state }]))).toEqual({
+        [retainedDate.obligation.id]: { amountMinor: 2_000, state: "active" },
+        [nextOpenDate.obligation.id]: { amountMinor: 2_000, state: "active" },
+      });
+      expect(repair.allocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0)).toBe(repair.replacementPayment.amount);
+      expect(Object.fromEntries(repair.oldAllocations.map((allocation) => [allocation.obligationId, { amountMinor: allocation.amountMinor, state: allocation.state }]))).toEqual({
+        [septemberDate.obligation.id]: { amountMinor: 2_000, state: "voided" },
+        [retainedDate.obligation.id]: { amountMinor: 2_000, state: "voided" },
+      });
+
+      const [originalPayment] = await db.select({ status: payments.status, amount: payments.amount }).from(payments).where(eq(payments.id, source.payment.id));
+      expect(originalPayment).toEqual({ status: "voided", amount: 4_000 });
+      const replacementAllocations = await db.select({ obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, state: paymentAllocations.state }).from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, leagueId),
+        eq(paymentAllocations.paymentId, repair.replacementPaymentId),
+      )).orderBy(paymentAllocations.id);
+      expect(Object.fromEntries(replacementAllocations.map((allocation) => [allocation.obligationId, { amountMinor: allocation.amountMinor, state: allocation.state }]))).toEqual({
+        [retainedDate.obligation.id]: { amountMinor: 2_000, state: "active" },
+        [nextOpenDate.obligation.id]: { amountMinor: 2_000, state: "active" },
+      });
+      expect(replacementAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0)).toBe(repair.replacementPayment.amount);
+      expect(await db.select({ id: paymentVoids.id, reason: paymentVoids.reason }).from(paymentVoids).where(and(
+        eq(paymentVoids.organizationId, organizationId),
+        eq(paymentVoids.leagueId, leagueId),
+        eq(paymentVoids.paymentId, source.payment.id),
+      ))).toMatchObject([{ reason: request.reason }]);
+
+      const [activeResponsibility] = await db.select({ id: occurrencePaymentResponsibilities.id, responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind, substituteBowlerId: occurrencePaymentResponsibilities.substituteBowlerId, payerBowlerId: occurrencePaymentResponsibilities.payerBowlerId, policy: occurrencePaymentResponsibilities.policy }).from(occurrencePaymentResponsibilities).where(and(
+        eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+        eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+        eq(occurrencePaymentResponsibilities.occurrenceId, septemberDate.occurrence.id),
+        eq(occurrencePaymentResponsibilities.state, "active"),
+      ));
+      expect(activeResponsibility).toMatchObject({ responsibilityKind: "substitute", substituteBowlerId: substitute.id, payerBowlerId: substitute.id, policy: "sub_pays_full" });
+      const [substituteObligation] = await db.select({ payerBowlerId: paymentObligations.payerBowlerId, amountMinor: paymentObligations.amountMinor, state: paymentObligations.state }).from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        eq(paymentObligations.responsibilityId, activeResponsibility.id),
+      ));
+      expect(substituteObligation).toEqual({ payerBowlerId: substitute.id, amountMinor: 2_000, state: "open" });
+      const settledDateStates = await db.select({ id: paymentObligations.id, state: paymentObligations.state }).from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        inArray(paymentObligations.id, [retainedDate.obligation.id, nextOpenDate.obligation.id]),
+      ));
+      expect(Object.fromEntries(settledDateStates.map((row) => [row.id, row.state]))).toEqual({
+        [retainedDate.obligation.id]: "settled",
+        [nextOpenDate.obligation.id]: "settled",
+      });
+      const commands = await db.select({ commandType: financialCommands.commandType, idempotencyKey: financialCommands.idempotencyKey, state: financialCommands.state }).from(financialCommands).where(and(
+        eq(financialCommands.organizationId, organizationId),
+        eq(financialCommands.leagueId, leagueId),
+        inArray(financialCommands.idempotencyKey, [request.idempotencyKey, commandKey]),
+      ));
+      expect(Object.fromEntries(commands.map((command) => [command.idempotencyKey, { commandType: command.commandType, state: command.state }]))).toEqual({
+        [request.idempotencyKey]: { commandType: "roster_payment.repair_historical_cash_allocation", state: "applied" },
+        [commandKey]: { commandType: "roster_payment.record_responsibilities", state: "applied" },
+      });
+
+      await expect(repairHistoricalCashPaymentAllocation({ organizationId, leagueId, actorUserId, allowlist, request })).rejects.toMatchObject({ code: "IDEMPOTENCY_REPLAY" });
+      await expect(recordOccurrenceResponsibilities({ organizationId, leagueId, actorUserId, commandKey, requestFingerprint, responsibilities })).rejects.toMatchObject({ code: "IDEMPOTENCY_REPLAY" });
     });
 
     it("fails closed when a payment is absent from or mismatched with the private allowlist", async () => {
