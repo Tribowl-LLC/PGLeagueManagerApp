@@ -2889,8 +2889,9 @@ export async function repairHistoricalCashPaymentAllocation(input: {
   actorUserId: number;
   allowlist: HistoricalCashPaymentAllowlist;
   request: HistoricalCashAllocationRepairRequest;
+  transaction?: RosterPaymentTransaction;
 }) {
-  return db.transaction(async (tx) => {
+  const run = async (tx: RosterPaymentTransaction) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
     const request = input.request;
     const targetAllocations = Array.isArray(request.targetAllocations) ? request.targetAllocations : null;
@@ -3178,7 +3179,8 @@ export async function repairHistoricalCashPaymentAllocation(input: {
       result,
     });
     return result;
-  });
+  };
+  return input.transaction ? run(input.transaction) : db.transaction(run);
 }
 
 export type RosterPaymentResponsibilityInput = OccurrenceResponsibilityInput;

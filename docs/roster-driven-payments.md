@@ -45,6 +45,18 @@ allocation, or an amount that cannot be allocated, is rejected without any
 change. The replacement payment date is interpreted in the league timezone,
 and retries are idempotent for the same actor and request fingerprint.
 
+The internal historical cash reallocation command also accepts an existing
+payment transaction, so a reviewed date reallocation and an occurrence
+responsibility change can commit or roll back together. The reallocation
+acquires the tenant+league lock in either transaction mode; pass that same
+transaction to `recordOccurrenceResponsibilities` after the reallocation.
+Historical cash correction keeps the original tender and allocations as voided
+evidence and creates a same-amount replacement tender with an explicit target
+allocation map. When an amount paid ahead for one date is moved to the payer's
+next open date, it is prepaid coverage for that obligation. It does not create
+an unassigned balance or a separate credit ledger; the amount must remain
+mapped to an eligible obligation for the original payer.
+
 All roster, responsibility, quote, manual, and correction commands take the
 tenant+league advisory lock and record idempotency in `financial_commands`.
 Provider calls are outside these transactions. Standing automatic collection
