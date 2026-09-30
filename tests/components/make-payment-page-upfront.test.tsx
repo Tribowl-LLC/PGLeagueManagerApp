@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { createElement } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 const mocks = vi.hoisted(() => {
   const bowlerLayout = vi.fn((props: { children: ReactNode; onOpenLeagueSheet?: () => void }) => props.children);
@@ -44,6 +46,8 @@ const mocks = vi.hoisted(() => {
   let quoteError: { code: string; message: string; status: number } | null = null;
   let participantRefreshGate: Promise<void> | null = null;
   let participantRefreshMissing = false;
+  let useActualBowlerLayout = false;
+  let useActualLeagueBottomSheet = false;
   const standingQueryCalls: unknown[][] = [];
   let rotatingPoolMember = false;
   let standingAutopayState: "pending" | "active" | "revoked" | "expired" | "none" = "none";
@@ -241,6 +245,10 @@ const mocks = vi.hoisted(() => {
     setQuoteError: (value: { code: string; message: string; status: number } | null) => { quoteError = value; },
     setParticipantRefreshGate: (value: Promise<void> | null) => { participantRefreshGate = value; },
     setParticipantRefreshMissing: (value: boolean) => { participantRefreshMissing = value; },
+    setUseActualBowlerLayout: (value: boolean) => { useActualBowlerLayout = value; },
+    getUseActualBowlerLayout: () => useActualBowlerLayout,
+    setUseActualLeagueBottomSheet: (value: boolean) => { useActualLeagueBottomSheet = value; },
+    getUseActualLeagueBottomSheet: () => useActualLeagueBottomSheet,
     csrfFetch,
     paymentRequestWithRecovery,
     tokenizeCard,
@@ -255,10 +263,22 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("@tanstack/react-query", async (importOriginal) => ({ ...(await importOriginal<typeof import("@tanstack/react-query")>()), useQuery: mocks.query, useMutation: () => ({ mutate: vi.fn(), isPending: false, error: null }) }));
-vi.mock("@/components/bowler-layout", () => ({
-  BowlerLayout: (props: { children: ReactNode; onOpenLeagueSheet?: () => void }) => mocks.bowlerLayout(props),
-}));
-vi.mock("@/components/league-bottom-sheet", () => ({ LeagueBottomSheet: mocks.leagueBottomSheet }));
+vi.mock("@/components/bowler-layout", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/bowler-layout")>();
+  return {
+    BowlerLayout: (props: ComponentProps<typeof actual.BowlerLayout>) => mocks.getUseActualBowlerLayout()
+      ? createElement(actual.BowlerLayout, props)
+      : mocks.bowlerLayout(props),
+  };
+});
+vi.mock("@/components/league-bottom-sheet", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/league-bottom-sheet")>();
+  return {
+    LeagueBottomSheet: (props: ComponentProps<typeof actual.LeagueBottomSheet>) => mocks.getUseActualLeagueBottomSheet()
+      ? createElement(actual.LeagueBottomSheet, props)
+      : mocks.leagueBottomSheet(props),
+  };
+});
 vi.mock("@/components/error-boundary", () => ({ ErrorBoundary: ({ children }: { children: ReactNode }) => <>{children}</> }));
 vi.mock("@/components/page-states", () => ({ PageErrorState: () => null, PageLoadingState: () => null }));
 vi.mock("@/components/bowler-one-time-payment-card", () => ({ BowlerOneTimePaymentCard: mocks.oneTimePaymentCard }));
@@ -318,6 +338,8 @@ vi.mock("@/lib/payment-request-identity", () => ({
 import MakePaymentPage from "@/pages/make-payment-page";
 
 afterEach(() => {
+  mocks.setUseActualBowlerLayout(false);
+  mocks.setUseActualLeagueBottomSheet(false);
   mocks.bowlerLayout.mockClear();
   mocks.leagueBottomSheet.mockClear();
   mocks.navigate.mockClear();
@@ -360,22 +382,25 @@ afterEach(() => {
 });
 
 describe("MakePaymentPage upfront payment mode", () => {
-  it("opens the one-active-league picker from its layout handler without starting a payment", async () => {
+  it("opens the real one-row picker from the mobile header and does not start a payment", async () => {
+    const user = userEvent.setup();
+    mocks.setUseActualBowlerLayout(true);
+    mocks.setUseActualLeagueBottomSheet(true);
     render(<MakePaymentPage />);
 
-    await waitFor(() => expect(mocks.leagueBottomSheet).toHaveBeenCalled());
-    const layoutProps = mocks.bowlerLayout.mock.lastCall?.[0];
-    expect(layoutProps?.onOpenLeagueSheet).toBeTypeOf("function");
+    const trigger = await screen.findByRole("button", { name: "League" });
+    expect(trigger).toBeEnabled();
+    await user.click(trigger);
+    const dialog = await screen.findByRole("dialog");
+    const options = within(dialog).getByRole("group", { name: "Available leagues" });
+    expect(within(options).getAllByRole("button")).toHaveLength(1);
+    const option = within(options).getByRole("button", { name: "League" });
+    expect(option).toHaveAttribute("aria-pressed", "true");
 
-    act(() => { layoutProps?.onOpenLeagueSheet?.(); });
-    await waitFor(() => expect(mocks.leagueBottomSheet.mock.lastCall?.[0].open).toBe(true));
-    const pickerProps = mocks.leagueBottomSheet.mock.lastCall?.[0];
-    expect(pickerProps?.activeBowlerLeagues).toHaveLength(1);
-    expect(pickerProps?.activeBowlerLeagues?.[0]).toMatchObject({ leagueId: 17, active: true });
-
-    act(() => { pickerProps?.onSelectLeague?.(17); });
+    await user.click(option);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith("/make-payment?leagueId=17"));
     expect(mocks.setSelectedLeague).toHaveBeenCalledWith(17);
-    expect(mocks.navigate).toHaveBeenCalledWith("/make-payment?leagueId=17");
     expect(mocks.csrfFetch).not.toHaveBeenCalled();
     expect(mocks.apiRequest).not.toHaveBeenCalled();
     expect(mocks.tokenizeCard).not.toHaveBeenCalled();

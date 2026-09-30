@@ -1,5 +1,8 @@
-import { act, render, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { createElement } from "react";
+import type { ComponentProps } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const content = vi.fn((_props: {
@@ -12,6 +15,8 @@ const mocks = vi.hoisted(() => {
   }) => null);
   const navigate = vi.fn();
   const setSelectedLeague = vi.fn();
+  let useActualContent = false;
+  let useActualBowlerLayout = false;
   const useQuery = vi.fn(({ queryKey }: { queryKey: readonly unknown[] }) => {
     const key = String(queryKey[0]);
     const base = { isLoading: false, error: null, refetch: vi.fn() };
@@ -46,7 +51,16 @@ const mocks = vi.hoisted(() => {
     }
     return base;
   });
-  return { content, navigate, setSelectedLeague, useQuery };
+  return {
+    content,
+    navigate,
+    setSelectedLeague,
+    useQuery,
+    setUseActualContent: (value: boolean) => { useActualContent = value; },
+    getUseActualContent: () => useActualContent,
+    setUseActualBowlerLayout: (value: boolean) => { useActualBowlerLayout = value; },
+    getUseActualBowlerLayout: () => useActualBowlerLayout,
+  };
 });
 
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
@@ -59,7 +73,22 @@ vi.mock("wouter", async (importOriginal) => ({
   useSearch: () => "?leagueId=17",
 }));
 vi.mock("@/hooks/use-selected-league", () => ({ useSelectedLeague: () => [17, mocks.setSelectedLeague] }));
-vi.mock("@/pages/payment-history-page/payment-history-content", () => ({ PaymentHistoryContent: mocks.content }));
+vi.mock("@/components/bowler-layout", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/bowler-layout")>();
+  return {
+    BowlerLayout: (props: ComponentProps<typeof actual.BowlerLayout>) => mocks.getUseActualBowlerLayout()
+      ? createElement(actual.BowlerLayout, props)
+      : createElement("div", null, props.children),
+  };
+});
+vi.mock("@/pages/payment-history-page/payment-history-content", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/pages/payment-history-page/payment-history-content")>();
+  return {
+    PaymentHistoryContent: (props: ComponentProps<typeof actual.PaymentHistoryContent>) => mocks.getUseActualContent()
+      ? createElement(actual.PaymentHistoryContent, props)
+      : mocks.content(props),
+  };
+});
 
 import PaymentHistoryPage from "@/pages/payment-history-page";
 
@@ -69,6 +98,36 @@ describe("PaymentHistoryPage league picker wiring", () => {
     mocks.navigate.mockClear();
     mocks.setSelectedLeague.mockClear();
     mocks.useQuery.mockClear();
+  });
+
+  afterEach(() => {
+    mocks.setUseActualContent(false);
+    mocks.setUseActualBowlerLayout(false);
+  });
+
+  it("opens the actual one-row picker from the mobile History header trigger", async () => {
+    const user = userEvent.setup();
+    mocks.setUseActualContent(true);
+    mocks.setUseActualBowlerLayout(true);
+    render(<PaymentHistoryPage />);
+
+    await screen.findByRole("heading", { name: "Payment history" });
+    const trigger = document.querySelector<HTMLButtonElement>(".familiar-bowler-league-select");
+    expect(trigger).not.toBeNull();
+    expect(trigger).toBeEnabled();
+    if (!trigger) return;
+
+    await user.click(trigger);
+    const dialog = await screen.findByRole("dialog");
+    const options = screen.getByRole("group", { name: "Available leagues" });
+    expect(options.querySelectorAll("button")).toHaveLength(1);
+    const option = screen.getByRole("button", { name: "Wednesday League" });
+    expect(option).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(option);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(mocks.setSelectedLeague).toHaveBeenCalledWith(17));
+    expect(mocks.navigate).toHaveBeenCalledWith("/payment-history?leagueId=17");
   });
 
   it("keeps History league selection routing and resets report pagination", async () => {
