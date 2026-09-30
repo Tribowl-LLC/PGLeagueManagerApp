@@ -143,7 +143,8 @@ export function PaymentsTable({
                 && !canonicalRow.refund.present
                 && !canonicalRow.dispute.present
                 && payment.providerPaymentId === null
-                && payment.paymentOperationId === null
+                // The payment list sanitizer omits this internal operation ID. Matched canonical evidence above must still prove it is null.
+                && payment.paymentOperationId == null
                 && payment.refundedAt === null
                 && payment.squareRefundId === null
                 && payment.refundReason === null

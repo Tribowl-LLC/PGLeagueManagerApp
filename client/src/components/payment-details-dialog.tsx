@@ -178,7 +178,8 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
       && !evidence.refund.present
       && !evidence.dispute.present
       && payment.providerPaymentId === null
-      && payment.paymentOperationId === null
+      // The payment list sanitizer omits this internal operation ID. Canonical evidence must still prove it is null.
+      && payment.paymentOperationId == null
       && payment.refundedAt === null
       && payment.squareRefundId === null
       && payment.refundReason === null

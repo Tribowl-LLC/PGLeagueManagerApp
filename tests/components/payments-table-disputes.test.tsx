@@ -62,6 +62,27 @@ function payment(id: number, bowlerId: number): Payment & { disputes: PaymentRow
   };
 }
 
+function sanitizedPaymentListRow<T extends object>(row: T): T {
+  const sanitized = { ...row };
+  Reflect.deleteProperty(sanitized, "paymentOperationId");
+  return sanitized;
+}
+
+function cashEvidence(paymentId: number, bowlerId: number): CanonicalPaymentRow {
+  return {
+    paymentId, leagueId: 7, bowlerId, amountMinor: 2500, currency: "USD",
+    status: "confirmed_paid", paymentType: "cash", businessDate: "2034-03-01",
+    authoritativeLocalDate: "2034-03-01", providerPaymentId: null,
+    paymentOperationId: null, operationType: null, operationStatus: null,
+    allocatedMinor: 2500, unallocatedMinor: 0, reviewRequired: false,
+    source: "canonical_allocation", unresolved: false,
+    refund: { present: false, amountMinor: 0, providerRefundId: null },
+    dispute: { present: false, amountMinor: 0, disputeId: null },
+    receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded" },
+    allocations: [{ allocationId: "allocation-1", obligationId: "obligation-1", occurrenceId: "occurrence-1", occurrenceLocalDate: "2034-02-28", bowlerId, amountMinor: 2500, currency: "USD", state: "active" }],
+  };
+}
+
 describe("PaymentsTable dispute visibility", () => {
   it("shows a shared-transaction dispute on every allocation with expandable sanitized history", async () => {
     const user = userEvent.setup();
@@ -128,21 +149,56 @@ describe("PaymentsTable dispute visibility", () => {
     expect(screen.getByText("02/28/2034")).toBeInTheDocument();
   });
 
+  it("offers and opens cash edit for a sanitized payment-list row", async () => {
+    const user = userEvent.setup();
+    const rawCash = sanitizedPaymentListRow({ ...payment(1, 10), paymentOperationId: null, disputes: [] });
+    expect(rawCash).not.toHaveProperty("paymentOperationId");
+
+    render(
+      <PaymentsTable
+        payments={[rawCash]}
+        filteredPayments={[rawCash]}
+        bowlers={[{ id: 10, name: "First Bowler" }] as never}
+        isAdmin
+        onRefund={() => {}}
+        isRefundPending={false}
+        paymentCanonicalRows={new Map([[1, cashEvidence(1, 10)]])}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Edit cash payment" }));
+    expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save payment edit" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Payment amount" })).toHaveValue("25.00");
+  });
+
+  it.each([
+    ["provider-backed payment evidence", { paymentOperationId: null, operationType: null, operationStatus: null, providerPaymentId: "provider-payment-1" }],
+    ["canonical payment operation evidence", { paymentOperationId: "22222222-2222-4222-8222-222222222222", operationType: "interactive_charge", operationStatus: "confirmed", providerPaymentId: null }],
+  ] as const)("keeps Edit unavailable for sanitized rows with %s", (_label, overrides) => {
+    const rawCash = sanitizedPaymentListRow({ ...payment(1, 10), paymentOperationId: null, disputes: [] });
+    const evidence = { ...cashEvidence(1, 10), ...overrides };
+    render(
+      <PaymentsTable
+        payments={[rawCash]}
+        filteredPayments={[rawCash]}
+        bowlers={[{ id: 10, name: "First Bowler" }] as never}
+        isAdmin
+        onRefund={() => {}}
+        isRefundPending={false}
+        paymentCanonicalRows={new Map([[1, evidence]])}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void or delete cash payment" })).not.toBeInTheDocument();
+  });
+
   it("keeps cash void and delete actions discoverable in the Payments table", async () => {
     const user = userEvent.setup();
-    const rawCash = { ...payment(1, 10), paymentOperationId: null, disputes: [] };
-    const evidence: CanonicalPaymentRow = {
-      paymentId: 1, leagueId: 7, bowlerId: 10, amountMinor: 2500, currency: "USD",
-      status: "confirmed_paid", paymentType: "cash", businessDate: "2034-03-01",
-      authoritativeLocalDate: "2034-03-01", providerPaymentId: null,
-      paymentOperationId: null, operationType: null, operationStatus: null,
-      allocatedMinor: 2500, unallocatedMinor: 0, reviewRequired: false,
-      source: "canonical_allocation", unresolved: false,
-      refund: { present: false, amountMinor: 0, providerRefundId: null },
-      dispute: { present: false, amountMinor: 0, disputeId: null },
-      receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded" },
-      allocations: [{ allocationId: "allocation-1", obligationId: "obligation-1", occurrenceId: "occurrence-1", occurrenceLocalDate: "2034-02-28", bowlerId: 10, amountMinor: 2500, currency: "USD", state: "active" }],
-    };
+    const rawCash = sanitizedPaymentListRow({ ...payment(1, 10), paymentOperationId: null, disputes: [] });
+    const evidence = cashEvidence(1, 10);
+    expect(rawCash).not.toHaveProperty("paymentOperationId");
     const view = render(
       <PaymentsTable
         payments={[rawCash]}
@@ -172,6 +228,7 @@ describe("PaymentsTable dispute visibility", () => {
         paymentCanonicalRows={new Map([[1, evidence]])}
       />,
     );
+    expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Void or delete cash payment" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();

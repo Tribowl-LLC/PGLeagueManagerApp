@@ -79,6 +79,12 @@ const evidence: CanonicalPaymentRow = {
   ],
 };
 
+function sanitizedPaymentListRow<T extends object>(row: T): T {
+  const sanitized = { ...row };
+  Reflect.deleteProperty(sanitized, "paymentOperationId");
+  return sanitized;
+}
+
 type NamedPaymentEvidence = CanonicalPaymentRow & {
   paidByName?: string | null;
   allocations: Array<CanonicalPaymentRow["allocations"][number] & { bowlerName?: string | null }>;
@@ -515,6 +521,34 @@ describe("PaymentDetailsDialog", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("starts and submits cash edit for the sanitized payment-list shape", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const sanitizedPayment = sanitizedPaymentListRow({ ...payment, paymentOperationId: null });
+    expect(sanitizedPayment).not.toHaveProperty("paymentOperationId");
+    render(<PaymentDetailsDialog payment={sanitizedPayment} evidence={evidence} bowlerName="Test Bowler" canCorrect startInEdit onClose={onClose} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save payment edit" })).toBeInTheDocument());
+    const amount = screen.getByRole("textbox", { name: "Payment amount" });
+    expect(amount).toHaveValue("50.00");
+    await user.clear(amount);
+    await user.type(amount, "60.00");
+    fireEvent.change(screen.getByLabelText("Payment date"), { target: { value: "2034-09-17" } });
+    await user.click(screen.getByRole("button", { name: "Save payment edit" }));
+
+    await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledTimes(1));
+    const [path, init] = mocks.csrfFetch.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/financials/leagues/7/canonical/corrections/1");
+    expect(init.method).toBe("POST");
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ paymentId: 12, correctionMode: "edit_cash", amountMinor: 6000, paymentDate: "2034-09-17" });
+    expect(body.idempotencyKey).toEqual((init.headers as Record<string, string>)["Idempotency-Key"]);
+    expect(body.requestFingerprint).toMatch(/^lvcashedit:v1:[0-9a-f]{64}$/);
+    expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["/api/payments"] });
+    expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["/api/financials/f5/payments"] });
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("does not reopen the initial edit form after cancel", async () => {
     const user = userEvent.setup();
     render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect startInEdit onClose={() => {}} />);
@@ -526,10 +560,36 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.getByRole("button", { name: "Edit cash payment" })).toBeInTheDocument();
   });
 
-  it("does not offer corrections without permission", () => {
-    render(<PaymentDetailsDialog payment={payment} evidence={evidence} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
+  it("does not offer corrections without permission for a sanitized payment-list row", () => {
+    const sanitizedPayment = sanitizedPaymentListRow({ ...payment, paymentOperationId: null });
+    expect(sanitizedPayment).not.toHaveProperty("paymentOperationId");
+    render(<PaymentDetailsDialog payment={sanitizedPayment} evidence={evidence} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["a provider-backed payment", { paymentProviderId: "provider-payment-12", operationEvidence: { providerPaymentId: "provider-payment-12", paymentOperationId: null, operationType: null, operationStatus: null } }],
+    ["canonical operation evidence", { paymentProviderId: null, operationEvidence: { providerPaymentId: null, paymentOperationId: "22222222-2222-4222-8222-222222222222", operationType: "interactive_charge", operationStatus: "succeeded" } }],
+  ] as const)("does not allow a sanitized row edit with %s", (_label, scenario) => {
+    const sanitizedPayment = sanitizedPaymentListRow({ ...payment, paymentOperationId: null, providerPaymentId: scenario.paymentProviderId });
+    const guardedEvidence: CanonicalPaymentRow = { ...evidence, ...scenario.operationEvidence };
+    render(<PaymentDetailsDialog payment={sanitizedPayment} evidence={guardedEvidence} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save payment edit" })).not.toBeInTheDocument();
+  });
+
+  it("requires explicit null canonical operation evidence for a sanitized row edit", () => {
+    const sanitizedPayment = sanitizedPaymentListRow({ ...payment, paymentOperationId: null });
+    const incompleteEvidence = { ...evidence };
+    Reflect.deleteProperty(incompleteEvidence, "paymentOperationId");
+    expect(incompleteEvidence).not.toHaveProperty("paymentOperationId");
+    render(<PaymentDetailsDialog payment={sanitizedPayment} evidence={incompleteEvidence} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
   });
 
   it("hides cash edit and void controls for an allocated rotating-credit funding tender", () => {
