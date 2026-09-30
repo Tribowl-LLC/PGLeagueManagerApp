@@ -706,6 +706,23 @@ export async function saveTeamRoster(input: {
         throw new RosterPaymentError("ROTATING_POOL_WITHOUT_SLOT", "A rotating eligibility pool requires at least one rotating slot", 422);
       }
     }
+    const desiredBySlot = new Map(slots.map((slot) => [slot.slotIndex, slot] as const));
+    const mainIdentitiesToRelease = existing.filter((current) => {
+      if (current.occupant !== "main" || current.mainBowlerId === null) return false;
+      const desired = desiredBySlot.get(current.slotIndex);
+      return desired?.occupant !== "main" || desired.mainBowlerId !== current.mainBowlerId;
+    });
+    for (const current of mainIdentitiesToRelease) {
+      // Free every changed Main identity before assigning any final identities.
+      // This is a transaction-local state only: revision history below must
+      // compare and snapshot the original locked rows against the final rows.
+      await tx.update(teamPaymentSlots).set({ occupant: "unassigned", mainBowlerId: null }).where(and(
+        eq(teamPaymentSlots.id, current.id),
+        eq(teamPaymentSlots.organizationId, input.organizationId),
+        eq(teamPaymentSlots.leagueId, input.leagueId),
+        eq(teamPaymentSlots.teamId, input.teamId),
+      ));
+    }
     const saved = [];
     for (const value of slots) {
       const current = existing.find((row) => row.slotIndex === value.slotIndex);

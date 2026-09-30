@@ -20,6 +20,7 @@ import {
 import { hasAccessToLeague, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague, requireOrganizationAccess } from "../utils/access-control.js";
 import { canUserPayForBowler } from "../utils/bowler-payment-authz.js";
 import { sendError, sendSuccess } from "../utils/api.js";
+import { createLogger } from "../logger.js";
 import { storage } from "../storage/index.js";
 import { adminWriteLimiter, paymentWriteLimiter } from "../middleware/rate-limit.js";
 import {
@@ -58,6 +59,7 @@ import {
 } from "../services/historical-square-payment-correction.js";
 
 const router = Router();
+const log = createLogger("RosterPayments");
 
 const historicalCashRepairRequestSchema = z.object({
   paymentId: z.number().int().positive(),
@@ -153,6 +155,7 @@ function handleError(res: Response, error: unknown): void {
     sendError(res, error.message, error.status, error.code);
     return;
   }
+  log.captureException(error);
   sendError(res, "Unable to process roster payment evidence", 500, "INTERNAL_ERROR");
 }
 
