@@ -27,6 +27,7 @@ import {
   rotatingCreditRefunds,
   teamPaymentPolicies,
   teamPaymentSlots,
+  teamPaymentSlotRevisions,
   teams,
   users,
 } from "@shared/schema";
@@ -2592,6 +2593,159 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       eq(occurrencePaymentResponsibilities.occurrenceId, fixture.occurrence.id),
       eq(occurrencePaymentResponsibilities.teamId, overrideTeam.id),
       eq(occurrencePaymentResponsibilities.slotIndex, 2),
+    ))).toHaveLength(0);
+  });
+
+  it("swaps and cycles Main identities while preserving stable slot revisions", async () => {
+    const [swapTeam] = await db.insert(teams).values({ name: "Main Swap Team", number: 34, leagueId }).returning({ id: teams.id });
+    const [mainA, mainB, mainC] = await db.insert(bowlers).values([
+      { name: "Swap Main A", organizationId },
+      { name: "Swap Main B", organizationId },
+      { name: "Swap Main C", organizationId },
+    ]).returning({ id: bowlers.id });
+    if (!mainA || !mainB || !mainC) throw new Error("Main swap fixture was incomplete");
+    await db.insert(bowlerLeagues).values([mainA, mainB, mainC].map(({ id }) => ({ bowlerId: id, leagueId, teamId: swapTeam.id })));
+    await db.insert(teamPaymentSlots).values([mainA, mainB, mainC].map((bowler, slotIndex) => ({
+      organizationId,
+      leagueId,
+      teamId: swapTeam.id,
+      slotIndex,
+      lineupSize: 3,
+      occupant: "main" as const,
+      mainBowlerId: bowler.id,
+      recordedByUserId: actorUserId,
+    })));
+
+    const save = async (mainBowlerIds: number[], label: string) => {
+      const request = {
+        commandKey: `main-identity-${label}-${randomUUID()}`,
+        requestFingerprint: "",
+        lineupSize: 3 as const,
+        policy: "main_pays_full" as const,
+        slots: [
+          ...mainBowlerIds.map((mainBowlerId, slotIndex) => ({ slotIndex, occupant: "main" as const, mainBowlerId })),
+        ],
+      };
+      request.requestFingerprint = canonicalRosterFingerprint(request);
+      await saveTeamRoster({ organizationId, leagueId, teamId: swapTeam.id, actorUserId, request });
+    };
+    const initialSlots = await db.select({ id: teamPaymentSlots.id, slotIndex: teamPaymentSlots.slotIndex }).from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, swapTeam.id),
+    )).orderBy(teamPaymentSlots.slotIndex);
+    const slotIndexById = new Map(initialSlots.map((slot) => [slot.id, slot.slotIndex]));
+    const slotIds = initialSlots.map(({ id }) => id);
+
+    await save([mainB.id, mainA.id, mainC.id], "swap");
+    let savedSlots = await db.select({ id: teamPaymentSlots.id, slotIndex: teamPaymentSlots.slotIndex, mainBowlerId: teamPaymentSlots.mainBowlerId, currentRevision: teamPaymentSlots.currentRevision }).from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, swapTeam.id),
+    )).orderBy(teamPaymentSlots.slotIndex);
+    expect(savedSlots.map(({ id }) => id)).toEqual(slotIds);
+    expect(savedSlots.map(({ mainBowlerId, currentRevision }) => [mainBowlerId, currentRevision])).toEqual([
+      [mainB.id, 2], [mainA.id, 2], [mainC.id, 1],
+    ]);
+    const swapRevisions = await db.select({ slotId: teamPaymentSlotRevisions.slotId, revisionNumber: teamPaymentSlotRevisions.revisionNumber, beforeSnapshot: teamPaymentSlotRevisions.beforeSnapshot, afterSnapshot: teamPaymentSlotRevisions.afterSnapshot }).from(teamPaymentSlotRevisions).where(and(
+      eq(teamPaymentSlotRevisions.organizationId, organizationId),
+      eq(teamPaymentSlotRevisions.leagueId, leagueId),
+      inArray(teamPaymentSlotRevisions.slotId, slotIds),
+    ));
+    expect(swapRevisions.map((revision) => {
+      const before = revision.beforeSnapshot as { mainBowlerId?: number | null } | null;
+      const after = revision.afterSnapshot as { mainBowlerId?: number | null };
+      return [slotIndexById.get(revision.slotId), revision.revisionNumber, before?.mainBowlerId, after.mainBowlerId];
+    }).sort((a, b) => Number(a[0]) - Number(b[0]))).toEqual([
+      [0, 2, mainA.id, mainB.id],
+      [1, 2, mainB.id, mainA.id],
+    ]);
+
+    await save([mainC.id, mainB.id, mainA.id], "cycle");
+    savedSlots = await db.select({ id: teamPaymentSlots.id, slotIndex: teamPaymentSlots.slotIndex, mainBowlerId: teamPaymentSlots.mainBowlerId, currentRevision: teamPaymentSlots.currentRevision }).from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, swapTeam.id),
+    )).orderBy(teamPaymentSlots.slotIndex);
+    expect(savedSlots.map(({ id }) => id)).toEqual(slotIds);
+    expect(savedSlots.map(({ mainBowlerId, currentRevision }) => [mainBowlerId, currentRevision])).toEqual([
+      [mainC.id, 3], [mainB.id, 3], [mainA.id, 2],
+    ]);
+    const cycleRevisions = await db.select({ slotId: teamPaymentSlotRevisions.slotId, revisionNumber: teamPaymentSlotRevisions.revisionNumber, beforeSnapshot: teamPaymentSlotRevisions.beforeSnapshot, afterSnapshot: teamPaymentSlotRevisions.afterSnapshot }).from(teamPaymentSlotRevisions).where(and(
+      eq(teamPaymentSlotRevisions.organizationId, organizationId),
+      eq(teamPaymentSlotRevisions.leagueId, leagueId),
+      inArray(teamPaymentSlotRevisions.slotId, slotIds),
+    ));
+    expect(cycleRevisions).toHaveLength(5);
+    const latestCycleRevisions = cycleRevisions.filter((revision) => revision.revisionNumber > 2 || revision.revisionNumber === 2 && slotIndexById.get(revision.slotId) === 2);
+    expect(latestCycleRevisions.map((revision) => {
+      const before = revision.beforeSnapshot as { mainBowlerId?: number | null } | null;
+      const after = revision.afterSnapshot as { mainBowlerId?: number | null };
+      return [slotIndexById.get(revision.slotId), revision.revisionNumber, before?.mainBowlerId, after.mainBowlerId];
+    }).sort((a, b) => Number(a[0]) - Number(b[0]))).toEqual([
+      [0, 3, mainB.id, mainC.id],
+      [1, 3, mainA.id, mainB.id],
+      [2, 2, mainC.id, mainA.id],
+    ]);
+  });
+
+  it("rolls back staged Main identity releases when a final assignment conflicts", async () => {
+    const [targetTeam, sourceTeam] = await db.insert(teams).values([
+      { name: "Main Swap Rollback Target", number: 35, leagueId },
+      { name: "Main Swap Rollback Source", number: 36, leagueId },
+    ]).returning({ id: teams.id });
+    if (!targetTeam || !sourceTeam) throw new Error("Main swap rollback fixture was incomplete");
+    const [mainA, mainB, occupiedMain] = await db.insert(bowlers).values([
+      { name: "Rollback Main A", organizationId },
+      { name: "Rollback Main B", organizationId },
+      { name: "Rollback Occupied Main", organizationId },
+    ]).returning({ id: bowlers.id });
+    if (!mainA || !mainB || !occupiedMain) throw new Error("Main swap rollback bowlers were incomplete");
+    await db.insert(bowlerLeagues).values([
+      ...[mainA, mainB, occupiedMain].map(({ id }) => ({ bowlerId: id, leagueId, teamId: targetTeam.id })),
+      { bowlerId: occupiedMain.id, leagueId, teamId: sourceTeam.id },
+    ]);
+    await db.insert(teamPaymentSlots).values([
+      { organizationId, leagueId, teamId: targetTeam.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: mainA.id, recordedByUserId: actorUserId },
+      { organizationId, leagueId, teamId: targetTeam.id, slotIndex: 1, lineupSize: 3, occupant: "main", mainBowlerId: mainB.id, recordedByUserId: actorUserId },
+      { organizationId, leagueId, teamId: targetTeam.id, slotIndex: 2, lineupSize: 3, occupant: "unassigned", mainBowlerId: null, recordedByUserId: actorUserId },
+      { organizationId, leagueId, teamId: sourceTeam.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: occupiedMain.id, recordedByUserId: actorUserId },
+    ]);
+    const commandKey = `main-identity-rollback-${randomUUID()}`;
+    const request = {
+      commandKey,
+      requestFingerprint: "",
+      lineupSize: 3 as const,
+      policy: "main_pays_full" as const,
+      slots: [
+        { slotIndex: 0, occupant: "main" as const, mainBowlerId: mainB.id },
+        { slotIndex: 1, occupant: "main" as const, mainBowlerId: occupiedMain.id },
+        { slotIndex: 2, occupant: "unassigned" as const, mainBowlerId: null },
+      ],
+    };
+    request.requestFingerprint = canonicalRosterFingerprint(request);
+
+    await expect(saveTeamRoster({ organizationId, leagueId, teamId: targetTeam.id, actorUserId, request })).rejects.toMatchObject({
+      cause: { code: "23505", constraint: "team_payment_slots_main_bowler_unique" },
+    });
+
+    const targetSlots = await db.select({ id: teamPaymentSlots.id, slotIndex: teamPaymentSlots.slotIndex, occupant: teamPaymentSlots.occupant, mainBowlerId: teamPaymentSlots.mainBowlerId, currentRevision: teamPaymentSlots.currentRevision }).from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, targetTeam.id),
+    )).orderBy(teamPaymentSlots.slotIndex);
+    expect(targetSlots.map(({ occupant, mainBowlerId, currentRevision }) => [occupant, mainBowlerId, currentRevision])).toEqual([
+      ["main", mainA.id, 1], ["main", mainB.id, 1], ["unassigned", null, 1],
+    ]);
+    expect(await db.select({ id: teamPaymentSlotRevisions.id }).from(teamPaymentSlotRevisions).where(and(
+      eq(teamPaymentSlotRevisions.organizationId, organizationId),
+      eq(teamPaymentSlotRevisions.leagueId, leagueId),
+      inArray(teamPaymentSlotRevisions.slotId, targetSlots.map(({ id }) => id)),
+    ))).toHaveLength(0);
+    expect(await db.select({ id: financialCommands.id }).from(financialCommands).where(and(
+      eq(financialCommands.organizationId, organizationId),
+      eq(financialCommands.leagueId, leagueId),
+      eq(financialCommands.idempotencyKey, commandKey),
     ))).toHaveLength(0);
   });
 

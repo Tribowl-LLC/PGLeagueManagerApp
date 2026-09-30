@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
     constructor(public readonly result: unknown) { super("IDEMPOTENCY_REPLAY", "The command was already applied", 200); }
   }
   return {
+  captureException: vi.fn(),
   getLeague: vi.fn(),
   hasAccess: vi.fn(),
   hasAdmin: vi.fn(),
@@ -32,6 +33,15 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+vi.mock("../../server/logger.js", () => ({
+  createLogger: () => ({
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    captureException: (...args: unknown[]) => mocks.captureException(...args),
+  }),
+}));
 vi.mock("../../server/storage/index.js", () => ({ storage: { getLeague: (...args: unknown[]) => mocks.getLeague(...args) } }));
 vi.mock("../../server/storage", () => ({ storage: { getLeague: (...args: unknown[]) => mocks.getLeague(...args) } }));
 vi.mock("../../server/utils/access-control.js", () => ({
@@ -123,6 +133,30 @@ beforeEach(() => {
 });
 
 describe("roster payment route authorization", () => {
+  it("captures unexpected failures while returning only the generic roster error", async () => {
+    const unexpected = new Error("private provider detail");
+    mocks.readDue.mockRejectedValue(unexpected);
+
+    const response = await request("/leagues/7/canonical-due-past-due/2", user("user", 11, 42));
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Unable to process roster payment evidence" },
+    });
+    expect(mocks.captureException).toHaveBeenCalledOnce();
+    expect(mocks.captureException).toHaveBeenCalledWith(unexpected);
+  });
+
+  it("does not capture known roster payment domain errors", async () => {
+    mocks.readDue.mockRejectedValue(new mocks.RosterPaymentError("KNOWN_CONFLICT", "Expected conflict", 409));
+
+    const response = await request("/leagues/7/canonical-due-past-due/2", user("user", 11, 42));
+
+    expect(response.status).toBe(409);
+    expect(mocks.captureException).not.toHaveBeenCalled();
+  });
+
   it("scopes ordinary due reads to the authenticated bowler", async () => {
     mocks.readDue.mockResolvedValue({ rows: [] });
     const response = await request("/leagues/7/canonical-due-past-due/2", user("user", 11, 42));
