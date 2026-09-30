@@ -192,7 +192,6 @@ async function createOccurrence(options: {
   preserveOccurrenceOrdinal?: boolean;
   plannedOrdinal?: number;
   authoritativeLocalDate?: string;
-  defaultAmountMinor?: number;
 } = {}) {
   if (!options.preserveOccurrenceOrdinal) occurrenceOrdinal += 1;
   occurrenceFixtureIdentity += 1;
@@ -239,7 +238,7 @@ async function createOccurrence(options: {
     occurrenceId: occurrence.id,
     purpose: "league_weekly_fee",
     obligationPolicy: "eligible_bowlers",
-    defaultAmountMinor: options.defaultAmountMinor ?? 2_000,
+    defaultAmountMinor: 2_000,
     currency: "USD",
     billingOrdinal: plannedOrdinal,
     version: 1,
@@ -2991,17 +2990,17 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
 
     it("atomically moves prepaid cash to the payer's next open date before recording a sub-pays-full responsibility", async () => {
       await resetBaseRosterToWeeklyMain();
-      const septemberDate = await createOccurrence({ authoritativeLocalDate: "2038-09-29", plannedOrdinal: 1_009_029, defaultAmountMinor: 2_500 });
-      const retainedDate = await createOccurrence({ authoritativeLocalDate: "2038-10-06", plannedOrdinal: 1_010_006, defaultAmountMinor: 2_500 });
-      const nextOpenDate = await createOccurrence({ authoritativeLocalDate: "2038-10-13", plannedOrdinal: 1_010_013, defaultAmountMinor: 2_500 });
+      const septemberDate = await createOccurrence({ authoritativeLocalDate: "2038-09-29", plannedOrdinal: 1_009_029 });
+      const retainedDate = await createOccurrence({ authoritativeLocalDate: "2038-10-06", plannedOrdinal: 1_010_006 });
+      const nextOpenDate = await createOccurrence({ authoritativeLocalDate: "2038-10-13", plannedOrdinal: 1_010_013 });
       const [substitute] = await db.insert(bowlers).values({ name: `Credit fixture substitute ${randomUUID()}`, organizationId }).returning({ id: bowlers.id });
       const source = await createCashEvidenceForAllocations([
-        { obligationId: septemberDate.obligation.id, amountMinor: 2_500 },
-        { obligationId: retainedDate.obligation.id, amountMinor: 2_500 },
+        { obligationId: septemberDate.obligation.id, amountMinor: 2_000 },
+        { obligationId: retainedDate.obligation.id, amountMinor: 2_000 },
       ], "2038-09-28T12:00:00.000Z");
       const request = historicalCashRepairRequest(source.payment.id, source.allocations, [
-        { obligationId: retainedDate.obligation.id, amountMinor: 2_500 },
-        { obligationId: nextOpenDate.obligation.id, amountMinor: 2_500 },
+        { obligationId: retainedDate.obligation.id, amountMinor: 2_000 },
+        { obligationId: nextOpenDate.obligation.id, amountMinor: 2_000 },
       ], `cash-credit-composition-${randomUUID()}`);
       const allowlist = historicalCashRepairAllowlist(source.payment.id, source.payment.amount);
       const responsibility = {
@@ -3014,7 +3013,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         substituteBowlerId: substitute.id,
         payerBowlerId: substitute.id,
         policy: "sub_pays_full" as const,
-        amountMinor: 2_500,
+        amountMinor: 2_000,
         lineageAmountMinor: null,
         prizeFundAmountMinor: null,
         dueAt: septemberDate.obligation.dueAt,
@@ -3046,15 +3045,15 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         eq(payments.leagueId, leagueId),
         eq(payments.id, source.payment.id),
       ));
-      expect(paymentAfterRollback).toEqual({ status: "paid", amount: 5_000 });
+      expect(paymentAfterRollback).toEqual({ status: "paid", amount: 4_000 });
       const allocationsAfterRollback = await db.select({ obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, state: paymentAllocations.state }).from(paymentAllocations).where(and(
         eq(paymentAllocations.organizationId, organizationId),
         eq(paymentAllocations.leagueId, leagueId),
         eq(paymentAllocations.paymentId, source.payment.id),
       ));
       expect(Object.fromEntries(allocationsAfterRollback.map((allocation) => [allocation.obligationId, { amountMinor: allocation.amountMinor, state: allocation.state }]))).toEqual({
-        [septemberDate.obligation.id]: { amountMinor: 2_500, state: "active" },
-        [retainedDate.obligation.id]: { amountMinor: 2_500, state: "active" },
+        [septemberDate.obligation.id]: { amountMinor: 2_000, state: "active" },
+        [retainedDate.obligation.id]: { amountMinor: 2_000, state: "active" },
       });
       expect(Object.fromEntries((await db.select({ id: paymentObligations.id, state: paymentObligations.state }).from(paymentObligations).where(and(
         eq(paymentObligations.organizationId, organizationId),
@@ -3087,25 +3086,25 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       expect(assignment.responsibilities).toHaveLength(1);
       expect(repair.replacementPayment.amount).toBe(source.payment.amount);
       expect(Object.fromEntries(repair.allocations.map((allocation) => [allocation.obligationId, { amountMinor: allocation.amountMinor, state: allocation.state }]))).toEqual({
-        [retainedDate.obligation.id]: { amountMinor: 2_500, state: "active" },
-        [nextOpenDate.obligation.id]: { amountMinor: 2_500, state: "active" },
+        [retainedDate.obligation.id]: { amountMinor: 2_000, state: "active" },
+        [nextOpenDate.obligation.id]: { amountMinor: 2_000, state: "active" },
       });
       expect(repair.allocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0)).toBe(repair.replacementPayment.amount);
       expect(Object.fromEntries(repair.oldAllocations.map((allocation) => [allocation.obligationId, { amountMinor: allocation.amountMinor, state: allocation.state }]))).toEqual({
-        [septemberDate.obligation.id]: { amountMinor: 2_500, state: "voided" },
-        [retainedDate.obligation.id]: { amountMinor: 2_500, state: "voided" },
+        [septemberDate.obligation.id]: { amountMinor: 2_000, state: "voided" },
+        [retainedDate.obligation.id]: { amountMinor: 2_000, state: "voided" },
       });
 
       const [originalPayment] = await db.select({ status: payments.status, amount: payments.amount }).from(payments).where(eq(payments.id, source.payment.id));
-      expect(originalPayment).toEqual({ status: "voided", amount: 5_000 });
+      expect(originalPayment).toEqual({ status: "voided", amount: 4_000 });
       const replacementAllocations = await db.select({ obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, state: paymentAllocations.state }).from(paymentAllocations).where(and(
         eq(paymentAllocations.organizationId, organizationId),
         eq(paymentAllocations.leagueId, leagueId),
         eq(paymentAllocations.paymentId, repair.replacementPaymentId),
       )).orderBy(paymentAllocations.id);
       expect(Object.fromEntries(replacementAllocations.map((allocation) => [allocation.obligationId, { amountMinor: allocation.amountMinor, state: allocation.state }]))).toEqual({
-        [retainedDate.obligation.id]: { amountMinor: 2_500, state: "active" },
-        [nextOpenDate.obligation.id]: { amountMinor: 2_500, state: "active" },
+        [retainedDate.obligation.id]: { amountMinor: 2_000, state: "active" },
+        [nextOpenDate.obligation.id]: { amountMinor: 2_000, state: "active" },
       });
       expect(replacementAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0)).toBe(repair.replacementPayment.amount);
       expect(await db.select({ id: paymentVoids.id, reason: paymentVoids.reason }).from(paymentVoids).where(and(
@@ -3126,7 +3125,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         eq(paymentObligations.leagueId, leagueId),
         eq(paymentObligations.responsibilityId, activeResponsibility.id),
       ));
-      expect(substituteObligation).toEqual({ payerBowlerId: substitute.id, amountMinor: 2_500, state: "open" });
+      expect(substituteObligation).toEqual({ payerBowlerId: substitute.id, amountMinor: 2_000, state: "open" });
       const settledDateStates = await db.select({ id: paymentObligations.id, state: paymentObligations.state }).from(paymentObligations).where(and(
         eq(paymentObligations.organizationId, organizationId),
         eq(paymentObligations.leagueId, leagueId),
