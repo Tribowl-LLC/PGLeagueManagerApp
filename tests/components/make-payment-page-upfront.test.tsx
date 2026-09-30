@@ -3,10 +3,12 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 const mocks = vi.hoisted(() => {
+  const bowlerLayout = vi.fn((props: { children: ReactNode; onOpenLeagueSheet?: () => void }) => props.children);
   const leagueBottomSheet = vi.fn((_props: {
     open?: boolean;
     selectedLeagueId?: number | null;
     onSelectLeague?: (leagueId: number) => void;
+    activeBowlerLeagues?: Array<{ leagueId: number; active: boolean }>;
   }) => null);
   const standingAutopayCard = vi.fn((..._args: unknown[]) => null);
   const oneTimePaymentCard = vi.fn((..._args: unknown[]) => null);
@@ -136,8 +138,11 @@ const mocks = vi.hoisted(() => {
           success: true,
           data: {
             bowler: { id: 42, name: "Bowler", email: "bowler@example.test" },
-            bowlerLeagues: detailsLeagueReady ? [{ leagueId: 17 }] : [],
-            leagues: detailsLeagueReady ? [{ id: 17, name: "League", paymentMode, locationId: "L17", organizationId: 1 }] : [],
+            bowlerLeagues: detailsLeagueReady ? [
+              { id: 71, bowlerId: 42, leagueId: 17, teamId: 81, active: true, order: 0, joinedAt: "2026-08-01T00:00:00.000Z" },
+              { id: 72, bowlerId: 42, leagueId: 18, teamId: 82, active: false, order: 1, joinedAt: "2026-08-01T00:00:00.000Z" },
+            ] : [],
+            leagues: detailsLeagueReady ? [{ id: 17, name: "League", active: true, paymentMode, locationId: "L17", organizationId: 1 }] : [],
           },
         },
         isLoading: false,
@@ -208,6 +213,7 @@ const mocks = vi.hoisted(() => {
     throw new Error(`Unexpected query: ${key}`);
   });
   return {
+    bowlerLayout,
     leagueBottomSheet,
     navigate,
     setSelectedLeague,
@@ -249,7 +255,9 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("@tanstack/react-query", async (importOriginal) => ({ ...(await importOriginal<typeof import("@tanstack/react-query")>()), useQuery: mocks.query, useMutation: () => ({ mutate: vi.fn(), isPending: false, error: null }) }));
-vi.mock("@/components/bowler-layout", () => ({ BowlerLayout: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
+vi.mock("@/components/bowler-layout", () => ({
+  BowlerLayout: (props: { children: ReactNode; onOpenLeagueSheet?: () => void }) => mocks.bowlerLayout(props),
+}));
 vi.mock("@/components/league-bottom-sheet", () => ({ LeagueBottomSheet: mocks.leagueBottomSheet }));
 vi.mock("@/components/error-boundary", () => ({ ErrorBoundary: ({ children }: { children: ReactNode }) => <>{children}</> }));
 vi.mock("@/components/page-states", () => ({ PageErrorState: () => null, PageLoadingState: () => null }));
@@ -310,6 +318,7 @@ vi.mock("@/lib/payment-request-identity", () => ({
 import MakePaymentPage from "@/pages/make-payment-page";
 
 afterEach(() => {
+  mocks.bowlerLayout.mockClear();
   mocks.leagueBottomSheet.mockClear();
   mocks.navigate.mockClear();
   mocks.setSelectedLeague.mockClear();
@@ -351,6 +360,27 @@ afterEach(() => {
 });
 
 describe("MakePaymentPage upfront payment mode", () => {
+  it("opens the one-active-league picker from its layout handler without starting a payment", async () => {
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.leagueBottomSheet).toHaveBeenCalled());
+    const layoutProps = mocks.bowlerLayout.mock.lastCall?.[0];
+    expect(layoutProps?.onOpenLeagueSheet).toBeTypeOf("function");
+
+    act(() => { layoutProps?.onOpenLeagueSheet?.(); });
+    await waitFor(() => expect(mocks.leagueBottomSheet.mock.lastCall?.[0].open).toBe(true));
+    const pickerProps = mocks.leagueBottomSheet.mock.lastCall?.[0];
+    expect(pickerProps?.activeBowlerLeagues).toHaveLength(1);
+    expect(pickerProps?.activeBowlerLeagues?.[0]).toMatchObject({ leagueId: 17, active: true });
+
+    act(() => { pickerProps?.onSelectLeague?.(17); });
+    expect(mocks.setSelectedLeague).toHaveBeenCalledWith(17);
+    expect(mocks.navigate).toHaveBeenCalledWith("/make-payment?leagueId=17");
+    expect(mocks.csrfFetch).not.toHaveBeenCalled();
+    expect(mocks.apiRequest).not.toHaveBeenCalled();
+    expect(mocks.tokenizeCard).not.toHaveBeenCalled();
+  });
+
   it("uses the shared league picker and preserves payment league selection routing", async () => {
     render(<MakePaymentPage />);
 

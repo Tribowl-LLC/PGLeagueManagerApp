@@ -6,6 +6,9 @@ const mocks = vi.hoisted(() => {
     canonicalReportPage?: number;
     onCanonicalReportPageChange?: (page: number) => void;
     onSelectLeague?: (leagueId: number) => void;
+    leagueSheetOpen?: boolean;
+    onOpenLeagueSheet?: () => void;
+    bowlerLeagues?: Array<{ leagueId: number; active: boolean }>;
   }) => null);
   const navigate = vi.fn();
   const setSelectedLeague = vi.fn();
@@ -18,7 +21,10 @@ const mocks = vi.hoisted(() => {
     if (key.startsWith("/api/bowlers/") && key.endsWith("/details")) {
       return { ...base, data: { success: true, data: {
         bowler: { id: 42, name: "Bowler" },
-        bowlerLeagues: [{ id: 71, bowlerId: 42, leagueId: 17, teamId: 81, active: true, order: 0, joinedAt: "2026-08-01T00:00:00.000Z" }],
+        bowlerLeagues: [
+          { id: 71, bowlerId: 42, leagueId: 17, teamId: 81, active: true, order: 0, joinedAt: "2026-08-01T00:00:00.000Z" },
+          { id: 72, bowlerId: 42, leagueId: 18, teamId: 82, active: false, order: 1, joinedAt: "2026-08-01T00:00:00.000Z" },
+        ],
         leagues: [{ id: 17, name: "Wednesday League", active: true, weeklyFee: 3000, organizationId: 1, competitionStartTime: null }],
         teams: [{ id: 81, name: "Team 1", number: 1, leagueId: 17, active: true, displayOrder: 0 }],
       } } };
@@ -71,9 +77,16 @@ describe("PaymentHistoryPage league picker wiring", () => {
     await waitFor(() => expect(mocks.content).toHaveBeenCalled());
     let contentProps = mocks.content.mock.lastCall?.[0];
     expect(contentProps?.canonicalReportPage).toBe(1);
+    expect(contentProps?.bowlerLeagues).toEqual([{ id: 71, bowlerId: 42, leagueId: 17, teamId: 81, active: true, order: 0, joinedAt: "2026-08-01T00:00:00.000Z" }]);
+    expect(contentProps?.onOpenLeagueSheet).toBeTypeOf("function");
     expect(contentProps && "viewerRole" in contentProps).toBe(false);
     expect(contentProps && "teamMap" in contentProps).toBe(false);
 
+    act(() => { contentProps?.onOpenLeagueSheet?.(); });
+    await waitFor(() => expect(mocks.content.mock.lastCall?.[0].leagueSheetOpen).toBe(true));
+    expect(mocks.content.mock.lastCall?.[0].bowlerLeagues).toHaveLength(1);
+
+    contentProps = mocks.content.mock.lastCall?.[0];
     act(() => { contentProps?.onCanonicalReportPageChange?.(4); });
     await waitFor(() => expect(mocks.content.mock.lastCall?.[0].canonicalReportPage).toBe(4));
 

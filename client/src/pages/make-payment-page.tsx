@@ -317,7 +317,6 @@ export default function MakePaymentPage() {
     [bowlerLeagues, leagueMap],
   );
   const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
-  const hasAlternativeActiveLeague = activeSwitcherLeagues.some((membership) => membership.leagueId !== leagueId);
   const openLeagueSheet = useCallback(() => {
     setLeagueSheetOpen(true);
   }, []);
@@ -1428,7 +1427,7 @@ export default function MakePaymentPage() {
   const showPaymentContext = paymentMode !== "upfront" && !isRotatingPoolMember;
   const activeBowlerLeague = bowlerLeagues.find((membership) => membership.leagueId === leagueId && membership.active);
   const bowlerTeam = details?.teams?.find((team) => team.id === activeBowlerLeague?.teamId);
-  return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId} onOpenLeagueSheet={openLeagueSheet} mobileLeagueSwitchEnabled={hasAlternativeActiveLeague} teamName={bowlerTeam?.name} leagueStartTime={league.competitionStartTime}>
+  return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId} onOpenLeagueSheet={openLeagueSheet} teamName={bowlerTeam?.name} leagueStartTime={league.competitionStartTime}>
     <div className={`familiar-bowler-pay-page${hasPaymentPartner ? " familiar-bowler-pay-page-partner" : ""}${paymentMode === "upfront" ? " familiar-bowler-pay-page-upfront" : ""}${isRotatingPoolMember ? " familiar-bowler-pay-page-rotating" : ""}`}>
       <div className="familiar-bowler-pay-header">
         <h1 className="text-2xl font-bold mb-1">Make a payment</h1>
