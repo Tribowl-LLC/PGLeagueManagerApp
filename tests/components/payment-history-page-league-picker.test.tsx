@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
   const setSelectedLeague = vi.fn();
   let useActualContent = false;
   let useActualBowlerLayout = false;
+  let leagueActive = true;
   const useQuery = vi.fn(({ queryKey }: { queryKey: readonly unknown[] }) => {
     const key = String(queryKey[0]);
     const base = { isLoading: false, error: null, refetch: vi.fn() };
@@ -30,7 +31,7 @@ const mocks = vi.hoisted(() => {
           { id: 71, bowlerId: 42, leagueId: 17, teamId: 81, active: true, order: 0, joinedAt: "2026-08-01T00:00:00.000Z" },
           { id: 72, bowlerId: 42, leagueId: 18, teamId: 82, active: false, order: 1, joinedAt: "2026-08-01T00:00:00.000Z" },
         ],
-        leagues: [{ id: 17, name: "Wednesday League", active: true, weeklyFee: 3000, organizationId: 1, competitionStartTime: null }],
+        leagues: [{ id: 17, name: "Wednesday League", active: leagueActive, weeklyFee: 3000, organizationId: 1, competitionStartTime: null }],
         teams: [{ id: 81, name: "Team 1", number: 1, leagueId: 17, active: true, displayOrder: 0 }],
       } } };
     }
@@ -60,6 +61,7 @@ const mocks = vi.hoisted(() => {
     getUseActualContent: () => useActualContent,
     setUseActualBowlerLayout: (value: boolean) => { useActualBowlerLayout = value; },
     getUseActualBowlerLayout: () => useActualBowlerLayout,
+    setLeagueActive: (value: boolean) => { leagueActive = value; },
   };
 });
 
@@ -103,6 +105,7 @@ describe("PaymentHistoryPage league picker wiring", () => {
   afterEach(() => {
     mocks.setUseActualContent(false);
     mocks.setUseActualBowlerLayout(false);
+    mocks.setLeagueActive(true);
   });
 
   it("opens the actual one-row picker from the mobile History header trigger", async () => {
@@ -128,6 +131,19 @@ describe("PaymentHistoryPage league picker wiring", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await waitFor(() => expect(mocks.setSelectedLeague).toHaveBeenCalledWith(17));
     expect(mocks.navigate).toHaveBeenCalledWith("/payment-history?leagueId=17");
+  });
+
+  it("hides picker triggers when the bowler has no active leagues", async () => {
+    mocks.setLeagueActive(false);
+    mocks.setUseActualContent(true);
+    mocks.setUseActualBowlerLayout(true);
+    render(<PaymentHistoryPage />);
+
+    await screen.findByRole("heading", { name: "Payment history" });
+    const mobileTrigger = document.querySelector<HTMLButtonElement>(".familiar-bowler-league-select");
+    expect(mobileTrigger).not.toBeNull();
+    expect(mobileTrigger).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Switch league" })).not.toBeInTheDocument();
   });
 
   it("keeps History league selection routing and resets report pagination", async () => {

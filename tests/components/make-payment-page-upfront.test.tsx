@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => {
   let pastDueMinor = 0;
   let participantRefreshUsesCurrentData = false;
   let detailsLeagueReady = true;
+  let leagueActive = true;
   let selectedLeagueId: number | null = 17;
   const navigate = vi.fn();
   const setSelectedLeague = vi.fn((value: number | null) => { selectedLeagueId = value; });
@@ -146,7 +147,7 @@ const mocks = vi.hoisted(() => {
               { id: 71, bowlerId: 42, leagueId: 17, teamId: 81, active: true, order: 0, joinedAt: "2026-08-01T00:00:00.000Z" },
               { id: 72, bowlerId: 42, leagueId: 18, teamId: 82, active: false, order: 1, joinedAt: "2026-08-01T00:00:00.000Z" },
             ] : [],
-            leagues: detailsLeagueReady ? [{ id: 17, name: "League", active: true, paymentMode, locationId: "L17", organizationId: 1 }] : [],
+            leagues: detailsLeagueReady ? [{ id: 17, name: "League", active: leagueActive, paymentMode, locationId: "L17", organizationId: 1 }] : [],
           },
         },
         isLoading: false,
@@ -239,6 +240,7 @@ const mocks = vi.hoisted(() => {
     setPastDueMinor: (value: number) => { pastDueMinor = value; },
     setParticipantRefreshUsesCurrentData: (value: boolean) => { participantRefreshUsesCurrentData = value; },
     setDetailsLeagueReady: (value: boolean) => { detailsLeagueReady = value; },
+    setLeagueActive: (value: boolean) => { leagueActive = value; },
     setSelectedLeagueId: (value: number | null) => { selectedLeagueId = value; },
     getSelectedLeagueId: () => selectedLeagueId,
     setQuoteFetching: (value: boolean) => { quoteFetching = value; },
@@ -362,6 +364,7 @@ afterEach(() => {
   mocks.setPastDueMinor(0);
   mocks.setParticipantRefreshUsesCurrentData(false);
   mocks.setDetailsLeagueReady(true);
+  mocks.setLeagueActive(true);
   mocks.setSelectedLeagueId(17);
   mocks.setQuoteFetching(false);
   mocks.setQuoteError(null);
@@ -404,6 +407,16 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(mocks.csrfFetch).not.toHaveBeenCalled();
     expect(mocks.apiRequest).not.toHaveBeenCalled();
     expect(mocks.tokenizeCard).not.toHaveBeenCalled();
+  });
+
+  it("hides picker triggers when the bowler has no active leagues", async () => {
+    mocks.setLeagueActive(false);
+    mocks.setUseActualBowlerLayout(true);
+    render(<MakePaymentPage />);
+
+    const mobileTrigger = await screen.findByRole("button", { name: "League" });
+    expect(mobileTrigger).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Switch league" })).not.toBeInTheDocument();
   });
 
   it("uses the shared league picker and preserves payment league selection routing", async () => {

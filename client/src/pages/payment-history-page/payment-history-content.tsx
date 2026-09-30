@@ -65,7 +65,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
       teamName={teamName}
       leagueStartTime={leagueStartTime}
       currentLeagueId={leagueId}
-      onOpenLeagueSheet={onOpenLeagueSheet}
+      onOpenLeagueSheet={bowlerLeagues.length > 0 ? onOpenLeagueSheet : undefined}
     >
       <div className="familiar-payment-history-content space-y-6">
         <header className="familiar-bowler-page-heading">
