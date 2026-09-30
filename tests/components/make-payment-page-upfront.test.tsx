@@ -3,7 +3,11 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 const mocks = vi.hoisted(() => {
-  const leagueBottomSheet = vi.fn((_props: { viewerRole?: string }) => null);
+  const leagueBottomSheet = vi.fn((_props: {
+    open?: boolean;
+    selectedLeagueId?: number | null;
+    onSelectLeague?: (leagueId: number) => void;
+  }) => null);
   const standingAutopayCard = vi.fn((..._args: unknown[]) => null);
   const oneTimePaymentCard = vi.fn((..._args: unknown[]) => null);
   const rotatingShareCreditCard = vi.fn((..._args: unknown[]) => null);
@@ -17,6 +21,8 @@ const mocks = vi.hoisted(() => {
   let participantRefreshUsesCurrentData = false;
   let detailsLeagueReady = true;
   let selectedLeagueId: number | null = 17;
+  const navigate = vi.fn();
+  const setSelectedLeague = vi.fn((value: number | null) => { selectedLeagueId = value; });
   const csrfFetch = vi.fn();
   const apiRequest = vi.fn();
   const tokenizeCard = vi.fn();
@@ -203,6 +209,8 @@ const mocks = vi.hoisted(() => {
   });
   return {
     leagueBottomSheet,
+    navigate,
+    setSelectedLeague,
     standingAutopayCard,
     oneTimePaymentCard,
     rotatingShareCreditCard,
@@ -248,7 +256,7 @@ vi.mock("@/components/page-states", () => ({ PageErrorState: () => null, PageLoa
 vi.mock("@/components/bowler-one-time-payment-card", () => ({ BowlerOneTimePaymentCard: mocks.oneTimePaymentCard }));
 vi.mock("@/components/standing-autopay-card", () => ({ StandingAutopayCard: mocks.standingAutopayCard }));
 vi.mock("@/components/rotating-share-credit-card", () => ({ RotatingShareCreditCard: mocks.rotatingShareCreditCard }));
-vi.mock("@/hooks/use-selected-league", () => ({ useSelectedLeague: () => [mocks.getSelectedLeagueId(), vi.fn()] }));
+vi.mock("@/hooks/use-selected-league", () => ({ useSelectedLeague: () => [mocks.getSelectedLeagueId(), mocks.setSelectedLeague] }));
 vi.mock("@/hooks/use-saved-card-default", () => ({ useSavedCardDefault: vi.fn() }));
 vi.mock("@/hooks/use-square-payment", () => ({ useSquarePayment: () => ({ card: mocks.squareCard, isInitialized: true, initializeCard: vi.fn(), cleanupCard: mocks.cleanupCard }) }));
 vi.mock("@/hooks/use-payment-provider", () => ({ usePaymentProvider: () => ({ supportsWallets: true }) }));
@@ -274,7 +282,7 @@ vi.mock("@/hooks/use-wallet-payments", () => ({ useWalletPayments: (options: {
   };
 } }));
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
-vi.mock("wouter", () => ({ useLocation: () => ["/make-payment", vi.fn()], useSearch: () => "?leagueId=17", Link: () => null }));
+vi.mock("wouter", () => ({ useLocation: () => ["/make-payment", mocks.navigate], useSearch: () => "?leagueId=17", Link: () => null }));
 vi.mock("@/lib/queryClient", () => ({ apiRequest: mocks.apiRequest, csrfFetch: mocks.csrfFetch, queryClient: { invalidateQueries: vi.fn(), cancelQueries: vi.fn(async () => {}), removeQueries: vi.fn() } }));
 vi.mock("@/lib/payment-history-financial-query", () => ({ paymentHistoryFinancialQueryKey: (leagueId: number, bowlerId: number) => ["financial", leagueId, bowlerId], invalidatePaymentHistoryFinancials: mocks.invalidatePaymentHistoryFinancials }));
 vi.mock("@/lib/square", () => ({ tokenizeCard: mocks.tokenizeCard }));
@@ -303,6 +311,8 @@ import MakePaymentPage from "@/pages/make-payment-page";
 
 afterEach(() => {
   mocks.leagueBottomSheet.mockClear();
+  mocks.navigate.mockClear();
+  mocks.setSelectedLeague.mockClear();
   mocks.query.mockClear();
   mocks.apiRequest.mockReset();
   mocks.standingAutopayCard.mockClear();
@@ -341,14 +351,18 @@ afterEach(() => {
 });
 
 describe("MakePaymentPage upfront payment mode", () => {
-  it("uses the Overview league sheet and forwards the current user role", async () => {
+  it("uses the shared league picker and preserves payment league selection routing", async () => {
     render(<MakePaymentPage />);
 
     await waitFor(() => expect(mocks.leagueBottomSheet).toHaveBeenCalled());
-    expect(mocks.leagueBottomSheet.mock.calls.at(-1)?.[0]).toMatchObject({
-      open: false,
-      viewerRole: "user",
-    });
+    const pickerProps = mocks.leagueBottomSheet.mock.calls.at(-1)?.[0];
+    expect(pickerProps).toMatchObject({ open: false, selectedLeagueId: 17 });
+    expect(pickerProps && "viewerRole" in pickerProps).toBe(false);
+    expect(pickerProps && "teamMap" in pickerProps).toBe(false);
+
+    act(() => { pickerProps?.onSelectLeague?.(18); });
+    expect(mocks.setSelectedLeague).toHaveBeenCalledWith(18);
+    expect(mocks.navigate).toHaveBeenCalledWith("/make-payment?leagueId=18");
   });
 
   it("does not call an on-time current payment past due", async () => {

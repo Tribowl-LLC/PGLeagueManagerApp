@@ -626,9 +626,14 @@ component system. This design remains distinct from the admin UI.
   summary boxes or automatic-payment setup; its coverage sentence describes
   the selected number of weeks. Provider-generated wallet confirmation remains
   native to the provider.
-- **League switching:** Across bowler pages, list only active bowler memberships
+- **League switching:** Across Overview, Pay, History, and Profile on mobile and
+  desktop, use one centered modal with the preview's title, helper, close action,
+  and open/close motion. Each option shows only the league name and season range;
+  mark the selected option with a check and other options with a down chevron.
+  Keep season suffixes when names repeat. List only active bowler memberships
   in active leagues. Archived leagues do not appear in the switcher; this does
-  not change existing direct links to archived History views.
+  not change existing direct links to archived History views. Preserve each
+  page's existing selection, URL, storage, and payment-intent behavior.
 - **History:** Show a Weeks paid line (`x/y weeks`) above the Season totals,
   using active canonical obligations rather than money or weekly-fee math.
   Follow it with Transactions. A confirmed self-only payment covering several

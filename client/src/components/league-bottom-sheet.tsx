@@ -1,19 +1,31 @@
-import { FC, useEffect, useId, useRef } from "react";
-import { CanonicalSeasonProgress } from "./canonical-season-progress";
-import { X, Check } from "lucide-react";
-import type { League, BowlerLeague, Team } from "@shared/schema";
+import { FC, useEffect, useRef, useState } from "react";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { Check, ChevronDown, X } from "lucide-react";
+import type { League, BowlerLeague } from "@shared/schema";
 import { getSeasonYearRange } from "@shared/season-utils";
-import { formatScheduleLocalTime } from "@/lib/league-display";
 
 interface LeagueBottomSheetProps {
   open: boolean;
   onClose: () => void;
   activeBowlerLeagues: BowlerLeague[];
   leagueMap: Map<number, League>;
-  teamMap: Map<number, Team>;
   selectedLeagueId: number | null;
   onSelectLeague: (leagueId: number) => void;
-  viewerRole?: string;
+}
+
+const DEFAULT_CLOSE_DURATION_MS = 150;
+
+function getCloseDuration(dialog: HTMLElement | null): number {
+  if (!dialog) return DEFAULT_CLOSE_DURATION_MS;
+  const value = getComputedStyle(dialog).getPropertyValue("--league-picker-close-duration").trim();
+  const parsedValue = Number.parseFloat(value);
+  if (!Number.isFinite(parsedValue)) return DEFAULT_CLOSE_DURATION_MS;
+  return value.endsWith("ms") ? parsedValue : parsedValue * 1000;
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 export const LeagueBottomSheet: FC<LeagueBottomSheetProps> = ({
@@ -21,150 +33,138 @@ export const LeagueBottomSheet: FC<LeagueBottomSheetProps> = ({
   onClose,
   activeBowlerLeagues,
   leagueMap,
-  teamMap,
   selectedLeagueId,
   onSelectLeague,
-  viewerRole,
 }) => {
-  const dialogTitleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const onCloseRef = useRef(onClose);
+  const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
+  const pendingSelectionRef = useRef<number | null>(null);
+  const selectionTimerRef = useRef<number | null>(null);
+  const onSelectLeagueRef = useRef(onSelectLeague);
+  const [pendingSelectionId, setPendingSelectionId] = useState<number | null>(null);
 
   useEffect(() => {
-    onCloseRef.current = onClose;
-  }, [onClose]);
+    onSelectLeagueRef.current = onSelectLeague;
+  }, [onSelectLeague]);
 
-  useEffect(() => {
-    if (!open) return;
+  useEffect(() => () => {
+    if (selectionTimerRef.current !== null) {
+      window.clearTimeout(selectionTimerRef.current);
+    }
+  }, []);
 
-    const previouslyFocusedElement = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    closeButtonRef.current?.focus();
+  const finishPendingSelection = () => {
+    const leagueId = pendingSelectionRef.current;
+    if (leagueId === null) return;
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onCloseRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
+    if (selectionTimerRef.current !== null) {
+      window.clearTimeout(selectionTimerRef.current);
+      selectionTimerRef.current = null;
+    }
+    pendingSelectionRef.current = null;
+    setPendingSelectionId(null);
+    onSelectLeagueRef.current(leagueId);
+  };
 
-      const dialog = dialogRef.current;
-      if (!dialog) return;
-      const focusableElements = Array.from(dialog.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      )).filter((element) => element.getClientRects().length > 0);
-      if (focusableElements.length === 0) {
-        event.preventDefault();
-        closeButtonRef.current?.focus();
-        return;
-      }
+  const handleLeagueSelection = (leagueId: number) => {
+    if (pendingSelectionRef.current !== null) return;
 
-      const firstFocusableElement = focusableElements[0];
-      const lastFocusableElement = focusableElements[focusableElements.length - 1];
-      const activeElement = document.activeElement;
-      if (event.shiftKey && (activeElement === firstFocusableElement || !dialog.contains(activeElement))) {
-        event.preventDefault();
-        lastFocusableElement.focus();
-      } else if (!event.shiftKey && (activeElement === lastFocusableElement || !dialog.contains(activeElement))) {
-        event.preventDefault();
-        firstFocusableElement.focus();
-      }
-    };
+    if (prefersReducedMotion()) {
+      onSelectLeague(leagueId);
+      onClose();
+      return;
+    }
 
-    document.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-      if (previouslyFocusedElement?.isConnected) {
-        previouslyFocusedElement.focus();
-      }
-    };
-  }, [open]);
-
-  if (!open) return null;
+    pendingSelectionRef.current = leagueId;
+    setPendingSelectionId(leagueId);
+    const closeDuration = getCloseDuration(dialogRef.current);
+    onClose();
+    selectionTimerRef.current = window.setTimeout(finishPendingSelection, closeDuration);
+  };
 
   return (
-    <>
-      <button
-        type="button"
-        aria-label="Close league switcher"
-        className="fixed inset-0 bg-black/40 z-40 transition-opacity duration-300 familiar-league-switcher-backdrop"
-        onClick={onClose}
-      />
-      <div className="fixed bottom-0 left-0 right-0 z-50 animate-slide-up familiar-bowler-league-sheet">
-        <div
-          ref={dialogRef}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby={dialogTitleId}
-          className="bg-white rounded-t-2xl shadow-xl max-h-sheet-viewport overflow-hidden familiar-bowler-league-panel"
-        >
-          <div className="flex items-center justify-between px-5 py-4 border-b border-navigation-100 familiar-league-switcher-header">
-            <h3 id={dialogTitleId} className="text-lg font-semibold text-navigation-900"><span className="familiar-league-switcher-title-mobile">Switch League</span><span className="familiar-league-switcher-title-desktop">Choose your league</span></h3>
-            <button
-              ref={closeButtonRef}
-              type="button"
-              onClick={onClose}
-              aria-label="Close league switcher"
-              className="size-8 rounded-full hover:bg-navigation-100 flex items-center justify-center text-navigation-400 transition-colors familiar-league-switcher-close"
-            >
-              <X className="size-5" />
-            </button>
-          </div>
-          <p className="familiar-league-switcher-description">Balances and history follow the selected league.</p>
-
-          <div className="overflow-y-auto familiar-league-switcher-options">
-            {activeBowlerLeagues.map((bl) => {
-              const league = leagueMap.get(bl.leagueId);
-              const team = bl.teamId ? teamMap.get(bl.teamId) : undefined;
-              const isSelected = bl.leagueId === selectedLeagueId;
-              const leagueTitle = league?.seasonStart && league.seasonEnd
-                ? `${league.name} ${getSeasonYearRange(league.seasonStart, league.seasonEnd)}`
-                : league?.name ?? `League #${bl.leagueId}`;
-              const desktopCompetitionTime = league?.competitionStartTime
-                ? formatScheduleLocalTime(league.competitionStartTime)
+    <DialogPrimitive.Root
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) onClose();
+      }}
+    >
+      <DialogPrimitive.Portal>
+        <div className="familiar-league-picker-scope">
+          <DialogPrimitive.Overlay className="familiar-league-switcher-backdrop" />
+          <DialogPrimitive.Content
+            ref={dialogRef}
+            className="familiar-bowler-league-panel"
+            onOpenAutoFocus={(event) => {
+              previouslyFocusedElementRef.current = document.activeElement instanceof HTMLElement
+                ? document.activeElement
                 : null;
-              const desktopMeta = [team?.name, desktopCompetitionTime].filter(Boolean).join(" · ");
+              event.preventDefault();
+              closeButtonRef.current?.focus({ preventScroll: true });
+            }}
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              const previouslyFocusedElement = previouslyFocusedElementRef.current;
+              if (previouslyFocusedElement?.isConnected) {
+                previouslyFocusedElement.focus({ preventScroll: true });
+              }
+              previouslyFocusedElementRef.current = null;
+            }}
+            onAnimationEnd={(event) => {
+              if (event.target === event.currentTarget && event.animationName === "familiar-league-picker-close") {
+                finishPendingSelection();
+              }
+            }}
+          >
+            <div className="familiar-league-switcher-header">
+              <DialogPrimitive.Title className="familiar-league-switcher-title">
+                Choose your league
+              </DialogPrimitive.Title>
+              <DialogPrimitive.Close
+                ref={closeButtonRef}
+                type="button"
+                aria-label="Close league switcher"
+                className="familiar-league-switcher-close"
+              >
+                <X aria-hidden="true" size={20} />
+              </DialogPrimitive.Close>
+            </div>
 
-              return (
-                <button type="button"
-                  key={bl.leagueId}
-                  onClick={() => {
-                    onSelectLeague(bl.leagueId);
-                    onClose();
-                  }}
-                  className={`w-full text-left px-5 py-4 flex items-center justify-between transition-colors familiar-league-switcher-option ${isSelected ? 'is-selected' : ''}`}
-                >
-                  <div>
-                    <div className={`font-medium familiar-league-switcher-name ${isSelected ? 'text-brand-accent-700' : 'text-navigation-900'}`}>
-                      <span className="familiar-league-switcher-title-mobile">{leagueTitle}</span>
-                      <span className="familiar-league-switcher-title-desktop">{leagueTitle}</span>
-                    </div>
-                    {desktopMeta && <div className="familiar-league-switcher-meta-desktop">{desktopMeta}</div>}
-                    <div className="text-sm text-navigation-500 mt-0.5 familiar-league-switcher-meta-mobile">
-                      {team?.name ?? 'No Team'}
-                      {league && viewerRole && (
-                        <> &bull; <CanonicalSeasonProgress leagueId={league.id} organizationId={league.organizationId} viewerRole={viewerRole} allowRetry={false} /></>
-                      )}
-                    </div>
-                  </div>
-                  {isSelected && (
-                    <div className="size-6 rounded-full flex items-center justify-center flex-shrink-0 ml-3 familiar-league-switcher-check">
-                      <Check className="size-4 text-white" />
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+            <DialogPrimitive.Description className="familiar-league-switcher-description">
+              Balances and history follow the selected league.
+            </DialogPrimitive.Description>
 
-          <div className="h-8 familiar-league-switcher-bottom-space" />
+            <div className="familiar-league-switcher-options" role="group" aria-label="Available leagues">
+              {activeBowlerLeagues.map((bowlerLeague) => {
+                const league = leagueMap.get(bowlerLeague.leagueId);
+                const isSelected = bowlerLeague.leagueId === selectedLeagueId;
+                const leagueTitle = league?.seasonStart && league.seasonEnd
+                  ? `${league.name} ${getSeasonYearRange(league.seasonStart, league.seasonEnd)}`
+                  : league?.name ?? `League #${bowlerLeague.leagueId}`;
+
+                return (
+                  <button
+                    type="button"
+                    key={bowlerLeague.leagueId}
+                    aria-pressed={isSelected}
+                    disabled={pendingSelectionId !== null}
+                    onClick={() => handleLeagueSelection(bowlerLeague.leagueId)}
+                    className={`familiar-league-switcher-option${isSelected ? " is-selected" : ""}`}
+                  >
+                    <span className="familiar-league-switcher-name">{leagueTitle}</span>
+                    <span className="familiar-league-switcher-check" aria-hidden="true">
+                      {isSelected
+                        ? <Check className="size-5" />
+                        : <ChevronDown size={18} />}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </DialogPrimitive.Content>
         </div>
-      </div>
-
-    </>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 };

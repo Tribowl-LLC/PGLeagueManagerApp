@@ -316,7 +316,6 @@ export default function MakePaymentPage() {
     ),
     [bowlerLeagues, leagueMap],
   );
-  const teamMap = useMemo(() => new Map((details?.teams ?? []).map((team) => [team.id, team])), [details?.teams]);
   const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
   const hasAlternativeActiveLeague = activeSwitcherLeagues.some((membership) => membership.leagueId !== leagueId);
   const openLeagueSheet = useCallback(() => {
@@ -1525,14 +1524,12 @@ export default function MakePaymentPage() {
       onClose={() => setLeagueSheetOpen(false)}
       activeBowlerLeagues={activeSwitcherLeagues}
       leagueMap={leagueMap}
-      teamMap={teamMap}
       selectedLeagueId={leagueId ?? null}
       onSelectLeague={(nextId) => {
         setSelectedLeagueId(nextId);
         intentAppliedRef.current = false;
         navigate(`/make-payment?leagueId=${nextId}`);
       }}
-      viewerRole={currentUser?.data?.role}
     />
   </BowlerLayout>;
 }

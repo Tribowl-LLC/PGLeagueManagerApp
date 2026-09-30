@@ -1,8 +1,12 @@
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
-  const content = vi.fn((_props: { viewerRole?: string }) => null);
+  const content = vi.fn((_props: {
+    canonicalReportPage?: number;
+    onCanonicalReportPageChange?: (page: number) => void;
+    onSelectLeague?: (leagueId: number) => void;
+  }) => null);
   const navigate = vi.fn();
   const setSelectedLeague = vi.fn();
   const useQuery = vi.fn(({ queryKey }: { queryKey: readonly unknown[] }) => {
@@ -57,13 +61,26 @@ describe("PaymentHistoryPage league picker wiring", () => {
   beforeEach(() => {
     mocks.content.mockClear();
     mocks.navigate.mockClear();
+    mocks.setSelectedLeague.mockClear();
     mocks.useQuery.mockClear();
   });
 
-  it("forwards the signed-in user's role to the shared picker content", async () => {
+  it("keeps History league selection routing and resets report pagination", async () => {
     render(<PaymentHistoryPage />);
 
     await waitFor(() => expect(mocks.content).toHaveBeenCalled());
-    expect(mocks.content.mock.lastCall?.[0].viewerRole).toBe("system_admin");
+    let contentProps = mocks.content.mock.lastCall?.[0];
+    expect(contentProps?.canonicalReportPage).toBe(1);
+    expect(contentProps && "viewerRole" in contentProps).toBe(false);
+    expect(contentProps && "teamMap" in contentProps).toBe(false);
+
+    act(() => { contentProps?.onCanonicalReportPageChange?.(4); });
+    await waitFor(() => expect(mocks.content.mock.lastCall?.[0].canonicalReportPage).toBe(4));
+
+    contentProps = mocks.content.mock.lastCall?.[0];
+    act(() => { contentProps?.onSelectLeague?.(18); });
+    expect(mocks.setSelectedLeague).toHaveBeenCalledWith(18);
+    expect(mocks.navigate).toHaveBeenCalledWith("/payment-history?leagueId=18");
+    await waitFor(() => expect(mocks.content.mock.lastCall?.[0].canonicalReportPage).toBe(1));
   });
 });
