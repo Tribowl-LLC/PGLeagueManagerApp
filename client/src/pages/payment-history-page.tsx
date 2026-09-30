@@ -57,7 +57,6 @@ export default function PaymentHistoryPage() {
   }, [bowlerLeagues, selectedLeagueId, setSelectedLeagueId]);
 
   const leagueId = selectedLeagueId ?? bowlerLeagues[0]?.leagueId;
-  const hasAlternativeActiveLeague = activeSwitcherLeagues.some((membership) => membership.leagueId !== leagueId);
   const teamMap = useMemo(() => new Map((details?.teams ?? []).map((team) => [team.id, team])), [details?.teams]);
   const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
   const activeMembership = leagueId === undefined ? undefined : bowlerLeagues.find((membership) => membership.leagueId === leagueId);
@@ -139,7 +138,6 @@ export default function PaymentHistoryPage() {
     bowlerName={bowlerName}
     league={league}
     leagueId={leagueId}
-    hasMultipleLeagues={hasAlternativeActiveLeague}
     leagueSheetOpen={leagueSheetOpen}
     onOpenLeagueSheet={() => setLeagueSheetOpen(true)}
     onCloseLeagueSheet={() => setLeagueSheetOpen(false)}

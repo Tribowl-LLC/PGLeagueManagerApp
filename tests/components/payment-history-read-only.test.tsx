@@ -42,7 +42,6 @@ describe("PaymentHistoryContent", () => {
       bowlerName="Bowler"
       league={league}
       leagueId={17}
-      hasMultipleLeagues
       leagueSheetOpen
       onOpenLeagueSheet={vi.fn()}
       onCloseLeagueSheet={vi.fn()}
@@ -82,7 +81,6 @@ describe("PaymentHistoryContent", () => {
       bowlerName="Bowler"
       league={league}
       leagueId={17}
-      hasMultipleLeagues={false}
       leagueSheetOpen={false}
       onOpenLeagueSheet={vi.fn()}
       onCloseLeagueSheet={vi.fn()}
@@ -115,7 +113,6 @@ describe("PaymentHistoryContent", () => {
       bowlerName="Bowler"
       league={league}
       leagueId={17}
-      hasMultipleLeagues={false}
       leagueSheetOpen={false}
       onOpenLeagueSheet={vi.fn()}
       onCloseLeagueSheet={vi.fn()}
@@ -144,7 +141,7 @@ describe("PaymentHistoryContent", () => {
   it("keeps report failures inside the layout and offers a retry", async () => {
     const retry = vi.fn();
     render(<PaymentHistoryContent
-      bowlerName="Bowler" league={league} leagueId={17} hasMultipleLeagues={false}
+      bowlerName="Bowler" league={league} leagueId={17}
       leagueSheetOpen={false} onOpenLeagueSheet={vi.fn()} onCloseLeagueSheet={vi.fn()}
       bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
       totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
@@ -161,7 +158,7 @@ describe("PaymentHistoryContent", () => {
   it("supports previous and next report pages", async () => {
     const onPageChange = vi.fn();
     const view = render(<PaymentHistoryContent
-      bowlerName="Bowler" league={league} leagueId={17} hasMultipleLeagues={false}
+      bowlerName="Bowler" league={league} leagueId={17}
       leagueSheetOpen={false} onOpenLeagueSheet={vi.fn()} onCloseLeagueSheet={vi.fn()}
       bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
       totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
@@ -177,7 +174,7 @@ describe("PaymentHistoryContent", () => {
     expect(onPageChange).toHaveBeenCalledWith(2);
 
     view.rerender(<PaymentHistoryContent
-      bowlerName="Bowler" league={league} leagueId={17} hasMultipleLeagues={false}
+      bowlerName="Bowler" league={league} leagueId={17}
       leagueSheetOpen={false} onOpenLeagueSheet={vi.fn()} onCloseLeagueSheet={vi.fn()}
       bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
       totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
@@ -195,7 +192,6 @@ describe("PaymentHistoryContent", () => {
       bowlerName: "Bowler",
       league,
       leagueId: 17,
-      hasMultipleLeagues: false,
       leagueSheetOpen: false,
       onOpenLeagueSheet: vi.fn(),
       onCloseLeagueSheet: vi.fn(),

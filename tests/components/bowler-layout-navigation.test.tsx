@@ -1,20 +1,36 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Router } from "wouter";
 import { BowlerLayout } from "@/components/bowler-layout";
 
 vi.mock("@/hooks/use-business-context", () => ({ useBusinessContext: () => ({ business: null }) }));
 
-function renderLayout(path = "/make-payment?leagueId=17") {
+function renderLayout(path = "/make-payment?leagueId=17", onOpenLeagueSheet?: () => void) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ success: true, data: { role: "user", organizationId: 1 } }) } } });
   queryClient.setQueryData(["/api/user"], { success: true, data: { role: "user", organizationId: 1 } });
-  return render(<QueryClientProvider client={queryClient}><Router hook={() => [path, vi.fn()]}><BowlerLayout bowlerName="Bowler" leagueName="League" currentLeagueId={17}><div>Content</div></BowlerLayout></Router></QueryClientProvider>);
+  return render(<QueryClientProvider client={queryClient}><Router hook={() => [path, vi.fn()]}><BowlerLayout bowlerName="Bowler" leagueName="League" currentLeagueId={17} onOpenLeagueSheet={onOpenLeagueSheet}><div>Content</div></BowlerLayout></Router></QueryClientProvider>);
 }
 
 afterEach(() => vi.clearAllMocks());
 
 describe("BowlerLayout payment navigation", () => {
+  it("keeps both league picker triggers enabled when there is only one active league", async () => {
+    const user = userEvent.setup();
+    const openLeagueSheet = vi.fn();
+    renderLayout("/make-payment?leagueId=17", openLeagueSheet);
+
+    const mobileTrigger = screen.getByRole("button", { name: "League" });
+    const desktopTrigger = screen.getByRole("button", { name: "Switch league" });
+    expect(mobileTrigger).toBeEnabled();
+    expect(desktopTrigger).toBeEnabled();
+
+    await user.click(mobileTrigger);
+    await user.click(desktopTrigger);
+    expect(openLeagueSheet).toHaveBeenCalledTimes(2);
+  });
+
   it("renders four equal navigation items with deterministic league links and active state", () => {
     renderLayout();
     const navigations = screen.getAllByRole("navigation", { name: "Bowler navigation" });

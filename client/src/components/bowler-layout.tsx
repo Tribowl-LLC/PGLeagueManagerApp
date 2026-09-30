@@ -18,7 +18,6 @@ interface BowlerLayoutProps {
   leagueStartTime?: string | null;
   currentLeagueId?: number;
   onOpenLeagueSheet?: () => void;
-  mobileLeagueSwitchEnabled?: boolean;
 }
 
 interface NavItem {
@@ -79,7 +78,7 @@ const LoadingFallback = () => (
   </div>
 );
 
-export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leagueName, teamName, leagueStartTime, currentLeagueId, onOpenLeagueSheet, mobileLeagueSwitchEnabled }) => {
+export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leagueName, teamName, leagueStartTime, currentLeagueId, onOpenLeagueSheet }) => {
   const [location] = useLocation();
   const navItems = buildNavItems(currentLeagueId);
   const screen = location.startsWith("/bowler-dashboard")
@@ -110,7 +109,7 @@ export const BowlerLayout: FC<BowlerLayoutProps> = ({ children, bowlerName, leag
     || location.startsWith(`${item.baseHref}/`);
   const profileItem = navItems[3];
   const isProfileActive = isNavItemActive(profileItem);
-  const canSwitchLeagueOnMobile = mobileLeagueSwitchEnabled ?? Boolean(onOpenLeagueSheet);
+  const canSwitchLeagueOnMobile = Boolean(onOpenLeagueSheet);
   const formattedLeagueStartTime = leagueStartTime ? formatScheduleLocalTime(leagueStartTime) : null;
   const leagueMeta = [teamName?.trim(), formattedLeagueStartTime].filter(Boolean).join(" · ");
 

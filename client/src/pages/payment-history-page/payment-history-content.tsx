@@ -17,7 +17,6 @@ interface PaymentHistoryContentProps {
   teamName?: string | null;
   leagueStartTime?: string | null;
   leagueId: number;
-  hasMultipleLeagues: boolean;
   leagueSheetOpen: boolean;
   onOpenLeagueSheet: () => void;
   onCloseLeagueSheet: () => void;
@@ -47,7 +46,7 @@ interface PaymentHistoryContentProps {
 }
 
 export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
-  bowlerName, league, teamName, leagueStartTime, leagueId, hasMultipleLeagues, leagueSheetOpen,
+  bowlerName, league, teamName, leagueStartTime, leagueId, leagueSheetOpen,
   onOpenLeagueSheet, onCloseLeagueSheet, bowlerLeagues, leagueMap,
   onSelectLeague, totalWeeksInSeason, fullSeasonAmount, weeksDueCount,
   totalSeasonDues, weeksPaid, totalPaidAmount, amountPastDue, remainingBalance,
@@ -66,8 +65,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
       teamName={teamName}
       leagueStartTime={leagueStartTime}
       currentLeagueId={leagueId}
-      onOpenLeagueSheet={onOpenLeagueSheet}
-      mobileLeagueSwitchEnabled={hasMultipleLeagues}
+      onOpenLeagueSheet={bowlerLeagues.length > 0 ? onOpenLeagueSheet : undefined}
     >
       <div className="familiar-payment-history-content space-y-6">
         <header className="familiar-bowler-page-heading">
