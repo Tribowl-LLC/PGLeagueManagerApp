@@ -10,7 +10,7 @@
   font-family: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
 }
 
-.familiar-league-picker-scope .familiar-league-switcher-backdrop {
+.familiar-league-picker-scope.familiar-league-switcher-backdrop {
   position: fixed;
   z-index: 1000;
   inset: 0;
@@ -19,12 +19,12 @@
   animation: familiar-league-picker-backdrop-open 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.familiar-league-picker-scope .familiar-league-switcher-backdrop[data-state="closed"] {
+.familiar-league-picker-scope.familiar-league-switcher-backdrop[data-state="closed"] {
   animation-name: familiar-league-picker-backdrop-close;
   animation-duration: 150ms;
 }
 
-.familiar-league-picker-scope .familiar-bowler-league-panel {
+.familiar-league-picker-scope.familiar-bowler-league-panel {
   --league-picker-close-duration: 150ms;
   position: fixed;
   z-index: 1001;
@@ -43,17 +43,17 @@
   background: var(--familiar-surface);
   box-shadow: 0 25px 90px rgb(15 23 42 / 0.24);
   color: var(--familiar-ink);
-  transform: translate(-50%, -50%) scale(0.96);
+  transform: translate(-50%, -50%) scale(1);
   transform-origin: center;
   animation: familiar-league-picker-open 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.familiar-league-picker-scope .familiar-bowler-league-panel[data-state="closed"] {
+.familiar-league-picker-scope.familiar-bowler-league-panel[data-state="closed"] {
   animation-name: familiar-league-picker-close;
   animation-duration: var(--league-picker-close-duration);
 }
 
-.familiar-league-switcher-header {
+.familiar-league-picker-scope .familiar-league-switcher-header {
   display: flex;
   min-height: 44px;
   align-items: center;
@@ -62,7 +62,7 @@
   margin-bottom: 12px;
 }
 
-.familiar-league-switcher-title {
+.familiar-league-picker-scope .familiar-league-switcher-title {
   margin: 0;
   color: var(--familiar-ink);
   font-size: 20px;
@@ -71,7 +71,7 @@
   line-height: 1.25;
 }
 
-.familiar-league-switcher-close {
+.familiar-league-picker-scope .familiar-league-switcher-close {
   display: flex;
   width: 44px;
   min-width: 44px;
@@ -86,20 +86,20 @@
   touch-action: manipulation;
 }
 
-.familiar-league-switcher-close:focus-visible,
-.familiar-league-switcher-option:focus-visible {
+.familiar-league-picker-scope .familiar-league-switcher-close:focus-visible,
+.familiar-league-picker-scope .familiar-league-switcher-option:focus-visible {
   outline: 3px solid var(--familiar-navy);
   outline-offset: 2px;
 }
 
-.familiar-league-switcher-description {
+.familiar-league-picker-scope .familiar-league-switcher-description {
   margin: 0;
   color: var(--familiar-muted);
   font-size: 14px;
   line-height: 1.6;
 }
 
-.familiar-league-switcher-options {
+.familiar-league-picker-scope .familiar-league-switcher-options {
   display: flex;
   min-height: 0;
   flex-direction: column;
@@ -110,7 +110,7 @@
   overscroll-behavior: contain;
 }
 
-.familiar-league-switcher-option {
+.familiar-league-picker-scope .familiar-league-switcher-option {
   display: flex;
   width: 100%;
   min-height: 56px;
@@ -129,15 +129,15 @@
   transition: border-color 150ms ease, background-color 150ms ease, transform 100ms ease;
 }
 
-.familiar-league-switcher-option:disabled {
+.familiar-league-picker-scope .familiar-league-switcher-option:disabled {
   cursor: default;
 }
 
-.familiar-league-switcher-option:active:not(:disabled) {
+.familiar-league-picker-scope .familiar-league-switcher-option:active:not(:disabled) {
   transform: scale(0.99);
 }
 
-.familiar-league-switcher-name {
+.familiar-league-picker-scope .familiar-league-switcher-name {
   display: block;
   color: var(--familiar-ink);
   font-size: 14px;
@@ -146,7 +146,7 @@
   overflow-wrap: anywhere;
 }
 
-.familiar-league-switcher-check {
+.familiar-league-picker-scope .familiar-league-switcher-check {
   display: flex;
   width: 24px;
   min-width: 24px;
@@ -157,11 +157,11 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .familiar-league-switcher-close:hover {
+  .familiar-league-picker-scope .familiar-league-switcher-close:hover {
     background: rgb(100 116 139 / 0.12);
   }
 
-  .familiar-league-switcher-option:hover:not(:disabled) {
+  .familiar-league-picker-scope .familiar-league-switcher-option:hover:not(:disabled) {
     border-color: rgb(100 116 139 / 0.55);
     background: rgb(100 116 139 / 0.035);
   }
@@ -200,13 +200,13 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .familiar-league-picker-scope .familiar-league-switcher-backdrop,
-  .familiar-league-picker-scope .familiar-bowler-league-panel {
+  .familiar-league-picker-scope.familiar-league-switcher-backdrop,
+  .familiar-league-picker-scope.familiar-bowler-league-panel {
     animation: none !important;
   }
 
-  .familiar-league-switcher-option,
-  .familiar-league-switcher-close {
+  .familiar-league-picker-scope .familiar-league-switcher-option,
+  .familiar-league-picker-scope .familiar-league-switcher-close {
     transition: none;
   }
 }

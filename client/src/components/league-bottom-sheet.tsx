@@ -87,83 +87,83 @@ export const LeagueBottomSheet: FC<LeagueBottomSheetProps> = ({
     <DialogPrimitive.Root
       open={open}
       onOpenChange={(nextOpen) => {
-        if (!nextOpen) onClose();
+        if (!nextOpen && open) onClose();
       }}
     >
       <DialogPrimitive.Portal>
-        <div className="familiar-league-picker-scope">
-          <DialogPrimitive.Overlay className="familiar-league-switcher-backdrop" />
-          <DialogPrimitive.Content
-            ref={dialogRef}
-            className="familiar-bowler-league-panel"
-            onOpenAutoFocus={(event) => {
-              previouslyFocusedElementRef.current = document.activeElement instanceof HTMLElement
-                ? document.activeElement
-                : null;
-              event.preventDefault();
-              closeButtonRef.current?.focus({ preventScroll: true });
-            }}
-            onCloseAutoFocus={(event) => {
-              event.preventDefault();
-              const previouslyFocusedElement = previouslyFocusedElementRef.current;
-              if (previouslyFocusedElement?.isConnected) {
-                previouslyFocusedElement.focus({ preventScroll: true });
-              }
-              previouslyFocusedElementRef.current = null;
-            }}
-            onAnimationEnd={(event) => {
-              if (event.target === event.currentTarget && event.animationName === "familiar-league-picker-close") {
-                finishPendingSelection();
-              }
-            }}
-          >
-            <div className="familiar-league-switcher-header">
-              <DialogPrimitive.Title className="familiar-league-switcher-title">
-                Choose your league
-              </DialogPrimitive.Title>
-              <DialogPrimitive.Close
-                ref={closeButtonRef}
-                type="button"
-                aria-label="Close league switcher"
-                className="familiar-league-switcher-close"
-              >
-                <X aria-hidden="true" size={20} />
-              </DialogPrimitive.Close>
-            </div>
+        <DialogPrimitive.Overlay className="familiar-league-picker-scope familiar-league-switcher-backdrop" />
+        <DialogPrimitive.Content
+          ref={dialogRef}
+          aria-modal="true"
+          inert={!open}
+          className="familiar-league-picker-scope familiar-bowler-league-panel"
+          onOpenAutoFocus={(event) => {
+            previouslyFocusedElementRef.current = document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null;
+            event.preventDefault();
+            closeButtonRef.current?.focus({ preventScroll: true });
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const previouslyFocusedElement = previouslyFocusedElementRef.current;
+            if (previouslyFocusedElement?.isConnected) {
+              previouslyFocusedElement.focus({ preventScroll: true });
+            }
+            previouslyFocusedElementRef.current = null;
+          }}
+          onAnimationEnd={(event) => {
+            if (event.target === event.currentTarget && event.animationName === "familiar-league-picker-close") {
+              finishPendingSelection();
+            }
+          }}
+        >
+          <div className="familiar-league-switcher-header">
+            <DialogPrimitive.Title className="familiar-league-switcher-title">
+              Choose your league
+            </DialogPrimitive.Title>
+            <DialogPrimitive.Close
+              ref={closeButtonRef}
+              type="button"
+              aria-label="Close league switcher"
+              className="familiar-league-switcher-close"
+            >
+              <X aria-hidden="true" size={20} />
+            </DialogPrimitive.Close>
+          </div>
 
-            <DialogPrimitive.Description className="familiar-league-switcher-description">
-              Balances and history follow the selected league.
-            </DialogPrimitive.Description>
+          <DialogPrimitive.Description className="familiar-league-switcher-description">
+            Balances and history follow the selected league.
+          </DialogPrimitive.Description>
 
-            <div className="familiar-league-switcher-options" role="group" aria-label="Available leagues">
-              {activeBowlerLeagues.map((bowlerLeague) => {
-                const league = leagueMap.get(bowlerLeague.leagueId);
-                const isSelected = bowlerLeague.leagueId === selectedLeagueId;
-                const leagueTitle = league?.seasonStart && league.seasonEnd
-                  ? `${league.name} ${getSeasonYearRange(league.seasonStart, league.seasonEnd)}`
-                  : league?.name ?? `League #${bowlerLeague.leagueId}`;
+          <div className="familiar-league-switcher-options" role="group" aria-label="Available leagues">
+            {activeBowlerLeagues.map((bowlerLeague) => {
+              const league = leagueMap.get(bowlerLeague.leagueId);
+              const isSelected = bowlerLeague.leagueId === selectedLeagueId;
+              const leagueTitle = league?.seasonStart && league.seasonEnd
+                ? `${league.name} ${getSeasonYearRange(league.seasonStart, league.seasonEnd)}`
+                : league?.name ?? `League #${bowlerLeague.leagueId}`;
 
-                return (
-                  <button
-                    type="button"
-                    key={bowlerLeague.leagueId}
-                    aria-pressed={isSelected}
-                    disabled={pendingSelectionId !== null}
-                    onClick={() => handleLeagueSelection(bowlerLeague.leagueId)}
-                    className={`familiar-league-switcher-option${isSelected ? " is-selected" : ""}`}
-                  >
-                    <span className="familiar-league-switcher-name">{leagueTitle}</span>
-                    <span className="familiar-league-switcher-check" aria-hidden="true">
-                      {isSelected
-                        ? <Check className="size-5" />
-                        : <ChevronDown size={18} />}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </DialogPrimitive.Content>
-        </div>
+              return (
+                <button
+                  type="button"
+                  key={bowlerLeague.leagueId}
+                  aria-pressed={isSelected}
+                  disabled={pendingSelectionId !== null}
+                  onClick={() => handleLeagueSelection(bowlerLeague.leagueId)}
+                  className={`familiar-league-switcher-option${isSelected ? " is-selected" : ""}`}
+                >
+                  <span className="familiar-league-switcher-name">{leagueTitle}</span>
+                  <span className="familiar-league-switcher-check" aria-hidden="true">
+                    {isSelected
+                      ? <Check className="size-5" />
+                      : <ChevronDown size={18} />}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
   );

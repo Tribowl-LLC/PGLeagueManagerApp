@@ -83,7 +83,8 @@ describe('LeagueBottomSheet season labels', () => {
   it('shows a single title, helper, and season-suffixed option names', () => {
     renderPicker();
 
-    expect(screen.getByRole('dialog', { name: 'Choose your league' })).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: 'Choose your league' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
     expect(screen.getByText('Balances and history follow the selected league.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: "Wednesday Night Men's League 26/27" })).toBeInTheDocument();
   });
@@ -128,6 +129,8 @@ describe('LeagueBottomSheet season labels', () => {
     fireEvent.click(screen.getByRole('button', { name: "Wednesday Night Men's League 27/28" }));
     expect(onClose).toHaveBeenCalledOnce();
     expect(onSelectLeague).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: "Wednesday Night Men's League 26/27" })).toBeDisabled();
+    expect(screen.getByRole('button', { name: "Wednesday Night Men's League 27/28" })).toBeDisabled();
 
     act(() => { vi.advanceTimersByTime(149); });
     expect(onSelectLeague).not.toHaveBeenCalled();
