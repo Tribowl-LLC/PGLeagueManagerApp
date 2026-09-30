@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 const mocks = vi.hoisted(() => {
+  const leagueBottomSheet = vi.fn((_props: { viewerRole?: string }) => null);
   const standingAutopayCard = vi.fn((..._args: unknown[]) => null);
   const oneTimePaymentCard = vi.fn((..._args: unknown[]) => null);
   const rotatingShareCreditCard = vi.fn((..._args: unknown[]) => null);
@@ -121,7 +122,7 @@ const mocks = vi.hoisted(() => {
       };
     }
     if (key === "/api/user") {
-      return { data: { success: true, data: { id: 1, bowlerId: 42 } }, isLoading: false, error: null };
+      return { data: { success: true, data: { id: 1, bowlerId: 42, role: "user" } }, isLoading: false, error: null };
     }
     if (key.startsWith("/api/bowlers/") && key.endsWith("/details")) {
       return {
@@ -201,6 +202,7 @@ const mocks = vi.hoisted(() => {
     throw new Error(`Unexpected query: ${key}`);
   });
   return {
+    leagueBottomSheet,
     standingAutopayCard,
     oneTimePaymentCard,
     rotatingShareCreditCard,
@@ -240,7 +242,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("@tanstack/react-query", async (importOriginal) => ({ ...(await importOriginal<typeof import("@tanstack/react-query")>()), useQuery: mocks.query, useMutation: () => ({ mutate: vi.fn(), isPending: false, error: null }) }));
 vi.mock("@/components/bowler-layout", () => ({ BowlerLayout: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
-vi.mock("@/components/league-switcher-sheet", () => ({ LeagueSwitcherSheet: () => null }));
+vi.mock("@/components/league-bottom-sheet", () => ({ LeagueBottomSheet: mocks.leagueBottomSheet }));
 vi.mock("@/components/error-boundary", () => ({ ErrorBoundary: ({ children }: { children: ReactNode }) => <>{children}</> }));
 vi.mock("@/components/page-states", () => ({ PageErrorState: () => null, PageLoadingState: () => null }));
 vi.mock("@/components/bowler-one-time-payment-card", () => ({ BowlerOneTimePaymentCard: mocks.oneTimePaymentCard }));
@@ -300,6 +302,7 @@ vi.mock("@/lib/payment-request-identity", () => ({
 import MakePaymentPage from "@/pages/make-payment-page";
 
 afterEach(() => {
+  mocks.leagueBottomSheet.mockClear();
   mocks.query.mockClear();
   mocks.apiRequest.mockReset();
   mocks.standingAutopayCard.mockClear();
@@ -338,6 +341,16 @@ afterEach(() => {
 });
 
 describe("MakePaymentPage upfront payment mode", () => {
+  it("uses the Overview league sheet and forwards the current user role", async () => {
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.leagueBottomSheet).toHaveBeenCalled());
+    expect(mocks.leagueBottomSheet.mock.calls.at(-1)?.[0]).toMatchObject({
+      open: false,
+      viewerRole: "user",
+    });
+  });
+
   it("does not call an on-time current payment past due", async () => {
     mocks.setPaymentMode("weekly");
     mocks.setDueNowMinor(1_000);

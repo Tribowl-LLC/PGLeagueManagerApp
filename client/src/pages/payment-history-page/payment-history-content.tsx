@@ -7,12 +7,15 @@ import { BowlerLayout } from "@/components/bowler-layout";
 import { PaymentSummaryCards } from "@/components/payment-summary-cards";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { PageErrorState } from "@/components/page-states";
-import { LeagueSwitcherSheet } from "@/components/league-switcher-sheet";
+import { LeagueBottomSheet } from "@/components/league-bottom-sheet";
 import type { DoublePayStatus } from "@/lib/financial-utils";
 import type { RotatingCreditDisplayState } from "@/components/payment-status-section";
 
+const EMPTY_TEAM_MAP = new Map<number, Team>();
+
 interface PaymentHistoryContentProps {
   bowlerName: string;
+  viewerRole?: string;
   league: Pick<League, "id" | "name" | "weeklyFee" | "organizationId">;
   teamName?: string | null;
   leagueStartTime?: string | null;
@@ -48,7 +51,7 @@ interface PaymentHistoryContentProps {
 }
 
 export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
-  bowlerName, league, teamName, leagueStartTime, leagueId, hasMultipleLeagues, leagueSheetOpen,
+  bowlerName, viewerRole, league, teamName, leagueStartTime, leagueId, hasMultipleLeagues, leagueSheetOpen,
   onOpenLeagueSheet, onCloseLeagueSheet, bowlerLeagues, leagueMap,
   teamMap, onSelectLeague, totalWeeksInSeason, fullSeasonAmount, weeksDueCount,
   totalSeasonDues, weeksPaid, totalPaidAmount, amountPastDue, remainingBalance,
@@ -125,7 +128,16 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
         </div>
       </div>
 
-      <LeagueSwitcherSheet open={leagueSheetOpen} onClose={onCloseLeagueSheet} bowlerLeagues={bowlerLeagues} leagueMap={leagueMap} teamMap={teamMap} selectedLeagueId={leagueId} onSelect={onSelectLeague} />
+      <LeagueBottomSheet
+        open={leagueSheetOpen}
+        onClose={onCloseLeagueSheet}
+        activeBowlerLeagues={bowlerLeagues}
+        leagueMap={leagueMap}
+        teamMap={teamMap ?? EMPTY_TEAM_MAP}
+        selectedLeagueId={leagueId}
+        onSelectLeague={onSelectLeague}
+        viewerRole={viewerRole}
+      />
     </BowlerLayout>
   );
 };
