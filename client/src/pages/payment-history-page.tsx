@@ -137,6 +137,7 @@ export default function PaymentHistoryPage() {
 
   return <PaymentHistoryContent
     bowlerName={bowlerName}
+    viewerRole={currentUser?.data?.role}
     league={league}
     leagueId={leagueId}
     hasMultipleLeagues={hasAlternativeActiveLeague}

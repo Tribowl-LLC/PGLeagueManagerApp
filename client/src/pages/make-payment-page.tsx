@@ -5,7 +5,7 @@ import type { ApiResponse, BowlerDetailsResponse, SavedCard, User } from "@share
 import type { RotatingCreditBalanceWire } from "@shared/rotating-credit-contract";
 import type { StandingAutopayConsentWire } from "@shared/standing-autopay-contract";
 import { BowlerLayout } from "@/components/bowler-layout";
-import { LeagueSwitcherSheet } from "@/components/league-switcher-sheet";
+import { LeagueBottomSheet } from "@/components/league-bottom-sheet";
 import { BowlerOneTimePaymentCard, type CompletedPayment, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
 import { StandingAutopayCard } from "@/components/standing-autopay-card";
 import { RotatingShareCreditCard } from "@/components/rotating-share-credit-card";
@@ -1520,6 +1520,19 @@ export default function MakePaymentPage() {
         </div></CardContent>
       </Card>}
     </div>
-    <LeagueSwitcherSheet open={leagueSheetOpen} onClose={() => setLeagueSheetOpen(false)} bowlerLeagues={activeSwitcherLeagues} leagueMap={leagueMap} teamMap={teamMap} selectedLeagueId={leagueId} onSelect={(nextId) => { setSelectedLeagueId(nextId); intentAppliedRef.current = false; navigate(`/make-payment?leagueId=${nextId}`); }} />
+    <LeagueBottomSheet
+      open={leagueSheetOpen}
+      onClose={() => setLeagueSheetOpen(false)}
+      activeBowlerLeagues={activeSwitcherLeagues}
+      leagueMap={leagueMap}
+      teamMap={teamMap}
+      selectedLeagueId={leagueId ?? null}
+      onSelectLeague={(nextId) => {
+        setSelectedLeagueId(nextId);
+        intentAppliedRef.current = false;
+        navigate(`/make-payment?leagueId=${nextId}`);
+      }}
+      viewerRole={currentUser?.data?.role}
+    />
   </BowlerLayout>;
 }

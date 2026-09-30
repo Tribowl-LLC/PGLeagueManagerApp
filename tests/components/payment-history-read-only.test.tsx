@@ -11,10 +11,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 const apiRequestMock = vi.hoisted(() => vi.fn());
 const csrfFetchMock = vi.hoisted(() => vi.fn());
 const tokenizeCardMock = vi.hoisted(() => vi.fn());
+const leagueBottomSheetMock = vi.hoisted(() => vi.fn((_props: { viewerRole?: string }) => null));
 
 vi.mock("@/components/bowler-layout", () => ({ BowlerLayout: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
 vi.mock("@/components/error-boundary", () => ({ ErrorBoundary: ({ children }: { children: ReactNode }) => <>{children}</> }));
-vi.mock("@/components/league-switcher-sheet", () => ({ LeagueSwitcherSheet: () => null }));
+vi.mock("@/components/league-bottom-sheet", () => ({ LeagueBottomSheet: leagueBottomSheetMock }));
 vi.mock("@/components/canonical-payment-evidence-table", () => ({ CanonicalPaymentEvidenceTable: () => <div data-testid="payment-history-table" /> }));
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock("@/lib/queryClient", () => ({ apiRequest: apiRequestMock, csrfFetch: csrfFetchMock, queryClient: { invalidateQueries: vi.fn() } }));
@@ -25,12 +26,43 @@ const savedCard: SavedCard = { id: "card_1", brand: "VISA", last4: "4242", expMo
 const squareCard: SquareCard = { tokenize: async () => ({ status: "OK", token: "source_token" }), attach: async () => undefined, destroy: () => undefined };
 
 beforeEach(() => {
+  leagueBottomSheetMock.mockClear();
   apiRequestMock.mockReset();
   csrfFetchMock.mockReset();
   tokenizeCardMock.mockReset();
 });
 
 describe("PaymentHistoryContent", () => {
+  it("passes the current user role to the shared Overview league picker", () => {
+    render(<PaymentHistoryContent
+      bowlerName="Bowler"
+      viewerRole="user"
+      league={league}
+      leagueId={17}
+      hasMultipleLeagues
+      leagueSheetOpen
+      onOpenLeagueSheet={vi.fn()}
+      onCloseLeagueSheet={vi.fn()}
+      bowlerLeagues={[{ id: 71, bowlerId: 42, leagueId: 17, teamId: 81, active: true, order: 0, joinedAt: "2026-08-01T00:00:00.000Z" }]}
+      leagueMap={new Map()}
+      onSelectLeague={vi.fn()}
+      totalWeeksInSeason={10}
+      fullSeasonAmount={30000}
+      weeksDueCount={3}
+      totalSeasonDues={9000}
+      weeksPaid={1}
+      totalPaidAmount={3000}
+      amountPastDue={6000}
+      remainingBalance={27000}
+      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
+      canonicalPaymentLoading={false}
+      canonicalPaymentError={null}
+      canonicalRows={[]}
+    />);
+
+    expect(leagueBottomSheetMock.mock.lastCall?.[0].viewerRole).toBe("user");
+  });
+
   it("formats the next automatic payment in the league timezone", () => {
     expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "America/Detroit")).toMatch(/December 31, 2029/);
     expect(formatNextPaymentDate("2030-01-01T04:30:00.000Z", "Pacific/Kiritimati")).toMatch(/January 1, 2030/);

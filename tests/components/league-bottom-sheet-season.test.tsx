@@ -1,8 +1,13 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
 import type { BowlerLeague, League, Team } from '@shared/schema';
 import { LeagueBottomSheet } from '@/components/league-bottom-sheet';
-import { LeagueSwitcherSheet } from '@/components/league-switcher-sheet';
+import { LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION } from '@shared/league-occurrence-schedule';
+
+const scheduleRequest = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/queryClient', () => ({ apiRequest: scheduleRequest }));
 
 const bowlerLeague = (leagueId: number): BowlerLeague => ({
   id: leagueId,
@@ -49,12 +54,27 @@ const league = (overrides: Partial<League>): League => ({
 
 const teamMap = new Map<number, Team>();
 
+const testTeam = (overrides: Partial<Team> = {}): Team => ({
+  id: 11,
+  name: 'Tuesday Team',
+  number: 1,
+  leagueId: 7,
+  active: true,
+  displayOrder: 0,
+  ...overrides,
+});
+
+function renderWithQueryClient(ui: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
+
 function renderSheet(currentLeague: League) {
   return renderSheetForLeagues([currentLeague]);
 }
 
 function renderSheetForLeagues(currentLeagues: League[]) {
-  return render(
+  return renderWithQueryClient(
     <LeagueBottomSheet
       open
       onClose={() => undefined}
@@ -63,20 +83,6 @@ function renderSheetForLeagues(currentLeagues: League[]) {
       teamMap={teamMap}
       selectedLeagueId={currentLeagues[0]?.id ?? null}
       onSelectLeague={() => undefined}
-    />,
-  );
-}
-
-function renderSwitcherForLeagues(currentLeagues: League[]) {
-  return render(
-    <LeagueSwitcherSheet
-      open
-      onClose={() => undefined}
-      bowlerLeagues={currentLeagues.map((currentLeague) => bowlerLeague(currentLeague.id))}
-      leagueMap={new Map(currentLeagues.map((currentLeague) => [currentLeague.id, currentLeague]))}
-      teamMap={teamMap}
-      selectedLeagueId={currentLeagues[0]?.id ?? null}
-      onSelect={() => undefined}
     />,
   );
 }
@@ -91,6 +97,10 @@ const sameNamedSeasonLeagues = [
 ];
 
 describe('LeagueBottomSheet season titles', () => {
+  beforeEach(() => {
+    scheduleRequest.mockReset();
+  });
+
   it('appends the two-digit season range to the league title', () => {
     const { container } = renderSheet(league({}));
     const expectedTitle = "Wednesday Night Men's League 26/27";
@@ -119,12 +129,56 @@ describe('LeagueBottomSheet season titles', () => {
     expect(screen.getByRole('button', { name: /Wednesday Night Men's League 27\/28/ })).toBeInTheDocument();
   });
 
-  it('keeps same-named rollover seasons distinct in the payment switcher', () => {
-    renderSwitcherForLeagues(sameNamedSeasonLeagues);
+  it('shows the shared mobile team and canonical progress and keeps selection actions', async () => {
+    scheduleRequest.mockResolvedValue({ data: {
+      contractVersion: LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION,
+      authoritativeSource: 'canonical',
+      occurrences: [],
+    } });
+    const onClose = vi.fn();
+    const onSelectLeague = vi.fn();
+    const optionTeamMap = new Map([[11, testTeam()]]);
 
-    const options = screen.getAllByRole('button', { name: /Wednesday Night Men's League/ });
-    expect(options).toHaveLength(2);
-    expect(screen.getByRole('button', { name: /Wednesday Night Men's League 26\/27/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Wednesday Night Men's League 27\/28/ })).toBeInTheDocument();
+    renderWithQueryClient(
+      <LeagueBottomSheet
+        open
+        onClose={onClose}
+        activeBowlerLeagues={sameNamedSeasonLeagues.map((entry) => bowlerLeague(entry.id))}
+        leagueMap={new Map(sameNamedSeasonLeagues.map((entry) => [entry.id, entry]))}
+        teamMap={optionTeamMap}
+        selectedLeagueId={8}
+        onSelectLeague={onSelectLeague}
+        viewerRole="user"
+      />,
+    );
+
+    const option = screen.getByRole('button', { name: /Wednesday Night Men's League 27\/28/ });
+    expect(await within(option).findByText('0 of 0 weeks completed')).toBeInTheDocument();
+    expect(option).toHaveClass('is-selected');
+    expect(option.querySelector('.familiar-league-switcher-meta-mobile')).toHaveTextContent('Tuesday Team');
+    expect(option.querySelector('.familiar-league-switcher-meta-mobile')).toHaveTextContent('0 of 0 weeks completed');
+
+    fireEvent.click(option);
+    expect(onSelectLeague).toHaveBeenCalledWith(8);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the shared sheet backdrop and Escape close behavior', () => {
+    const onClose = vi.fn();
+    renderWithQueryClient(
+      <LeagueBottomSheet
+        open
+        onClose={onClose}
+        activeBowlerLeagues={[bowlerLeague(7)]}
+        leagueMap={new Map([[7, league({})]])}
+        teamMap={teamMap}
+        selectedLeagueId={7}
+        onSelectLeague={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Close league switcher' })[0]);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(2);
   });
 });
