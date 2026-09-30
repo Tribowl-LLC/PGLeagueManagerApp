@@ -33,7 +33,15 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../../server/logger.js", () => ({ createLogger: () => ({ captureException: (...args: unknown[]) => mocks.captureException(...args) }) }));
+vi.mock("../../server/logger.js", () => ({
+  createLogger: () => ({
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    captureException: (...args: unknown[]) => mocks.captureException(...args),
+  }),
+}));
 vi.mock("../../server/storage/index.js", () => ({ storage: { getLeague: (...args: unknown[]) => mocks.getLeague(...args) } }));
 vi.mock("../../server/storage", () => ({ storage: { getLeague: (...args: unknown[]) => mocks.getLeague(...args) } }));
 vi.mock("../../server/utils/access-control.js", () => ({
