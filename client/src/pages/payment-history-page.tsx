@@ -137,7 +137,6 @@ export default function PaymentHistoryPage() {
 
   return <PaymentHistoryContent
     bowlerName={bowlerName}
-    viewerRole={currentUser?.data?.role}
     league={league}
     leagueId={leagueId}
     hasMultipleLeagues={hasAlternativeActiveLeague}
@@ -146,7 +145,6 @@ export default function PaymentHistoryPage() {
     onCloseLeagueSheet={() => setLeagueSheetOpen(false)}
     bowlerLeagues={activeSwitcherLeagues}
     leagueMap={leagueMap}
-    teamMap={teamMap}
     teamName={activeTeam?.name}
     leagueStartTime={league.competitionStartTime}
     onSelectLeague={(nextId) => { setSelectedLeagueId(nextId); setCanonicalReportPage(1); navigate(`/payment-history?leagueId=${nextId}`); }}

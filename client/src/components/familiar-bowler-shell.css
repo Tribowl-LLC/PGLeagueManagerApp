@@ -1460,42 +1460,6 @@ a.familiar-payment-summary__value:hover {
     outline-offset: 2px;
   }
 
-  .familiar-bowler-shell .familiar-bowler-league-sheet {
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 32px;
-    pointer-events: none;
-    animation: none;
-  }
-
-  .familiar-bowler-shell .familiar-bowler-league-panel {
-    display: flex;
-    flex-direction: column;
-    width: min(100%, 480px);
-    max-height: min(640px, calc(100vh - 64px));
-    border-radius: 16px;
-    pointer-events: auto;
-  }
-
-  .familiar-bowler-shell .familiar-bowler-league-panel > .overflow-y-auto {
-    min-height: 0;
-    flex: 1 1 auto;
-  }
-
-  .familiar-bowler-shell .familiar-bowler-league-panel .bg-brand-accent-50 {
-    background: rgb(15 23 42 / 0.06);
-  }
-
-  .familiar-bowler-shell .familiar-bowler-league-panel .text-brand-accent-700 {
-    color: var(--familiar-navy);
-  }
-
-  .familiar-bowler-shell .familiar-bowler-league-panel .bg-brand-accent-600 {
-    background: var(--familiar-navy);
-  }
-
   .familiar-bowler-main > main {
     min-width: 0;
   }

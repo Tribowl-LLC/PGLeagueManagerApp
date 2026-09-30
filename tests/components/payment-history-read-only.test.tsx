@@ -11,7 +11,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 const apiRequestMock = vi.hoisted(() => vi.fn());
 const csrfFetchMock = vi.hoisted(() => vi.fn());
 const tokenizeCardMock = vi.hoisted(() => vi.fn());
-const leagueBottomSheetMock = vi.hoisted(() => vi.fn((_props: { viewerRole?: string }) => null));
+const leagueBottomSheetMock = vi.hoisted(() => vi.fn((_props: {
+  open?: boolean;
+  selectedLeagueId?: number | null;
+  activeBowlerLeagues?: unknown[];
+}) => null));
 
 vi.mock("@/components/bowler-layout", () => ({ BowlerLayout: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
 vi.mock("@/components/error-boundary", () => ({ ErrorBoundary: ({ children }: { children: ReactNode }) => <>{children}</> }));
@@ -33,10 +37,9 @@ beforeEach(() => {
 });
 
 describe("PaymentHistoryContent", () => {
-  it("passes the current user role to the shared Overview league picker", () => {
+  it("passes the active memberships to the shared league picker", () => {
     render(<PaymentHistoryContent
       bowlerName="Bowler"
-      viewerRole="user"
       league={league}
       leagueId={17}
       hasMultipleLeagues
@@ -60,7 +63,11 @@ describe("PaymentHistoryContent", () => {
       canonicalRows={[]}
     />);
 
-    expect(leagueBottomSheetMock.mock.lastCall?.[0].viewerRole).toBe("user");
+    const pickerProps = leagueBottomSheetMock.mock.lastCall?.[0];
+    expect(pickerProps).toMatchObject({ open: true, selectedLeagueId: 17 });
+    expect(pickerProps?.activeBowlerLeagues).toHaveLength(1);
+    expect(pickerProps && "viewerRole" in pickerProps).toBe(false);
+    expect(pickerProps && "teamMap" in pickerProps).toBe(false);
   });
 
   it("formats the next automatic payment in the league timezone", () => {

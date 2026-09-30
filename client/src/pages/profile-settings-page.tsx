@@ -343,10 +343,8 @@ const ProfileSettingsPage: FC = () => {
           onClose={() => setLeagueSheetOpen(false)}
           activeBowlerLeagues={activeBowlerLeagues}
           leagueMap={leagueMap}
-          teamMap={teamMap}
           selectedLeagueId={activeBowlerLeague?.leagueId ?? null}
           onSelectLeague={(id) => setSelectedLeagueId(id)}
-          viewerRole={currentUser.role}
         />
       )}
     </BowlerLayout>

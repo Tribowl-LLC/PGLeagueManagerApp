@@ -1,6 +1,6 @@
 /* eslint-disable shadcn/no-unknown-classes */
 import { FC } from "react";
-import type { League, BowlerLeague, Team } from "@shared/schema";
+import type { League, BowlerLeague } from "@shared/schema";
 import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 import { CanonicalPaymentEvidenceTable } from "@/components/canonical-payment-evidence-table";
 import { BowlerLayout } from "@/components/bowler-layout";
@@ -11,11 +11,8 @@ import { LeagueBottomSheet } from "@/components/league-bottom-sheet";
 import type { DoublePayStatus } from "@/lib/financial-utils";
 import type { RotatingCreditDisplayState } from "@/components/payment-status-section";
 
-const EMPTY_TEAM_MAP = new Map<number, Team>();
-
 interface PaymentHistoryContentProps {
   bowlerName: string;
-  viewerRole?: string;
   league: Pick<League, "id" | "name" | "weeklyFee" | "organizationId">;
   teamName?: string | null;
   leagueStartTime?: string | null;
@@ -26,7 +23,6 @@ interface PaymentHistoryContentProps {
   onCloseLeagueSheet: () => void;
   bowlerLeagues: BowlerLeague[];
   leagueMap: Map<number, League>;
-  teamMap?: Map<number, Team>;
   onSelectLeague: (leagueId: number) => void;
   totalWeeksInSeason: number;
   fullSeasonAmount: number;
@@ -51,9 +47,9 @@ interface PaymentHistoryContentProps {
 }
 
 export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
-  bowlerName, viewerRole, league, teamName, leagueStartTime, leagueId, hasMultipleLeagues, leagueSheetOpen,
+  bowlerName, league, teamName, leagueStartTime, leagueId, hasMultipleLeagues, leagueSheetOpen,
   onOpenLeagueSheet, onCloseLeagueSheet, bowlerLeagues, leagueMap,
-  teamMap, onSelectLeague, totalWeeksInSeason, fullSeasonAmount, weeksDueCount,
+  onSelectLeague, totalWeeksInSeason, fullSeasonAmount, weeksDueCount,
   totalSeasonDues, weeksPaid, totalPaidAmount, amountPastDue, remainingBalance,
   waivedAmount,
   doublePay, canonicalPaymentLoading, canonicalPaymentError, canonicalReportPage,
@@ -133,10 +129,8 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
         onClose={onCloseLeagueSheet}
         activeBowlerLeagues={bowlerLeagues}
         leagueMap={leagueMap}
-        teamMap={teamMap ?? EMPTY_TEAM_MAP}
         selectedLeagueId={leagueId}
         onSelectLeague={onSelectLeague}
-        viewerRole={viewerRole}
       />
     </BowlerLayout>
   );

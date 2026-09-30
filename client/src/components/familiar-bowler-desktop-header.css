@@ -1,24 +1,218 @@
+/* The picker is portaled to the document body, so give that surface the same
+   Familiar A tokens and type as the authenticated bowler shell. */
+.familiar-league-picker-scope {
+  --familiar-navy: #0f172a;
+  --familiar-ink: #0f172a;
+  --familiar-muted: #475569;
+  --familiar-line: rgb(100 116 139 / 0.28);
+  --familiar-surface: #ffffff;
+  color: var(--familiar-ink);
+  font-family: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+.familiar-league-picker-scope.familiar-league-switcher-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  background: rgb(100 116 139 / 0.4);
+  backdrop-filter: blur(3px);
+  animation: familiar-league-picker-backdrop-open 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.familiar-league-picker-scope.familiar-league-switcher-backdrop[data-state="closed"] {
+  animation-name: familiar-league-picker-backdrop-close;
+  animation-duration: 150ms;
+}
+
+.familiar-league-picker-scope.familiar-bowler-league-panel {
+  --league-picker-close-duration: 150ms;
+  position: fixed;
+  z-index: 1001;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(640px, calc(100vh - 32px));
+  max-height: min(640px, calc(100dvh - 32px));
+  flex-direction: column;
+  overflow: hidden;
+  padding: 22px;
+  border: 1px solid rgb(100 116 139 / 0.22);
+  border-radius: 16px;
+  outline: none;
+  background: var(--familiar-surface);
+  box-shadow: 0 25px 90px rgb(15 23 42 / 0.24);
+  color: var(--familiar-ink);
+  transform: translate(-50%, -50%) scale(1);
+  transform-origin: center;
+  animation: familiar-league-picker-open 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.familiar-league-picker-scope.familiar-bowler-league-panel[data-state="closed"] {
+  animation-name: familiar-league-picker-close;
+  animation-duration: var(--league-picker-close-duration);
+}
+
+.familiar-league-picker-scope .familiar-league-switcher-header {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.familiar-league-picker-scope .familiar-league-switcher-title {
+  margin: 0;
+  color: var(--familiar-ink);
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.6px;
+  line-height: 1.25;
+}
+
+.familiar-league-picker-scope .familiar-league-switcher-close {
+  display: flex;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: rgb(100 116 139 / 0.06);
+  color: var(--familiar-muted);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.familiar-league-picker-scope .familiar-league-switcher-close:focus-visible,
+.familiar-league-picker-scope .familiar-league-switcher-option:focus-visible {
+  outline: 3px solid var(--familiar-navy);
+  outline-offset: 2px;
+}
+
+.familiar-league-picker-scope .familiar-league-switcher-description {
+  margin: 0;
+  color: var(--familiar-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.familiar-league-picker-scope .familiar-league-switcher-options {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 9px;
+  margin: 15px -6px -6px;
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.familiar-league-picker-scope .familiar-league-switcher-option {
+  display: flex;
+  width: 100%;
+  min-height: 56px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 17px;
+  border: 1px solid var(--familiar-line);
+  border-radius: 9px;
+  background: #ffffff;
+  color: var(--familiar-ink);
+  cursor: pointer;
+  text-align: left;
+  touch-action: manipulation;
+  transition: border-color 150ms ease, background-color 150ms ease, transform 100ms ease;
+}
+
+.familiar-league-picker-scope .familiar-league-switcher-option:disabled {
+  cursor: default;
+}
+
+.familiar-league-picker-scope .familiar-league-switcher-option:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.familiar-league-picker-scope .familiar-league-switcher-name {
+  display: block;
+  color: var(--familiar-ink);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.familiar-league-picker-scope .familiar-league-switcher-check {
+  display: flex;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  color: var(--familiar-ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .familiar-league-picker-scope .familiar-league-switcher-close:hover {
+    background: rgb(100 116 139 / 0.12);
+  }
+
+  .familiar-league-picker-scope .familiar-league-switcher-option:hover:not(:disabled) {
+    border-color: rgb(100 116 139 / 0.55);
+    background: rgb(100 116 139 / 0.035);
+  }
+}
+
+@keyframes familiar-league-picker-open {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes familiar-league-picker-close {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+}
+
+@keyframes familiar-league-picker-backdrop-open {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes familiar-league-picker-backdrop-close {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .familiar-league-picker-scope.familiar-league-switcher-backdrop,
+  .familiar-league-picker-scope.familiar-bowler-league-panel {
+    animation: none !important;
+  }
+
+  .familiar-league-picker-scope .familiar-league-switcher-option,
+  .familiar-league-picker-scope .familiar-league-switcher-close {
+    transition: none;
+  }
+}
+
 /* Keep the approved desktop header aligned with the content rail. The league
    switch stays at the far right of the viewport, as in the preview. */
-.familiar-league-switcher-title-desktop,
-.familiar-league-switcher-description,
-.familiar-league-switcher-meta-desktop {
-  display: none;
-}
-
-.familiar-league-switcher-option.is-selected {
-  background: var(--color-brand-accent-50);
-}
-
-.familiar-league-switcher-option:not(.is-selected):hover {
-  background: var(--color-navigation-50);
-}
-
-.familiar-league-switcher-check {
-  background: var(--color-brand-accent-600);
-  color: #fff;
-}
-
 @media (min-width: 1024px) {
   .familiar-bowler-shell {
     --familiar-muted: rgb(71 85 105 / 0.78);
@@ -40,113 +234,5 @@
     line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .familiar-bowler-shell .familiar-league-switcher-backdrop {
-    background: rgb(100 116 139 / 0.4);
-    backdrop-filter: blur(3px);
-  }
-
-  .familiar-bowler-shell .familiar-bowler-league-sheet {
-    align-items: flex-start;
-    padding: 45px 24px;
-  }
-
-  .familiar-bowler-shell .familiar-bowler-league-panel {
-    width: min(100%, 440px);
-    max-height: calc(100dvh - 90px);
-    padding: 25px;
-    border: 1px solid rgb(100 116 139 / 0.2);
-    border-radius: 16px;
-    box-shadow: 0 25px 90px rgb(100 116 139 / 0.24);
-  }
-
-  .familiar-bowler-shell .familiar-league-switcher-header {
-    gap: 16px;
-    padding: 0;
-    border: 0;
-    margin-bottom: 12px;
-  }
-
-  .familiar-league-switcher-header h3 {
-    color: var(--familiar-ink);
-    font-size: 20px;
-    font-weight: 650;
-    letter-spacing: -0.6px;
-  }
-
-  .familiar-league-switcher-title-mobile,
-  .familiar-league-switcher-meta-mobile {
-    display: none;
-  }
-
-  .familiar-league-switcher-title-desktop {
-    display: inline;
-  }
-
-  .familiar-bowler-shell .familiar-league-switcher-close {
-    width: 34px;
-    height: 34px;
-    border-radius: 7px;
-    background: rgb(100 116 139 / 0.06);
-    color: var(--familiar-muted);
-  }
-
-  .familiar-league-switcher-description {
-    display: block;
-    margin: 14px 0;
-    color: var(--familiar-muted);
-    font-size: 14px;
-    line-height: 1.8;
-  }
-
-  .familiar-bowler-shell .familiar-league-switcher-options {
-    display: flex;
-    min-height: 0;
-    flex-direction: column;
-    gap: 9px;
-    margin-top: 20px;
-  }
-
-  .familiar-bowler-shell .familiar-bowler-league-panel .familiar-league-switcher-option {
-    min-height: 75px;
-    padding: 17px;
-    border: 1px solid var(--familiar-line);
-    border-radius: 9px;
-    background: #fff;
-    color: var(--familiar-ink);
-  }
-
-  .familiar-bowler-shell .familiar-bowler-league-panel .familiar-league-switcher-option:hover {
-    border-color: rgb(100 116 139 / 0.55);
-    background: rgb(100 116 139 / 0.035);
-  }
-
-  .familiar-league-switcher-name {
-    color: var(--familiar-ink);
-    font-size: 14px;
-    font-weight: 650;
-  }
-
-  .familiar-league-switcher-meta-desktop {
-    display: block;
-    margin-top: 8px;
-    color: var(--familiar-muted);
-    font-size: 12px;
-  }
-
-  .familiar-bowler-shell .familiar-bowler-league-panel .familiar-league-switcher-check {
-    width: 20px;
-    height: 20px;
-    background: transparent;
-    color: var(--familiar-ink);
-  }
-
-  .familiar-bowler-shell .familiar-bowler-league-panel .familiar-league-switcher-check svg {
-    color: inherit;
-  }
-
-  .familiar-league-switcher-bottom-space {
-    display: none;
   }
 }

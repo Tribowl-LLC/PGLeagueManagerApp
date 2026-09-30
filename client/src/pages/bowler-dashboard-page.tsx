@@ -236,10 +236,8 @@ const BowlerDashboardPage: FC = () => {
         onClose={() => setSheetOpen(false)}
         activeBowlerLeagues={activeBowlerLeagues}
         leagueMap={leagueMap}
-        teamMap={teamMap}
         selectedLeagueId={activeBowlerLeague?.leagueId ?? null}
         onSelectLeague={(id) => setSelectedLeagueId(id)}
-        viewerRole={currentUser.role}
       />
     </BowlerLayout>
   );
