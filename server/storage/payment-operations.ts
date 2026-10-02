@@ -39,6 +39,7 @@ import {
   locationSquareCredentialsSchema,
 } from "@shared/schema";
 import { db } from "../db.js";
+import { accountPaymentOperationSnapshots } from "@shared/schema/account-payment-operations";
 import {
   buildPaymentOperationIdentity,
   INTERACTIVE_REQUEST_KEY_MAX_LENGTH,
@@ -64,6 +65,13 @@ import {
 } from "../services/rotating-credit-operation-snapshot.js";
 import type { RotatingCreditOperationSemanticSnapshot } from "../services/rotating-credit-operation-snapshot.js";
 import type { RotatingCreditOperationSnapshotInput } from "../services/rotating-credit-operation-snapshot.js";
+import {
+  encryptAccountPaymentOperationSnapshot,
+  fingerprintAccountPaymentOperationSnapshot,
+  reconstructAccountPaymentOperationSnapshot,
+  type AccountPaymentOperationSnapshotInput,
+  type AccountPaymentOperationExecutionSnapshot,
+} from "../services/account-payment-operation-snapshot.js";
 import {
   createRotatingCreditRefundSnapshot,
   fingerprintRotatingCreditRefundSnapshot,
@@ -743,6 +751,107 @@ async function validateRosterOperationSnapshotTenantReferences(
   }
 }
 
+async function validateAccountPaymentOperationSnapshotTenantReferences(
+  executor: PaymentOperationTransaction,
+  snapshot: AccountPaymentOperationSnapshotInput,
+): Promise<void> {
+  const bowlerIds = [...new Set([snapshot.payerBowlerId, ...snapshot.fundingPortions.map((portion) => portion.creditedBowlerId)])];
+  const [ownedLeague] = await executor.select({ id: leagues.id }).from(leagues).where(and(
+    eq(leagues.id, snapshot.leagueId), eq(leagues.organizationId, snapshot.organizationId),
+  )).limit(1).for("share");
+  const ownedBowlers = await executor.select({ id: bowlers.id }).from(bowlers).where(and(
+    eq(bowlers.organizationId, snapshot.organizationId), inArray(bowlers.id, bowlerIds),
+  )).for("share");
+  const [ownedActor] = await executor.select({ id: users.id }).from(users).where(and(
+    eq(users.id, snapshot.authorizingUserId), eq(users.organizationId, snapshot.organizationId),
+  )).limit(1).for("share");
+  const ownedLocation = snapshot.locationId === null ? [] : await executor.select({ id: locations.id }).from(locations).where(and(
+    eq(locations.organizationId, snapshot.organizationId), eq(locations.id, snapshot.locationId),
+  )).limit(1).for("share");
+  if (!ownedLeague || ownedBowlers.length !== bowlerIds.length || !ownedActor
+    || ownedLocation.length !== (snapshot.locationId === null ? 0 : 1)) {
+    throw new PaymentOperationValidationError("account funding snapshot references do not belong to the operation tenant");
+  }
+}
+
+async function loadAccountPaymentOperationSnapshot(
+  executor: typeof db | PaymentOperationTransaction,
+  operation: PaymentOperation,
+): Promise<AccountPaymentOperationExecutionSnapshot | undefined> {
+  if (operation.operationType !== "interactive_charge" || operation.leagueId === null) return undefined;
+  const [stored] = await executor.select().from(accountPaymentOperationSnapshots).where(and(
+    eq(accountPaymentOperationSnapshots.operationId, operation.id),
+    eq(accountPaymentOperationSnapshots.organizationId, operation.organizationId),
+    eq(accountPaymentOperationSnapshots.leagueId, operation.leagueId),
+  )).limit(1);
+  if (!stored) return undefined;
+  const [rosterSnapshot] = await executor.select({ operationId: paymentOperationRosterSnapshots.operationId }).from(paymentOperationRosterSnapshots).where(and(
+    eq(paymentOperationRosterSnapshots.operationId, operation.id),
+    eq(paymentOperationRosterSnapshots.organizationId, operation.organizationId),
+    eq(paymentOperationRosterSnapshots.leagueId, operation.leagueId),
+    eq(paymentOperationRosterSnapshots.snapshotKind, "interactive"),
+  )).limit(1);
+  const [creditSnapshot] = await executor.select({ operationId: rotatingCreditPaymentOperationSnapshots.operationId }).from(rotatingCreditPaymentOperationSnapshots).where(and(
+    eq(rotatingCreditPaymentOperationSnapshots.operationId, operation.id),
+    eq(rotatingCreditPaymentOperationSnapshots.organizationId, operation.organizationId),
+    eq(rotatingCreditPaymentOperationSnapshots.leagueId, operation.leagueId),
+  )).limit(1);
+  if (rosterSnapshot || creditSnapshot) throw new PaymentOperationImmutableMismatchError();
+  return reconstructAccountPaymentOperationSnapshot({
+    operation,
+    stored,
+  });
+}
+
+/** Persist the additive V4 account funding snapshot without changing retained
+ * V2/V3 roster or rotating-credit snapshot codecs. */
+export async function persistAccountPaymentOperationSnapshot(
+  operation: PaymentOperation,
+  snapshot: AccountPaymentOperationSnapshotInput,
+  transaction: PaymentOperationTransaction,
+): Promise<AccountPaymentOperationExecutionSnapshot> {
+  if (snapshot.operationId !== operation.id
+    || snapshot.organizationId !== operation.organizationId
+    || operation.operationType !== "interactive_charge"
+    || operation.leagueId !== snapshot.leagueId
+    || snapshot.amountMinor !== operation.amountMinor
+    || snapshot.currency !== operation.currency
+    || snapshot.providerName !== operation.providerName
+    || snapshot.providerIdempotencyKey !== operation.providerIdempotencyKey
+    || snapshot.authorizingUserId !== operation.authorizingUserId) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  await validateAccountPaymentOperationSnapshotTenantReferences(transaction, snapshot);
+  const [storedOperation] = await transaction.select().from(paymentOperations).where(and(
+    eq(paymentOperations.id, operation.id), eq(paymentOperations.organizationId, operation.organizationId),
+  )).limit(1).for("share");
+  if (!storedOperation || storedOperation.operationType !== operation.operationType
+    || storedOperation.leagueId !== snapshot.leagueId
+    || storedOperation.targetKey !== operation.targetKey
+    || storedOperation.amountMinor !== operation.amountMinor
+    || storedOperation.currency !== operation.currency
+    || storedOperation.providerName !== operation.providerName
+    || storedOperation.requestFingerprint !== operation.requestFingerprint
+    || storedOperation.providerIdempotencyKey !== operation.providerIdempotencyKey
+    || storedOperation.authorizingUserId !== operation.authorizingUserId) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const encrypted = encryptAccountPaymentOperationSnapshot(snapshot);
+  const [created] = await transaction.insert(accountPaymentOperationSnapshots).values(encrypted)
+    .onConflictDoNothing().returning({ operationId: accountPaymentOperationSnapshots.operationId });
+  if (!created) {
+    const existing = await loadAccountPaymentOperationSnapshot(transaction, operation);
+    if (!existing || existing.snapshotFingerprint !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
+    return existing;
+  }
+  if (snapshot.storeCard) await initializeInteractiveCardSaveState(transaction, operation, snapshot);
+  const stored = await loadAccountPaymentOperationSnapshot(transaction, operation);
+  if (!stored || stored.snapshotFingerprint !== fingerprintAccountPaymentOperationSnapshot(snapshot)) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  return stored;
+}
+
 async function loadRosterOperationSnapshot(
   executor: typeof db | PaymentOperationTransaction,
   operation: PaymentOperation,
@@ -1266,6 +1375,15 @@ export async function getRosterOperationSnapshotForOrganization(
   const operation = await getPaymentOperationForOrganization(organizationId, operationId);
   if (!operation) return undefined;
   return loadRosterOperationSnapshot(db, operation);
+}
+
+export async function getAccountPaymentOperationSnapshotForOrganization(
+  organizationId: number,
+  operationId: string,
+): Promise<AccountPaymentOperationExecutionSnapshot | undefined> {
+  const operation = await getPaymentOperationForOrganization(organizationId, operationId);
+  if (!operation) return undefined;
+  return loadAccountPaymentOperationSnapshot(db, operation);
 }
 
 export async function getPaymentOperationForOrganization(

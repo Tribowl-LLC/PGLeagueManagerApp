@@ -4,6 +4,7 @@ import {
   accountPaymentFundingChargeRequestV4Schema,
   accountPaymentFundingQuoteResponseV4Schema,
   accountPaymentFundingQuoteRequestV4Schema,
+  accountPaymentParticipantsResponseV4Schema,
   resolveAccountPaymentFundingChargeAmountV4,
 } from "@shared/account-payment-v4-contract";
 import {
@@ -85,7 +86,7 @@ function quoteRecipient(input: {
   bowlerId: number;
   name: string;
   role: "self" | "partner";
-  selection: { kind: "explicit_amount"; amountMinor: number } | { kind: "confirmed_debt_balance" } | { kind: "forecast_collection_target" };
+  selection: { kind: "explicit_amount"; amountMinor: number } | { kind: "confirmed_debt_balance" } | { kind: "forecast_collection_target"; scope?: "current_collection" | "selected_weeks" | "full_season"; weeks?: number };
   confirmedDebtMinor: number;
   availableCreditMinor: number;
   forecastCollectionTargetMinor: number;
@@ -95,6 +96,48 @@ function quoteRecipient(input: {
 }
 
 describe("account payment funding V4 contract and operation snapshots", () => {
+  it("discovers legacy mode without changing V3 participant semantics", () => {
+    expect(accountPaymentParticipantsResponseV4Schema.safeParse({
+      contractVersion: "interactive-payment-participants/4",
+      organizationId: 8,
+      leagueId: 12,
+      payerBowlerId: 101,
+      accountingMode: "legacy_roster_v3",
+    }).success).toBe(true);
+  });
+
+  it("separates confirmed debt, available credit, and forecast without requiring a self portion", () => {
+    const response = {
+      contractVersion: "interactive-payment-participants/4",
+      organizationId: 8,
+      leagueId: 12,
+      payerBowlerId: 101,
+      accountingMode: "confirmed_account_v4",
+      paymentMode: "weekly",
+      recipients: [{
+        bowlerId: 202,
+        name: "Partner",
+        role: "partner",
+        confirmedDebtMinor: 900,
+        availableCreditMinor: 1_200,
+        forecastTargets: {
+          currentCollectionMinor: 1_500,
+          selectedWeeks: [{ weeks: 1, amountMinor: 1_500 }, { weeks: 2, amountMinor: 3_000 }],
+          fullSeasonMinor: 8_000,
+        },
+      }],
+    };
+    expect(accountPaymentParticipantsResponseV4Schema.safeParse(response).success).toBe(true);
+    expect(accountPaymentParticipantsResponseV4Schema.safeParse({
+      ...response,
+      recipients: [{ ...response.recipients[0], role: "self" }],
+    }).success).toBe(false);
+    expect(accountPaymentParticipantsResponseV4Schema.safeParse({
+      ...response,
+      recipients: [response.recipients[0], response.recipients[0]],
+    }).success).toBe(false);
+  });
+
   it("keeps explicit recipient portions exact while presets apply that recipient's credit once", () => {
     expect(resolveAccountPaymentFundingChargeAmountV4({
       selection: { kind: "explicit_amount", amountMinor: 1_250 },
@@ -109,7 +152,7 @@ describe("account payment funding V4 contract and operation snapshots", () => {
       forecastCollectionTargetMinor: 2_500,
     })).toBe(2_100);
     expect(resolveAccountPaymentFundingChargeAmountV4({
-      selection: { kind: "forecast_collection_target" },
+      selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 2 },
       confirmedDebtMinor: 3_000,
       availableCreditMinor: 3_000,
       forecastCollectionTargetMinor: 2_500,
@@ -185,6 +228,8 @@ describe("account payment funding V4 contract and operation snapshots", () => {
     expect(accountPaymentFundingChargeRequestV4Schema.safeParse(charge).success).toBe(true);
     expect(accountPaymentFundingChargeRequestV4Schema.safeParse({ ...charge, organizationId: 8 }).success).toBe(false);
     expect(accountPaymentFundingChargeRequestV4Schema.safeParse({ ...charge, sourceKind: "wallet", storeCard: true }).success).toBe(false);
+    expect(accountPaymentFundingQuoteRequestV4Schema.safeParse({ recipients: [{ bowlerId: 202, selection: { kind: "forecast_collection_target", scope: "selected_weeks" } }] }).success).toBe(false);
+    expect(accountPaymentFundingQuoteRequestV4Schema.safeParse({ recipients: [{ bowlerId: 202, selection: { kind: "forecast_collection_target", scope: "current_collection", weeks: 1 } }] }).success).toBe(false);
   });
 
   it("round-trips one combined tender and immutable payer/partner credit portions with zero obligation allocations", () => {

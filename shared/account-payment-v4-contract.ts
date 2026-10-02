@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const ACCOUNT_PAYMENT_FUNDING_QUOTE_CONTRACT_V4 = "account-payment-funding-quote/4" as const;
 export const ACCOUNT_PAYMENT_FUNDING_CHARGE_CONTRACT_V4 = "account-payment-funding-charge/4" as const;
+export const ACCOUNT_PAYMENT_PARTICIPANTS_CONTRACT_V4 = "interactive-payment-participants/4" as const;
 export const ACCOUNT_PAYMENT_FUNDING_QUOTE_FINGERPRINT_PREFIX_V4 = "lvaccountfundquote:v4:" as const;
 
 const amountMinorSchema = z.number().int().min(0).max(2_147_483_647);
@@ -9,6 +10,62 @@ const positiveAmountMinorSchema = z.number().int().positive().max(2_147_483_647)
 const payerBowlerIdSchema = z.number().int().positive().max(2_147_483_647);
 const idempotencyKeySchema = z.string().trim().min(16).max(109).regex(/^[A-Za-z0-9_-]+$/);
 const quoteFingerprintSchema = z.string().regex(/^lvaccountfundquote:v4:[0-9a-f]{64}$/);
+
+const accountPaymentFundingParticipantV4Schema = z.object({
+  bowlerId: payerBowlerIdSchema,
+  name: z.string().trim().min(1).max(255),
+  role: z.enum(["self", "partner"]),
+  confirmedDebtMinor: amountMinorSchema,
+  availableCreditMinor: amountMinorSchema,
+  /** Forecast amounts only; these are never settled debt. */
+  forecastTargets: z.object({
+    currentCollectionMinor: amountMinorSchema,
+    selectedWeeks: z.array(z.object({
+      weeks: z.number().int().positive().max(1000),
+      amountMinor: amountMinorSchema,
+    }).strict()).max(1000),
+    fullSeasonMinor: amountMinorSchema,
+  }).strict(),
+}).strict();
+
+const accountPaymentParticipantsV4Base = z.object({
+  contractVersion: z.literal(ACCOUNT_PAYMENT_PARTICIPANTS_CONTRACT_V4),
+  organizationId: z.number().int().positive().max(2_147_483_647),
+  leagueId: z.number().int().positive().max(2_147_483_647),
+  payerBowlerId: payerBowlerIdSchema,
+}).strict();
+
+/** Discovery response keeps V3 untouched. Legacy clients continue to use its
+ * original participant endpoint and receipt semantics. */
+const legacyPaymentParticipantsV4Schema = accountPaymentParticipantsV4Base.extend({
+  accountingMode: z.literal("legacy_roster_v3"),
+}).strict();
+
+const confirmedAccountPaymentParticipantsV4Schema = accountPaymentParticipantsV4Base.extend({
+  accountingMode: z.literal("confirmed_account_v4"),
+  paymentMode: z.enum(["weekly", "upfront"]),
+  recipients: z.array(accountPaymentFundingParticipantV4Schema).min(1).max(200),
+}).strict();
+
+export const accountPaymentParticipantsResponseV4Schema = z.discriminatedUnion("accountingMode", [
+  legacyPaymentParticipantsV4Schema,
+  confirmedAccountPaymentParticipantsV4Schema,
+]).superRefine((response, context) => {
+  if (response.accountingMode === "legacy_roster_v3") return;
+  const recipientIds = response.recipients.map((recipient) => recipient.bowlerId);
+  if (new Set(recipientIds).size !== recipientIds.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["recipients"], message: "Each funding recipient may appear only once" });
+  }
+  const selfRecipients = response.recipients.filter((recipient) => recipient.role === "self");
+  if (selfRecipients.length > 1 || (selfRecipients.length === 1 && selfRecipients[0]?.bowlerId !== response.payerBowlerId)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["recipients"], message: "Self recipient, when present, must identify the payer" });
+  }
+  for (const [index, recipient] of response.recipients.entries()) {
+    if ((recipient.role === "self") !== (recipient.bowlerId === response.payerBowlerId)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["recipients", index, "role"], message: "Recipient role does not match the authenticated payer" });
+    }
+  }
+});
 
 /**
  * Each selected recipient gets an immutable portion of the one combined
@@ -19,7 +76,18 @@ const quoteFingerprintSchema = z.string().regex(/^lvaccountfundquote:v4:[0-9a-f]
 export const accountPaymentFundingSelectionV4Schema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("explicit_amount"), amountMinor: positiveAmountMinorSchema }).strict(),
   z.object({ kind: z.literal("confirmed_debt_balance") }).strict(),
-  z.object({ kind: z.literal("forecast_collection_target") }).strict(),
+  z.object({
+    kind: z.literal("forecast_collection_target"),
+    scope: z.enum(["current_collection", "selected_weeks", "full_season"]).default("current_collection"),
+    weeks: z.number().int().positive().max(1000).optional(),
+  }).strict().superRefine((selection, context) => {
+    if (selection.scope === "selected_weeks" && selection.weeks === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["weeks"], message: "selected_weeks requires a week count" });
+    }
+    if (selection.scope !== "selected_weeks" && selection.weeks !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["weeks"], message: "weeks is only valid for selected_weeks" });
+    }
+  }),
 ]);
 
 export const accountPaymentFundingQuoteRequestV4Schema = z.object({
@@ -126,6 +194,8 @@ export const accountPaymentFundingChargeRequestV4Schema = accountPaymentFundingQ
 });
 
 export type AccountPaymentFundingSelectionV4 = z.infer<typeof accountPaymentFundingSelectionV4Schema>;
+export type AccountPaymentFundingParticipantV4 = z.infer<typeof accountPaymentFundingParticipantV4Schema>;
+export type AccountPaymentParticipantsResponseV4 = z.infer<typeof accountPaymentParticipantsResponseV4Schema>;
 export type AccountPaymentFundingRecipientSelectionV4 = z.infer<typeof accountPaymentFundingQuoteRequestV4Schema>["recipients"][number];
 export type AccountPaymentFundingQuoteRecipientResponseV4 = z.infer<typeof accountPaymentFundingQuoteRecipientResponseV4Schema>;
 export type AccountPaymentFundingQuoteRequestV4 = z.infer<typeof accountPaymentFundingQuoteRequestV4Schema>;
