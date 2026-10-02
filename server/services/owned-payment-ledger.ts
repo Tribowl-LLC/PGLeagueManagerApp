@@ -97,6 +97,37 @@ export interface OwnedPaymentFifoApplicationPlanRow {
   amountMinor: number;
 }
 
+export function finalizedLegacyProviderItemsMatchSnapshot(
+  snapshotItems: readonly { allocationIndex: number; obligationId: string; amountMinor: number; state: string }[],
+  snapshotAllocations: readonly { allocationIndex: number; obligationId: string; amountMinor: number }[],
+): boolean {
+  if (snapshotItems.length !== snapshotAllocations.length) return false;
+  const allocationsByIndex = new Map(snapshotAllocations.map((item) => [item.allocationIndex, item]));
+  if (allocationsByIndex.size !== snapshotAllocations.length) return false;
+  return snapshotItems.every((item) => {
+    const expected = allocationsByIndex.get(item.allocationIndex);
+    return item.state === "finalized" && expected?.obligationId === item.obligationId && expected.amountMinor === item.amountMinor;
+  });
+}
+
+export function legacyProviderRecipientItemsMatchSnapshot(input: {
+  snapshotItems: readonly { allocationIndex: number; obligationId: string; amountMinor: number; state: string }[];
+  snapshotAllocations: readonly { allocationIndex: number; obligationId: string; bowlerId: number; amountMinor: number }[];
+  creditedBowlerId: number;
+  authorizationItemCount: number;
+  authorizationItems: readonly { allocationIndex: number; amountMinor: number; snapshotFingerprint: string }[];
+  snapshotFingerprint: string;
+}): boolean {
+  if (!finalizedLegacyProviderItemsMatchSnapshot(input.snapshotItems, input.snapshotAllocations)) return false;
+  const recipientAllocations = input.snapshotAllocations.filter((item) => item.bowlerId === input.creditedBowlerId)
+    .sort((left, right) => left.allocationIndex - right.allocationIndex);
+  return recipientAllocations.length === input.authorizationItemCount
+    && input.authorizationItems.length === input.authorizationItemCount
+    && input.authorizationItems.every((item, index) => item.snapshotFingerprint === input.snapshotFingerprint
+      && item.allocationIndex === recipientAllocations[index]?.allocationIndex
+      && item.amountMinor === recipientAllocations[index]?.amountMinor);
+}
+
 /** Plan one owner's source union against their oldest confirmed debts. Input
  * debt rows may arrive from independent readers; this canonical ordering is
  * the shared rule for provider charges and worksheet receipts. */
@@ -670,7 +701,7 @@ export async function recordOwnedFundingInTransaction(
         eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
         eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
       ));
-    if (authorizedItems.length !== (input.authorizationItemCount ?? 0) || authorizedItems.some((item) => item.state !== "finalized")) {
+    if (authorizedItems.some((item) => item.state !== "finalized")) {
       throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_ITEMS_INVALID");
     }
     type SnapshotAllocation = { allocationIndex?: number; obligationId?: string; bowlerId?: number; payerBowlerId?: number; amountMinor?: number };
@@ -771,14 +802,14 @@ export async function recordOwnedFundingInTransaction(
     } else {
       throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
     }
-    const expectedRecipientAllocations = ownerAllocations.filter((item) => item.bowlerId === input.creditedBowlerId)
-      .sort((left, right) => left.allocationIndex - right.allocationIndex);
-    if (expectedRecipientAllocations.length !== authorizationItems.length
-      || expectedRecipientAllocations.reduce((sum, item) => sum + item.amountMinor, 0) !== input.amountMinor
-      || authorizationItems.some((item, index) => item.snapshotFingerprint !== snapshotRow.snapshotFingerprint
-        || item.allocationIndex !== expectedRecipientAllocations[index]?.allocationIndex
-        || item.amountMinor !== expectedRecipientAllocations[index]?.amountMinor
-        || authorizedItems.find((candidate) => candidate.allocationIndex === item.allocationIndex)?.amountMinor !== item.amountMinor)) {
+    if (!legacyProviderRecipientItemsMatchSnapshot({
+      snapshotItems: authorizedItems,
+      snapshotAllocations: ownerAllocations,
+      creditedBowlerId: input.creditedBowlerId,
+      authorizationItemCount: input.authorizationItemCount ?? 0,
+      authorizationItems,
+      snapshotFingerprint: snapshotRow.snapshotFingerprint,
+    }) || authorizationItems.reduce((sum, item) => sum + item.amountMinor, 0) !== input.amountMinor) {
       throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_ITEMS_INVALID");
     }
   }

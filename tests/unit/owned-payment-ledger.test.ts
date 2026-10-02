@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isOccurrenceConfirmedInOwnedLedger, planOwnedFundingFifo, type OwnedConfirmedObligation, type OwnedPaymentFundingLot } from "../../server/services/owned-payment-ledger.js";
+import { legacyProviderRecipientItemsMatchSnapshot, isOccurrenceConfirmedInOwnedLedger, planOwnedFundingFifo, type OwnedConfirmedObligation, type OwnedPaymentFundingLot } from "../../server/services/owned-payment-ledger.js";
 
 function debt(overrides: Partial<OwnedConfirmedObligation> & Pick<OwnedConfirmedObligation, "obligationId" | "dueAt" | "outstandingMinor">): OwnedConfirmedObligation {
   return {
@@ -76,5 +76,38 @@ describe("owned payment account FIFO planning", () => {
       lot: expect.objectContaining({ fundingId: "released-receipt" }),
       amountMinor: 200,
     })]);
+  });
+});
+
+describe("legacy provider funding recipient evidence", () => {
+  it("validates all finalized tender items while allowing each recipient to authorize only their subset", () => {
+    const snapshotFingerprint = `lvroster:v3:${"a".repeat(64)}`;
+    const tenderItems = [
+      { allocationIndex: 0, obligationId: "obligation-a", amountMinor: 500, state: "finalized" },
+      { allocationIndex: 1, obligationId: "obligation-b", amountMinor: 700, state: "finalized" },
+    ];
+    const reconstructed = [
+      { allocationIndex: 0, obligationId: "obligation-a", bowlerId: 11, amountMinor: 500 },
+      { allocationIndex: 1, obligationId: "obligation-b", bowlerId: 22, amountMinor: 700 },
+    ];
+
+    for (const [creditedBowlerId, allocationIndex, amountMinor] of [[11, 0, 500], [22, 1, 700]]) {
+      expect(legacyProviderRecipientItemsMatchSnapshot({
+        snapshotItems: tenderItems,
+        snapshotAllocations: reconstructed,
+        creditedBowlerId,
+        authorizationItemCount: 1,
+        authorizationItems: [{ allocationIndex, amountMinor, snapshotFingerprint }],
+        snapshotFingerprint,
+      })).toBe(true);
+    }
+    expect(legacyProviderRecipientItemsMatchSnapshot({
+      snapshotItems: tenderItems.map((item, index) => ({ ...item, state: index === 0 ? "reserved" : item.state })),
+      snapshotAllocations: reconstructed,
+      creditedBowlerId: 11,
+      authorizationItemCount: 1,
+      authorizationItems: [{ allocationIndex: 0, amountMinor: 500, snapshotFingerprint }],
+      snapshotFingerprint,
+    })).toBe(false);
   });
 });
