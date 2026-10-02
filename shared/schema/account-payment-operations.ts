@@ -20,7 +20,8 @@ import { paymentOperations } from "./payment-operations";
 import { users } from "./users";
 
 export const ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_VERSION = 4 as const;
-export const ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_KINDS = ["interactive_funding"] as const;
+export const ACCOUNT_STANDING_FUNDING_SNAPSHOT_VERSION = 5 as const;
+export const ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_KINDS = ["interactive_funding", "standing_funding"] as const;
 export type AccountPaymentOperationSnapshotKind = (typeof ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_KINDS)[number];
 
 export const ACCOUNT_PAYMENT_OPERATION_SOURCE_KINDS = ["new_card", "saved_card", "wallet"] as const;
@@ -51,6 +52,55 @@ export interface AccountPaymentRecipientAuthorizationEvidenceV4 {
   };
 }
 
+/** Per-recipient basis for one standing-autopay cutoff. It records the gross
+ * collection target and the credit available when the immutable charge was
+ * prepared; no obligation or future-week reservation is implied. */
+export interface AccountStandingFundingRecipientEvidenceV5 {
+  recipientBowlerId: number;
+  role: "self" | "partner";
+  paymentLinkId: number | null;
+  linkFingerprint: string | null;
+  target: {
+    confirmedDebtMinor: number;
+    olderConfirmedDebtMinor: number;
+    availableCreditMinor: number;
+    creditAppliedToOlderDebtMinor: number;
+    olderConfirmedDebtRemainingMinor: number;
+    olderDebtReviewRequired: boolean;
+    currentDebtReviewRequired: boolean;
+    currentCollectionTargetMinor: number;
+    forecastCollectionTargetMinor: number;
+    newChargeMinor: number;
+  };
+}
+
+/** Exact consent and cutoff-group evidence for an unattended account funding
+ * operation. The saved payment source remains solely on the versioned
+ * standing consent; this JSON never contains card/customer identifiers. */
+export interface AccountStandingFundingEvidenceV5 {
+  consentId: string;
+  consentVersion: number;
+  consentFingerprint: string;
+  bindingEvidenceFingerprint: string;
+  cutoffAt: string;
+  collectionMode: "weekly" | "double_pay";
+  triggerOccurrenceId: string;
+  triggerOccurrenceRevision: number;
+  pairedOccurrenceId: string | null;
+  collectionGroupId: string | null;
+  collectionGroupRevision: number | null;
+  collectionGroupFingerprint: string | null;
+  triggerMemberId: string | null;
+  pairedMemberId: string | null;
+  /** Forecast occurrence identities used only to reproduce this charge
+   * target. They do not reserve or settle those future responsibilities. */
+  collectionRequirementOccurrenceIds: string[];
+}
+
+export type AccountPaymentOperationRecipientEvidence =
+  | AccountPaymentRecipientAuthorizationEvidenceV4
+  | AccountStandingFundingRecipientEvidenceV5;
+
 /**
  * Immutable provider request evidence for an adopted-mode account funding
  * charge. One provider operation and tender may have multiple independently
@@ -66,19 +116,20 @@ export const accountPaymentOperationSnapshots = pgTable("account_payment_operati
   payerBowlerId: integer("payer_bowler_id").notNull(),
   amountMinor: integer("amount_minor").notNull(),
   fundingPortions: jsonb("funding_portions").$type<AccountPaymentFundingPortionV4[]>().notNull(),
-  recipientEvidence: jsonb("recipient_evidence").$type<AccountPaymentRecipientAuthorizationEvidenceV4[]>().notNull(),
+  recipientEvidence: jsonb("recipient_evidence").$type<AccountPaymentOperationRecipientEvidence[]>().notNull(),
+  standingEvidence: jsonb("standing_evidence").$type<AccountStandingFundingEvidenceV5 | null>(),
   currency: varchar("currency", { length: 3 }).notNull().default("USD"),
   providerName: varchar("provider_name", { length: 32 }).notNull(),
   locationId: integer("location_id"),
   providerLocationId: varchar("provider_location_id", { length: 255 }),
   authorizingUserId: integer("authorizing_user_id").notNull(),
-  requestKind: text("request_kind", { enum: ["direct"] }).notNull().default("direct"),
-  sourceKind: text("source_kind", { enum: ACCOUNT_PAYMENT_OPERATION_SOURCE_KINDS }).notNull(),
-  encryptedSourceId: text("encrypted_source_id").notNull(),
+  requestKind: text("request_kind", { enum: ["direct", "standing"] }).notNull().default("direct"),
+  sourceKind: text("source_kind", { enum: ACCOUNT_PAYMENT_OPERATION_SOURCE_KINDS }),
+  encryptedSourceId: text("encrypted_source_id"),
   encryptedCustomerId: text("encrypted_customer_id"),
   encryptedBuyerEmail: text("encrypted_buyer_email"),
   storeCard: boolean("store_card").notNull().default(false),
-  quoteFingerprint: varchar("quote_fingerprint", { length: 96 }).notNull(),
+  quoteFingerprint: varchar("quote_fingerprint", { length: 96 }),
   snapshotFingerprint: varchar("snapshot_fingerprint", { length: 96 }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
 }, (table) => ({
@@ -111,7 +162,7 @@ export const accountPaymentOperationSnapshots = pgTable("account_payment_operati
   }).onDelete("restrict"),
   amountCheck: check(
     "account_payment_operation_snapshots_amount_check",
-    sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD' AND ${table.snapshotVersion} = ${sql.raw(String(ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_VERSION))} AND ${table.snapshotKind} = 'interactive_funding' AND ${table.requestKind} = 'direct' AND jsonb_typeof(${table.fundingPortions}) = 'array' AND jsonb_array_length(${table.fundingPortions}) > 0 AND jsonb_typeof(${table.recipientEvidence}) = 'array' AND jsonb_array_length(${table.recipientEvidence}) > 0`,
+    sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD' AND jsonb_typeof(${table.fundingPortions}) = 'array' AND jsonb_array_length(${table.fundingPortions}) > 0 AND jsonb_typeof(${table.recipientEvidence}) = 'array' AND jsonb_array_length(${table.recipientEvidence}) > 0 AND (( ${table.snapshotVersion} = ${sql.raw(String(ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_VERSION))} AND ${table.snapshotKind} = 'interactive_funding' AND ${table.requestKind} = 'direct' AND ${table.standingEvidence} IS NULL ) OR ( ${table.snapshotVersion} = ${sql.raw(String(ACCOUNT_STANDING_FUNDING_SNAPSHOT_VERSION))} AND ${table.snapshotKind} = 'standing_funding' AND ${table.requestKind} = 'standing' AND ${table.standingEvidence} IS NOT NULL ))`,
   ),
   provenanceCheck: check(
     "account_payment_operation_snapshots_provenance_check",
@@ -119,15 +170,15 @@ export const accountPaymentOperationSnapshots = pgTable("account_payment_operati
   ),
   sourceCheck: check(
     "account_payment_operation_snapshots_source_check",
-    sql`length(btrim(${table.encryptedSourceId})) > 0 AND (${table.sourceKind} <> 'wallet' OR ${table.storeCard} = false)`,
+    sql`((${table.snapshotKind} = 'interactive_funding' AND ${table.sourceKind} IS NOT NULL AND length(btrim(${table.encryptedSourceId})) > 0 AND (${table.sourceKind} <> 'wallet' OR ${table.storeCard} = false)) OR (${table.snapshotKind} = 'standing_funding' AND ${table.sourceKind} IS NULL AND ${table.encryptedSourceId} IS NULL AND ${table.encryptedCustomerId} IS NULL AND ${table.encryptedBuyerEmail} IS NULL AND ${table.storeCard} = false))`,
   ),
   quoteFingerprintCheck: check(
     "account_payment_operation_snapshots_quote_fingerprint_check",
-    sql`${table.quoteFingerprint} ~ '^lvaccountfundquote:v4:[0-9a-f]{64}$'`,
+    sql`(${table.snapshotKind} = 'interactive_funding' AND ${table.quoteFingerprint} ~ '^lvaccountfundquote:v4:[0-9a-f]{64}$') OR (${table.snapshotKind} = 'standing_funding' AND ${table.quoteFingerprint} IS NULL)`,
   ),
   snapshotFingerprintCheck: check(
     "account_payment_operation_snapshots_fingerprint_check",
-    sql`${table.snapshotFingerprint} ~ '^lvaccountfunding:v4:[0-9a-f]{64}$'`,
+    sql`(${table.snapshotKind} = 'interactive_funding' AND ${table.snapshotFingerprint} ~ '^lvaccountfunding:v4:[0-9a-f]{64}$') OR (${table.snapshotKind} = 'standing_funding' AND ${table.snapshotFingerprint} ~ '^lvstandingfunding:v1:[0-9a-f]{64}$')`,
   ),
   leagueLookupIdx: index("account_payment_operation_snapshots_league_idx").on(table.organizationId, table.leagueId, table.createdAt.desc()),
 }));

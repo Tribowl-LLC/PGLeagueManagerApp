@@ -213,6 +213,7 @@ export function encryptAccountPaymentOperationSnapshot(
     amountMinor: normalized.amountMinor,
     fundingPortions: normalized.fundingPortions,
     recipientEvidence: normalized.recipientEvidence,
+    standingEvidence: null,
     currency: normalized.currency,
     providerName: normalized.providerName,
     locationId: normalized.locationId,
@@ -257,6 +258,10 @@ export function reconstructAccountPaymentOperationSnapshot(input: {
     || stored.currency !== operation.currency
     || stored.providerName !== operation.providerName
     || stored.authorizingUserId !== operation.authorizingUserId
+    || stored.sourceKind === null
+    || stored.encryptedSourceId === null
+    || stored.quoteFingerprint === null
+    || stored.standingEvidence !== null
   ) {
     throw new AccountPaymentOperationSnapshotValidationError("account funding snapshot provenance does not match its payment operation");
   }

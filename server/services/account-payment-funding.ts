@@ -40,6 +40,7 @@ import {
   resolveParticipantsInTransaction,
 } from "./interactive-partner-payment.js";
 import { buildOneTimePaymentOptions } from "@shared/one-time-payment-options";
+import { effectiveCollectionPrefixMinor } from "./account-payment-funding-targets.js";
 import {
   readOwnedAccountBalancesInTransaction,
   readOwnedLedgerAdoptionInTransaction,
@@ -174,21 +175,27 @@ async function transactionNow(tx: PaymentOperationTransaction): Promise<string> 
   return normalizeInteractivePaymentTransactionTimestamp((result as { rows?: Array<{ now?: unknown }> }).rows?.[0]?.now);
 }
 
-function forecastProjection(input: {
+export function forecastProjection(input: {
   candidates: FifoPaymentCandidate[];
   confirmedObligationIds: ReadonlySet<string>;
   confirmedDebtMinor: number;
   paymentMode: "weekly" | "upfront";
   now: string;
+  forecastOccurrenceIds?: ReadonlySet<string>;
 }) {
   const orderedCandidates = [...input.candidates].sort(comparePublishedCollectionOrder);
-  const forecasts = orderedCandidates.filter((candidate) => !input.confirmedObligationIds.has(candidate.id));
+  const forecasts = orderedCandidates.filter((candidate) => !input.confirmedObligationIds.has(candidate.id)
+    && (!input.forecastOccurrenceIds || input.forecastOccurrenceIds.has(candidate.occurrenceId)));
   if (forecasts.some((candidate) => candidate.reviewRequired)) {
     throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Forecast payment evidence requires staff review", 503);
   }
   const forecastBalanceMinor = forecasts.reduce((sum, candidate) => sum + candidate.outstandingMinor, 0);
   const totalTargetMinor = input.confirmedDebtMinor + forecastBalanceMinor;
-  const options = buildOneTimePaymentOptions(orderedCandidates, totalTargetMinor);
+  const projectionCandidates = input.forecastOccurrenceIds
+    ? orderedCandidates.filter((candidate) => input.confirmedObligationIds.has(candidate.id)
+      || input.forecastOccurrenceIds?.has(candidate.occurrenceId))
+    : orderedCandidates;
+  const options = buildOneTimePaymentOptions(projectionCandidates, totalTargetMinor);
   const dueNowForecastMinor = effectiveCollectionPrefixMinor(forecasts, input.now);
   const currentCollectionMinor = input.paymentMode === "upfront"
     ? totalTargetMinor
@@ -200,17 +207,6 @@ function forecastProjection(input: {
     fullSeasonMinor: totalTargetMinor,
     forecastBalanceMinor,
   };
-}
-
-function effectiveCollectionPrefixMinor(candidates: FifoPaymentCandidate[], now: string): number {
-  const asOf = new Date(now).getTime();
-  let lastDueIndex = -1;
-  candidates.forEach((row, index) => {
-    if ((row.outstandingMinor > 0 || row.reservedMinor > 0)
-      && new Date(row.effectiveCollectionAt).getTime() <= asOf) lastDueIndex = index;
-  });
-  if (lastDueIndex < 0) return 0;
-  return candidates.slice(0, lastDueIndex + 1).reduce((sum, row) => sum + row.outstandingMinor, 0);
 }
 
 async function accountContextInTransaction(

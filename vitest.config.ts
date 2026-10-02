@@ -132,6 +132,7 @@ const UNIT_NO_DB = [
   'tests/unit/payment-disputes-routes.test.ts',
   'tests/unit/payment-operation-idempotency.test.ts',
   'tests/unit/account-payment-funding-v4.test.ts',
+  'tests/unit/account-standing-funding-v5.test.ts',
   'tests/unit/financials-f5-route.test.ts',
   'tests/unit/payment-operation-wake-scheduler.test.ts',
   'tests/unit/payment-error-telemetry.test.ts',
