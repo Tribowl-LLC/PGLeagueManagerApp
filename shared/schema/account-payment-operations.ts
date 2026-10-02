@@ -162,7 +162,7 @@ export const accountPaymentOperationSnapshots = pgTable("account_payment_operati
   }).onDelete("restrict"),
   amountCheck: check(
     "account_payment_operation_snapshots_amount_check",
-    sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD' AND jsonb_typeof(${table.fundingPortions}) = 'array' AND jsonb_array_length(${table.fundingPortions}) > 0 AND jsonb_typeof(${table.recipientEvidence}) = 'array' AND jsonb_array_length(${table.recipientEvidence}) > 0 AND (( ${table.snapshotVersion} = ${sql.raw(String(ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_VERSION))} AND ${table.snapshotKind} = 'interactive_funding' AND ${table.requestKind} = 'direct' AND ${table.standingEvidence} IS NULL ) OR ( ${table.snapshotVersion} = ${sql.raw(String(ACCOUNT_STANDING_FUNDING_SNAPSHOT_VERSION))} AND ${table.snapshotKind} = 'standing_funding' AND ${table.requestKind} = 'standing' AND ${table.standingEvidence} IS NOT NULL ))`,
+    sql`${table.amountMinor} > 0 AND ${table.currency} = 'USD' AND jsonb_typeof(${table.fundingPortions}) = 'array' AND jsonb_array_length(${table.fundingPortions}) > 0 AND jsonb_typeof(${table.recipientEvidence}) = 'array' AND jsonb_array_length(${table.recipientEvidence}) > 0 AND (( ${table.snapshotVersion} = ${sql.raw(String(ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_VERSION))} AND ${table.snapshotKind} = 'interactive_funding' AND ${table.requestKind} = 'direct' AND ${table.standingEvidence} IS NULL ) OR ( ${table.snapshotVersion} = ${sql.raw(String(ACCOUNT_STANDING_FUNDING_SNAPSHOT_VERSION))} AND ${table.snapshotKind} = 'standing_funding' AND ${table.requestKind} = 'standing' AND jsonb_typeof(${table.standingEvidence}) = 'object' ))`,
   ),
   provenanceCheck: check(
     "account_payment_operation_snapshots_provenance_check",
@@ -170,11 +170,11 @@ export const accountPaymentOperationSnapshots = pgTable("account_payment_operati
   ),
   sourceCheck: check(
     "account_payment_operation_snapshots_source_check",
-    sql`((${table.snapshotKind} = 'interactive_funding' AND ${table.sourceKind} IS NOT NULL AND length(btrim(${table.encryptedSourceId})) > 0 AND (${table.sourceKind} <> 'wallet' OR ${table.storeCard} = false)) OR (${table.snapshotKind} = 'standing_funding' AND ${table.sourceKind} IS NULL AND ${table.encryptedSourceId} IS NULL AND ${table.encryptedCustomerId} IS NULL AND ${table.encryptedBuyerEmail} IS NULL AND ${table.storeCard} = false))`,
+    sql`((${table.snapshotKind} = 'interactive_funding' AND ${table.sourceKind} IS NOT NULL AND ${table.encryptedSourceId} IS NOT NULL AND length(btrim(${table.encryptedSourceId})) > 0 AND (${table.sourceKind} <> 'wallet' OR ${table.storeCard} = false)) OR (${table.snapshotKind} = 'standing_funding' AND ${table.sourceKind} IS NULL AND ${table.encryptedSourceId} IS NULL AND ${table.encryptedCustomerId} IS NULL AND ${table.encryptedBuyerEmail} IS NULL AND ${table.storeCard} = false))`,
   ),
   quoteFingerprintCheck: check(
     "account_payment_operation_snapshots_quote_fingerprint_check",
-    sql`(${table.snapshotKind} = 'interactive_funding' AND ${table.quoteFingerprint} ~ '^lvaccountfundquote:v4:[0-9a-f]{64}$') OR (${table.snapshotKind} = 'standing_funding' AND ${table.quoteFingerprint} IS NULL)`,
+    sql`(${table.snapshotKind} = 'interactive_funding' AND ${table.quoteFingerprint} IS NOT NULL AND ${table.quoteFingerprint} ~ '^lvaccountfundquote:v4:[0-9a-f]{64}$') OR (${table.snapshotKind} = 'standing_funding' AND ${table.quoteFingerprint} IS NULL)`,
   ),
   snapshotFingerprintCheck: check(
     "account_payment_operation_snapshots_fingerprint_check",
