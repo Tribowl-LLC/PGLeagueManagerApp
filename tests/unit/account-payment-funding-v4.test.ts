@@ -30,7 +30,7 @@ function snapshot(overrides: Partial<AccountPaymentOperationSnapshotInput> = {})
     payerBowlerId: 101,
     amountMinor: 1_250,
     fundingPortions: [{ portionIndex: 0, creditedBowlerId: 101, amountMinor: 1_250 }],
-    recipientEvidence: [{ recipientBowlerId: 101, role: "self", paymentLinkId: null, linkFingerprint: null }],
+    recipientEvidence: [{ recipientBowlerId: 101, role: "self", paymentLinkId: null, linkFingerprint: null, selection: { kind: "explicit_amount", amountMinor: 1_250 } }],
     currency: "USD",
     providerName: "square",
     providerIdempotencyKey: "lv-op1-ic-account-funding-123456",
@@ -67,6 +67,7 @@ function partnerEvidence(recipientBowlerId = 202) {
     role: "partner" as const,
     paymentLinkId: 77,
     linkFingerprint: acceptedPartnerLinkFingerprint,
+    selection: { kind: "explicit_amount", amountMinor: 800 } as const,
   };
 }
 
@@ -78,7 +79,7 @@ function twoRecipientSnapshot(): AccountPaymentOperationSnapshotInput {
       { portionIndex: 1, creditedBowlerId: 202, amountMinor: 800 },
     ],
     recipientEvidence: [
-      { recipientBowlerId: 101, role: "self", paymentLinkId: null, linkFingerprint: null },
+      { recipientBowlerId: 101, role: "self", paymentLinkId: null, linkFingerprint: null, selection: { kind: "explicit_amount", amountMinor: 700 } },
       partnerEvidence(),
     ],
   });
@@ -91,6 +92,7 @@ function quoteRecipient(input: {
   selection: { kind: "explicit_amount"; amountMinor: number } | { kind: "confirmed_debt_balance" } | { kind: "forecast_collection_target"; scope?: "current_collection" | "selected_weeks" | "full_season"; weeks?: number };
   confirmedDebtMinor: number;
   availableCreditMinor: number;
+  collectionTargetMinor: number;
   forecastCollectionTargetMinor: number;
   providerChargeAmountMinor: number;
 }) {
@@ -145,18 +147,28 @@ describe("account payment funding V4 contract and operation snapshots", () => {
       selection: { kind: "explicit_amount", amountMinor: 1_250 },
       confirmedDebtMinor: 3_000,
       availableCreditMinor: 900,
+      collectionTargetMinor: 0,
       forecastCollectionTargetMinor: 2_500,
     })).toBe(1_250);
     expect(resolveAccountPaymentFundingChargeAmountV4({
       selection: { kind: "confirmed_debt_balance" },
       confirmedDebtMinor: 3_000,
       availableCreditMinor: 900,
+      collectionTargetMinor: 3_000,
       forecastCollectionTargetMinor: 2_500,
     })).toBe(2_100);
     expect(resolveAccountPaymentFundingChargeAmountV4({
       selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 2 },
+      confirmedDebtMinor: 25,
+      availableCreditMinor: 0,
+      collectionTargetMinor: 25,
+      forecastCollectionTargetMinor: 0,
+    })).toBe(25);
+    expect(resolveAccountPaymentFundingChargeAmountV4({
+      selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 2 },
       confirmedDebtMinor: 3_000,
-      availableCreditMinor: 3_000,
+      availableCreditMinor: 5_500,
+      collectionTargetMinor: 5_500,
       forecastCollectionTargetMinor: 2_500,
     })).toBe(0);
   });
@@ -176,6 +188,7 @@ describe("account payment funding V4 contract and operation snapshots", () => {
           selection: { kind: "explicit_amount", amountMinor: 700 },
           confirmedDebtMinor: 3_000,
           availableCreditMinor: 900,
+          collectionTargetMinor: 0,
           forecastCollectionTargetMinor: 2_500,
           providerChargeAmountMinor: 700,
         }),
@@ -186,7 +199,8 @@ describe("account payment funding V4 contract and operation snapshots", () => {
           selection: { kind: "confirmed_debt_balance" },
           confirmedDebtMinor: 1_500,
           availableCreditMinor: 300,
-          forecastCollectionTargetMinor: 2_000,
+          collectionTargetMinor: 1_500,
+          forecastCollectionTargetMinor: 0,
           providerChargeAmountMinor: 1_200,
         }),
       ],
@@ -319,8 +333,8 @@ describe("account payment funding V4 contract and operation snapshots", () => {
       { fundingPortions: [{ portionIndex: 1, creditedBowlerId: 101, amountMinor: 700 }, partnerPortion] },
       { recipientEvidence: [payerEvidence] },
       { recipientEvidence: [payerEvidence, partnerEvidence(303)] },
-      { recipientEvidence: [{ recipientBowlerId: 202, role: "partner", paymentLinkId: null, linkFingerprint: null }] },
-      { recipientEvidence: [{ recipientBowlerId: 202, role: "self", paymentLinkId: null, linkFingerprint: null }] },
+      { recipientEvidence: [{ recipientBowlerId: 202, role: "partner", paymentLinkId: null, linkFingerprint: null, selection: { kind: "explicit_amount", amountMinor: 800 } }] },
+      { recipientEvidence: [{ recipientBowlerId: 202, role: "self", paymentLinkId: null, linkFingerprint: null, selection: { kind: "explicit_amount", amountMinor: 800 } }] },
     ];
     for (const mutation of mutations) {
       expect(() => encryptAccountPaymentOperationSnapshot({ ...value, ...mutation })).toThrow();

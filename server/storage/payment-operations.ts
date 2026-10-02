@@ -1385,6 +1385,14 @@ export async function getAccountPaymentOperationSnapshotForOrganization(
   return loadAccountPaymentOperationSnapshot(db, operation);
 }
 
+/** Transaction-bound V4 snapshot read used by idempotent request replay. */
+export async function getAccountPaymentOperationSnapshotInTransaction(
+  transaction: PaymentOperationTransaction,
+  operation: PaymentOperation,
+): Promise<AccountPaymentOperationExecutionSnapshot | undefined> {
+  return loadAccountPaymentOperationSnapshot(transaction, operation);
+}
+
 export async function getPaymentOperationForOrganization(
   organizationId: number,
   operationId: string,
@@ -2446,6 +2454,31 @@ function rosterWebhookPaymentRows(
   }];
 }
 
+function accountWebhookPaymentRows(
+  operation: PaymentOperation,
+  snapshot: AccountPaymentOperationExecutionSnapshot,
+  input: ProviderWebhookCompletionEvidence,
+): PaymentOperationLinkedPaymentInput[] {
+  return [{
+    allocationIndex: 0,
+    values: {
+      organizationId: input.organizationId,
+      bowlerId: snapshot.payerBowlerId,
+      leagueId: snapshot.leagueId,
+      amount: operation.amountMinor,
+      status: "paid" as const,
+      type: providerNameToPaymentType(snapshot.providerName),
+      providerPaymentId: input.providerPaymentId,
+      receiptUrl: input.receiptUrl ?? undefined,
+      receiptNumber: input.receiptNumber ?? undefined,
+      receiptEmailMissing: snapshot.providerName === "square" && snapshot.buyerEmail === null,
+      paidByUserId: operation.authorizingUserId,
+      idempotencyKey: operation.id,
+      notes: `Account funding (${snapshot.fundingPortions.length} recipient${snapshot.fundingPortions.length === 1 ? "" : "s"})`,
+    },
+  }];
+}
+
 /**
  * Conclusive signed provider evidence uses the same local invariants and row
  * insertion primitive as executor finalization, but never calls a provider.
@@ -2508,14 +2541,23 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
 
   let rows: PaymentOperationLinkedPaymentInput[] = [];
   if (operation.operationType === "interactive_charge") {
-    const snapshot = await loadRosterOperationSnapshot(tx, operation);
-    if (
-      !snapshot
-      || snapshot.locationId !== input.locationId
-      || (snapshot.providerLocationId !== null
-        && snapshot.providerLocationId !== input.providerLocationId)
-    ) throw new PaymentOperationImmutableMismatchError();
-    rows = rosterWebhookPaymentRows(operation, snapshot, input);
+    const accountSnapshot = await loadAccountPaymentOperationSnapshot(tx, operation);
+    if (accountSnapshot) {
+      if (accountSnapshot.locationId !== input.locationId
+        || (accountSnapshot.providerLocationId !== null && accountSnapshot.providerLocationId !== input.providerLocationId)) {
+        throw new PaymentOperationImmutableMismatchError();
+      }
+      rows = accountWebhookPaymentRows(operation, accountSnapshot, input);
+    } else {
+      const snapshot = await loadRosterOperationSnapshot(tx, operation);
+      if (
+        !snapshot
+        || snapshot.locationId !== input.locationId
+        || (snapshot.providerLocationId !== null
+          && snapshot.providerLocationId !== input.providerLocationId)
+      ) throw new PaymentOperationImmutableMismatchError();
+      rows = rosterWebhookPaymentRows(operation, snapshot, input);
+    }
   } else if (operation.operationType === "standing_autopay_charge") {
     const [binding] = await tx.select({ providerLocationId: paymentOperationStandingAutopayBindings.providerLocationId, collectionMode: paymentOperationStandingAutopayBindings.collectionMode, payerBowlerId: autopayConsents.payerBowlerId }).from(paymentOperationStandingAutopayBindings).innerJoin(autopayConsents, and(
       eq(autopayConsents.id, paymentOperationStandingAutopayBindings.consentId),

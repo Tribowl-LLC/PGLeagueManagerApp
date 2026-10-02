@@ -17,6 +17,10 @@ import {
   interactivePaymentChargeRequestV3Schema,
   interactivePaymentQuoteRequestV3Schema,
 } from "@shared/interactive-payment-v3-contract";
+import {
+  accountPaymentFundingChargeRequestV4Schema,
+  accountPaymentFundingQuoteRequestV4Schema,
+} from "@shared/account-payment-v4-contract";
 import { hasAccessToLeague, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague, requireOrganizationAccess } from "../utils/access-control.js";
 import { canUserPayForBowler } from "../utils/bowler-payment-authz.js";
 import { sendError, sendSuccess } from "../utils/api.js";
@@ -47,6 +51,11 @@ import {
   quoteInteractivePartnerPayments,
   readInteractivePaymentParticipants,
 } from "../services/interactive-partner-payment.js";
+import {
+  chargeAccountPaymentFundingV4,
+  quoteAccountPaymentFundingV4,
+  readInteractivePaymentParticipantsV4,
+} from "../services/account-payment-funding.js";
 import {
   recoverRosterPaymentOperation,
   recoverRosterPaymentOperationByRequestKey,
@@ -355,6 +364,41 @@ router.post("/leagues/:leagueId/interactive-payment-charge/3", paymentWriteLimit
   try {
     const result = await chargeInteractivePartnerPayments({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId: req.user.bowlerId, request: parsed.data });
     return sendSuccess(res, interactivePartnerWireResult(result), result.status === "succeeded" ? 201 : 202);
+  } catch (error) { return handleError(res, error); }
+});
+
+router.get("/leagues/:leagueId/interactive-payment-participants/4", async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user?.bowlerId) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    return sendSuccess(res, await readInteractivePaymentParticipantsV4({ organizationId: league.organizationId, leagueId, payerBowlerId: req.user.bowlerId }));
+  } catch (error) { return handleError(res, error); }
+});
+
+router.post("/leagues/:leagueId/interactive-payment-quote/4", paymentWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user?.bowlerId) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = accountPaymentFundingQuoteRequestV4Schema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid account payment quote request", 400, "INVALID_REQUEST");
+  const league = await authorizedLeague(req, leagueId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    return sendSuccess(res, await quoteAccountPaymentFundingV4({ organizationId: league.organizationId, leagueId, payerBowlerId: req.user.bowlerId, request: parsed.data }));
+  } catch (error) { return handleError(res, error); }
+});
+
+router.post("/leagues/:leagueId/interactive-payment-charge/4", paymentWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user?.bowlerId || req.user.role === "payment_manager") return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = accountPaymentFundingChargeRequestV4Schema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid account payment charge request", 400, "INVALID_REQUEST");
+  const league = await authorizedLeague(req, leagueId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    const result = await chargeAccountPaymentFundingV4({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId: req.user.bowlerId, request: parsed.data });
+    return sendSuccess(res, result, result.status === "succeeded" ? 201 : 202);
   } catch (error) { return handleError(res, error); }
 });
 

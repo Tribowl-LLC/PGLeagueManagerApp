@@ -37,6 +37,18 @@ export interface AccountPaymentRecipientAuthorizationEvidenceV4 {
   role: "self" | "partner";
   paymentLinkId: number | null;
   linkFingerprint: string | null;
+  /** User-selected amount target, retained so request-key replay can verify
+   * the original intent without reserving any future obligation identities. */
+  selection: {
+    kind: "explicit_amount";
+    amountMinor: number;
+  } | {
+    kind: "confirmed_debt_balance";
+  } | {
+    kind: "forecast_collection_target";
+    scope: "current_collection" | "selected_weeks" | "full_season";
+    weeks?: number;
+  };
 }
 
 /**

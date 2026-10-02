@@ -17,7 +17,7 @@ const accountPaymentFundingParticipantV4Schema = z.object({
   role: z.enum(["self", "partner"]),
   confirmedDebtMinor: amountMinorSchema,
   availableCreditMinor: amountMinorSchema,
-  /** Forecast amounts only; these are never settled debt. */
+  /** Preset collection targets. Forecast portions remain distinct from debt. */
   forecastTargets: z.object({
     currentCollectionMinor: amountMinorSchema,
     selectedWeeks: z.array(z.object({
@@ -111,17 +111,19 @@ export function resolveAccountPaymentFundingChargeAmountV4(input: {
   selection: AccountPaymentFundingSelectionV4;
   confirmedDebtMinor: number;
   availableCreditMinor: number;
+  collectionTargetMinor: number;
   forecastCollectionTargetMinor: number;
 }): number {
   const confirmedDebtMinor = amountMinorSchema.parse(input.confirmedDebtMinor);
   const availableCreditMinor = amountMinorSchema.parse(input.availableCreditMinor);
+  const collectionTargetMinor = amountMinorSchema.parse(input.collectionTargetMinor);
   const forecastCollectionTargetMinor = amountMinorSchema.parse(input.forecastCollectionTargetMinor);
   const selection = accountPaymentFundingSelectionV4Schema.parse(input.selection);
 
   if (selection.kind === "explicit_amount") return selection.amountMinor;
   const targetMinor = selection.kind === "confirmed_debt_balance"
     ? confirmedDebtMinor
-    : forecastCollectionTargetMinor;
+    : collectionTargetMinor;
   return Math.max(0, targetMinor - availableCreditMinor);
 }
 
@@ -136,6 +138,9 @@ const accountPaymentFundingQuoteRecipientResponseV4Schema = z.object({
   availableCreditMinor: amountMinorSchema,
   /** Forecast target for this recipient; it is not confirmed debt. */
   forecastCollectionTargetMinor: amountMinorSchema,
+  /** Gross preset target before credit, including confirmed debt where the
+   * selected collection mode consumes it. */
+  collectionTargetMinor: amountMinorSchema,
   /** Exact portion of the new combined provider charge for this recipient. */
   providerChargeAmountMinor: amountMinorSchema,
 }).strict();
@@ -168,6 +173,7 @@ export const accountPaymentFundingQuoteResponseV4Schema = z.object({
       selection: recipient.selection,
       confirmedDebtMinor: recipient.confirmedDebtMinor,
       availableCreditMinor: recipient.availableCreditMinor,
+      collectionTargetMinor: recipient.collectionTargetMinor,
       forecastCollectionTargetMinor: recipient.forecastCollectionTargetMinor,
     });
     if (recipient.providerChargeAmountMinor !== expectedPortionMinor) {

@@ -1,11 +1,13 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db.js";
 import { getGeneralInteractiveTargetKey } from "../storage/payment-operations.js";
-import { paymentOperations, paymentOperationRosterSnapshots } from "@shared/schema";
+import { paymentOperations, paymentOperationRosterSnapshots, accountPaymentOperationSnapshots } from "@shared/schema";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import {
   finalizeRosterSnapshotInTransaction,
   isRosterSnapshotFinalizationError,
+  RosterSnapshotFinalizationError,
+  validateRosterSnapshotForDispatchInTransaction,
 } from "./roster-payment-finalizer.js";
 
 export class RosterPaymentRecoveryError extends Error {
@@ -117,25 +119,66 @@ export async function recoverRosterPaymentOperation(input: {
       }
       throw new RosterPaymentRecoveryError("NOT_FOUND", "Payment operation not found", 404);
     }
-    const [snapshot] = await tx.select({ operationId: paymentOperationRosterSnapshots.operationId }).from(paymentOperationRosterSnapshots).where(and(
-      eq(paymentOperationRosterSnapshots.operationId, operation.id),
-      eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
-      eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
-    )).limit(1).for("share");
-    if (!snapshot) throw new RosterPaymentRecoveryError("NOT_ROSTER_OPERATION", "Only roster-backed payment operations can use this recovery path", 409);
+    const [snapshot, accountSnapshot] = await Promise.all([
+      tx.select({ operationId: paymentOperationRosterSnapshots.operationId }).from(paymentOperationRosterSnapshots).where(and(
+        eq(paymentOperationRosterSnapshots.operationId, operation.id),
+        eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
+        eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
+      )).limit(1).for("share"),
+      tx.select({ operationId: accountPaymentOperationSnapshots.operationId }).from(accountPaymentOperationSnapshots).where(and(
+        eq(accountPaymentOperationSnapshots.operationId, operation.id),
+        eq(accountPaymentOperationSnapshots.organizationId, input.organizationId),
+        eq(accountPaymentOperationSnapshots.leagueId, input.leagueId),
+      )).limit(1).for("share"),
+    ]);
+    const isAccountFunding = accountSnapshot.length > 0;
+    if (isAccountFunding && snapshot.length > 0) {
+      throw new RosterPaymentRecoveryError("SNAPSHOT_INVALID", "Payment operation has conflicting immutable snapshots", 409);
+    }
+    if (snapshot.length === 0 && !isAccountFunding) {
+      throw new RosterPaymentRecoveryError("NOT_ROSTER_OPERATION", "Only roster-backed payment operations can use this recovery path", 409);
+    }
     if (!operation.providerObjectId) throw new RosterPaymentRecoveryError("PROVIDER_EVIDENCE_PENDING", "Provider evidence is not available for recovery", 409);
+    const providerObjectId = operation.providerObjectId;
     if (operation.status !== "succeeded" && operation.status !== "reconciliation_required") {
       throw new RosterPaymentRecoveryError("OPERATION_NOT_RECOVERABLE", "Payment operation is not ready for roster recovery", 409);
     }
     const now = new Date().toISOString();
     try {
-      const finalization = await tx.transaction(async (finalizerTx) => finalizeRosterSnapshotInTransaction(finalizerTx, {
+      const finalization = await tx.transaction(async (finalizerTx) => {
+        if (isAccountFunding) {
+          const dispatchable = await validateRosterSnapshotForDispatchInTransaction(finalizerTx, {
+            organizationId: input.organizationId,
+            leagueId: input.leagueId,
+            operationId: operation.id,
+          });
+          if (!dispatchable) throw new RosterSnapshotFinalizationError("SNAPSHOT_INVALID", "The account funding snapshot is unavailable");
+          if (operation.status === "reconciliation_required") {
+            const [restored] = await finalizerTx.update(paymentOperations).set({
+              status: "succeeded",
+              nextAttemptAt: null,
+              errorClassification: null,
+              errorCode: null,
+              completedAt: operation.completedAt ?? now,
+              updatedAt: now,
+            }).where(and(
+              eq(paymentOperations.organizationId, input.organizationId),
+              eq(paymentOperations.leagueId, input.leagueId),
+              eq(paymentOperations.id, operation.id),
+              eq(paymentOperations.status, "reconciliation_required"),
+              eq(paymentOperations.providerObjectId, providerObjectId),
+            )).returning({ id: paymentOperations.id });
+            if (!restored) throw new RosterSnapshotFinalizationError("OPERATION_CHANGED", "Payment operation changed during recovery");
+          }
+        }
+        return finalizeRosterSnapshotInTransaction(finalizerTx, {
           organizationId: input.organizationId,
           leagueId: input.leagueId,
           operationId: operation.id,
           now,
           actorUserId: operation.authorizingUserId ?? input.actorUserId,
-        }));
+        });
+      });
       if (!finalization.finalized) throw new RosterPaymentRecoveryError("ROSTER_FINALIZATION_NOT_CONFIRMED", "Roster payment finalization was not confirmed", 409);
     } catch (error) {
       if (!isRosterSnapshotFinalizationError(error)) throw error;
@@ -151,21 +194,11 @@ export async function recoverRosterPaymentOperation(input: {
       )).returning();
       return reviewed ?? operation;
     }
-    if (operation.status === "reconciliation_required") {
-      const [settled] = await tx.update(paymentOperations).set({
-        status: "succeeded",
-        nextAttemptAt: null,
-        errorClassification: null,
-        errorCode: null,
-        completedAt: now,
-        updatedAt: now,
-      }).where(and(
-        eq(paymentOperations.organizationId, input.organizationId),
-        eq(paymentOperations.id, operation.id),
-        eq(paymentOperations.status, "reconciliation_required"),
-      )).returning();
-      return settled ?? operation;
-    }
-    return operation;
+    const [recovered] = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+      eq(paymentOperations.id, operation.id),
+    )).limit(1);
+    return recovered ?? operation;
   });
 }

@@ -20,6 +20,8 @@ import {
   payments,
   paymentAllocations,
   refundAllocationAdjustments,
+  weeklyPaymentLedgerAdoptions,
+  weeklyPaymentFundings,
   teamPaymentSlots,
   teams,
   users,
@@ -53,6 +55,7 @@ import {
   createOrGetGeneralInteractivePaymentOperation,
   persistRosterOperationSnapshot,
 } from "../../server/storage/payment-operations";
+import { prepareAccountPaymentOperation } from "../../server/services/account-payment-operation-preparation";
 import { deriveSquareOperationIdempotencyKey } from "../../server/services/payment-operation-idempotency";
 import type { RosterOperationSemanticSnapshot } from "../../server/services/roster-operation-snapshot";
 
@@ -466,7 +469,113 @@ async function completedInteractiveCharge(options: { combined?: boolean } = {}) 
   return { operation, providerPaymentId, payment };
 }
 
+async function preparedAccountFundingCharge() {
+  const operation = await prepareAccountPaymentOperation({
+    requestKey: `account-funding-${randomUUID()}`,
+    organizationId,
+    leagueId,
+    payerBowlerId: bowlerId,
+    amountMinor: 2_000,
+    fundingPortions: [{ portionIndex: 0, creditedBowlerId: bowlerId, amountMinor: 2_000 }],
+    recipientEvidence: [{
+      recipientBowlerId: bowlerId,
+      role: "self",
+      paymentLinkId: null,
+      linkFingerprint: null,
+      selection: { kind: "explicit_amount", amountMinor: 2_000 },
+    }],
+    currency: "USD",
+    providerName: "square",
+    locationId,
+    providerLocationId: null,
+    authorizingUserId: actorUserId,
+    sourceKind: "new_card",
+    sourceId: `cnon:account-funding-${randomUUID()}`,
+    customerId: "CUSTOMER_WEBHOOK_FIXTURE",
+    buyerEmail: "webhook@example.test",
+    storeCard: false,
+    quoteFingerprint: `lvaccountfundquote:v4:${"b".repeat(64)}`,
+    now: new Date("2034-03-05T00:00:00.000Z"),
+  });
+  const leased = await acquirePaymentOperationLease({
+    organizationId,
+    operationId: operation.id,
+    leaseOwner: `webhook-account-charge-${randomUUID()}`,
+    leaseDurationMs: 15 * 60_000,
+    now: new Date("2034-03-05T00:00:01.000Z"),
+  });
+  if (!leased) throw new Error("account funding operation was not leased");
+  return leased;
+}
+
 describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
+  it("finalizes and maps a V4 account funding tender to its Square dispute", async () => {
+    const [adoption] = await db.insert(weeklyPaymentLedgerAdoptions).values({
+      organizationId,
+      leagueId,
+      adoptedThroughLocalDate: "2034-03-01",
+      preflightFingerprint: `lvweeklyadoptpre:v1:${"c".repeat(64)}`,
+      resultFingerprint: `lvweeklyadopt:v1:${"d".repeat(64)}`,
+      recordedByUserId: actorUserId,
+    }).returning({ id: weeklyPaymentLedgerAdoptions.id });
+    try {
+      const operation = await preparedAccountFundingCharge();
+      const providerPaymentId = `payment-${randomUUID()}`;
+      const chargeDelivery = await ingest(paymentBody({
+        eventId: `event-${randomUUID()}`,
+        paymentId: providerPaymentId,
+        operationId: operation.id,
+      }));
+      const chargeResult = await processSquareWebhookEvent({
+        organizationId,
+        eventId: chargeDelivery.recorded.event.id,
+        event: chargeDelivery.event,
+        now: new Date("2034-03-05T00:01:01.000Z"),
+      });
+      expect(chargeResult.businessStateChanged).toBe(true);
+      const [payment] = await db.select().from(payments).where(eq(payments.paymentOperationId, operation.id));
+      expect(payment).toMatchObject({ bowlerId, amount: 2_000, status: "paid", providerPaymentId });
+      expect(await db.select().from(weeklyPaymentFundings).where(and(
+        eq(weeklyPaymentFundings.paymentId, payment.id),
+        eq(weeklyPaymentFundings.creditedBowlerId, bowlerId),
+      ))).toMatchObject([{
+        organizationId,
+        leagueId,
+        paymentId: payment.id,
+        creditedBowlerId: bowlerId,
+        amountMinor: 2_000,
+        source: "provider",
+        authorizationKind: "provider_snapshot",
+      }]);
+
+      const disputeId = `dispute-${randomUUID()}`;
+      const disputeDelivery = await ingest(disputeBody({
+        eventId: `event-${randomUUID()}`,
+        disputeId,
+        paymentId: providerPaymentId,
+      }));
+      const disputeResult = await processSquareWebhookEvent({
+        organizationId,
+        eventId: disputeDelivery.recorded.event.id,
+        event: disputeDelivery.event,
+        processDisputes: true,
+        now: new Date("2034-03-06T00:01:01.000Z"),
+      });
+      expect(disputeResult).toMatchObject({ acknowledged: true, terminal: true, businessStateChanged: true });
+      expect(await db.select().from(paymentDisputes).where(eq(paymentDisputes.providerDisputeId, disputeId)))
+        .toMatchObject([{
+          organizationId,
+          locationId,
+          paymentOperationId: operation.id,
+          providerPaymentId,
+          amountMinor: 2_000,
+          currency: "USD",
+        }]);
+    } finally {
+      await db.delete(weeklyPaymentLedgerAdoptions).where(eq(weeklyPaymentLedgerAdoptions.id, adoption.id));
+    }
+  });
+
   it("finalizes one known charge from signed reference evidence without duplicate payment rows", async () => {
     const operation = await preparedInteractiveCharge();
     const providerPaymentId = `payment-${randomUUID()}`;

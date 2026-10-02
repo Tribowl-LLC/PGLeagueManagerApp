@@ -27,6 +27,7 @@ import { createLogger } from "../logger.js";
 import type { InteractivePaymentRecipientSelectionV3, InteractivePaymentParticipantsResponseV3, InteractivePaymentQuoteAllocationV3, InteractivePaymentQuoteRecipientV3 } from "@shared/interactive-payment-v3-contract";
 import type { InteractivePartnerPaymentEvidence } from "./interactive-partner-payment-snapshot.js";
 import { buildOneTimePaymentOptions } from "@shared/one-time-payment-options";
+import { readOwnedLedgerAdoptionInTransaction } from "./owned-payment-ledger.js";
 
 type Link = typeof bowlerPaymentLinks.$inferSelect;
 const log = createLogger("InteractivePartnerPayment");
@@ -47,7 +48,7 @@ export function dueNowFifoPrefixMinor(candidates: Array<Pick<FifoPaymentCandidat
   return candidates.slice(0, lastDueIndex + 1).reduce((sum, row) => sum + row.outstandingMinor, 0);
 }
 
-function partnerLinkFingerprint(link: Pick<Link, "id" | "bowlerAId" | "bowlerBId" | "organizationId" | "status" | "respondedAt">): string {
+export function partnerLinkFingerprint(link: Pick<Link, "id" | "bowlerAId" | "bowlerBId" | "organizationId" | "status" | "respondedAt">): string {
   return `lvpartnerlink:v1:${createHash("sha256").update(canonicalizePaymentOperationInput({
     id: link.id,
     bowlerAId: link.bowlerAId,
@@ -84,7 +85,7 @@ async function activePayer(tx: RosterPaymentTransaction, organizationId: number,
   return row;
 }
 
-async function resolveParticipantsInTransaction(tx: RosterPaymentTransaction, input: { organizationId: number; leagueId: number; payerBowlerId: number; now: string }) {
+export async function resolveParticipantsInTransaction(tx: RosterPaymentTransaction, input: { organizationId: number; leagueId: number; payerBowlerId: number; now: string }) {
   const [league] = await tx.select({ paymentMode: leagues.paymentMode }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1).for("share");
   if (!league) throw new RosterPaymentError("NOT_FOUND", "League not found", 404);
   const payer = await activePayer(tx, input.organizationId, input.leagueId, input.payerBowlerId);
@@ -137,6 +138,9 @@ async function resolveParticipantsInTransaction(tx: RosterPaymentTransaction, in
 export async function readInteractivePaymentParticipants(input: { organizationId: number; leagueId: number; payerBowlerId: number }): Promise<InteractivePaymentParticipantsResponseV3> {
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    if (await readOwnedLedgerAdoptionInTransaction(tx, input)) {
+      throw new RosterPaymentError("ACCOUNT_PAYMENT_V4_REQUIRED", "This league uses account-based payment checkout", 409);
+    }
     const nowResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS now`);
     const now = nowFromTransaction(nowResult);
     const resolved = await resolveParticipantsInTransaction(tx, { ...input, now });
@@ -166,6 +170,9 @@ function selectionsMatch(a: InteractivePaymentRecipientSelectionV3[], b: Interac
 export async function quoteInteractivePartnerPayments(input: { organizationId: number; leagueId: number; payerBowlerId: number; recipients: InteractivePaymentRecipientSelectionV3[]; transaction?: RosterPaymentTransaction }) {
   const run = async (tx: RosterPaymentTransaction) => {
     if (!input.transaction) await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    if (await readOwnedLedgerAdoptionInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId })) {
+      throw new RosterPaymentError("ACCOUNT_PAYMENT_V4_REQUIRED", "This league uses account-based payment checkout", 409);
+    }
     const nowResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS now`);
     const now = nowFromTransaction(nowResult);
     const resolved = await resolveParticipantsInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, now });
@@ -308,6 +315,9 @@ export async function chargeInteractivePartnerPayments(input: {
       const selections = storedEvidence.flatMap((row) => typeof row === "object" && row !== null && "recipientBowlerId" in row && "selectedWeeks" in row && "fullBalance" in row ? [{ bowlerId: Number(row.recipientBowlerId), weeks: Number(row.selectedWeeks), fullBalance: row.fullBalance === true, ...( "dueNow" in row && row.dueNow === true ? { dueNow: true } : {}) }] : []);
       if (!stored || stored.snapshotVersion !== 3 || stored.payerBowlerId !== input.payerBowlerId || sourceId !== input.request.sourceId || stored.sourceKind !== input.request.sourceKind || stored.storeCard !== (input.request.storeCard === true) || stored.quoteFingerprint !== input.request.requestFingerprint || !selectionsMatch(selections, input.request.recipients)) throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different payment identity or recipient selection", 409);
       return { operation: existing, reused: true };
+    }
+    if (await readOwnedLedgerAdoptionInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId })) {
+      throw new RosterPaymentError("ACCOUNT_PAYMENT_V4_REQUIRED", "Use the account-based payment checkout for this league", 409);
     }
     const quote = await quoteInteractivePartnerPayments({ organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: input.payerBowlerId, recipients: input.request.recipients, transaction: tx });
     if (quote.fingerprint !== input.request.requestFingerprint) throw new RosterPaymentError("STALE_QUOTE", "The payment quote is stale; request a new quote", 409);

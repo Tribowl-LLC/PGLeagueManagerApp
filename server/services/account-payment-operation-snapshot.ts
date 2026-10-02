@@ -7,12 +7,13 @@ import { ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_KINDS, ACCOUNT_PAYMENT_OPERATION_SNA
 import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
 import { decrypt, encrypt } from "../utils/crypto.js";
 import type { InteractivePartnerPaymentEvidence } from "./interactive-partner-payment-snapshot.js";
+import { accountPaymentFundingSelectionV4Schema, type AccountPaymentFundingSelectionV4 } from "@shared/account-payment-v4-contract";
 
 export const ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_FINGERPRINT_PREFIX = "lvaccountfunding:v4:" as const;
 
 export type AccountPaymentFundingRecipientEvidenceV4 = Pick<InteractivePartnerPaymentEvidence,
   "recipientBowlerId" | "role" | "paymentLinkId" | "linkFingerprint"
->;
+> & { selection: AccountPaymentFundingSelectionV4 };
 
 const fundingPortionSchema = z.object({
   portionIndex: z.number().int().min(0),
@@ -27,6 +28,7 @@ const recipientEvidenceSchema = z.object({
   role: z.enum(["self", "partner"]),
   paymentLinkId: z.number().int().positive().max(2_147_483_647).nullable(),
   linkFingerprint: z.string().regex(/^lvpartnerlink:v1:[0-9a-f]{64}$/).nullable(),
+  selection: accountPaymentFundingSelectionV4Schema,
 }).strict().superRefine((evidence, context) => {
   if (evidence.role === "self" && (evidence.paymentLinkId !== null || evidence.linkFingerprint !== null)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["paymentLinkId"], message: "self evidence cannot contain a payment link" });
@@ -81,8 +83,13 @@ const semanticSchema = z.object({
     }
     evidenceByRecipient.set(evidence.recipientBowlerId, evidence);
   }
-  if (evidenceByRecipient.size !== portions.length || portions.some((portion) => !evidenceByRecipient.has(portion.creditedBowlerId))) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["recipientEvidence"], message: "every credited recipient requires matching authorization evidence" });
+  if (portions.some((portion) => !evidenceByRecipient.has(portion.creditedBowlerId))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["recipientEvidence"], message: "every funded recipient requires matching authorization evidence" });
+  }
+  for (const [index, evidence] of snapshot.recipientEvidence.entries()) {
+    if ((evidence.role === "self") !== (evidence.recipientBowlerId === snapshot.payerBowlerId)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["recipientEvidence", index, "recipientBowlerId"], message: "recipient role does not match the original payer" });
+    }
   }
   for (const [index, portion] of portions.entries()) {
     const evidence = evidenceByRecipient.get(portion.creditedBowlerId);

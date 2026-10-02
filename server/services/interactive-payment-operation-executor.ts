@@ -10,6 +10,7 @@ import {
   acquireInteractivePaymentOperationDispatchCutoff,
   finalizeInteractiveCardSave,
   finalizePaymentOperationSuccess,
+  getAccountPaymentOperationSnapshotForOrganization,
   getRosterOperationSnapshotForOrganization,
   getInteractiveCardSaveResponse,
   getPaymentOperationForOrganization,
@@ -30,6 +31,7 @@ import {
 import type { PaymentProvider, PaymentResult } from "./payment-provider.js";
 import { createLogger } from "../logger.js";
 import { captureUnexpectedPaymentProviderError } from "./payment-error-telemetry.js";
+import type { AccountPaymentOperationExecutionSnapshot } from "./account-payment-operation-snapshot.js";
 
 const log = createLogger("InteractivePaymentLedger");
 const MIN_RETRY_MS = 60_000;
@@ -67,10 +69,30 @@ function safeErrorCode(error: unknown): string {
 
 function paymentRows(
   operation: PaymentOperation,
-  snapshot: NonNullable<Awaited<ReturnType<typeof getRosterOperationSnapshotForOrganization>>>,
+  snapshot: NonNullable<Awaited<ReturnType<typeof getRosterOperationSnapshotForOrganization>>> | AccountPaymentOperationExecutionSnapshot,
   result: PaymentResult,
 ): PaymentOperationLinkedPaymentInput[] {
   if (!result.id) return [];
+  if ("kind" in snapshot && snapshot.kind === "account_funding") {
+    return [{
+      allocationIndex: 0,
+      values: {
+        organizationId: operation.organizationId,
+        bowlerId: snapshot.payerBowlerId,
+        leagueId: snapshot.leagueId,
+        amount: operation.amountMinor,
+        status: "paid" as const,
+        type: providerNameToPaymentType(snapshot.providerName),
+        providerPaymentId: result.id,
+        receiptUrl: result.receiptUrl,
+        receiptNumber: result.receiptNumber,
+        receiptEmailMissing: snapshot.providerName === "square" && snapshot.buyerEmail === null,
+        idempotencyKey: operation.id,
+        notes: `Account funding (${snapshot.fundingPortions.length} recipient${snapshot.fundingPortions.length === 1 ? "" : "s"})`,
+        paidByUserId: operation.authorizingUserId,
+      },
+    }];
+  }
   if ("kind" in snapshot && snapshot.kind === "rotating_credit") {
     return [{
       allocationIndex: 0,
@@ -93,9 +115,7 @@ function paymentRows(
   }
   const first = snapshot.allocations[0];
   if (!first) return [];
-  const bowlerId = snapshot.snapshotVersion === 1
-    ? snapshot.bowlerId
-    : snapshot.payerBowlerId ?? first.bowlerId;
+  const bowlerId = snapshot.payerBowlerId ?? first.bowlerId;
   // A provider transaction is one tender regardless of how many canonical
   // obligations it settles. Allocations remain the internal breakdown.
   return [{
@@ -192,9 +212,10 @@ export class InteractivePaymentOperationExecutor {
     const leaseToken = operation.leaseToken;
     if (!leaseToken) throw new Error("leased interactive operation has no fencing token");
     const now = this.now();
-    let snapshot: NonNullable<Awaited<ReturnType<typeof getRosterOperationSnapshotForOrganization>>>;
+    let snapshot: NonNullable<Awaited<ReturnType<typeof getRosterOperationSnapshotForOrganization>>> | AccountPaymentOperationExecutionSnapshot;
     try {
-      const loaded = await getRosterOperationSnapshotForOrganization(
+      const accountSnapshot = await getAccountPaymentOperationSnapshotForOrganization(operation.organizationId, operation.id);
+      const loaded = accountSnapshot ?? await getRosterOperationSnapshotForOrganization(
         operation.organizationId,
         operation.id,
       );
@@ -436,8 +457,12 @@ export class InteractivePaymentOperationExecutor {
         return (await getPaymentOperationForOrganization(operation.organizationId, operation.id)) ?? operation;
       }
       const identity = {
-        paymentKey: snapshot.squarePaymentIdempotencyKey,
-        orderKey: snapshot.squareOrderIdempotencyKey ?? undefined,
+        paymentKey: "kind" in snapshot && snapshot.kind === "account_funding"
+          ? snapshot.providerIdempotencyKey
+          : snapshot.squarePaymentIdempotencyKey,
+        orderKey: "kind" in snapshot && snapshot.kind === "account_funding"
+          ? undefined
+          : snapshot.squareOrderIdempotencyKey ?? undefined,
         providerLocationId: snapshot.providerLocationId ?? undefined,
         referenceId: operation.id,
       };
