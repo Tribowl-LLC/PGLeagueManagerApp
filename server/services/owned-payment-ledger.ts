@@ -503,7 +503,10 @@ async function readGenericFundingAvailabilityInTransaction(
       || voidPaymentIds.has(payment.id)
       || payment.disputeId !== null
       || payment.disputedAt !== null
-      || (payment.paymentOperationId !== null && (operation?.status !== "succeeded" || operation.providerObjectId === null || disputeOperationIds.has(operation.id)));
+      || (payment.paymentOperationId === null
+        ? payment.providerPaymentId !== null
+        : operation?.status !== "succeeded" || operation.providerObjectId === null
+          || payment.providerPaymentId !== operation.providerObjectId || disputeOperationIds.has(operation.id));
     const unresolvedRefund = (refundsByPayment.get(payment.id) ?? []).some(({ operation: refundOperation }) => REFUND_HOLD_STATUSES.includes(refundOperation.status as (typeof REFUND_HOLD_STATUSES)[number]));
     const completedOrAmbiguousRefund = (refundsByPayment.get(payment.id) ?? []).some(({ operation: refundOperation }) => refundOperation.status === "succeeded"
       || (refundOperation.status !== "failed_terminal" && !isConfirmedNoRefundCreditOutcome(refundOperation)));
@@ -584,6 +587,8 @@ export async function recordOwnedFundingInTransaction(
   },
 ): Promise<WeeklyPaymentFunding> {
   if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0 || input.currency !== "USD") throw new OwnedPaymentLedgerError("FUNDING_AMOUNT_INVALID");
+  const adoptionId = input.adoptionId ?? null;
+  const authorizationOperationId = input.authorizationOperationId ?? null;
   const [payment] = await tx.select().from(payments).where(and(
     eq(payments.id, input.paymentId),
     eq(payments.organizationId, input.organizationId),
@@ -602,38 +607,42 @@ export async function recordOwnedFundingInTransaction(
     throw new OwnedPaymentLedgerError("FUNDING_AUTH_ITEMS_INVALID");
   }
   if (input.source === "worksheet_manual" && (input.authorizationKind !== "manual_receipt"
-    || (input.authorizationOperationId !== null && input.authorizationOperationId !== undefined) || (input.authorizationItemCount ?? 0) !== 0
-    || authorizationItems.length !== 0 || !["cash", "check"].includes(payment.type))) {
+    || authorizationOperationId !== null || (input.authorizationItemCount ?? 0) !== 0
+    || authorizationItems.length !== 0 || !["cash", "check"].includes(payment.type)
+    || payment.bowlerId !== input.creditedBowlerId || payment.amount !== input.amountMinor || input.portionIndex !== 0
+    || payment.providerPaymentId !== null || payment.paymentOperationId !== null)) {
     throw new OwnedPaymentLedgerError("MANUAL_FUNDING_AUTH_INVALID");
   }
   if (input.source === "provider" && (input.authorizationKind !== "provider_snapshot"
-    || input.authorizationOperationId === null || input.authorizationOperationId === undefined
-    || payment.paymentOperationId !== input.authorizationOperationId || (input.authorizationItemCount ?? 0) !== 0
+    || authorizationOperationId === null
+    || payment.paymentOperationId !== authorizationOperationId || (input.authorizationItemCount ?? 0) !== 0
     || authorizationItems.length !== 0 || payment.type === "cash" || payment.type === "check")) {
     throw new OwnedPaymentLedgerError("PROVIDER_FUNDING_AUTH_INVALID");
   }
-  if (input.source === "legacy_adoption" && !input.adoptionId) throw new OwnedPaymentLedgerError("LEGACY_ADOPTION_REQUIRED");
-  if (input.source !== "legacy_adoption" && input.adoptionId !== null) throw new OwnedPaymentLedgerError("UNEXPECTED_ADOPTION_ID");
+  if (input.source === "legacy_adoption" && !adoptionId) throw new OwnedPaymentLedgerError("LEGACY_ADOPTION_REQUIRED");
+  if (input.source !== "legacy_adoption" && adoptionId !== null) throw new OwnedPaymentLedgerError("UNEXPECTED_ADOPTION_ID");
   if (input.authorizationKind === "legacy_payment" && (input.source !== "legacy_adoption"
-    || (input.authorizationOperationId !== null && input.authorizationOperationId !== undefined) || (input.authorizationItemCount ?? 0) !== 0
-    || authorizationItems.length !== 0 || payment.paymentOperationId !== null || !["cash", "check"].includes(payment.type))) {
+    || authorizationOperationId !== null || (input.authorizationItemCount ?? 0) !== 0
+    || authorizationItems.length !== 0 || payment.paymentOperationId !== null || payment.providerPaymentId !== null
+    || payment.bowlerId !== input.creditedBowlerId || payment.amount !== input.amountMinor
+    || input.portionIndex !== 0 || !["cash", "check"].includes(payment.type))) {
     throw new OwnedPaymentLedgerError("LEGACY_PAYMENT_AUTH_INVALID");
   }
   if (input.authorizationKind === "legacy_provider_snapshot") {
-    if (input.source !== "legacy_adoption" || !input.authorizationOperationId
-      || payment.paymentOperationId !== input.authorizationOperationId || (input.authorizationItemCount ?? 0) <= 0
+    if (input.source !== "legacy_adoption" || !authorizationOperationId
+      || payment.paymentOperationId !== authorizationOperationId || (input.authorizationItemCount ?? 0) <= 0
       || authorizationItems.length !== input.authorizationItemCount || payment.type === "cash" || payment.type === "check"
       || authorizationItems.reduce((sum, item) => sum + item.amountMinor, 0) !== input.amountMinor) {
       throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_ITEMS_INVALID");
     }
     const [operationRows, snapshotRows] = await Promise.all([
       tx.select().from(paymentOperations).where(and(
-        eq(paymentOperations.id, input.authorizationOperationId),
+        eq(paymentOperations.id, authorizationOperationId),
         eq(paymentOperations.organizationId, input.organizationId),
         eq(paymentOperations.leagueId, input.leagueId),
       )).limit(1),
       tx.select().from(paymentOperationRosterSnapshots).where(and(
-        eq(paymentOperationRosterSnapshots.operationId, input.authorizationOperationId),
+        eq(paymentOperationRosterSnapshots.operationId, authorizationOperationId),
         eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
         eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
       )).limit(1),
@@ -641,6 +650,7 @@ export async function recordOwnedFundingInTransaction(
     const [operationRow] = operationRows;
     const [snapshotRow] = snapshotRows;
     if (!operationRow || operationRow.status !== "succeeded" || operationRow.providerObjectId === null
+      || payment.providerPaymentId !== operationRow.providerObjectId
       || !snapshotRow || !["interactive", "standing_autopay"].includes(snapshotRow.snapshotKind)
       || (snapshotRow.snapshotKind === "interactive" && operationRow.operationType !== "interactive_charge")
       || (snapshotRow.snapshotKind === "standing_autopay" && operationRow.operationType !== "standing_autopay_charge")
@@ -653,12 +663,16 @@ export async function recordOwnedFundingInTransaction(
       allocationIndex: paymentOperationRosterSnapshotItems.allocationIndex,
       obligationId: paymentOperationRosterSnapshotItems.obligationId,
       amountMinor: paymentOperationRosterSnapshotItems.amountMinor,
+      state: paymentOperationRosterSnapshotItems.state,
     })
       .from(paymentOperationRosterSnapshotItems).where(and(
-        eq(paymentOperationRosterSnapshotItems.operationId, input.authorizationOperationId),
+        eq(paymentOperationRosterSnapshotItems.operationId, authorizationOperationId),
         eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
         eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
       ));
+    if (authorizedItems.length !== (input.authorizationItemCount ?? 0) || authorizedItems.some((item) => item.state !== "finalized")) {
+      throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_ITEMS_INVALID");
+    }
     type SnapshotAllocation = { allocationIndex?: number; obligationId?: string; bowlerId?: number; payerBowlerId?: number; amountMinor?: number };
     const recordedSnapshotRows = Array.isArray(snapshotRow.obligations) ? snapshotRow.obligations as SnapshotAllocation[] : [];
     const ownerAllocations: Array<{ allocationIndex: number; obligationId: string; bowlerId: number; amountMinor: number }> = [];
@@ -731,12 +745,12 @@ export async function recordOwnedFundingInTransaction(
       && operationRow.operationType === "standing_autopay_charge") {
       const [bindingRows, participantRows] = await Promise.all([
         tx.select().from(paymentOperationStandingAutopayBindings).where(and(
-          eq(paymentOperationStandingAutopayBindings.operationId, input.authorizationOperationId),
+          eq(paymentOperationStandingAutopayBindings.operationId, authorizationOperationId),
           eq(paymentOperationStandingAutopayBindings.organizationId, input.organizationId),
           eq(paymentOperationStandingAutopayBindings.leagueId, input.leagueId),
         )).limit(1),
         tx.select().from(paymentOperationStandingAutopayParticipants).where(and(
-          eq(paymentOperationStandingAutopayParticipants.operationId, input.authorizationOperationId),
+          eq(paymentOperationStandingAutopayParticipants.operationId, authorizationOperationId),
           eq(paymentOperationStandingAutopayParticipants.organizationId, input.organizationId),
           eq(paymentOperationStandingAutopayParticipants.leagueId, input.leagueId),
         )),
@@ -769,8 +783,10 @@ export async function recordOwnedFundingInTransaction(
     }
   }
   if (input.source === "legacy_adoption") {
+    const legacyAdoptionId = adoptionId;
+    if (legacyAdoptionId === null) throw new OwnedPaymentLedgerError("LEGACY_ADOPTION_REQUIRED");
     const [adoption] = await tx.select({ id: weeklyPaymentLedgerAdoptions.id }).from(weeklyPaymentLedgerAdoptions).where(and(
-      eq(weeklyPaymentLedgerAdoptions.id, input.adoptionId!),
+      eq(weeklyPaymentLedgerAdoptions.id, legacyAdoptionId),
       eq(weeklyPaymentLedgerAdoptions.organizationId, input.organizationId),
       eq(weeklyPaymentLedgerAdoptions.leagueId, input.leagueId),
     )).limit(1);
@@ -794,7 +810,8 @@ export async function recordOwnedFundingInTransaction(
     const portionIndexes = portions?.map((portion) => portion.portionIndex) ?? [];
     const portionOwners = portions?.map((portion) => portion.creditedBowlerId) ?? [];
     if (!operation || operation.operationType !== "interactive_charge" || operation.status !== "succeeded"
-      || operation.providerObjectId === null || operation.amountMinor !== payment.amount || operation.currency !== payment.currency
+      || operation.providerObjectId === null || payment.providerPaymentId !== operation.providerObjectId
+      || operation.amountMinor !== payment.amount || operation.currency !== payment.currency
       || !stored || stored.snapshotVersion !== 4 || stored.snapshotKind !== "interactive_funding"
       || stored.snapshotFingerprint !== input.authorizationFingerprint || stored.amountMinor !== payment.amount
       || stored.currency !== payment.currency || stored.payerBowlerId !== payment.bowlerId
@@ -814,6 +831,8 @@ export async function recordOwnedFundingInTransaction(
   const { authorizationItems: _items, now, ...fundingInput } = input;
   const provenanceFingerprint = `lvweeklyfund:v1:${createHash("sha256").update(canonicalizePaymentOperationInput({
     ...fundingInput,
+    adoptionId,
+    authorizationOperationId,
     authorizationItems,
   })).digest("hex")}`;
   const [existingFunding] = await tx.select().from(weeklyPaymentFundings).where(and(
@@ -849,13 +868,15 @@ export async function recordOwnedFundingInTransaction(
   }).returning();
   if (!funding) throw new OwnedPaymentLedgerError("FUNDING_CREATE_FAILED");
   if (authorizationItems.length > 0) {
+    const sourceOperationId = authorizationOperationId;
+    if (!sourceOperationId) throw new OwnedPaymentLedgerError("FUNDING_AUTH_OPERATION_REQUIRED");
     await tx.insert(weeklyPaymentFundingAuthorizationItems).values(authorizationItems.map((item) => ({
       organizationId: input.organizationId,
       leagueId: input.leagueId,
       fundingId: funding.id,
       paymentId: input.paymentId,
       creditedBowlerId: input.creditedBowlerId,
-      sourceOperationId: input.authorizationOperationId!,
+      sourceOperationId,
       sourceAllocationIndex: item.allocationIndex,
       authorizedAmountMinor: item.amountMinor,
       sourceSnapshotFingerprint: item.snapshotFingerprint,

@@ -11,6 +11,7 @@ import {
   rotatingCreditApplications,
   rotatingCreditFundings,
   rotatingCreditRefunds,
+  weeklyPaymentAllocationReleases,
 } from "@shared/schema";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
@@ -267,6 +268,11 @@ export async function readRotatingCreditFundingBalancesInTransaction(
       eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
       inArray(paymentAllocationFundingApplications.rotatingFundingId, fundingIds),
     ));
+  const ownedReleases = ownedApps.length === 0 ? [] : await tx.select().from(weeklyPaymentAllocationReleases).where(and(
+    eq(weeklyPaymentAllocationReleases.organizationId, input.organizationId),
+    eq(weeklyPaymentAllocationReleases.leagueId, input.leagueId),
+    inArray(weeklyPaymentAllocationReleases.fundingApplicationId, [...new Set(ownedApps.map(({ application }) => application.id))]),
+  ));
   const allTenderAllocations = await tx.select({ allocation: paymentAllocations, funding: rotatingCreditFundings })
     .from(paymentAllocations).innerJoin(rotatingCreditFundings, and(
       eq(rotatingCreditFundings.paymentId, paymentAllocations.paymentId),
@@ -304,6 +310,8 @@ export async function readRotatingCreditFundingBalancesInTransaction(
   const duplicateRepresentations = new Set(ownedApps
     .filter(({ application }) => legacyApplicationAllocationIds.has(application.allocationId))
     .map(({ application }) => application.rotatingFundingId));
+  const releasesByApplication = new Map<string, typeof ownedReleases>();
+  for (const release of ownedReleases) releasesByApplication.set(release.fundingApplicationId, [...(releasesByApplication.get(release.fundingApplicationId) ?? []), release]);
   const untrackedCreditPayments = new Set(allTenderAllocations.filter(({ allocation }) => !applicationAllocationIds.has(allocation.id)).map(({ funding }) => funding.id));
 
   return fundings.map(({ funding, payment, operation }) => {
@@ -330,7 +338,19 @@ export async function readRotatingCreditFundingBalancesInTransaction(
         && row.application.amountMinor === row.allocation.amountMinor
         && row.application.obligationId === row.allocation.obligationId
         && row.application.allocationId === row.allocation.id;
-      if (!matches || row.allocation.reviewRequired) reviewRequired = true;
+      const releaseRows = releasesByApplication.get(row.application.id) ?? [];
+      const validFullRelease = releaseRows.length === 1 && releaseRows[0]?.fundingApplicationId === row.application.id
+        && releaseRows[0].organizationId === input.organizationId && releaseRows[0].leagueId === input.leagueId
+        && releaseRows[0].paymentId === funding.paymentId && releaseRows[0].creditedBowlerId === funding.bowlerId
+        && releaseRows[0].sourceAllocationId === row.allocation.id
+        && releaseRows[0].sourceObligationId === row.application.obligationId
+        && releaseRows[0].sourceApplicationAmountMinor === row.application.amountMinor
+        && releaseRows[0].releasedAmountMinor === row.application.amountMinor && releaseRows[0].retainedAmountMinor === 0
+        && releaseRows[0].replacementAllocationId === null && releaseRows[0].currency === "USD";
+      if (!matches || row.allocation.reviewRequired
+        || (row.allocation.state === "active" && releaseRows.length !== 0)
+        || (row.allocation.state === "voided" && !validFullRelease)
+        || !["active", "voided"].includes(row.allocation.state)) reviewRequired = true;
       if (row.allocation.state === "active") appliedMinor += row.allocation.amountMinor;
     }
 
@@ -364,7 +384,8 @@ export async function readRotatingCreditFundingBalancesInTransaction(
 
     const providerEvidenceValid = payment.type === "cash" || payment.type === "check"
       ? operation === null && payment.providerPaymentId === null
-      : operation?.status === "succeeded" && operation.providerObjectId !== null;
+      : operation?.status === "succeeded" && operation.providerObjectId !== null
+        && payment.providerPaymentId === operation.providerObjectId;
     if (payment.bowlerId !== funding.bowlerId || payment.amount !== funding.amountMinor || payment.currency !== funding.currency
       || untrackedCreditPayments.has(funding.id) || duplicateRepresentations.has(funding.id)
       || !providerEvidenceValid || payment.status !== "paid" || payment.disputeId !== null || payment.disputedAt !== null
