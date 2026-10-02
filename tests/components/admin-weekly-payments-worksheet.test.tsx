@@ -181,6 +181,25 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
     expect(screen.queryByRole("textbox", { name: "Amount received from Avery Lane" })).not.toBeInTheDocument();
   });
 
+  it("saves a responsibility checkbox change without requiring a cash entry", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn<AdminWeeklyPaymentsWorksheetProps["onSave"]>(async () => undefined);
+    renderWorksheet({ onSave });
+
+    await user.click(screen.getByRole("checkbox", { name: "Responsible this week for Avery Lane" }));
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      changedRows: [{
+        teamId: 31,
+        bowlerId: 501,
+        responsible: false,
+        feeComponent: "full",
+        manualReceiptEdits: [],
+      }],
+    })));
+  });
+
   it("edits each legacy manual receipt independently and cancels on Escape", async () => {
     const user = userEvent.setup();
     const secondReceipt = {
@@ -264,7 +283,7 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
     await user.click(screen.getByRole("button", { name: "Save week" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Week wasn’t saved. Your changes are still here. Try again.",
+      "Week wasn’t saved. Your changes are still here. Check your connection and try again.",
     );
     expect(screen.getByRole("textbox", {
       name: "Correct recorded amount received 2026-09-28 for Avery Lane",
@@ -322,7 +341,7 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
     })));
   });
 
-  it("allows an empty confirmation save and disables an unchanged confirmed week", async () => {
+  it("allows initial confirmation and derives the next save state from the returned props", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn<AdminWeeklyPaymentsWorksheetProps["onSave"]>(async () => undefined);
     const unconfirmedView = renderWorksheet({ onSave, weekConfirmed: false, needsConfirmation: true });
@@ -336,7 +355,9 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
       expectedStateFingerprint: `lvmanagepayments:v1:${"a".repeat(64)}`,
       changedRows: [],
     }));
-    expect(saveButton).toBeDisabled();
+    // The parent owns the committed server snapshot. A successful callback
+    // alone must not poison an unchanged view when its props have not advanced.
+    expect(saveButton).toBeEnabled();
     unconfirmedView.unmount();
 
     const confirmedView = renderWorksheet({ weekConfirmed: true, needsConfirmation: false });

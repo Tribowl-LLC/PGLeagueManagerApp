@@ -88,6 +88,33 @@ export interface AdminWeeklyPaymentsSaveInput {
   changedRows: readonly AdminWeeklyPaymentsRowChange[];
 }
 
+export interface AdminWeeklyPaymentsResponsibilityDraft {
+  responsible: boolean;
+  feeComponent: AdminWeeklyPaymentsFeeComponent;
+}
+
+export interface AdminWeeklyPaymentsWorksheetDraftState {
+  responsibilityDrafts: Readonly<Record<string, AdminWeeklyPaymentsResponsibilityDraft>>;
+  newReceiptDrafts: Readonly<Record<string, string>>;
+  manualReceiptDrafts: Readonly<Record<string, string>>;
+}
+
+export interface AdminWeeklyPaymentsRecoveryAction {
+  label: string;
+  run: () => Promise<void>;
+}
+
+/** Marker for a sanitized, deliberately user-facing save message. */
+export class AdminWeeklyPaymentsSaveError extends Error {
+  readonly recoveryAction?: AdminWeeklyPaymentsRecoveryAction;
+
+  constructor(message: string, recoveryAction?: AdminWeeklyPaymentsRecoveryAction) {
+    super(message);
+    this.name = "AdminWeeklyPaymentsSaveError";
+    this.recoveryAction = recoveryAction;
+  }
+}
+
 export interface AdminWeeklyPaymentsWorksheetProps {
   leagueId: number;
   occurrenceId: string;
@@ -97,13 +124,10 @@ export interface AdminWeeklyPaymentsWorksheetProps {
   needsConfirmation: boolean;
   feeOptions: readonly AdminWeeklyPaymentsFeeOption[];
   teams: readonly AdminWeeklyPaymentsTeam[];
+  initialDrafts?: AdminWeeklyPaymentsWorksheetDraftState;
   onSave: (input: AdminWeeklyPaymentsSaveInput) => Promise<void>;
   onDirtyChange?: (isDirty: boolean) => void;
-}
-
-interface ResponsibilityDraft {
-  responsible: boolean;
-  feeComponent: AdminWeeklyPaymentsFeeComponent;
+  onDraftStateChange?: (drafts: AdminWeeklyPaymentsWorksheetDraftState) => void;
 }
 
 function rowKey(
@@ -184,7 +208,7 @@ function TeamWorksheet({
   feeOptions: readonly AdminWeeklyPaymentsFeeOption[];
   expanded: boolean;
   saving: boolean;
-  responsibilityDrafts: Readonly<Record<string, ResponsibilityDraft>>;
+  responsibilityDrafts: Readonly<Record<string, AdminWeeklyPaymentsResponsibilityDraft>>;
   newReceiptDrafts: Readonly<Record<string, string>>;
   manualReceiptDrafts: Readonly<Record<string, string>>;
   onExpandedChange: (open: boolean) => void;
@@ -474,28 +498,36 @@ export function AdminWeeklyPaymentsWorksheet({
   needsConfirmation,
   feeOptions,
   teams,
+  initialDrafts,
   onSave,
   onDirtyChange,
+  onDraftStateChange,
 }: AdminWeeklyPaymentsWorksheetProps) {
   const [expandedTeams, setExpandedTeams] = useState<Readonly<Record<number, boolean>>>(() =>
     Object.fromEntries(teams.map((team, index) => [team.teamId, index === 0])),
   );
   const [responsibilityDrafts, setResponsibilityDrafts] = useState<
-    Readonly<Record<string, ResponsibilityDraft>>
-  >({});
-  const [newReceiptDrafts, setNewReceiptDrafts] = useState<Readonly<Record<string, string>>>({});
-  const [manualReceiptDrafts, setManualReceiptDrafts] = useState<Readonly<Record<string, string>>>({});
+    Readonly<Record<string, AdminWeeklyPaymentsResponsibilityDraft>>
+  >(() => initialDrafts?.responsibilityDrafts ?? {});
+  const [newReceiptDrafts, setNewReceiptDrafts] = useState<Readonly<Record<string, string>>>(
+    () => initialDrafts?.newReceiptDrafts ?? {},
+  );
+  const [manualReceiptDrafts, setManualReceiptDrafts] = useState<Readonly<Record<string, string>>>(
+    () => initialDrafts?.manualReceiptDrafts ?? {},
+  );
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState("");
-  const [lastSavedSnapshot, setLastSavedSnapshot] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<{
+    message: string;
+    recoveryAction?: AdminWeeklyPaymentsRecoveryAction;
+  } | null>(null);
+  const [recovering, setRecovering] = useState(false);
   const saveInFlight = useRef(false);
-  const snapshotKey = `${occurrenceId}:${expectedRevision}:${expectedStateFingerprint}`;
 
   const allRows = teams.flatMap((team) =>
     team.rows.map((row) => ({ team, row, key: rowKey(leagueId, team.teamId, row.bowlerId) })),
   );
 
-  function currentDecision(row: AdminWeeklyPaymentsBowlerRow, key: string): ResponsibilityDraft {
+  function currentDecision(row: AdminWeeklyPaymentsBowlerRow, key: string): AdminWeeklyPaymentsResponsibilityDraft {
     return responsibilityDrafts[key] ?? {
       responsible: row.responsible,
       feeComponent: row.feeComponent,
@@ -575,7 +607,6 @@ export function AdminWeeklyPaymentsWorksheet({
     || Object.keys(manualReceiptDrafts).length > 0
     || Object.values(newReceiptDrafts).some((amount) => amount.trim() !== "");
   const canSave = !saving
-    && lastSavedSnapshot !== snapshotKey
     && invalidRows.length === 0
     && (needsConfirmation || hasDraftChanges);
 
@@ -583,14 +614,18 @@ export function AdminWeeklyPaymentsWorksheet({
     onDirtyChange?.(hasLocalDrafts);
   }, [hasLocalDrafts, onDirtyChange]);
 
+  useEffect(() => {
+    onDraftStateChange?.({ responsibilityDrafts, newReceiptDrafts, manualReceiptDrafts });
+  }, [manualReceiptDrafts, newReceiptDrafts, onDraftStateChange, responsibilityDrafts]);
+
   function clearSaveError() {
-    setSaveError("");
+    setSaveError(null);
   }
 
   function updateResponsibility(
     row: AdminWeeklyPaymentsBowlerRow,
     teamId: number,
-    next: ResponsibilityDraft,
+    next: AdminWeeklyPaymentsResponsibilityDraft,
   ) {
     const key = rowKey(leagueId, teamId, row.bowlerId);
     setResponsibilityDrafts((current) => {
@@ -659,15 +694,33 @@ export function AdminWeeklyPaymentsWorksheet({
         changedRows: rowChanges,
       });
 
-      setLastSavedSnapshot(snapshotKey);
       setResponsibilityDrafts({});
       setNewReceiptDrafts({});
       setManualReceiptDrafts({});
-    } catch {
-      setSaveError("Week wasn’t saved. Your changes are still here. Try again.");
+    } catch (error) {
+      setSaveError(error instanceof AdminWeeklyPaymentsSaveError
+        ? { message: error.message, recoveryAction: error.recoveryAction }
+        : { message: "Week wasn’t saved. Your changes are still here. Check your connection and try again." });
     } finally {
       saveInFlight.current = false;
       setSaving(false);
+    }
+  }
+
+  async function runRecoveryAction() {
+    const action = saveError?.recoveryAction;
+    if (!action || recovering) return;
+    setRecovering(true);
+    try {
+      await action.run();
+      setSaveError(null);
+    } catch {
+      setSaveError({
+        message: "The latest saved week could not be loaded. This week’s unsaved edits were cleared as requested; retry the reload to continue.",
+        recoveryAction: action,
+      });
+    } finally {
+      setRecovering(false);
     }
   }
 
@@ -753,9 +806,20 @@ export function AdminWeeklyPaymentsWorksheet({
             </p>
           )}
           {saveError && (
-            <p className="mt-1 text-destructive" role="alert">
-              {saveError}
-            </p>
+            <div className="mt-1 space-y-2 text-destructive" role="alert">
+              <p>{saveError.message}</p>
+              {saveError.recoveryAction && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={saving || recovering}
+                  onClick={() => { void runRecoveryAction(); }}
+                >
+                  {recovering ? "Reloading…" : saveError.recoveryAction.label}
+                </Button>
+              )}
+            </div>
           )}
           {!needsConfirmation && weekConfirmed && !hasLocalDrafts && invalidRows.length === 0 && (
             <p className="mt-1 text-muted-foreground">No changes to save.</p>

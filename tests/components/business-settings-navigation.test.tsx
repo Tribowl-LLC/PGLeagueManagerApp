@@ -75,6 +75,9 @@ describe('Admin navigation', () => {
   it('shows only Locations and Users in the Admin menu for organization admins', () => {
     renderLayout('org_admin');
 
+    expect(screen.getByTestId('nav-link-/manage-payments')).toHaveTextContent('Manage Payments');
+    expect(screen.getByTestId('nav-link-/payments')).toHaveTextContent('Payments');
+
     const adminMenu = screen.getByTestId('nav-submenu-trigger-/__super-admin');
     expect(adminMenu).toHaveTextContent('Admin');
     fireEvent.click(adminMenu);
@@ -99,5 +102,12 @@ describe('Admin navigation', () => {
     expect(screen.queryByTestId('nav-link-/business-settings')).not.toBeInTheDocument();
     expect(screen.queryByTestId('nav-submenu-trigger-/__super-admin')).not.toBeInTheDocument();
     expect(screen.queryByTestId('nav-link-/organizations')).not.toBeInTheDocument();
+  });
+
+  it('keeps the new worksheet link organization-admin-only while retaining payment-manager Payments access', () => {
+    renderLayout('payment_manager');
+
+    expect(screen.queryByTestId('nav-link-/manage-payments')).not.toBeInTheDocument();
+    expect(screen.getByTestId('nav-link-/payments')).toHaveTextContent('Payments');
   });
 });
