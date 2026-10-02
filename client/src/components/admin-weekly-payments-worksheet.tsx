@@ -384,9 +384,9 @@ function TeamWorksheet({
                                     type="button"
                                     variant="ghost"
                                     size="icon"
-                                  className="size-8 shrink-0"
-                                  disabled={saving}
-                                  aria-label={`Edit recorded ${receipt.type} payment ${formatMoney(receipt.amountMinor)} received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
+                                    className="size-8 shrink-0"
+                                    disabled={saving}
+                                    aria-label={`Edit recorded ${receipt.type} payment ${formatMoney(receipt.amountMinor)} received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                     onClick={() => onBeginManualReceiptEdit(manualKey, receipt)}
                                   >
                                     <Pencil aria-hidden="true" className="size-3.5" />
@@ -395,7 +395,7 @@ function TeamWorksheet({
                               ) : (
                                 <div className="flex min-w-0 flex-col gap-1">
                                   <div className="flex min-w-0 items-center gap-1">
-                                    <div data-awpw="amount-input">
+                                    <div data-awpw="amount-input" data-awpw-edit-input>
                                       <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
                                       <Input
                                         type="text"
@@ -422,7 +422,7 @@ function TeamWorksheet({
                                       type="button"
                                       variant="ghost"
                                       size="icon"
-                                      className="size-8 shrink-0"
+                                      className="size-10 shrink-0"
                                       disabled={saving}
                                       aria-label={`Cancel recorded payment edit received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                       onClick={() => onCancelManualReceiptEdit(manualKey)}

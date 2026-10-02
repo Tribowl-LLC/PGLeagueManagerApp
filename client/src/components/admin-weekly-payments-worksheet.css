@@ -21,7 +21,7 @@
 }
 
 [data-awpw-col="received"] {
-  width: 194px;
+  width: 24%;
 }
 
 [data-awpw-col="final"] {
@@ -30,13 +30,13 @@
 
 [data-awpw="table"] th:nth-child(5),
 [data-awpw="received-cell"] {
-  width: 194px;
-  padding-left: 28px;
+  width: 24%;
+  padding-left: 12px;
 }
 
 [data-awpw="received-content"] {
   display: flex;
-  width: 150px;
+  width: 100%;
   max-width: 100%;
   flex-direction: column;
   align-items: flex-start;
@@ -47,6 +47,11 @@
   position: relative;
   width: 150px;
   max-width: 100%;
+}
+
+[data-awpw-edit-input] {
+  width: 140px;
+  max-width: calc(100% - 40px);
 }
 
 [data-awpw="mobile-label"] {
