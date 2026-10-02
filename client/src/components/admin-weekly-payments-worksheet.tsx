@@ -275,6 +275,11 @@ function TeamWorksheet({
                   responsible: row.responsible,
                   feeComponent: row.feeComponent,
                 };
+                const responsibilityChanged = decision.responsible !== row.responsible
+                  || decision.feeComponent !== row.feeComponent;
+                const selectedFeeMinor = responsibilityChanged
+                  ? feeOptions.find((option) => option.feeComponent === decision.feeComponent)?.amountMinor ?? row.feeMinor
+                  : row.feeMinor;
                 const newReceiptDraft = newReceiptDrafts[key] ?? "";
                 const newReceiptAmount = newReceiptDraft.trim() === ""
                   ? null
@@ -325,10 +330,7 @@ function TeamWorksheet({
                             aria-label={`This week’s fee for ${row.displayName}`}
                           >
                             <SelectValue>
-                              {formatMoney(
-                                feeOptions.find((option) => option.feeComponent === decision.feeComponent)
-                                  ?.amountMinor ?? row.feeMinor,
-                              )}
+                              {formatMoney(selectedFeeMinor)}
                             </SelectValue>
                           </SelectTrigger>
                           <SelectContent>

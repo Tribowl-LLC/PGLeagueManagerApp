@@ -34,6 +34,7 @@ import rosterPaymentsRouter from './roster-payments.js';
 import rotatingCreditRouter from './rotating-credit.js';
 import rosterStandingAutopayRouter from './roster-standing-autopay.js';
 import financialsF5Router from './financials-f5.js';
+import managePaymentsRouter from './manage-payments.js';
 import profileClaimsRouter from './profile-claims.js';
 import { requireAuth, requireOrgAdmin, requireSystemAdmin, requirePasswordRotated } from '../middleware/auth.js';
 import { requireNoIdentitySecurityHold } from '../middleware/identity-security-hold.js';
@@ -148,6 +149,7 @@ export function registerRoutes(app: Express): void {
   app.use('/api/bowler-leagues', requireAuth, bowlerLeaguesRouter);
   app.use('/api/payments', requireAuth, paymentsRouter);
   app.use('/api/financials', requireAuth, financialsRouter);
+  app.use('/api/financials', requireAuth, managePaymentsRouter);
   app.use('/api/financials', requireAuth, rosterPaymentsRouter);
   app.use('/api/financials', requireAuth, rotatingCreditRouter);
   app.use('/api/financials', requireAuth, rosterStandingAutopayRouter);

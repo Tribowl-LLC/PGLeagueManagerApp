@@ -171,6 +171,21 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
     expect(fee).not.toHaveTextContent("Lineage");
   });
 
+  it("keeps the server's historical fee amount visible until responsibility changes", () => {
+    const originalTeam = teams[0];
+    const originalRow = baseRows[0];
+    if (!originalTeam || !originalRow) throw new Error("The worksheet fixture is incomplete");
+    const historicalTeams: AdminWeeklyPaymentsTeam[] = [{
+      ...originalTeam,
+      rows: [{ ...originalRow, feeMinor: 1_800 }],
+    }];
+    renderWorksheet({ teams: historicalTeams });
+
+    const fee = screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" });
+    expect(fee).toHaveTextContent("$18.00");
+    expect(fee).not.toHaveTextContent("$25.00");
+  });
+
   it("keeps card receipts read-only and leaves a single empty entry only when no receipt exists", () => {
     renderWorksheet();
 
