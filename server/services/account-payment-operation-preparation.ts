@@ -6,15 +6,10 @@ import {
   persistAccountPaymentOperationSnapshot,
   type PaymentOperationTransaction,
 } from "../storage/payment-operations.js";
-import type { AccountPaymentOperationSnapshotInput } from "./account-payment-operation-snapshot.js";
-
-export type AccountPaymentOperationPreparationInput = Omit<
-  AccountPaymentOperationSnapshotInput,
-  "operationId" | "providerIdempotencyKey"
-> & {
-  requestKey: string;
-  now?: Date;
-};
+import {
+  buildAccountPaymentOperationSnapshot,
+  type AccountPaymentOperationPreparationInput,
+} from "./account-payment-operation-snapshot.js";
 
 /** Prepare one immutable V4 provider operation and its recipient funding
  * partition atomically. No future obligation identity is reserved here. */
@@ -35,11 +30,7 @@ export async function prepareAccountPaymentOperation(
       now: input.now,
     }, tx);
     if (operation.leagueId !== input.leagueId) throw new Error("account funding operation belongs to another league");
-    await persistAccountPaymentOperationSnapshot(operation, {
-      ...input,
-      operationId: operation.id,
-      providerIdempotencyKey: operation.providerIdempotencyKey,
-    }, tx);
+    await persistAccountPaymentOperationSnapshot(operation, buildAccountPaymentOperationSnapshot(operation, input), tx);
     return operation;
   };
   return existingTransaction ? run(existingTransaction) : db.transaction(run);

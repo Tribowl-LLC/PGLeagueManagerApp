@@ -109,6 +109,14 @@ export type AccountPaymentOperationIdentity = {
   authorizingUserId: number | null;
 };
 
+export type AccountPaymentOperationPreparationInput = Omit<
+  AccountPaymentOperationSnapshotInput,
+  "operationId" | "providerIdempotencyKey"
+> & {
+  requestKey: string;
+  now?: Date;
+};
+
 export type AccountPaymentOperationExecutionSnapshot = AccountPaymentOperationSemanticSnapshot & {
   kind: "account_funding";
   snapshotFingerprint: string;
@@ -121,6 +129,35 @@ export class AccountPaymentOperationSnapshotValidationError extends Error {
     super(message, options);
     this.name = "AccountPaymentOperationSnapshotValidationError";
   }
+}
+
+/** Pure adapter that keeps request orchestration metadata out of the strict
+ * immutable snapshot codec. */
+export function buildAccountPaymentOperationSnapshot(
+  operation: Pick<AccountPaymentOperationIdentity, "id" | "providerIdempotencyKey">,
+  input: AccountPaymentOperationPreparationInput,
+): AccountPaymentOperationSnapshotInput {
+  return {
+    operationId: operation.id,
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    payerBowlerId: input.payerBowlerId,
+    amountMinor: input.amountMinor,
+    fundingPortions: input.fundingPortions,
+    recipientEvidence: input.recipientEvidence,
+    currency: input.currency,
+    providerName: input.providerName,
+    providerIdempotencyKey: operation.providerIdempotencyKey,
+    locationId: input.locationId,
+    providerLocationId: input.providerLocationId,
+    authorizingUserId: input.authorizingUserId,
+    sourceKind: input.sourceKind,
+    sourceId: input.sourceId,
+    customerId: input.customerId,
+    buyerEmail: input.buyerEmail,
+    storeCard: input.storeCard,
+    quoteFingerprint: input.quoteFingerprint,
+  };
 }
 
 function normalize(value: unknown): AccountPaymentOperationSemanticSnapshot {

@@ -11,7 +11,9 @@ import {
   encryptAccountPaymentOperationSnapshot,
   fingerprintAccountPaymentOperationSnapshot,
   reconstructAccountPaymentOperationSnapshot,
+  buildAccountPaymentOperationSnapshot,
   type AccountPaymentOperationIdentity,
+  type AccountPaymentOperationPreparationInput,
   type AccountPaymentOperationSnapshotInput,
 } from "../../server/services/account-payment-operation-snapshot";
 
@@ -264,6 +266,30 @@ describe("account payment funding V4 contract and operation snapshots", () => {
     const reconstructed = reconstructAccountPaymentOperationSnapshot({ operation: operation(value), stored });
     expect(reconstructed.fundingPortions).toEqual([{ portionIndex: 0, creditedBowlerId: 101, amountMinor: value.amountMinor }]);
     expect(reconstructed.allocations).toEqual([]);
+  });
+
+  it("adapts preparation metadata into the exact strict snapshot codec shape", () => {
+    const original = snapshot();
+    const {
+      operationId: _operationId,
+      providerIdempotencyKey: _providerIdempotencyKey,
+      ...semanticInput
+    } = original;
+    void _operationId;
+    void _providerIdempotencyKey;
+    const preparedInput: AccountPaymentOperationPreparationInput = {
+      ...semanticInput,
+      requestKey: "account-funding-preparation-0001",
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    };
+    const built = buildAccountPaymentOperationSnapshot({
+      id: randomUUID(),
+      providerIdempotencyKey: "lv-op1-account-funding-prepare-0001",
+    }, preparedInput);
+
+    expect(built).not.toHaveProperty("requestKey");
+    expect(built).not.toHaveProperty("now");
+    expect(() => encryptAccountPaymentOperationSnapshot(built)).not.toThrow();
   });
 
   it("supports partner-only funding while retaining the original payer separately", () => {

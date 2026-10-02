@@ -789,7 +789,6 @@ async function loadAccountPaymentOperationSnapshot(
     eq(paymentOperationRosterSnapshots.operationId, operation.id),
     eq(paymentOperationRosterSnapshots.organizationId, operation.organizationId),
     eq(paymentOperationRosterSnapshots.leagueId, operation.leagueId),
-    eq(paymentOperationRosterSnapshots.snapshotKind, "interactive"),
   )).limit(1);
   const [creditSnapshot] = await executor.select({ operationId: rotatingCreditPaymentOperationSnapshots.operationId }).from(rotatingCreditPaymentOperationSnapshots).where(and(
     eq(rotatingCreditPaymentOperationSnapshots.operationId, operation.id),
