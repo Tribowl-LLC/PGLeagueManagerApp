@@ -11,6 +11,12 @@ const payerBowlerIdSchema = z.number().int().positive().max(2_147_483_647);
 const idempotencyKeySchema = z.string().trim().min(16).max(109).regex(/^[A-Za-z0-9_-]+$/);
 const quoteFingerprintSchema = z.string().regex(/^lvaccountfundquote:v4:[0-9a-f]{64}$/);
 
+/** GET query strings retain their wire-string type and reject repeated or
+ * malformed payer IDs before the route applies the session role policy. */
+export const accountPaymentParticipantsRequestV4QuerySchema = z.object({
+  payerBowlerId: z.string().regex(/^[1-9][0-9]{0,9}$/).transform(Number).pipe(payerBowlerIdSchema).optional(),
+}).strict();
+
 const accountPaymentFundingParticipantV4Schema = z.object({
   bowlerId: payerBowlerIdSchema,
   name: z.string().trim().min(1).max(255),
@@ -91,6 +97,7 @@ export const accountPaymentFundingSelectionV4Schema = z.discriminatedUnion("kind
 ]);
 
 export const accountPaymentFundingQuoteRequestV4Schema = z.object({
+  payerBowlerId: payerBowlerIdSchema.optional(),
   recipients: z.array(z.object({
     bowlerId: payerBowlerIdSchema,
     selection: accountPaymentFundingSelectionV4Schema,

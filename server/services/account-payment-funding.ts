@@ -295,6 +295,15 @@ async function accountContextInTransaction(
   };
 }
 
+function assertRequestPayerMatches(input: {
+  payerBowlerId: number;
+  request: Pick<AccountPaymentFundingQuoteRequestV4, "payerBowlerId">;
+}): void {
+  if (input.request.payerBowlerId !== undefined && input.request.payerBowlerId !== input.payerBowlerId) {
+    throw new RosterPaymentError("PAYER_SCOPE_MISMATCH", "The selected payer does not match the authorized payer", 403);
+  }
+}
+
 export async function readInteractivePaymentParticipantsV4(input: {
   organizationId: number;
   leagueId: number;
@@ -332,6 +341,7 @@ export async function quoteAccountPaymentFundingV4(input: {
   request: AccountPaymentFundingQuoteRequestV4;
   transaction?: PaymentOperationTransaction;
 }): Promise<AccountPaymentFundingQuoteResponseV4> {
+  assertRequestPayerMatches(input);
   const run = async (tx: PaymentOperationTransaction) => {
     const context = await accountContextInTransaction(tx, input, { lock: !input.transaction });
     if (context.response.accountingMode !== "confirmed_account_v4") {
@@ -432,6 +442,7 @@ export async function chargeAccountPaymentFundingV4(input: {
     quoteFingerprint: string;
   };
 }): Promise<AccountPaymentChargeResultV4> {
+  assertRequestPayerMatches(input);
   const [league] = await db.select({ id: leagues.id, organizationId: leagues.organizationId, locationId: leagues.locationId })
     .from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
   if (!league) throw new RosterPaymentError("NOT_FOUND", "League not found", 404);

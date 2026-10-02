@@ -20,6 +20,9 @@ const mocks = vi.hoisted(() => {
   readDue: vi.fn(),
   quote: vi.fn(),
   charge: vi.fn(),
+  readAccountParticipants: vi.fn(),
+  quoteAccountFunding: vi.fn(),
+  chargeAccountFunding: vi.fn(),
   saveRoster: vi.fn(),
   manual: vi.fn(),
   correct: vi.fn(),
@@ -73,6 +76,16 @@ vi.mock("../../server/services/roster-payment-core.js", () => ({
   repairHistoricalCashPaymentAllocation: (...args: unknown[]) => mocks.repairHistoricalCash(...args),
   RosterPaymentError: mocks.RosterPaymentError,
   RosterPaymentReplay: mocks.RosterPaymentReplay,
+}));
+vi.mock("../../server/services/account-payment-funding.js", () => ({
+  readInteractivePaymentParticipantsV4: (...args: unknown[]) => mocks.readAccountParticipants(...args),
+  quoteAccountPaymentFundingV4: (...args: unknown[]) => mocks.quoteAccountFunding(...args),
+  chargeAccountPaymentFundingV4: (...args: unknown[]) => mocks.chargeAccountFunding(...args),
+}));
+vi.mock("../../server/services/interactive-partner-payment.js", () => ({
+  chargeInteractivePartnerPayments: vi.fn(),
+  quoteInteractivePartnerPayments: vi.fn(),
+  readInteractivePaymentParticipants: vi.fn(),
 }));
 vi.mock("../../server/services/roster-payment-recovery.js", () => ({
   recoverRosterPaymentOperation: vi.fn(),
@@ -130,6 +143,9 @@ beforeEach(() => {
   mocks.hasPaymentManager.mockResolvedValue(false);
   mocks.canPay.mockResolvedValue({ allowed: true });
   mocks.quote.mockResolvedValue({ contractVersion: "interactive-obligation-quote/2", automaticContractVersion: "automatic-fifo-payment/1", obligations: [{ id: "00000000-0000-4000-8000-000000000001", payerBowlerId: 42 }], amountMinor: 1000, currency: "USD", fingerprint: "quote" });
+  mocks.readAccountParticipants.mockResolvedValue({ contractVersion: "interactive-payment-participants/4", payerBowlerId: 42 });
+  mocks.quoteAccountFunding.mockResolvedValue({ contractVersion: "account-payment-funding-quote/4", payerBowlerId: 42 });
+  mocks.chargeAccountFunding.mockResolvedValue({ contractVersion: "account-payment-funding-charge/4", operationId: "operation-1", status: "succeeded", providerPaymentId: "payment-1" });
 });
 
 describe("roster payment route authorization", () => {
@@ -162,6 +178,73 @@ describe("roster payment route authorization", () => {
     const response = await request("/leagues/7/canonical-due-past-due/2", user("user", 11, 42));
     expect(response.status).toBe(200);
     expect(mocks.readDue).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, payerBowlerId: 42 });
+  });
+
+  it("lets an authorized administrator select the payer for V4 checkout", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    const admin = user("org_admin", 11);
+    const participants = await request("/leagues/7/interactive-payment-participants/4?payerBowlerId=42", admin);
+    expect(participants.status).toBe(200);
+    expect(mocks.readAccountParticipants).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, payerBowlerId: 42 });
+
+    const selection = { payerBowlerId: 42, recipients: [{ bowlerId: 42, selection: { kind: "explicit_amount", amountMinor: 1000 } }] };
+    const quote = await request("/leagues/7/interactive-payment-quote/4", admin, { method: "POST", body: JSON.stringify(selection) });
+    expect(quote.status).toBe(200);
+    expect(mocks.quoteAccountFunding).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, payerBowlerId: 42, request: selection });
+
+    const chargeRequest = {
+      ...selection,
+      sourceId: "synthetic-provider-token",
+      sourceKind: "new_card",
+      storeCard: false,
+      idempotencyKey: testRequestKey("admin-v4-charge"),
+      quoteFingerprint: `lvaccountfundquote:v4:${"a".repeat(64)}`,
+    };
+    const charge = await request("/leagues/7/interactive-payment-charge/4", admin, { method: "POST", body: JSON.stringify(chargeRequest) });
+    expect(charge.status).toBe(201);
+    expect(mocks.chargeAccountFunding).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, actorUserId: 1, payerBowlerId: 42, request: chargeRequest });
+  });
+
+  it("does not allow ordinary users to select a different V4 payer", async () => {
+    const ownUser = user("user", 11, 42);
+    const selection = { payerBowlerId: 43, recipients: [{ bowlerId: 43, selection: { kind: "explicit_amount", amountMinor: 1000 } }] };
+    expect((await request("/leagues/7/interactive-payment-participants/4?payerBowlerId=43", ownUser)).status).toBe(404);
+    expect((await request("/leagues/7/interactive-payment-quote/4", ownUser, { method: "POST", body: JSON.stringify(selection) })).status).toBe(404);
+    expect((await request("/leagues/7/interactive-payment-charge/4", ownUser, {
+      method: "POST",
+      body: JSON.stringify({ ...selection, sourceId: "synthetic-provider-token", idempotencyKey: testRequestKey("other-payer"), quoteFingerprint: `lvaccountfundquote:v4:${"b".repeat(64)}` }),
+    })).status).toBe(404);
+    expect(mocks.readAccountParticipants).not.toHaveBeenCalled();
+    expect(mocks.quoteAccountFunding).not.toHaveBeenCalled();
+    expect(mocks.chargeAccountFunding).not.toHaveBeenCalled();
+  });
+
+  it("requires an administrator to select a payer when their account has no linked bowler", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    const admin = user("org_admin", 11);
+    expect((await request("/leagues/7/interactive-payment-participants/4", admin)).status).toBe(400);
+    expect((await request("/leagues/7/interactive-payment-quote/4", admin, {
+      method: "POST",
+      body: JSON.stringify({ recipients: [{ bowlerId: 42, selection: { kind: "explicit_amount", amountMinor: 1000 } }] }),
+    })).status).toBe(400);
+    expect(mocks.readAccountParticipants).not.toHaveBeenCalled();
+    expect(mocks.quoteAccountFunding).not.toHaveBeenCalled();
+  });
+
+  it("keeps payment managers out of V4 card charge even with a selected payer", async () => {
+    mocks.hasPaymentManager.mockResolvedValue(true);
+    const response = await request("/leagues/7/interactive-payment-charge/4", user("payment_manager", 11), {
+      method: "POST",
+      body: JSON.stringify({
+        payerBowlerId: 42,
+        recipients: [{ bowlerId: 42, selection: { kind: "explicit_amount", amountMinor: 1000 } }],
+        sourceId: "synthetic-provider-token",
+        idempotencyKey: testRequestKey("manager-v4-charge"),
+        quoteFingerprint: `lvaccountfundquote:v4:${"c".repeat(64)}`,
+      }),
+    });
+    expect(response.status).toBe(404);
+    expect(mocks.chargeAccountFunding).not.toHaveBeenCalled();
   });
 
   it("does not disclose another bowler through due reads or cross-tenant leagues", async () => {

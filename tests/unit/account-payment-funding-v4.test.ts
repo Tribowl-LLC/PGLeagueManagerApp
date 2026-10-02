@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  accountPaymentParticipantsRequestV4QuerySchema,
   accountPaymentFundingChargeRequestV4Schema,
   accountPaymentFundingQuoteResponseV4Schema,
   accountPaymentFundingQuoteRequestV4Schema,
@@ -276,6 +277,21 @@ describe("account payment funding V4 contract and operation snapshots", () => {
     expect(accountPaymentFundingChargeRequestV4Schema.safeParse({ ...charge, sourceKind: "wallet", storeCard: true }).success).toBe(false);
     expect(accountPaymentFundingQuoteRequestV4Schema.safeParse({ recipients: [{ bowlerId: 202, selection: { kind: "forecast_collection_target", scope: "selected_weeks" } }] }).success).toBe(false);
     expect(accountPaymentFundingQuoteRequestV4Schema.safeParse({ recipients: [{ bowlerId: 202, selection: { kind: "forecast_collection_target", scope: "current_collection", weeks: 1 } }] }).success).toBe(false);
+  });
+
+  it("accepts only one positive payer ID in V4 discovery and quote contracts", () => {
+    expect(accountPaymentParticipantsRequestV4QuerySchema.parse({ payerBowlerId: "42" })).toEqual({ payerBowlerId: 42 });
+    expect(accountPaymentParticipantsRequestV4QuerySchema.safeParse({ payerBowlerId: ["42", "43"] }).success).toBe(false);
+    expect(accountPaymentParticipantsRequestV4QuerySchema.safeParse({ payerBowlerId: "0" }).success).toBe(false);
+    expect(accountPaymentParticipantsRequestV4QuerySchema.safeParse({ leagueId: "12" }).success).toBe(false);
+    expect(accountPaymentFundingQuoteRequestV4Schema.safeParse({
+      payerBowlerId: 42,
+      recipients: [{ bowlerId: 202, selection: { kind: "explicit_amount", amountMinor: 1000 } }],
+    }).success).toBe(true);
+    expect(accountPaymentFundingQuoteRequestV4Schema.safeParse({
+      payerBowlerId: 0,
+      recipients: [{ bowlerId: 202, selection: { kind: "explicit_amount", amountMinor: 1000 } }],
+    }).success).toBe(false);
   });
 
   it("round-trips one combined tender and immutable payer/partner credit portions with zero obligation allocations", () => {
