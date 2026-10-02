@@ -1082,6 +1082,43 @@ export async function releaseOwnedFundingApplicationInTransaction(
     || row.application.amountMinor > row.application.sourceAmountMinor) {
     throw new OwnedPaymentLedgerError("FUNDING_APPLICATION_NOT_RELEASABLE");
   }
+  const [payment] = await tx.select({
+    paymentOperationId: payments.paymentOperationId,
+    disputeId: payments.disputeId,
+    disputedAt: payments.disputedAt,
+  }).from(payments).where(and(
+    eq(payments.id, row.application.paymentId),
+    eq(payments.organizationId, input.organizationId),
+    eq(payments.leagueId, input.leagueId),
+  )).limit(1).for("share");
+  if (!payment || payment.disputeId !== null || payment.disputedAt !== null) {
+    throw new OwnedPaymentLedgerError("FUNDING_SOURCE_REQUIRES_REVIEW");
+  }
+  const sourceOperationId = payment.paymentOperationId;
+  const [disputeRows, refundRows] = await Promise.all([
+    sourceOperationId === null ? Promise.resolve([]) : tx.select({ state: paymentDisputes.state }).from(paymentDisputes).where(and(
+      eq(paymentDisputes.organizationId, input.organizationId),
+      eq(paymentDisputes.paymentOperationId, sourceOperationId),
+    )),
+    tx.select({
+      status: paymentOperations.status,
+      providerObjectId: paymentOperations.providerObjectId,
+      errorClassification: paymentOperations.errorClassification,
+      errorCode: paymentOperations.errorCode,
+    }).from(refundPaymentOperationSnapshots)
+      .innerJoin(paymentOperations, and(
+        eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.leagueId, input.leagueId),
+      )).where(and(
+        eq(refundPaymentOperationSnapshots.paymentId, row.application.paymentId),
+        eq(refundPaymentOperationSnapshots.leagueId, input.leagueId),
+      )),
+  ]);
+  if (disputeRows.some((dispute) => REVIEW_DISPUTE_STATES.has(dispute.state))
+    || refundRows.some((refund) => !isConfirmedNoRefundCreditOutcome(refund))) {
+    throw new OwnedPaymentLedgerError("FUNDING_SOURCE_REQUIRES_REVIEW");
+  }
   const retainedAmountMinor = 0;
   const releasedAmountMinor = row.application.amountMinor - retainedAmountMinor;
   const now = input.now ?? new Date().toISOString();
