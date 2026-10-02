@@ -9,6 +9,11 @@ import {
   ManagePaymentsWorksheetReadError,
   readManagePaymentsWorksheetSnapshot,
 } from "../services/manage-payments-worksheet-read.js";
+import {
+  ManagePaymentsWorksheetWriteError,
+  saveManagePaymentsWorksheet,
+} from "../services/manage-payments-worksheet-write.js";
+import { managePaymentsSaveRequestSchema } from "@shared/manage-payments-contract";
 
 const router = Router();
 const occurrenceQuerySchema = z.string().uuid();
@@ -59,6 +64,52 @@ router.get("/leagues/:leagueId/manage-payments/1", async (req, res) => {
       return sendError(res, "Weekly payment evidence requires review", 409, "WEEKLY_PAYMENT_EVIDENCE_INCOMPATIBLE");
     }
     return sendError(res, "Unable to read the weekly payment worksheet", 500, "INTERNAL_ERROR");
+  }
+});
+
+router.post("/leagues/:leagueId/manage-payments/1", async (req, res) => {
+  if (!req.user) return sendError(res, "Authentication required", 401, "AUTH_REQUIRED");
+  if (req.user.role !== "org_admin" && req.user.role !== "system_admin") {
+    return sendError(res, "Administrator access required", 403, "ADMIN_ACCESS_REQUIRED");
+  }
+
+  const leagueId = positiveId(req.params.leagueId);
+  if (leagueId === null) return sendError(res, "Invalid league id", 400, "INVALID_LEAGUE_ID");
+
+  const organizationId = configuredOrganizationId();
+  if (organizationId === undefined
+    || req.organizationContextId === undefined
+    || req.organizationContextId !== organizationId
+    || !hasConfiguredOrganizationMembership(req.user, organizationId)) {
+    return sendError(res, "Configured business access is unavailable", 403, "ORG_ACCESS_DENIED");
+  }
+  if (!(await hasAdminAccessToLeague(req, leagueId))) {
+    return sendError(res, "Not found", 404, "NOT_FOUND");
+  }
+
+  const parsed = managePaymentsSaveRequestSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "The weekly payment changes are invalid", 400, "INVALID_WEEKLY_PAYMENT_REQUEST");
+  try {
+    return sendSuccess(res, await saveManagePaymentsWorksheet({
+      organizationId,
+      leagueId,
+      actorUserId: req.user.id,
+      request: parsed.data,
+    }));
+  } catch (caught) {
+    if (caught instanceof ManagePaymentsWorksheetWriteError) {
+      switch (caught.code) {
+        case "invalid_request": return sendError(res, caught.message, 400, "INVALID_WEEKLY_PAYMENT_REQUEST");
+        case "state_conflict": return sendError(res, caught.message, 409, "WEEKLY_PAYMENT_STATE_CONFLICT");
+        case "idempotency_conflict": return sendError(res, caught.message, 409, "IDEMPOTENCY_CONFLICT");
+        case "ledger_not_adopted": return sendError(res, caught.message, 409, "WEEKLY_PAYMENT_LEDGER_NOT_ADOPTED");
+        case "manual_receipt_conflict": return sendError(res, caught.message, 409, "MANUAL_RECEIPT_CONFLICT");
+        case "incompatible_evidence": return sendError(res, caught.message, 409, "WEEKLY_PAYMENT_EVIDENCE_INCOMPATIBLE");
+        case "league_not_found": return sendError(res, "Not found", 404, "NOT_FOUND");
+        default: return sendError(res, "Unable to save weekly payments", 500, "INTERNAL_ERROR");
+      }
+    }
+    return sendError(res, "Unable to save weekly payments", 500, "INTERNAL_ERROR");
   }
 });
 

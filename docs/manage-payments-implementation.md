@@ -170,6 +170,7 @@ explicit mapping; adoption must not guess or move money.
    transaction. New and released value applies FIFO to that credited owner's
    oldest confirmed debt only. Surplus remains owned credit; it is not assigned
    to a future week before staff confirms that responsibility.
+
 6. Preserve current standing-autopay consent and cutoff behavior and existing
    weekly/final-collection targets. Existing owner credit can reduce a
    collection. A successful automatic collection without confirmed weekly
@@ -179,6 +180,24 @@ explicit mapping; adoption must not guess or move money.
    is covered, current unused credit may cover the paired unconfirmed fees and
    completed final allocations count. The final-two-week responsibility editor
    is deferred; the worksheet must not ship sample-only paid status.
+
+An adoption cutoff can make historical obligations collectible before staff
+have explicitly saved a worksheet. The worksheet therefore tracks explicit
+confirmation separately from ledger debt eligibility: the first Save for any
+week without a worksheet confirmation records the complete displayed
+responsibility set, even when the adopted history already counts that week as
+confirmed. It retires the complete active legacy responsibility set before
+creating worksheet rows, so the same period cannot retain duplicate
+obligations. Later saves version only changed responsibility rows.
+
+Manual worksheet receipt edits preserve exact receipt identity, cash/check
+type, and business collection date. Increasing or decreasing a receipt voids
+the original tender with audit evidence and records a replacement for the new
+total in the same receipt lineage; clearing it appends a null-payment receipt
+revision. New worksheet receipts default to cash and the selected canonical
+week's local date. These operations release the prior typed funding
+applications and rerun FIFO for every affected account in the same locked
+transaction.
 
 Legacy receipt week mapping follows the approved collection-period rule and
 never uses the week of the debt allocation. Prefer an explicit standing-autopay

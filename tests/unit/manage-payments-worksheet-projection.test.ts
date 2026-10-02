@@ -195,6 +195,17 @@ describe("Manage Payments worksheet projection", () => {
     expect(rows.find((row) => row.bowlerId === 502)).toMatchObject({ responsible: true, feeMinor: 1_000 });
   });
 
+  it("allows an adopted historical week without an explicit worksheet save to be confirmed", () => {
+    const snapshot = buildManagePaymentsWorksheetSnapshot(projectionInput({
+      confirmedOccurrenceIds: new Set(["occ-4"]),
+      explicitConfirmationRevisions: new Map(),
+    }));
+
+    expect(snapshot.weekConfirmed).toBe(true);
+    expect(snapshot.needsConfirmation).toBe(true);
+    expect(snapshot.revision).toBe(0);
+  });
+
   it("keeps multiple exact cash/check receipts and distinct card funding portions visible", () => {
     const secondReceiptId = "b6c7b9ad-883c-4478-8f30-75d2206e9c0c";
     const input = projectionInput({

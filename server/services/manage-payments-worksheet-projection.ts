@@ -840,7 +840,9 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
       timeZone: selectedOccurrence.timezone,
     },
     weekConfirmed,
-    needsConfirmation: !weekConfirmed,
+    // Adoption can classify an old period as confirmed for debt reads before
+    // staff have explicitly saved the complete worksheet responsibility set.
+    needsConfirmation: !isExplicitlyConfirmed,
     revision,
     stateFingerprint,
     teams,

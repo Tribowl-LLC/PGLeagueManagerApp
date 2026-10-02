@@ -101,10 +101,12 @@ function currentReceiptTeam(
   selectedWeekResponsibilityTeam: ReadonlyMap<number, number>,
   receiptHistoryTeam: ReadonlyMap<number, number>,
   currentTeam: ReadonlyMap<number, number>,
+  uniqueHistoricalTeam: ReadonlyMap<number, number>,
 ): number | null {
   return selectedWeekResponsibilityTeam.get(bowlerId)
     ?? receiptHistoryTeam.get(bowlerId)
     ?? currentTeam.get(bowlerId)
+    ?? uniqueHistoricalTeam.get(bowlerId)
     ?? null;
 }
 
@@ -439,6 +441,23 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     }
   }
 
+  const receiptOwnerHistoricalTeams = new Map<number, Set<number>>();
+  for (const rows of responsibilitiesByOccurrence.values()) {
+    for (const row of rows) {
+      for (const bowlerId of [row.mainBowlerId, row.substituteBowlerId, row.payerBowlerId, row.lineagePayerBowlerId, row.prizePayerBowlerId]) {
+        addTeamEvidence(receiptOwnerHistoricalTeams, bowlerId, row.teamId);
+      }
+      const rotating = rotatingAssignmentsByResponsibility.get(row.responsibilityId);
+      if (rotating) addTeamEvidence(receiptOwnerHistoricalTeams, rotating.bowlerId, rotating.teamId);
+    }
+  }
+  const uniqueHistoricalTeamByBowler = new Map<number, number>();
+  for (const [bowlerId, teamIds] of receiptOwnerHistoricalTeams) {
+    if (teamIds.size !== 1) continue;
+    const teamId = [...teamIds][0];
+    if (teamId !== undefined) uniqueHistoricalTeamByBowler.set(bowlerId, teamId);
+  }
+
   const manualReceipts: ManagePaymentsProjectionManualReceipt[] = [];
   for (const parent of selectedReceiptParents) {
     const revision = latestRevisionByReceipt.get(parent.id);
@@ -450,6 +469,7 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
       selectedResponsibilityTeams,
       manualHistoryTeamByBowler,
       currentTeamByBowler,
+      uniqueHistoricalTeamByBowler,
     );
     if (teamId === null || !teamRows.some((team) => team.teamId === teamId)) {
       throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "A manual receipt owner cannot be placed on a league team");
