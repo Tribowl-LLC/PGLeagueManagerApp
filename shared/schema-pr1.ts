@@ -9,6 +9,7 @@ export * from "./schema/teams";
 export * from "./schema/bowlers";
 export * from "./schema/payments";
 export * from "./schema/payment-operations";
+export * from "./schema/account-payment-operations";
 export * from "./schema/webhook-events";
 export * from "./schema/payment-disputes";
 export * from "./schema/payment-dispute-operations";

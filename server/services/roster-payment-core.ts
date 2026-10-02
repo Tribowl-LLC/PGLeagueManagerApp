@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { db } from "../db.js";
 import {
@@ -339,7 +339,7 @@ export async function readRosterPaymentResponsibility(input: { organizationId: n
       inArray(leagueOccurrences.status, ["scheduled", "completed"] as const),
     ))
     .orderBy(asc(leagueOccurrences.startAt), asc(leagueOccurrences.id));
-  const occurrenceResponsibilities = await db.select({
+  const occurrenceResponsibilitiesRows = await db.select({
     occurrenceId: occurrencePaymentResponsibilities.occurrenceId,
     teamId: occurrencePaymentResponsibilities.teamId,
     slotIndex: occurrencePaymentResponsibilities.slotIndex,
@@ -356,7 +356,18 @@ export async function readRosterPaymentResponsibility(input: { organizationId: n
     eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
     eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
     eq(occurrencePaymentResponsibilities.state, "active"),
+    ne(occurrencePaymentResponsibilities.responsibilityKind, "worksheet"),
+    isNotNull(occurrencePaymentResponsibilities.slotId),
+    isNotNull(occurrencePaymentResponsibilities.slotIndex),
+    isNotNull(occurrencePaymentResponsibilities.positionIndex),
+    isNotNull(occurrencePaymentResponsibilities.policy),
   )).orderBy(asc(occurrencePaymentResponsibilities.occurrenceId), asc(occurrencePaymentResponsibilities.teamId), asc(occurrencePaymentResponsibilities.slotIndex), asc(occurrencePaymentResponsibilities.positionIndex));
+  const occurrenceResponsibilities = occurrenceResponsibilitiesRows.filter((row): row is typeof row & {
+    slotIndex: number;
+    positionIndex: number;
+    policy: NonNullable<typeof row.policy>;
+    responsibilityKind: Exclude<typeof row.responsibilityKind, "worksheet">;
+  } => row.slotIndex !== null && row.positionIndex !== null && row.policy !== null && row.responsibilityKind !== "worksheet");
   const slotsByTeam = new Map<number, typeof slots>();
   for (const slot of slots) slotsByTeam.set(slot.teamId, [...(slotsByTeam.get(slot.teamId) ?? []), slot]);
   const activeMainRows = await db.select({ bowlerId: bowlerLeagues.bowlerId, teamId: bowlerLeagues.teamId })
@@ -1359,6 +1370,7 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
       id: occurrencePaymentResponsibilities.id,
       teamId: occurrencePaymentResponsibilities.teamId,
       slotIndex: occurrencePaymentResponsibilities.slotIndex,
+      responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind,
       occurrenceId: occurrencePaymentResponsibilities.occurrenceId,
       state: occurrencePaymentResponsibilities.state,
     }).from(occurrencePaymentResponsibilities).where(and(
@@ -1496,6 +1508,9 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
       if (!owner || !responsibility || !occurrence || occurrence.occurrenceLocalDate === null) {
         throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing canonical owner or date evidence", 503);
       }
+      // The old financial read wire is intentionally slot-based. Worksheet
+      // payer/week rows are projected by Manage Payments, never by this API.
+      if (responsibility.responsibilityKind === "worksheet" || responsibility.slotIndex === null) continue;
       const billingOrdinal = billingByOccurrence.get(obligation.occurrenceId) ?? occurrence.plannedOrdinal;
       if (owner.kind === "team" && (obligation.state === "open" || obligation.state === "partially_settled")
         && !billingByOccurrence.has(obligation.occurrenceId)) {

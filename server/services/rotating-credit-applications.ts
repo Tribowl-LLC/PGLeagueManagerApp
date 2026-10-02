@@ -211,8 +211,10 @@ const REVIEW_DISPUTE_STATES = new Set([
  */
 export async function readRotatingCreditFundingBalancesInTransaction(
   tx: PaymentOperationTransaction,
-  input: { organizationId: number; leagueId: number; bowlerId: number },
+  input: { organizationId: number; leagueId: number; bowlerId?: number; bowlerIds?: readonly number[] },
 ): Promise<RotatingCreditFundingBalance[]> {
+  const bowlerIds = input.bowlerIds ?? (input.bowlerId === undefined ? undefined : [input.bowlerId]);
+  if (!bowlerIds || bowlerIds.length === 0) return [];
   const fundings = await tx.select({
     funding: rotatingCreditFundings,
     payment: payments,
@@ -227,7 +229,7 @@ export async function readRotatingCreditFundingBalancesInTransaction(
     .where(and(
       eq(rotatingCreditFundings.organizationId, input.organizationId),
       eq(rotatingCreditFundings.leagueId, input.leagueId),
-      eq(rotatingCreditFundings.bowlerId, input.bowlerId),
+      inArray(rotatingCreditFundings.bowlerId, [...new Set(bowlerIds)]),
     ))
     .orderBy(asc(rotatingCreditFundings.createdAt), asc(rotatingCreditFundings.id));
   if (fundings.length === 0) return [];

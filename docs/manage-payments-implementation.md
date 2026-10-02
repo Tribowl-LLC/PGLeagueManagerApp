@@ -70,6 +70,33 @@ unchanged. New V4 snapshots prove provider recipient portions without
 obligation reservations; adopted legacy provider funding preserves exact
 snapshot allocation indexes in its authorization evidence rows.
 
+The shared transaction-only service surface lives in
+`server/services/owned-payment-ledger.ts`. It exports:
+
+- `readOwnedLedgerAdoptionInTransaction(tx, { organizationId, leagueId })` to
+  read the unique per-league marker and fail closed on duplicate evidence.
+- `isOccurrenceConfirmedInOwnedLedger(adoption, occurrenceLocalDate, explicit)`
+  to accept explicit confirmation or a date at/before the adoption cutoff. The
+  cutoff is before the current billable occurrence, so current and future
+  weeks stay forecasts unless staff explicitly confirms them.
+- `readConfirmedOwnedObligationsInTransaction(tx, { organizationId, leagueId,
+  bowlerIds? })` to return exact effective debtor/assignment, actual paid,
+  waived, outstanding, and review-hold amounts for confirmed obligations.
+- `readOwnedAccountBalancesInTransaction(tx, { organizationId, leagueId,
+  bowlerIds? })` to bulk-read the union of generic recipient portions and
+  existing rotating lots and return available credit, confirmed debt, and
+  signed net balance.
+- `recordOwnedFundingInTransaction(tx, input)` to record one immutable portion
+  of an already-persisted real manual/provider tender. It rejects a tender
+  already represented by a rotating funding row.
+
+The follow-on ledger implementation adds typed FIFO application/release
+writers and guards. Financial mutations call these helpers only after taking
+the existing league schedule lock. Adopted account-funding refunds remain
+full-tender only: their V3 immutable refund snapshot must bind every recipient
+portion and each portion's unused credit together with current allocation
+evidence before provider I/O. No refund is apportioned across partners.
+
 `occurrence_payment_responsibilities` gains a `worksheet` branch. Worksheet
 rows are payer/week identities associated with a current team, not invented
 slot positions or `main_pays_full` policy rows. Only worksheet rows may have

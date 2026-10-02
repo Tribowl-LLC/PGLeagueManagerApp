@@ -20,6 +20,19 @@ export { payments, insertPaymentSchema, updatePaymentSchema } from "./payments";
 export type { Payment, InsertPaymentInput, InsertPayment, UpdatePayment } from "./payments";
 
 export {
+  accountPaymentOperationSnapshots,
+  ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_VERSION,
+  ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_KINDS,
+  ACCOUNT_PAYMENT_OPERATION_SOURCE_KINDS,
+} from "./account-payment-operations";
+export type {
+  AccountPaymentFundingPortionV4,
+  AccountPaymentRecipientAuthorizationEvidenceV4,
+  AccountPaymentOperationSnapshot,
+  InsertAccountPaymentOperationSnapshot,
+} from "./account-payment-operations";
+
+export {
   paymentOperations,
   refundPaymentOperationSnapshots,
   PAYMENT_OPERATION_TYPES,
