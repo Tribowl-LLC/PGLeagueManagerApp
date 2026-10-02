@@ -29,6 +29,7 @@ import {
   rotatingCreditFundings,
   rotatingCreditApplications,
   rotatingCreditApplicationReversals,
+  weeklyPaymentLedgerAdoptions,
   paymentAllocationCorrections,
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
@@ -2171,6 +2172,13 @@ export async function chargeInteractiveObligations(input: {
         throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different FIFO payment", 409);
       }
       return { operation: existingOperation, quote: null, reused: true };
+    }
+    const [ownedLedgerAdoption] = await tx.select({ id: weeklyPaymentLedgerAdoptions.id }).from(weeklyPaymentLedgerAdoptions).where(and(
+      eq(weeklyPaymentLedgerAdoptions.organizationId, input.organizationId),
+      eq(weeklyPaymentLedgerAdoptions.leagueId, input.leagueId),
+    )).limit(1).for("share");
+    if (ownedLedgerAdoption) {
+      throw new RosterPaymentError("ACCOUNT_PAYMENT_V4_REQUIRED", "This league now uses account-based payment collection. Start a new payment from the account checkout.", 409);
     }
     const payerBowlerIdInput = input.payerBowlerId;
     const quote = await quoteInteractiveObligations({ organizationId: input.organizationId, leagueId: input.leagueId, amountMinor: input.request.amountMinor, payerBowlerId: payerBowlerIdInput, transaction: tx });

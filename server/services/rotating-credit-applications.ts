@@ -6,6 +6,7 @@ import {
   paymentObligations,
   paymentOperations,
   payments,
+  paymentAllocationFundingApplications,
   rotatingCreditApplicationReversals,
   rotatingCreditApplications,
   rotatingCreditFundings,
@@ -255,6 +256,17 @@ export async function readRotatingCreditFundingBalancesInTransaction(
       eq(rotatingCreditApplications.leagueId, input.leagueId),
       inArray(rotatingCreditApplications.fundingId, fundingIds),
     ));
+  const ownedApps = await tx.select({ application: paymentAllocationFundingApplications, allocation: paymentAllocations })
+    .from(paymentAllocationFundingApplications)
+    .innerJoin(paymentAllocations, and(
+      eq(paymentAllocations.id, paymentAllocationFundingApplications.allocationId),
+      eq(paymentAllocations.organizationId, input.organizationId),
+      eq(paymentAllocations.leagueId, input.leagueId),
+    )).where(and(
+      eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
+      inArray(paymentAllocationFundingApplications.rotatingFundingId, fundingIds),
+    ));
   const allTenderAllocations = await tx.select({ allocation: paymentAllocations, funding: rotatingCreditFundings })
     .from(paymentAllocations).innerJoin(rotatingCreditFundings, and(
       eq(rotatingCreditFundings.paymentId, paymentAllocations.paymentId),
@@ -284,7 +296,14 @@ export async function readRotatingCreditFundingBalancesInTransaction(
     inArray(paymentDisputes.paymentOperationId, paymentOperationIds),
   ));
   const disputedOperations = new Set(disputes.filter((row) => REVIEW_DISPUTE_STATES.has(row.state)).map((row) => row.operationId));
-  const applicationAllocationIds = new Set(apps.map(({ application }) => application.allocationId));
+  const applicationAllocationIds = new Set([
+    ...apps.map(({ application }) => application.allocationId),
+    ...ownedApps.map(({ application }) => application.allocationId),
+  ]);
+  const legacyApplicationAllocationIds = new Set(apps.map(({ application }) => application.allocationId));
+  const duplicateRepresentations = new Set(ownedApps
+    .filter(({ application }) => legacyApplicationAllocationIds.has(application.allocationId))
+    .map(({ application }) => application.rotatingFundingId));
   const untrackedCreditPayments = new Set(allTenderAllocations.filter(({ allocation }) => !applicationAllocationIds.has(allocation.id)).map(({ funding }) => funding.id));
 
   return fundings.map(({ funding, payment, operation }) => {
@@ -302,6 +321,17 @@ export async function readRotatingCreditFundingBalancesInTransaction(
         reviewRequired = true;
       }
       if (row.reversal === null && row.allocation.state === "active") appliedMinor += row.allocation.amountMinor;
+    }
+    for (const row of ownedApps.filter(({ application }) => application.rotatingFundingId === funding.id)) {
+      const matches = row.application.genericFundingId === null
+        && row.application.paymentId === funding.paymentId
+        && row.application.creditedBowlerId === funding.bowlerId
+        && row.application.sourceAmountMinor === funding.amountMinor
+        && row.application.amountMinor === row.allocation.amountMinor
+        && row.application.obligationId === row.allocation.obligationId
+        && row.application.allocationId === row.allocation.id;
+      if (!matches || row.allocation.reviewRequired) reviewRequired = true;
+      if (row.allocation.state === "active") appliedMinor += row.allocation.amountMinor;
     }
 
     let refundedMinor = 0;
@@ -336,7 +366,8 @@ export async function readRotatingCreditFundingBalancesInTransaction(
       ? operation === null && payment.providerPaymentId === null
       : operation?.status === "succeeded" && operation.providerObjectId !== null;
     if (payment.bowlerId !== funding.bowlerId || payment.amount !== funding.amountMinor || payment.currency !== funding.currency
-      || untrackedCreditPayments.has(funding.id) || !providerEvidenceValid || payment.status !== "paid" || payment.disputeId !== null || payment.disputedAt !== null
+      || untrackedCreditPayments.has(funding.id) || duplicateRepresentations.has(funding.id)
+      || !providerEvidenceValid || payment.status !== "paid" || payment.disputeId !== null || payment.disputedAt !== null
       || (operation !== null && disputedOperations.has(operation.id))) reviewRequired = true;
 
     const remainder = funding.amountMinor - appliedMinor - refundedMinor - refundHeldMinor;

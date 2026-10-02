@@ -88,7 +88,19 @@ The shared transaction-only service surface lives in
   signed net balance.
 - `recordOwnedFundingInTransaction(tx, input)` to record one immutable portion
   of an already-persisted real manual/provider tender. It rejects a tender
-  already represented by a rotating funding row.
+  already represented by a rotating funding row and validates the exact V4
+  recipient portion or legacy operation allocation-index evidence. Matching
+  finalizer retries return the same immutable funding row.
+- `applyOwnedFundingFifoInTransaction(tx, { organizationId, leagueId,
+  bowlerId, actorUserId, now? })` to apply that credited bowler's generic and
+  rotating lots together against their oldest confirmed obligations. A review
+  hold at the oldest collectible obligation stops later applications; future
+  forecasts never receive an allocation.
+- `releaseOwnedFundingApplicationInTransaction(tx, { organizationId,
+  leagueId, applicationId, actorUserId, reason, idempotencyKey, now? })` to
+  append evidence releasing one exact application in full back to its original
+  credited owner. A correction then re-runs FIFO against the updated confirmed
+  debt. Release retries must match the original application, reason, and actor.
 
 The follow-on ledger implementation adds typed FIFO application/release
 writers and guards. Financial mutations call these helpers only after taking
