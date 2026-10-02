@@ -157,6 +157,7 @@ const UNIT_NO_DB = [
   'tests/unit/test-template-migration-source.test.ts',
   'tests/unit/zod-v4-migration-contracts.test.ts',
   'tests/unit/roster-payment-pr1-contract.test.ts',
+  'tests/unit/manage-payments-contract.test.ts',
   'tests/unit/roster-standing-autopay-contract.test.ts',
   'tests/unit/roster-standing-autopay-wake.test.ts',
   'tests/unit/roster-payment-route-boundaries.test.ts',
