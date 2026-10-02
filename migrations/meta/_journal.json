@@ -365,6 +365,13 @@
       "when": 1790190160145,
       "tag": "0051_square_historical_allocation_correction",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1790975580460,
+      "tag": "0052_weekly_admin_payments_ledger",
+      "breakpoints": true
     }
   ]
 }

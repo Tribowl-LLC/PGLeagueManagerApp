@@ -312,6 +312,12 @@
       "tag": "0051_square_historical_allocation_correction",
       "createdAt": 1790190160145,
       "hash": "07c4a86e1cace467cb5b2cadbb8d8c96ffb07b584304ee53bc0b2ee8c97a1660"
+    },
+    {
+      "idx": 52,
+      "tag": "0052_weekly_admin_payments_ledger",
+      "createdAt": 1790975580460,
+      "hash": "194faa58d01ea1d5504ce26257bce11b2fe458c2853d539482df5b0247ff555f"
     }
   ]
 }

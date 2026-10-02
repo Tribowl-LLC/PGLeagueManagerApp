@@ -41,4 +41,5 @@ export * from "./schema/canonical-occurrences";
 export * from "./schema/canonical-collection-groups";
 export * from "./schema/roster-payments";
 export * from "./schema/rotating-credits";
+export * from "./schema/weekly-payments";
 export * from "./schema/relations";
