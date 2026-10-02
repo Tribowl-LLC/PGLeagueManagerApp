@@ -49,6 +49,14 @@ export function isRosterSnapshotFinalizationError(error: unknown): error is Rost
   return error instanceof RosterSnapshotFinalizationError;
 }
 
+function validatedReceiptTimestamp(operation: { completedAt: string | null }, fallback: string): string {
+  const timestamp = new Date(operation.completedAt ?? fallback);
+  if (!Number.isFinite(timestamp.getTime())) {
+    throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_INCOMPLETE", "The provider receipt timestamp is invalid");
+  }
+  return timestamp.toISOString();
+}
+
 type SnapshotRecord = {
   id?: string;
   obligationId?: string;
@@ -454,7 +462,10 @@ export async function finalizeRosterSnapshotInTransaction(
         paymentOperationId: operation.id,
         notes: "Account funding receipt",
         receiptEmailMissing: snapshot.buyerEmail === null,
-        createdAt: input.now,
+        // Recovery can happen after the weekly boundary. Keep the receipt in
+        // its original provider-completion period when that durable timestamp
+        // is available; finalization time is only a validated fallback.
+        createdAt: validatedReceiptTimestamp(operation, input.now),
       }).returning();
       providerPayment = recoveredPayment;
     }

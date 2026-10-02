@@ -200,6 +200,35 @@ export const accountPaymentFundingChargeRequestV4Schema = accountPaymentFundingQ
 });
 
 export type AccountPaymentFundingSelectionV4 = z.infer<typeof accountPaymentFundingSelectionV4Schema>;
+
+/** States whose provider outcome or canonical finalization can still affect
+ * account credit. A hard decline with no captured provider payment is
+ * conclusive and must not hold up a later checkout. */
+export function isAccountFundingOperationUnresolvedV4(input: {
+  status: string;
+  errorClassification: string | null;
+  providerObjectId: string | null;
+  dispatchClaimedAt?: string | null;
+  attemptCount?: number;
+}): boolean {
+  if (["pending", "leased", "retry_scheduled", "provider_unknown", "reconciliation_required"].includes(input.status)) return true;
+  if (input.status === "action_required") {
+    return input.providerObjectId !== null || input.errorClassification !== "hard_decline";
+  }
+  if (input.status === "failed_terminal") {
+    if (input.providerObjectId !== null) return true;
+    if (["hard_decline", "invalid_request", "configuration"].includes(input.errorClassification ?? "")) return false;
+    if (input.dispatchClaimedAt != null) return true;
+    return input.errorClassification !== "internal";
+  }
+  if (input.status === "canceled") {
+    // A retry/unknown operation may be canceled after a provider attempt.
+    // Cancellation erases the prior error classification, so retain a hold
+    // whenever the durable attempt or dispatch identity leaves ambiguity.
+    return input.providerObjectId !== null || input.dispatchClaimedAt != null || (input.attemptCount ?? 0) > 0;
+  }
+  return false;
+}
 export type AccountPaymentFundingParticipantV4 = z.infer<typeof accountPaymentFundingParticipantV4Schema>;
 export type AccountPaymentParticipantsResponseV4 = z.infer<typeof accountPaymentParticipantsResponseV4Schema>;
 export type AccountPaymentFundingRecipientSelectionV4 = z.infer<typeof accountPaymentFundingQuoteRequestV4Schema>["recipients"][number];

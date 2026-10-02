@@ -46,6 +46,7 @@ import {
   readConfirmedOwnedObligationsInTransaction,
 } from "./owned-payment-ledger.js";
 import { prepareAccountPaymentOperation } from "./account-payment-operation-preparation.js";
+import { hasUnresolvedAccountFundingOverlapInTransaction } from "./account-payment-operation-guards.js";
 import { interactivePaymentOperationExecutor } from "./interactive-payment-operation-executor.js";
 import { paymentOperationRetryExecutor } from "./payment-operation-retry-executor.js";
 import type { AccountPaymentOperationExecutionSnapshot } from "./account-payment-operation-snapshot.js";
@@ -486,6 +487,16 @@ export async function chargeAccountPaymentFundingV4(input: {
     });
     if (quote.quoteFingerprint !== input.request.quoteFingerprint) throw new RosterPaymentError("STALE_QUOTE", "The payment quote is stale; request a new quote", 409);
     if (quote.providerChargeAmountMinor <= 0) throw new RosterPaymentError("ACCOUNT_ALREADY_COVERED", "The selected account targets are already covered by available credit", 409);
+    const chargedRecipientIds = quote.recipients
+      .filter((recipient) => recipient.providerChargeAmountMinor > 0)
+      .map((recipient) => recipient.bowlerId);
+    if (await hasUnresolvedAccountFundingOverlapInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      creditedBowlerIds: chargedRecipientIds,
+    })) {
+      throw new RosterPaymentError("PAYMENT_IN_PROGRESS", "A payment for one of these accounts is still being confirmed", 409);
+    }
     const [payer] = await tx.select().from(bowlers).where(and(
       eq(bowlers.id, input.payerBowlerId), eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true),
     )).limit(1).for("share");

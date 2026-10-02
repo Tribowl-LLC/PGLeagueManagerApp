@@ -74,7 +74,9 @@ export async function recoverRosterPaymentOperation(input: {
   leagueId: number;
   operationId: string;
   actorUserId: number;
+  now?: Date;
 }) {
+  const now = (input.now ?? new Date()).toISOString();
   return db.transaction(async (tx) => {
     await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
     const [operation] = await tx.select().from(paymentOperations).where(and(
@@ -102,7 +104,6 @@ export async function recoverRosterPaymentOperation(input: {
         if (!standingSnapshot) throw new RosterPaymentRecoveryError("NOT_ROSTER_OPERATION", "Only roster-backed payment operations can use this recovery path", 409);
         if (!standing.providerObjectId) throw new RosterPaymentRecoveryError("PROVIDER_EVIDENCE_PENDING", "Provider evidence is not available for recovery", 409);
         if (standing.status !== "succeeded" && standing.status !== "reconciliation_required") throw new RosterPaymentRecoveryError("OPERATION_NOT_RECOVERABLE", "Payment operation is not ready for roster recovery", 409);
-        const now = new Date().toISOString();
         try {
           const finalization = await tx.transaction(async (finalizerTx) => finalizeRosterSnapshotInTransaction(finalizerTx, { organizationId: input.organizationId, leagueId: input.leagueId, operationId: standing.id, now, actorUserId: standing.authorizingUserId ?? input.actorUserId }));
           if (!finalization.finalized) throw new RosterPaymentRecoveryError("ROSTER_FINALIZATION_NOT_CONFIRMED", "Roster payment finalization was not confirmed", 409);
@@ -143,7 +144,6 @@ export async function recoverRosterPaymentOperation(input: {
     if (operation.status !== "succeeded" && operation.status !== "reconciliation_required") {
       throw new RosterPaymentRecoveryError("OPERATION_NOT_RECOVERABLE", "Payment operation is not ready for roster recovery", 409);
     }
-    const now = new Date().toISOString();
     try {
       const finalization = await tx.transaction(async (finalizerTx) => {
         if (isAccountFunding) {
@@ -171,13 +171,34 @@ export async function recoverRosterPaymentOperation(input: {
             if (!restored) throw new RosterSnapshotFinalizationError("OPERATION_CHANGED", "Payment operation changed during recovery");
           }
         }
-        return finalizeRosterSnapshotInTransaction(finalizerTx, {
+        const finalized = await finalizeRosterSnapshotInTransaction(finalizerTx, {
           organizationId: input.organizationId,
           leagueId: input.leagueId,
           operationId: operation.id,
           now,
           actorUserId: operation.authorizingUserId ?? input.actorUserId,
         });
+        // Retain the historical V2/V3 recovery transition. V4 must transition
+        // before funding writes because the owned ledger accepts only succeeded
+        // provider operations; both remain inside this finalization savepoint.
+        if (finalized.finalized && !isAccountFunding && operation.status === "reconciliation_required") {
+          const [restored] = await finalizerTx.update(paymentOperations).set({
+            status: "succeeded",
+            nextAttemptAt: null,
+            errorClassification: null,
+            errorCode: null,
+            completedAt: operation.completedAt ?? now,
+            updatedAt: now,
+          }).where(and(
+            eq(paymentOperations.organizationId, input.organizationId),
+            eq(paymentOperations.leagueId, input.leagueId),
+            eq(paymentOperations.id, operation.id),
+            eq(paymentOperations.status, "reconciliation_required"),
+            eq(paymentOperations.providerObjectId, providerObjectId),
+          )).returning({ id: paymentOperations.id });
+          if (!restored) throw new RosterSnapshotFinalizationError("OPERATION_CHANGED", "Payment operation changed during recovery");
+        }
+        return finalized;
       });
       if (!finalization.finalized) throw new RosterPaymentRecoveryError("ROSTER_FINALIZATION_NOT_CONFIRMED", "Roster payment finalization was not confirmed", 409);
     } catch (error) {

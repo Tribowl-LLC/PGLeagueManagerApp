@@ -14,6 +14,7 @@ import {
   leagues,
   locations,
   occurrencePaymentResponsibilities,
+  accountPaymentOperationSnapshots,
   organizations,
   paymentAllocations,
   paymentObligations,
@@ -24,6 +25,8 @@ import {
   paymentOperationRosterSnapshots,
   payments,
   rotatingCreditFundings,
+  weeklyPaymentFundings,
+  weeklyPaymentLedgerAdoptions,
   rotatingCreditRefunds,
   teamPaymentPolicies,
   teamPaymentSlots,
@@ -46,6 +49,8 @@ import { canonicalCashPaymentDeleteFingerprint, canonicalCashPaymentEditFingerpr
 import { interactivePaymentOperationExecutor } from "../../server/services/interactive-payment-operation-executor";
 import { paymentOperationRetryExecutor } from "../../server/services/payment-operation-retry-executor";
 import { prepareInteractivePaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
+import { prepareAccountPaymentOperation } from "../../server/services/account-payment-operation-preparation";
+import { chargeAccountPaymentFundingV4, quoteAccountPaymentFundingV4 } from "../../server/services/account-payment-funding";
 import { finalizeChargeFromWebhookEvidenceInTransaction } from "../../server/storage/payment-operations";
 import { buildCanonicalScheduleCommandFingerprint, cancelOccurrence, rescheduleOccurrence } from "../../server/services/canonical-occurrence-transactions";
 import { lockLeagueSchedule } from "../../server/storage/league-schedule-lock";
@@ -117,7 +122,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (organizationId) await deleteOrganization(organizationId);
+  if (organizationId) {
+    await db.delete(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.organizationId, organizationId));
+    await db.delete(accountPaymentOperationSnapshots).where(eq(accountPaymentOperationSnapshots.organizationId, organizationId));
+    await db.delete(weeklyPaymentLedgerAdoptions).where(eq(weeklyPaymentLedgerAdoptions.organizationId, organizationId));
+    await deleteOrganization(organizationId);
+  }
 });
 
 // Each test owns its occurrence/payment evidence. Release only unfinished
@@ -627,6 +637,66 @@ async function createRosterOperation(
     if (!operation) throw new Error("fixture operation was not created");
     return { operation };
   });
+}
+
+async function ensureOwnedLedgerAdoption(): Promise<string> {
+  const [existing] = await db.select({ id: weeklyPaymentLedgerAdoptions.id }).from(weeklyPaymentLedgerAdoptions).where(and(
+    eq(weeklyPaymentLedgerAdoptions.organizationId, organizationId),
+    eq(weeklyPaymentLedgerAdoptions.leagueId, leagueId),
+  )).limit(1);
+  if (existing) return existing.id;
+  const preflight = randomUUID().replaceAll("-", "").repeat(2);
+  const result = randomUUID().replaceAll("-", "").repeat(2);
+  const [adoption] = await db.insert(weeklyPaymentLedgerAdoptions).values({
+    organizationId,
+    leagueId,
+    adoptedThroughLocalDate: "2037-12-31",
+    preflightFingerprint: `lvweeklyadoptpre:v1:${preflight}`,
+    resultFingerprint: `lvweeklyadopt:v1:${result}`,
+    grandfatheredAllocationCount: 0,
+    recordedByUserId: actorUserId,
+  }).returning({ id: weeklyPaymentLedgerAdoptions.id });
+  if (!adoption) throw new Error("account funding adoption fixture was not created");
+  return adoption.id;
+}
+
+async function createAccountFundingOperation(input: {
+  requestKey?: string;
+  amountMinor?: number;
+  quoteFingerprint?: string;
+  sourceId?: string;
+  now?: Date;
+}) {
+  const amountMinor = input.amountMinor ?? 2_000;
+  const sourceId = input.sourceId ?? `cnon:account-recovery-${randomUUID()}`;
+  const operation = await prepareAccountPaymentOperation({
+    requestKey: input.requestKey ?? `account-recovery-${randomUUID()}`,
+    organizationId,
+    leagueId,
+    payerBowlerId: bowlerId,
+    amountMinor,
+    fundingPortions: [{ portionIndex: 0, creditedBowlerId: bowlerId, amountMinor }],
+    recipientEvidence: [{
+      recipientBowlerId: bowlerId,
+      role: "self",
+      paymentLinkId: null,
+      linkFingerprint: null,
+      selection: { kind: "explicit_amount", amountMinor },
+    }],
+    currency: "USD",
+    providerName: "square",
+    locationId,
+    providerLocationId: null,
+    authorizingUserId: actorUserId,
+    sourceKind: "new_card",
+    sourceId,
+    customerId: null,
+    buyerEmail: "roster-main@example.test",
+    storeCard: false,
+    quoteFingerprint: input.quoteFingerprint ?? `lvaccountfundquote:v4:${randomUUID().replaceAll("-", "").repeat(2)}`,
+    now: input.now,
+  });
+  return operation;
 }
 
 async function createCashEvidence(obligationId: string, amountMinor: number, createdAt = "2038-02-01T12:00:00.000Z") {
@@ -1820,8 +1890,174 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     const { operation } = await createRosterOperation(fixture.obligation.id, fixture.responsibility.id);
     await db.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(eq(occurrencePaymentResponsibilities.id, fixture.responsibility.id));
     await expect(db.transaction(async (tx) => finalizeRosterSnapshotInTransaction(tx, { organizationId, leagueId, operationId: operation.id, now: "2038-02-02T21:00:00.000Z", actorUserId }))).rejects.toBeInstanceOf(RosterSnapshotFinalizationError);
+    await db.update(paymentOperations).set({
+      status: "reconciliation_required",
+      errorClassification: "internal",
+      errorCode: "ROSTER_RESERVATION_STALE",
+      updatedAt: "2038-02-02T21:00:00.000Z",
+    }).where(eq(paymentOperations.id, operation.id));
     const recovered = await recoverRosterPaymentOperation({ organizationId, leagueId, operationId: operation.id, actorUserId });
     expect(recovered.status).toBe("reconciliation_required");
+  });
+
+  it("restores the retained V2/V3 success transition after successful recovery", async () => {
+    const fixture = await createOccurrence();
+    const { operation } = await createRosterOperation(fixture.obligation.id, fixture.responsibility.id);
+    await db.update(paymentOperations).set({
+      status: "reconciliation_required",
+      errorClassification: "internal",
+      errorCode: "ROSTER_FINALIZATION_PENDING",
+      updatedAt: "2038-02-02T21:00:00.000Z",
+    }).where(eq(paymentOperations.id, operation.id));
+
+    const recovered = await recoverRosterPaymentOperation({ organizationId, leagueId, operationId: operation.id, actorUserId });
+
+    expect(recovered).toMatchObject({ id: operation.id, status: "succeeded", errorClassification: null, errorCode: null });
+  });
+
+  it("recovers V4 funding with the original capture timestamp across a weekly boundary", async () => {
+    await ensureOwnedLedgerAdoption();
+    const captureAt = new Date("2038-02-07T23:59:00.000Z");
+    const recoveryAt = new Date("2038-02-08T00:01:00.000Z");
+    const operation = await createAccountFundingOperation({
+      requestKey: `account-capture-boundary-${randomUUID()}`,
+      now: captureAt,
+    });
+    const providerPaymentId = `account-provider-${operation.id}`;
+    await db.update(paymentOperations).set({
+      status: "reconciliation_required",
+      providerObjectId: providerPaymentId,
+      errorClassification: "provider_unknown",
+      errorCode: "CAPTURE_FINALIZATION_PENDING",
+      attemptCount: 1,
+      startedAt: captureAt.toISOString(),
+      dispatchClaimedAt: captureAt.toISOString(),
+      completedAt: captureAt.toISOString(),
+      updatedAt: captureAt.toISOString(),
+    }).where(eq(paymentOperations.id, operation.id));
+
+    const recovered = await recoverRosterPaymentOperation({
+      organizationId,
+      leagueId,
+      operationId: operation.id,
+      actorUserId,
+      now: recoveryAt,
+    });
+
+    expect(recovered.status).toBe("succeeded");
+    const [payment] = await db.select({ createdAt: payments.createdAt }).from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+      eq(payments.paymentOperationId, operation.id),
+    )).limit(1);
+    const [funding] = await db.select({ createdAt: weeklyPaymentFundings.createdAt }).from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, organizationId),
+      eq(weeklyPaymentFundings.leagueId, leagueId),
+      eq(weeklyPaymentFundings.authorizationOperationId, operation.id),
+    )).limit(1);
+    expect(payment).toBeDefined();
+    expect(new Date(payment.createdAt).toISOString()).toBe(captureAt.toISOString());
+    expect(payment.createdAt.slice(0, 10)).toBe("2038-02-07");
+    expect(funding).toBeDefined();
+    expect(new Date(funding.createdAt).toISOString()).toBe(recoveryAt.toISOString());
+    await recoverRosterPaymentOperation({ organizationId, leagueId, operationId: operation.id, actorUserId, now: recoveryAt });
+    expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.paymentOperationId, operation.id))).toHaveLength(1);
+    expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.authorizationOperationId, operation.id))).toHaveLength(1);
+  });
+
+  it("rolls back the V4 success transition and receipt when funding finalization fails", async () => {
+    const adoptionId = await ensureOwnedLedgerAdoption();
+    const captureAt = new Date("2038-03-01T20:00:00.000Z");
+    const operation = await createAccountFundingOperation({
+      requestKey: `account-recovery-rollback-${randomUUID()}`,
+      now: captureAt,
+    });
+    await db.update(paymentOperations).set({
+      status: "reconciliation_required",
+      providerObjectId: `account-provider-${operation.id}`,
+      errorClassification: "provider_unknown",
+      errorCode: "CAPTURE_FINALIZATION_PENDING",
+      attemptCount: 1,
+      startedAt: captureAt.toISOString(),
+      dispatchClaimedAt: captureAt.toISOString(),
+      completedAt: captureAt.toISOString(),
+      updatedAt: captureAt.toISOString(),
+    }).where(eq(paymentOperations.id, operation.id));
+    await db.delete(weeklyPaymentLedgerAdoptions).where(eq(weeklyPaymentLedgerAdoptions.id, adoptionId));
+
+    const recovered = await recoverRosterPaymentOperation({
+      organizationId,
+      leagueId,
+      operationId: operation.id,
+      actorUserId,
+      now: new Date("2038-03-08T20:00:00.000Z"),
+    });
+
+    expect(recovered).toMatchObject({ id: operation.id, status: "reconciliation_required" });
+    expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.paymentOperationId, operation.id))).toHaveLength(0);
+    expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.authorizationOperationId, operation.id))).toHaveLength(0);
+  });
+
+  it("blocks a different-key V4 charge on an overlapping account but replays the same key first", async () => {
+    await ensureOwnedLedgerAdoption();
+    const selection = { kind: "explicit_amount" as const, amountMinor: 2_000 };
+    const recipientRequest = { recipients: [{ bowlerId, selection }] };
+    const quote = await quoteAccountPaymentFundingV4({ organizationId, leagueId, payerBowlerId: bowlerId, request: recipientRequest });
+    const unresolvedRequestKey = `account-overlap-a-${randomUUID()}`;
+    const unresolvedSourceId = `cnon:account-overlap-a-${randomUUID()}`;
+    const sameKeyRequestKey = `account-overlap-b-${randomUUID()}`;
+    const sameKeySourceId = `cnon:account-overlap-b-${randomUUID()}`;
+    const unresolved = await createAccountFundingOperation({
+      requestKey: unresolvedRequestKey,
+      quoteFingerprint: quote.quoteFingerprint,
+      sourceId: unresolvedSourceId,
+    });
+    const sameKey = await createAccountFundingOperation({
+      requestKey: sameKeyRequestKey,
+      quoteFingerprint: quote.quoteFingerprint,
+      sourceId: sameKeySourceId,
+    });
+    const provider = vi.spyOn(paymentProviderFactory, "getPaymentProvider").mockResolvedValue({
+      providerName: "square",
+      locationId,
+    } as Awaited<ReturnType<typeof paymentProviderFactory.getPaymentProvider>>);
+    const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute").mockResolvedValue(sameKey);
+    const rearm = vi.spyOn(paymentOperationRetryExecutor, "rearm").mockResolvedValue(undefined);
+    const makeRequest = (idempotencyKey: string, sourceId: string) => ({
+      ...recipientRequest,
+      sourceId,
+      sourceKind: "new_card" as const,
+      storeCard: false,
+      idempotencyKey,
+      quoteFingerprint: quote.quoteFingerprint,
+    });
+    try {
+      await expect(chargeAccountPaymentFundingV4({
+        organizationId,
+        leagueId,
+        actorUserId,
+        payerBowlerId: bowlerId,
+        request: makeRequest(`account-overlap-new-${randomUUID()}`, `cnon:new-${randomUUID()}`),
+      })).rejects.toMatchObject({ code: "PAYMENT_IN_PROGRESS", status: 409 });
+      expect(execute).not.toHaveBeenCalled();
+
+      const replay = await chargeAccountPaymentFundingV4({
+        organizationId,
+        leagueId,
+        actorUserId,
+        payerBowlerId: bowlerId,
+        request: makeRequest(sameKeyRequestKey, sameKeySourceId),
+      });
+
+      expect(replay).toMatchObject({ operationId: sameKey.id, status: "pending" });
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(rearm).toHaveBeenCalledTimes(1);
+      expect(unresolved.status).toBe("pending");
+    } finally {
+      provider.mockRestore();
+      execute.mockRestore();
+      rearm.mockRestore();
+    }
   });
 
   it("recovers by request key only for the same tenant, league, and authorizing user", async () => {

@@ -5,6 +5,7 @@ import {
   accountPaymentFundingQuoteResponseV4Schema,
   accountPaymentFundingQuoteRequestV4Schema,
   accountPaymentParticipantsResponseV4Schema,
+  isAccountFundingOperationUnresolvedV4,
   resolveAccountPaymentFundingChargeAmountV4,
 } from "@shared/account-payment-v4-contract";
 import {
@@ -100,6 +101,35 @@ function quoteRecipient(input: {
 }
 
 describe("account payment funding V4 contract and operation snapshots", () => {
+  it("blocks overlapping credit only while an earlier capture remains unresolved", () => {
+    for (const status of ["pending", "leased", "retry_scheduled", "provider_unknown", "reconciliation_required"]) {
+      expect(isAccountFundingOperationUnresolvedV4({ status, errorClassification: null, providerObjectId: null })).toBe(true);
+    }
+    expect(isAccountFundingOperationUnresolvedV4({
+      status: "action_required",
+      errorClassification: "hard_decline",
+      providerObjectId: null,
+    })).toBe(false);
+    expect(isAccountFundingOperationUnresolvedV4({
+      status: "action_required",
+      errorClassification: "provider_unknown",
+      providerObjectId: null,
+    })).toBe(true);
+    expect(isAccountFundingOperationUnresolvedV4({
+      status: "action_required",
+      errorClassification: "hard_decline",
+      providerObjectId: "captured-payment-id",
+    })).toBe(true);
+    expect(isAccountFundingOperationUnresolvedV4({ status: "failed_terminal", errorClassification: "hard_decline", providerObjectId: null })).toBe(false);
+    expect(isAccountFundingOperationUnresolvedV4({ status: "failed_terminal", errorClassification: "hard_decline", providerObjectId: null, dispatchClaimedAt: "2026-01-01T00:00:00.000Z" })).toBe(false);
+    expect(isAccountFundingOperationUnresolvedV4({ status: "failed_terminal", errorClassification: "invalid_request", providerObjectId: null })).toBe(false);
+    expect(isAccountFundingOperationUnresolvedV4({ status: "failed_terminal", errorClassification: "provider_unknown", providerObjectId: null })).toBe(true);
+    expect(isAccountFundingOperationUnresolvedV4({ status: "failed_terminal", errorClassification: "internal", providerObjectId: null, dispatchClaimedAt: "2026-01-01T00:00:00.000Z" })).toBe(true);
+    expect(isAccountFundingOperationUnresolvedV4({ status: "canceled", errorClassification: null, providerObjectId: null, attemptCount: 1 })).toBe(true);
+    expect(isAccountFundingOperationUnresolvedV4({ status: "canceled", errorClassification: null, providerObjectId: null, attemptCount: 0 })).toBe(false);
+    expect(isAccountFundingOperationUnresolvedV4({ status: "succeeded", errorClassification: null, providerObjectId: "captured-payment-id" })).toBe(false);
+  });
+
   it("discovers legacy mode without changing V3 participant semantics", () => {
     expect(accountPaymentParticipantsResponseV4Schema.safeParse({
       contractVersion: "interactive-payment-participants/4",
