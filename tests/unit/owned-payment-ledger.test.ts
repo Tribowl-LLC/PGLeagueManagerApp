@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { legacyProviderRecipientItemsMatchSnapshot, isOccurrenceConfirmedInOwnedLedger, planOwnedFundingFifo, type OwnedConfirmedObligation, type OwnedPaymentFundingLot } from "../../server/services/owned-payment-ledger.js";
+import {
+  isOccurrenceConfirmedInOwnedLedger,
+  isOwnedPaymentLedgerInvariantError,
+  legacyProviderRecipientItemsMatchSnapshot,
+  OWNED_PAYMENT_LEDGER_INVARIANT_SQLSTATE,
+  OWNED_PAYMENT_TENDER_LEDGER_CONSTRAINT,
+  planOwnedFundingFifo,
+  type OwnedConfirmedObligation,
+  type OwnedPaymentFundingLot,
+} from "../../server/services/owned-payment-ledger.js";
 
 function debt(overrides: Partial<OwnedConfirmedObligation> & Pick<OwnedConfirmedObligation, "obligationId" | "dueAt" | "outstandingMinor">): OwnedConfirmedObligation {
   return {
@@ -45,6 +54,24 @@ describe("owned payment ledger confirmation eligibility", () => {
   it("does not infer confirmation from a current calendar date or malformed local date", () => {
     expect(isOccurrenceConfirmedInOwnedLedger(null, "2026-10-02", false)).toBe(false);
     expect(isOccurrenceConfirmedInOwnedLedger({ adoptedThroughLocalDate: "2026-10-30" }, "not-a-date", false)).toBe(false);
+  });
+});
+
+describe("owned payment ledger SQL failure mapping", () => {
+  it("only recognizes the callable ledger invariant SQLSTATE and constraint through wrapped errors", () => {
+    expect(isOwnedPaymentLedgerInvariantError({
+      code: OWNED_PAYMENT_LEDGER_INVARIANT_SQLSTATE,
+      constraint: OWNED_PAYMENT_TENDER_LEDGER_CONSTRAINT,
+    })).toBe(true);
+    expect(isOwnedPaymentLedgerInvariantError({ cause: {
+      code: OWNED_PAYMENT_LEDGER_INVARIANT_SQLSTATE,
+      constraint: OWNED_PAYMENT_TENDER_LEDGER_CONSTRAINT,
+    } })).toBe(true);
+    expect(isOwnedPaymentLedgerInvariantError({
+      code: OWNED_PAYMENT_LEDGER_INVARIANT_SQLSTATE,
+      constraint: "payment_allocations_conservation",
+    })).toBe(false);
+    expect(isOwnedPaymentLedgerInvariantError({ code: "23514", constraint: OWNED_PAYMENT_TENDER_LEDGER_CONSTRAINT })).toBe(false);
   });
 });
 

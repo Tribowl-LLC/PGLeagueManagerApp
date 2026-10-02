@@ -45,6 +45,25 @@ export class OwnedPaymentLedgerError extends Error {
   }
 }
 
+/** SQLSTATE used by the callable PostgreSQL ledger assertion. Provider
+ * finalizers must map this failure to reconciliation-required while keeping
+ * the captured tender evidence for a safe retry. */
+export const OWNED_PAYMENT_LEDGER_INVARIANT_SQLSTATE = "PWL01" as const;
+export const OWNED_PAYMENT_TENDER_LEDGER_CONSTRAINT = "owned_payment_tender_ledger_guard" as const;
+
+/** Postgres driver errors are sometimes wrapped by a service boundary; inspect
+ * the cause chain but require both the custom SQLSTATE and constraint name. */
+export function isOwnedPaymentLedgerInvariantError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 6 && current !== null && typeof current === "object"; depth += 1) {
+    const candidate = current as { code?: unknown; constraint?: unknown; cause?: unknown };
+    if (candidate.code === OWNED_PAYMENT_LEDGER_INVARIANT_SQLSTATE
+      && candidate.constraint === OWNED_PAYMENT_TENDER_LEDGER_CONSTRAINT) return true;
+    current = candidate.cause;
+  }
+  return false;
+}
+
 export interface OwnedAccountBalance {
   bowlerId: number;
   availableCreditMinor: number;
@@ -56,6 +75,23 @@ export interface OwnedAccountBalance {
 export interface OwnedLedgerScope {
   organizationId: number;
   leagueId: number;
+}
+
+export interface AssertOwnedPaymentTenderInput extends OwnedLedgerScope {
+  paymentId: number;
+}
+
+/** Assert one exact tender after all payment, V4 recipient funding portions,
+ * and FIFO allocations have been written. The same SQL validator is also
+ * called by deferred database guards; calling it here makes provider capture
+ * finalization failures observable inside its recovery savepoint. */
+export async function assertOwnedPaymentTenderInTransaction(
+  tx: PaymentOperationTransaction,
+  scope: AssertOwnedPaymentTenderInput,
+): Promise<void> {
+  await tx.execute(sql`SELECT assert_owned_payment_tender_ledger(
+    ${scope.organizationId}, ${scope.leagueId}, ${scope.paymentId}
+  )`);
 }
 
 export interface ReadOwnedAccountBalancesInput extends OwnedLedgerScope {
