@@ -25,7 +25,9 @@ import { createHash } from "node:crypto";
 import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
 import { reconstructAccountPaymentOperationSnapshot } from "./account-payment-operation-snapshot.js";
 import {
+  assertOwnedPaymentTenderInTransaction,
   applyOwnedFundingFifoInTransaction,
+  isOwnedPaymentLedgerInvariantError,
   OwnedPaymentLedgerError,
   recordOwnedFundingInTransaction,
 } from "./owned-payment-ledger.js";
@@ -527,6 +529,16 @@ export async function finalizeRosterSnapshotInTransaction(
           now: input.now,
         }));
       }
+      try {
+        await assertOwnedPaymentTenderInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          paymentId: providerPayment.id,
+        });
+      } catch (error) {
+        if (!isOwnedPaymentLedgerInvariantError(error)) throw error;
+        throw new RosterSnapshotFinalizationError("TENDER_LEDGER_INVARIANT", "The captured receipt failed the owned ledger consistency check");
+      }
       const allocations = applicationIds.length === 0 ? [] : await tx.select({
         allocationId: paymentAllocationFundingApplications.allocationId,
       }).from(paymentAllocationFundingApplications).where(and(
@@ -536,6 +548,7 @@ export async function finalizeRosterSnapshotInTransaction(
       ));
       return { finalized: true, allocationIds: allocations.map((row) => row.allocationId) };
     } catch (error) {
+      if (isRosterSnapshotFinalizationError(error)) throw error;
       if (error instanceof OwnedPaymentLedgerError) {
         throw new RosterSnapshotFinalizationError(error.code, "Account funding could not be recorded or applied");
       }
