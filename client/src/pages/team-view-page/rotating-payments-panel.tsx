@@ -14,7 +14,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { Link } from "wouter";
 import type { TeamBowlerEntry } from "@/lib/bowler-league-utils";
 import { formatCurrency } from "@/lib/utils";
-import { isFinancialRowMoneyCovered, projectedOutstandingMinor } from "@/lib/financial-utils";
+import { areFinancialRowsMoneyCovered, projectedOutstandingMinor } from "@/lib/financial-utils";
 import type { BowlerWithAccount, League } from "@shared/schema";
 import {
   serializeCanonicalRotatingRosterFingerprint,
@@ -879,7 +879,7 @@ export function RotatingPaymentsPanel({
                     const memberRows = bowlerId === null ? [] : teamRows.filter((row) => row.occurrenceId === selectedOccurrence.id && row.actualBowlerId === bowlerId);
                     const memberOutstanding = memberRows.reduce((total, row) => total + projectedOutstandingMinor(row), 0);
                     const memberNeedsReview = memberRows.some((row) => row.reviewRequired);
-                    const memberMoneyCovered = memberRows.length > 0 && memberRows.every(isFinancialRowMoneyCovered);
+                    const memberMoneyCovered = areFinancialRowsMoneyCovered(memberRows);
                     const memberPaymentStatus = bowlerId === null
                       ? "No bowler confirmed"
                       : memberRows.length === 0
@@ -955,7 +955,7 @@ export function RotatingPaymentsPanel({
               : remainderByOccurrence.size === 0 ? <p className="text-sm text-muted-foreground">No team-owned rotating obligations are recorded for this team yet.</p>
                 : <div className="overflow-x-auto rounded-md border"><table className="w-full min-w-130 text-left text-sm"><thead className="border-b bg-muted/50"><tr><th className="px-3 py-2 font-medium">League date</th><th className="px-3 py-2 font-medium">Balance status</th><th className="px-3 py-2 text-right font-medium">Remaining</th></tr></thead><tbody>
                   {[...remainderByOccurrence.entries()].sort((left, right) => left[1].localDate.localeCompare(right[1].localDate)).map(([occurrenceId, balance]) => {
-                    const moneyCovered = balance.rows.length > 0 && balance.rows.every(isFinancialRowMoneyCovered);
+                    const moneyCovered = areFinancialRowsMoneyCovered(balance.rows);
                     const isPaid = balanceQuery.data?.data?.accountProjection
                       ? moneyCovered
                       : balance.rows.some((row) => row.state === "settled");

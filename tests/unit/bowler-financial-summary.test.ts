@@ -3,6 +3,7 @@ import type { CanonicalDuePastDueRowV2 } from "@shared/roster-payment-contract";
 import {
   confirmedCollectiblePastDueMinor,
   confirmedCurrentDueMinor,
+  areFinancialRowsMoneyCovered,
   countCanonicalPaidWeeks,
   deriveBowlerFinancials,
   isFinancialRowMoneyCovered,
@@ -136,6 +137,7 @@ describe("deriveBowlerFinancials", () => {
 
     expect(countCanonicalPaidWeeks([creditedFuture, waivedOnly], 4)).toBe(1);
     expect(countCanonicalPaidWeeks([creditedFuture, waivedOnly], 99)).toBe(0);
+    expect(countCanonicalPaidWeeks([waivedOnly], 4)).toBe(0);
     expect(isFinancialRowMoneyCovered(waivedOnly)).toBe(false);
 
     const result = deriveBowlerFinancials([creditedFuture, waivedOnly], AS_OF, 0, {
@@ -184,5 +186,52 @@ describe("deriveBowlerFinancials", () => {
     expect(confirmedCurrentDueMinor(confirmed)).toBe(600);
     expect(confirmedCollectiblePastDueMinor(forecast)).toBe(0);
     expect(confirmedCurrentDueMinor(forecast)).toBe(0);
+  });
+
+  it("counts a paid split week with a fully waived component and preserves null debtor scope", () => {
+    const paidComponent = row({
+      occurrenceId: "split-week",
+      amountMinor: 1_500,
+      allocatedMinor: 1_500,
+      outstandingMinor: 0,
+      stillOwed: false,
+      state: "settled",
+      classification: "settled",
+      accountProjection: {
+        owner: { kind: "bowler", bowlerId: 4 },
+        effectiveDebtorBowlerId: 4,
+        confirmationStatus: "confirmed",
+        projectedCreditMinor: 0,
+      },
+    });
+    const waivedComponent = row({
+      occurrenceId: "split-week",
+      amountMinor: 1_000,
+      waivedMinor: 1_000,
+      allocatedMinor: 0,
+      outstandingMinor: 0,
+      stillOwed: false,
+      state: "settled",
+      classification: "settled",
+      accountProjection: {
+        owner: { kind: "bowler", bowlerId: 4 },
+        effectiveDebtorBowlerId: 4,
+        confirmationStatus: "confirmed",
+        projectedCreditMinor: 0,
+      },
+    });
+    const unassignedHistoricalPayer = row({
+      payerBowlerId: 4,
+      accountProjection: {
+        owner: { kind: "team", teamId: 3 },
+        effectiveDebtorBowlerId: null,
+        confirmationStatus: "confirmed",
+        projectedCreditMinor: 2_500,
+      },
+    });
+
+    expect(areFinancialRowsMoneyCovered([paidComponent, waivedComponent])).toBe(true);
+    expect(countCanonicalPaidWeeks([paidComponent, waivedComponent], 4)).toBe(1);
+    expect(countCanonicalPaidWeeks([unassignedHistoricalPayer], 4)).toBe(0);
   });
 });

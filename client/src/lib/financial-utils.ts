@@ -44,18 +44,34 @@ export function effectiveFinancialDebtorBowlerId(
   return row.accountProjection ? row.accountProjection.effectiveDebtorBowlerId : row.payerBowlerId;
 }
 
-export function isFinancialRowMoneyCovered(row: Pick<FinancialReadRowContract,
+type MoneyCoveredFinancialRow = Pick<FinancialReadRowContract,
   "amountMinor" | "allocatedMinor" | "waivedMinor" | "state" | "reviewRequired" | "accountProjection"
->): boolean {
-  const projectedCreditMinor = row.accountProjection?.projectedCreditMinor ?? 0;
-  const requiredMinor = row.amountMinor - row.waivedMinor;
-  const coveredMinor = row.allocatedMinor + projectedCreditMinor;
-  return Number.isSafeInteger(row.amountMinor) && row.amountMinor > 0
-    && Number.isSafeInteger(row.allocatedMinor) && row.allocatedMinor >= 0
-    && Number.isSafeInteger(row.waivedMinor) && row.waivedMinor >= 0 && row.waivedMinor <= row.amountMinor
-    && Number.isSafeInteger(projectedCreditMinor) && projectedCreditMinor >= 0
-    && requiredMinor > 0 && coveredMinor > 0 && coveredMinor >= requiredMinor
-    && row.state !== "voided" && !row.reviewRequired;
+> & Pick<FinancialReadRowContract, "outstandingMinor">;
+
+export function areFinancialRowsMoneyCovered(rows: readonly MoneyCoveredFinancialRow[]): boolean {
+  if (rows.length === 0) return false;
+  let hasGenuineMoney = false;
+  const everyComponentCovered = rows.every((row) => {
+    const projectedCreditMinor = row.accountProjection?.projectedCreditMinor ?? 0;
+    const requiredMinor = row.amountMinor - row.waivedMinor;
+    const coveredMinor = row.allocatedMinor + projectedCreditMinor;
+    const valid = Number.isSafeInteger(row.amountMinor) && row.amountMinor > 0
+      && Number.isSafeInteger(row.allocatedMinor) && row.allocatedMinor >= 0
+      && Number.isSafeInteger(row.waivedMinor) && row.waivedMinor >= 0 && row.waivedMinor <= row.amountMinor
+      && Number.isSafeInteger(row.outstandingMinor) && row.outstandingMinor >= 0
+      && Number.isSafeInteger(projectedCreditMinor) && projectedCreditMinor >= 0
+      && row.state !== "voided" && !row.reviewRequired;
+    if (!valid) return false;
+    if (requiredMinor === 0) return row.waivedMinor === row.amountMinor && row.outstandingMinor === 0;
+    if (coveredMinor <= 0 || coveredMinor < requiredMinor) return false;
+    hasGenuineMoney = true;
+    return true;
+  });
+  return everyComponentCovered && hasGenuineMoney;
+}
+
+export function isFinancialRowMoneyCovered(row: MoneyCoveredFinancialRow): boolean {
+  return areFinancialRowsMoneyCovered([row]);
 }
 
 export function confirmedCollectiblePastDueMinor(row: OwnedProjectionDisplayRow): number {
@@ -87,17 +103,15 @@ export function countCanonicalPaidWeeks(rows: CanonicalDuePastDueRowV2[], bowler
   if (!Number.isSafeInteger(bowlerId) || !bowlerId || bowlerId <= 0) return 0;
   const byOccurrence = new Map<string, CanonicalDuePastDueRowV2[]>();
   for (const row of rows) {
-    if ((row.accountProjection?.effectiveDebtorBowlerId ?? row.payerBowlerId) !== bowlerId
+    if (effectiveFinancialDebtorBowlerId(row) !== bowlerId
       || row.state === "voided" || row.classification === "voided" || !row.occurrenceId) continue;
     byOccurrence.set(row.occurrenceId, [...(byOccurrence.get(row.occurrenceId) ?? []), row]);
   }
 
   let paidWeeks = 0;
   for (const obligations of byOccurrence.values()) {
-    const isFullyCovered = obligations.every((row) => {
-      if (row.accountProjection) {
-        return Number.isSafeInteger(row.outstandingMinor) && row.outstandingMinor >= 0 && isFinancialRowMoneyCovered(row);
-      }
+    const hasAccountProjection = obligations.some((row) => row.accountProjection !== undefined);
+    const isFullyCovered = hasAccountProjection ? areFinancialRowsMoneyCovered(obligations) : obligations.every((row) => {
       const valuesAreValid = Number.isSafeInteger(row.amountMinor) && row.amountMinor > 0
         && Number.isSafeInteger(row.allocatedMinor) && row.allocatedMinor >= 0
         && Number.isSafeInteger(row.waivedMinor) && row.waivedMinor >= 0 && row.waivedMinor <= row.amountMinor

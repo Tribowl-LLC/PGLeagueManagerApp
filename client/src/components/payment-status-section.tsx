@@ -202,7 +202,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({ league, bo
     // Keep the dashboard's existing authoritative balance projection. The
     // profile/history surfaces expose review evidence separately before using
     // their collectible balance policy.
-    remainingBalance: summary.remainingBalance,
+    remainingBalance: report?.accountProjection ? summary.remainingBalance : report?.totals.outstandingMinor ?? 0,
     waivedAmount: summary.waivedAmount,
   };
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading canonical payment evidence…</p>;
