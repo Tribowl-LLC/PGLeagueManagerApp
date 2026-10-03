@@ -214,7 +214,15 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     cashOwnerPortionIndexes.add(ownerPortionKey);
     return true;
   }) === true;
-  const ownedUnusedManualCashEditEvidence = Boolean(
+  const ownedCashAllocationHistoryIsValid = Boolean(evidence
+    && evidence.allocations.every((allocation) => allocation.state !== null
+      && Number.isSafeInteger(allocation.amountMinor)
+      && allocation.amountMinor > 0
+      && Number.isSafeInteger(allocation.bowlerId)
+      && allocation.bowlerId > 0)
+    && evidence.allocations.filter((allocation) => allocation.state === "active")
+      .reduce((sum, allocation) => sum + allocation.amountMinor, 0) === evidence.allocatedMinor);
+  const ownedManualCashEditEvidence = Boolean(
     canCorrect
       && payment
       && payment.id > 0
@@ -226,10 +234,17 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
       && evidence.paymentType === "cash"
       && evidence.status === "confirmed_paid"
       && payment.status === "paid"
-      && evidence.source === "prepaid_credit"
       && evidence.fundingPortions !== undefined
       && evidence.fundingPortions.length > 0
       && cashFundingPortionIdentitiesAreUnique
+      && Number.isSafeInteger(evidence.amountMinor)
+      && Number.isSafeInteger(evidence.allocatedMinor)
+      && evidence.allocatedMinor >= 0
+      && Number.isSafeInteger(evidence.unallocatedMinor)
+      && evidence.unallocatedMinor >= 0
+      && (evidence.allocatedMinor === 0
+        ? evidence.source === "prepaid_credit"
+        : evidence.source === "canonical_allocation")
       && evidence.fundingPortions.every((portion) => Number.isSafeInteger(portion.amountMinor)
         && portion.amountMinor > 0
         && typeof portion.fundingId === "string"
@@ -239,17 +254,20 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
         && Number.isSafeInteger(portion.creditedBowlerId)
         && (portion.creditedBowlerId ?? 0) > 0
         && Number.isSafeInteger(portion.availableMinor)
-        && portion.availableMinor === portion.amountMinor
-        && portion.appliedMinor === 0
+        && Number.isSafeInteger(portion.appliedMinor)
+        && portion.availableMinor >= 0
+        && portion.appliedMinor >= 0
+        && portion.availableMinor + portion.appliedMinor === portion.amountMinor
         && portion.refundedCreditMinor === 0
         && portion.totalRefundedMinor === 0
         && portion.heldCreditMinor === 0
         && !portion.reviewRequired)
       && evidence.fundingPortions.reduce((sum, portion) => sum + portion.amountMinor, 0) === evidence.amountMinor
+      && evidence.fundingPortions.reduce((sum, portion) => sum + portion.availableMinor, 0) === evidence.unallocatedMinor
+      && evidence.fundingPortions.reduce((sum, portion) => sum + portion.appliedMinor, 0) === evidence.allocatedMinor
       && evidence.amountMinor === payment.amount
-      && evidence.allocatedMinor === 0
-      && evidence.unallocatedMinor === payment.amount
-      && evidence.allocations.length === 0
+      && evidence.allocatedMinor + evidence.unallocatedMinor === payment.amount
+      && ownedCashAllocationHistoryIsValid
       && (evidence.appliedTo?.length ?? 0) === 0
       && !evidence.unresolved
       && !evidence.reviewRequired
@@ -258,7 +276,16 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
       && evidence.operationType === null
       && evidence.operationStatus === null
       && !evidence.refund.present
+      && evidence.refund.amountMinor === 0
+      && evidence.refund.providerRefundId === null
+      && evidence.creditRefunds?.completedAmountMinor === 0
+      && evidence.creditRefunds.heldAmountMinor === 0
+      && !evidence.creditRefunds.reviewRequired
+      && evidence.creditRefunds.providerRefundIds.length === 0
       && !evidence.dispute.present
+      && evidence.dispute.amountMinor === 0
+      && evidence.dispute.disputeId === null
+      && !evidence.dispute.reviewRequired
       && payment.providerPaymentId === null
       // The payment list sanitizer omits this internal operation ID. Canonical evidence must still prove it is null.
       && payment.paymentOperationId == null
@@ -273,7 +300,7 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
       && payment?.status === "paid"
       && evidence?.status === "confirmed_paid"
       && evidence?.allocations.every((allocation) => allocation.state === "active"))
-      || ownedUnusedManualCashEditEvidence,
+      || ownedManualCashEditEvidence,
   );
 
   useEffect(() => {
