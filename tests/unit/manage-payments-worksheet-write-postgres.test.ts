@@ -8,6 +8,7 @@ import {
   locations,
   occurrencePaymentResponsibilities,
   organizations,
+  paymentObligationOwnerRevisions,
   paymentAllocationFundingApplications,
   paymentAllocations,
   paymentObligations,
@@ -43,6 +44,7 @@ let thirdBowlerId = 0;
 let selectedOccurrenceId = "";
 let mainLegacyResponsibilityId = "";
 let mainLegacyObligationId = "";
+let unassignedSlotId = "";
 
 async function addBowler(name: string, order: number): Promise<number> {
   const [bowler] = await db.insert(bowlers).values({ name, organizationId }).returning({ id: bowlers.id });
@@ -106,6 +108,9 @@ beforeAll(async () => {
   ]).returning({ id: teamPaymentSlots.id, slotIndex: teamPaymentSlots.slotIndex });
   const mainSlot = createdSlots.find((slot) => slot.slotIndex === 0);
   if (!mainSlot) throw new Error("worksheet main slot fixture was not created");
+  const unassignedSlot = createdSlots.find((slot) => slot.slotIndex === 1);
+  if (!unassignedSlot) throw new Error("worksheet unassigned slot fixture was not created");
+  unassignedSlotId = unassignedSlot.id;
   const [occurrence] = await db.select().from(leagueOccurrences).where(and(
     eq(leagueOccurrences.organizationId, organizationId),
     eq(leagueOccurrences.leagueId, leagueId),
@@ -221,7 +226,7 @@ describe("Manage Payments worksheet atomic writer", () => {
     const firstSave = await saveManagePaymentsWorksheet(emptyConfirmation);
     expect(firstSave.snapshot).toMatchObject({ weekConfirmed: true, needsConfirmation: false, revision: 1 });
     const legacyAfter = await db.select().from(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, mainLegacyResponsibilityId));
-    expect(legacyAfter[0]?.state).toBe("voided");
+    expect(legacyAfter[0]?.state).toBe("active");
     const newResponsibilities = await db.select().from(occurrencePaymentResponsibilities).where(and(
       eq(occurrencePaymentResponsibilities.organizationId, organizationId),
       eq(occurrencePaymentResponsibilities.leagueId, leagueId),
@@ -229,21 +234,18 @@ describe("Manage Payments worksheet atomic writer", () => {
       eq(occurrencePaymentResponsibilities.state, "active"),
       eq(occurrencePaymentResponsibilities.responsibilityKind, "worksheet"),
     ));
-    expect(newResponsibilities).toHaveLength(1);
-    expect(newResponsibilities[0]).toMatchObject({ payerBowlerId: mainBowlerId, amountMinor: 2_500, worksheetFeeComponent: "full" });
+    expect(newResponsibilities).toHaveLength(0);
     const replay = await saveManagePaymentsWorksheet(emptyConfirmation);
     expect(replay.replayed).toBe(true);
     expect(replay.snapshot.revision).toBe(1);
     const oldObligation = await db.select().from(paymentObligations).where(eq(paymentObligations.id, mainLegacyObligationId));
-    expect(oldObligation[0]?.state).toBe("voided");
+    expect(oldObligation[0]?.state).toBe("open");
 
     let current = firstSave.snapshot;
-    const currentMainResponsibility = newResponsibilities[0];
-    if (!currentMainResponsibility) throw new Error("active worksheet responsibility is missing");
     const [mainObligation] = await db.select().from(paymentObligations).where(and(
       eq(paymentObligations.organizationId, organizationId),
       eq(paymentObligations.leagueId, leagueId),
-      eq(paymentObligations.responsibilityId, currentMainResponsibility.id),
+      eq(paymentObligations.responsibilityId, mainLegacyResponsibilityId),
     ));
     if (!mainObligation) throw new Error("main worksheet obligation is missing");
     const [rotatingTender] = await db.insert(payments).values({
@@ -420,5 +422,90 @@ describe("Manage Payments worksheet atomic writer", () => {
     await expect(saveManagePaymentsWorksheet(saveInput(current, [rowChange(current, mainBowlerId, {
       manualReceiptEdits: [{ receiptId: foreignReceipt.receiptId, expectedRevision: foreignReceipt.revision, amountMinor: 500 }],
     })], "worksheet-foreign-receipt-0008"))).rejects.toBeInstanceOf(ManagePaymentsWorksheetWriteError);
+  });
+
+  it("converts a safe unassigned future team forecast to the selected worksheet payer", async () => {
+    const [occurrence] = await db.select().from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, organizationId),
+      eq(leagueOccurrences.leagueId, leagueId),
+    )).orderBy(asc(leagueOccurrences.plannedOrdinal)).offset(1).limit(1);
+    if (!occurrence?.authoritativeLocalDate) throw new Error("future canonical occurrence fixture was not created");
+    const [forecast] = await db.insert(occurrencePaymentResponsibilities).values({
+      organizationId,
+      leagueId,
+      occurrenceId: occurrence.id,
+      teamId,
+      slotId: unassignedSlotId,
+      slotIndex: 1,
+      positionIndex: 1,
+      version: 1,
+      state: "active",
+      responsibilityKind: "rotating",
+      mainBowlerId: null,
+      substituteBowlerId: null,
+      payerBowlerId: null,
+      lineagePayerBowlerId: null,
+      prizePayerBowlerId: null,
+      policy: "main_pays_full",
+      worksheetFeeComponent: null,
+      amountMinor: 2_500,
+      lineageAmountMinor: null,
+      prizeFundAmountMinor: null,
+      currency: "USD",
+      dueAt: occurrence.startAt,
+      pastDueAt: occurrence.startAt,
+      recordedByUserId: actorUserId,
+    }).returning({ id: occurrencePaymentResponsibilities.id });
+    if (!forecast) throw new Error("unassigned forecast responsibility was not created");
+    const [forecastObligation] = await db.insert(paymentObligations).values({
+      organizationId,
+      leagueId,
+      occurrenceId: occurrence.id,
+      responsibilityId: forecast.id,
+      component: "full",
+      payerBowlerId: null,
+      amountMinor: 2_500,
+      currency: "USD",
+      dueAt: occurrence.startAt,
+      pastDueAt: occurrence.startAt,
+      state: "open",
+      createdByUserId: actorUserId,
+    }).returning({ id: paymentObligations.id });
+    if (!forecastObligation) throw new Error("unassigned forecast obligation was not created");
+    await db.insert(paymentObligationOwnerRevisions).values({
+      organizationId,
+      leagueId,
+      obligationId: forecastObligation.id,
+      revisionNumber: 1,
+      ownerKind: "team",
+      ownerBowlerId: null,
+      ownerTeamId: teamId,
+      reason: "rotating_materialization",
+      recordedByUserId: actorUserId,
+    });
+
+    const snapshot = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: occurrence.id });
+    expect(snapshot).toMatchObject({ weekConfirmed: false, needsConfirmation: true });
+    const saved = await saveManagePaymentsWorksheet(saveInput(snapshot, [
+      rowChange(snapshot, mainBowlerId, { responsible: false }),
+      rowChange(snapshot, substituteBowlerId, { responsible: true }),
+    ], "worksheet-unassigned-forecast-0001"));
+    expect(saved.snapshot).toMatchObject({ weekConfirmed: true, needsConfirmation: false, revision: 1 });
+    expect(saved.snapshot.teams.flatMap((team) => team.rows)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ bowlerId: mainBowlerId, responsible: false }),
+      expect.objectContaining({ bowlerId: substituteBowlerId, responsible: true, feeMinor: 2_500, balanceMinor: -2_500 }),
+    ]));
+    const [retiredForecast] = await db.select().from(paymentObligations).where(eq(paymentObligations.id, forecastObligation.id));
+    const [retiredResponsibility] = await db.select().from(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, forecast.id));
+    expect(retiredForecast?.state).toBe("voided");
+    expect(retiredResponsibility?.state).toBe("voided");
+    expect(await db.select().from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+      eq(occurrencePaymentResponsibilities.responsibilityKind, "worksheet"),
+      eq(occurrencePaymentResponsibilities.payerBowlerId, substituteBowlerId),
+    ))).toHaveLength(1);
   });
 });

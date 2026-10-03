@@ -5,6 +5,7 @@ import { positiveId } from "./games-scores-scope.js";
 import { hasAdminAccessToLeague } from "../utils/access-control.js";
 import { hasConfiguredOrganizationMembership } from "../middleware/organization.js";
 import { configuredOrganizationId } from "../services/single-tenant-context.js";
+import { adminWriteLimiter } from "../middleware/rate-limit.js";
 import {
   ManagePaymentsWorksheetReadError,
   readManagePaymentsWorksheetSnapshot,
@@ -67,7 +68,7 @@ router.get("/leagues/:leagueId/manage-payments/1", async (req, res) => {
   }
 });
 
-router.post("/leagues/:leagueId/manage-payments/1", async (req, res) => {
+router.post("/leagues/:leagueId/manage-payments/1", adminWriteLimiter, async (req, res) => {
   if (!req.user) return sendError(res, "Authentication required", 401, "AUTH_REQUIRED");
   if (req.user.role !== "org_admin" && req.user.role !== "system_admin") {
     return sendError(res, "Administrator access required", 403, "ADMIN_ACCESS_REQUIRED");

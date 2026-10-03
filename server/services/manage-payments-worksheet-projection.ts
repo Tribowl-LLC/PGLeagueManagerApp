@@ -101,7 +101,12 @@ export interface ManagePaymentsProjectionBalance {
 }
 
 export interface ManagePaymentsProjectionFinalObligation {
+  obligationId: string;
+  responsibilityId: string;
   occurrenceId: string;
+  teamId: number;
+  component: ManagePaymentFeeComponent;
+  payerBowlerId: number | null;
   debtorBowlerId: number;
   amountMinor: number;
   paidMinor: number;
@@ -412,6 +417,98 @@ function responsibilityRows(
   }];
 }
 
+function confirmedResponsibilityRows(
+  occurrenceId: string,
+  responsibilities: readonly ManagePaymentsProjectionResponsibility[],
+  input: ManagePaymentsProjectionInput,
+): ProjectedResponsibility[] {
+  const worksheetRows = responsibilities
+    .filter((row) => row.kind === "worksheet")
+    .flatMap((row) => responsibilityRows(row, input.rotatingAssignmentsByResponsibility));
+  const legacyRows = responsibilities.filter((row) => row.kind !== "worksheet");
+  const legacyIds = new Set(legacyRows.map((row) => row.responsibilityId));
+  const obligationRows = input.finalObligations.filter((row) => row.occurrenceId === occurrenceId
+    && legacyIds.has(row.responsibilityId));
+  const versionByResponsibility = new Map(legacyRows.map((row) => [row.responsibilityId, row.version]));
+  const projected: ProjectedResponsibility[] = [...worksheetRows];
+  const rowsByResponsibility = new Map<string, ManagePaymentsProjectionFinalObligation[]>();
+  for (const obligation of obligationRows) {
+    rowsByResponsibility.set(obligation.responsibilityId, [
+      ...(rowsByResponsibility.get(obligation.responsibilityId) ?? []),
+      obligation,
+    ]);
+  }
+
+  for (const responsibility of legacyRows) {
+    const obligations = rowsByResponsibility.get(responsibility.responsibilityId) ?? [];
+    const componentsByBowler = new Map<number, ManagePaymentsProjectionFinalObligation[]>();
+    for (const obligation of obligations) {
+      componentsByBowler.set(obligation.debtorBowlerId, [
+        ...(componentsByBowler.get(obligation.debtorBowlerId) ?? []),
+        obligation,
+      ]);
+    }
+    for (const [bowlerId, components] of componentsByBowler) {
+      const lineage = components.filter((row) => row.component === "lineage");
+      const prize = components.filter((row) => row.component === "prize");
+      const full = components.filter((row) => row.component === "full");
+      const samePayerSplit = responsibility.kind === "split"
+        && responsibility.lineagePayerBowlerId === bowlerId
+        && responsibility.prizePayerBowlerId === bowlerId;
+      const allPositiveSplitComponentsRetained = samePayerSplit
+        && (responsibility.lineageAmountMinor === 0 || lineage.length > 0)
+        && (responsibility.prizeAmountMinor === 0 || prize.length > 0);
+      if (allPositiveSplitComponentsRetained && full.length === 0 && (lineage.length > 0 || prize.length > 0)) {
+        projected.push({
+          teamId: responsibility.teamId,
+          bowlerId,
+          feeComponent: "full",
+          feeMinor: [...lineage, ...prize].reduce((sum, row) => sum + row.amountMinor, 0),
+          responsibilityId: responsibility.responsibilityId,
+          version: versionByResponsibility.get(responsibility.responsibilityId) ?? 0,
+        });
+        continue;
+      }
+      if (full.length > 0) {
+        for (const row of full) {
+          projected.push({
+            teamId: row.teamId,
+            bowlerId,
+            feeComponent: "full",
+            feeMinor: row.amountMinor,
+            responsibilityId: row.responsibilityId,
+            version: versionByResponsibility.get(row.responsibilityId) ?? 0,
+          });
+        }
+      }
+      if (lineage.length > 0 && prize.length > 0) {
+        const lineageMinor = lineage.reduce((sum, row) => sum + row.amountMinor, 0);
+        const prizeMinor = prize.reduce((sum, row) => sum + row.amountMinor, 0);
+        projected.push({
+          teamId: responsibility.teamId,
+          bowlerId,
+          feeComponent: "full",
+          feeMinor: lineageMinor + prizeMinor,
+          responsibilityId: responsibility.responsibilityId,
+          version: versionByResponsibility.get(responsibility.responsibilityId) ?? 0,
+        });
+      } else {
+        for (const row of [...lineage, ...prize]) {
+          projected.push({
+            teamId: row.teamId,
+            bowlerId,
+            feeComponent: row.component,
+            feeMinor: row.amountMinor,
+            responsibilityId: row.responsibilityId,
+            version: versionByResponsibility.get(row.responsibilityId) ?? 0,
+          });
+        }
+      }
+    }
+  }
+  return projected;
+}
+
 function finalBillableWeeks(schedule: LeagueOccurrenceScheduleReadContract): LeagueOccurrenceScheduleOccurrence[] {
   const billable = schedule.occurrences.filter(isBillableOccurrence).sort(compareOccurrenceBillingOrder);
   return billable.slice(-2);
@@ -463,9 +560,10 @@ function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<numbe
     const explicitRevision = input.explicitConfirmationRevisions.get(occurrence.occurrenceId);
     const confirmed = input.confirmedOccurrenceIds.has(occurrence.occurrenceId);
     const candidateRows = input.responsibilitiesByOccurrence.get(occurrence.occurrenceId) ?? [];
-    const candidateResponsibilities = candidateRows
-      .filter((row) => explicitRevision !== undefined ? row.kind === "worksheet" : row.kind !== "worksheet")
-    const savedRows = candidateResponsibilities.flatMap((row) => responsibilityRows(row, input.rotatingAssignmentsByResponsibility));
+    const candidateResponsibilities = candidateRows.filter((row) => row.kind !== "worksheet" || explicitRevision !== undefined);
+    const savedRows = explicitRevision !== undefined
+      ? confirmedResponsibilityRows(occurrence.occurrenceId, candidateResponsibilities, input)
+      : candidateResponsibilities.flatMap((row) => responsibilityRows(row, input.rotatingAssignmentsByResponsibility));
     const selected = confirmed
       ? savedRows
       : [...savedRows, ...defaultMainResponsibilities(input, occurrence.occurrenceId, candidateResponsibilities)];
@@ -574,12 +672,14 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
   const isExplicitlyConfirmed = confirmationRevision !== undefined;
   const candidateSavedResponsibilities = input.responsibilitiesByOccurrence.get(selectedOccurrence.occurrenceId) ?? [];
   const sourceResponsibilities = candidateSavedResponsibilities.filter((row) => {
-    if (isExplicitlyConfirmed) return row.kind === "worksheet";
+    if (isExplicitlyConfirmed) return true;
     return row.kind !== "worksheet";
   });
   const useSavedResponsibilities = isExplicitlyConfirmed || sourceResponsibilities.length > 0;
-  const actualRows = sourceResponsibilities.flatMap((row) => responsibilityRows(row, input.rotatingAssignmentsByResponsibility));
-  const defaults = !weekConfirmed
+  const actualRows = isExplicitlyConfirmed
+    ? confirmedResponsibilityRows(selectedOccurrence.occurrenceId, sourceResponsibilities, input)
+    : sourceResponsibilities.flatMap((row) => responsibilityRows(row, input.rotatingAssignmentsByResponsibility));
+  const defaults = !isExplicitlyConfirmed
     ? defaultMainResponsibilities(input, selectedOccurrence.occurrenceId, sourceResponsibilities)
     : [];
   const exactByBowler = new Map<number, ProjectedResponsibility>();
@@ -749,7 +849,7 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
           ? true
           : useSavedResponsibilities
           ? false
-          : !weekConfirmed && seed.rosterRole === "main";
+          : !isExplicitlyConfirmed && seed.rosterRole === "main";
     const feeComponent = exact?.teamId === seed.teamId ? exact.feeComponent : "full";
     const defaultResponsibility = defaults.find((row) => row.bowlerId === bowlerId && row.teamId === seed.teamId);
     const feeMinor = exact?.teamId === seed.teamId ? exact.feeMinor : defaultResponsibility?.feeMinor ?? (responsible ? fullFeeMinor : 0);

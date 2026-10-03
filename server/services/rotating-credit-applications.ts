@@ -508,11 +508,28 @@ export async function applyRotatingCreditToConfirmedObligationsInTransaction(
  * corrected. Original allocation/application/tender rows remain auditable. */
 export async function reverseRotatingCreditApplicationsForAssignmentChangeInTransaction(
   tx: PaymentOperationTransaction,
-  input: { organizationId: number; leagueId: number; assignmentId: string; actorUserId: number; reason: string; now?: string },
+  input: {
+    organizationId: number;
+    leagueId: number;
+    assignmentId: string;
+    actorUserId: number;
+    reason: string;
+    obligationIds?: readonly string[];
+    paymentId?: number;
+    now?: string;
+  },
 ): Promise<string[]> {
   const reason = input.reason.trim();
   if (reason.length === 0 || reason.length > 500) throw new RotatingCreditLedgerError("REVERSAL_REASON_INVALID");
+  if (input.obligationIds?.length === 0) return [];
   const now = input.now ?? new Date().toISOString();
+  const predicates = [
+    eq(rotatingCreditApplications.organizationId, input.organizationId),
+    eq(rotatingCreditApplications.leagueId, input.leagueId),
+    eq(rotatingCreditApplications.assignmentId, input.assignmentId),
+  ];
+  if (input.obligationIds) predicates.push(inArray(rotatingCreditApplications.obligationId, [...new Set(input.obligationIds)]));
+  if (input.paymentId !== undefined) predicates.push(eq(rotatingCreditApplications.paymentId, input.paymentId));
   const rows = await tx.select({
     application: rotatingCreditApplications,
     allocation: paymentAllocations,
@@ -542,11 +559,7 @@ export async function reverseRotatingCreditApplicationsForAssignmentChangeInTran
       eq(rotatingCreditApplicationReversals.organizationId, input.organizationId),
       eq(rotatingCreditApplicationReversals.leagueId, input.leagueId),
     ))
-    .where(and(
-      eq(rotatingCreditApplications.organizationId, input.organizationId),
-      eq(rotatingCreditApplications.leagueId, input.leagueId),
-      eq(rotatingCreditApplications.assignmentId, input.assignmentId),
-    )).orderBy(asc(rotatingCreditApplications.appliedAt), asc(rotatingCreditApplications.id))
+    .where(and(...predicates)).orderBy(asc(rotatingCreditApplications.appliedAt), asc(rotatingCreditApplications.id))
     // paymentOperations and reversals are LEFT JOINed; lock only the required
     // application/allocation rows so PostgreSQL never tries to lock a nullable
     // side of the join.

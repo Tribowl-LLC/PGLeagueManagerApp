@@ -204,6 +204,203 @@ describe("Manage Payments worksheet projection", () => {
     expect(snapshot.weekConfirmed).toBe(true);
     expect(snapshot.needsConfirmation).toBe(true);
     expect(snapshot.revision).toBe(0);
+    expect(snapshot.teams[0]?.rows[0]).toMatchObject({ responsible: true, feeMinor: 1_000 });
+  });
+
+  it("projects confirmed legacy split payers from retained obligation components and amounts", () => {
+    const input = projectionInput({
+      members: [
+        { teamId: 31, bowlerId: 501, displayName: "Avery Lane", order: 0, rosterRole: "main" },
+        { teamId: 31, bowlerId: 502, displayName: "Blair Quinn", order: 1, rosterRole: "substitute" },
+      ],
+      displayNamesByBowler: new Map([[501, "Avery Lane"], [502, "Blair Quinn"]]),
+      responsibilitiesByOccurrence: new Map([[
+        "occ-4",
+        [{
+          responsibilityId: "retained-legacy-split",
+          teamId: 31,
+          slotIndex: 0,
+          kind: "split",
+          payerBowlerId: 501,
+          mainBowlerId: 501,
+          substituteBowlerId: 502,
+          lineagePayerBowlerId: 501,
+          prizePayerBowlerId: 502,
+          worksheetFeeComponent: null,
+          amountMinor: 1_000,
+          lineageAmountMinor: 700,
+          prizeAmountMinor: 300,
+          version: 1,
+        }],
+      ]]),
+      explicitConfirmationRevisions: new Map([["occ-4", 1]]),
+      finalObligations: [
+        {
+          obligationId: "lineage-obligation",
+          responsibilityId: "retained-legacy-split",
+          occurrenceId: "occ-4",
+          teamId: 31,
+          component: "lineage",
+          payerBowlerId: 501,
+          debtorBowlerId: 501,
+          amountMinor: 700,
+          paidMinor: 200,
+          waivedMinor: 100,
+          outstandingMinor: 400,
+          reviewRequired: false,
+        },
+        {
+          obligationId: "prize-obligation",
+          responsibilityId: "retained-legacy-split",
+          occurrenceId: "occ-4",
+          teamId: 31,
+          component: "prize",
+          payerBowlerId: 502,
+          debtorBowlerId: 502,
+          amountMinor: 300,
+          paidMinor: 300,
+          waivedMinor: 0,
+          outstandingMinor: 0,
+          reviewRequired: false,
+        },
+      ],
+    });
+
+    const rows = buildManagePaymentsWorksheetSnapshot(input).teams[0]?.rows ?? [];
+    expect(rows.find((row) => row.bowlerId === 501)).toMatchObject({ responsible: true, feeComponent: "lineage", feeMinor: 700 });
+    expect(rows.find((row) => row.bowlerId === 502)).toMatchObject({ responsible: true, feeComponent: "prize", feeMinor: 300 });
+  });
+
+  it("keeps a same-payer split displayed as its exact positive full amount when one component is zero", () => {
+    const input = projectionInput({
+      explicitConfirmationRevisions: new Map([["occ-4", 1]]),
+      responsibilitiesByOccurrence: new Map([[
+        "occ-4",
+        [{
+          responsibilityId: "zero-side-split",
+          teamId: 31,
+          slotIndex: 0,
+          kind: "split",
+          payerBowlerId: 501,
+          mainBowlerId: 501,
+          substituteBowlerId: 502,
+          lineagePayerBowlerId: 501,
+          prizePayerBowlerId: 501,
+          worksheetFeeComponent: null,
+          amountMinor: 300,
+          lineageAmountMinor: 0,
+          prizeAmountMinor: 300,
+          version: 1,
+        }],
+      ]]),
+      finalObligations: [{
+        obligationId: "prize-obligation",
+        responsibilityId: "zero-side-split",
+        occurrenceId: "occ-4",
+        teamId: 31,
+        component: "prize",
+        payerBowlerId: 501,
+        debtorBowlerId: 501,
+        amountMinor: 300,
+        paidMinor: 0,
+        waivedMinor: 0,
+        outstandingMinor: 300,
+        reviewRequired: false,
+      }],
+    });
+
+    expect(buildManagePaymentsWorksheetSnapshot(input).teams[0]?.rows[0]).toMatchObject({
+      responsible: true,
+      feeComponent: "full",
+      feeMinor: 300,
+    });
+  });
+
+  it("projects only the retained component after one side of a confirmed same-payer split is retired", () => {
+    const input = projectionInput({
+      explicitConfirmationRevisions: new Map([["occ-4", 2]]),
+      responsibilitiesByOccurrence: new Map([[
+        "occ-4",
+        [{
+          responsibilityId: "partially-retained-split",
+          teamId: 31,
+          slotIndex: 0,
+          kind: "split",
+          payerBowlerId: 501,
+          mainBowlerId: 501,
+          substituteBowlerId: 502,
+          lineagePayerBowlerId: 501,
+          prizePayerBowlerId: 501,
+          worksheetFeeComponent: null,
+          amountMinor: 1_000,
+          lineageAmountMinor: 700,
+          prizeAmountMinor: 300,
+          version: 1,
+        }],
+      ]]),
+      finalObligations: [{
+        obligationId: "lineage-obligation",
+        responsibilityId: "partially-retained-split",
+        occurrenceId: "occ-4",
+        teamId: 31,
+        component: "lineage",
+        payerBowlerId: 501,
+        debtorBowlerId: 501,
+        amountMinor: 700,
+        paidMinor: 0,
+        waivedMinor: 0,
+        outstandingMinor: 700,
+        reviewRequired: false,
+      }],
+    });
+
+    expect(buildManagePaymentsWorksheetSnapshot(input).teams[0]?.rows[0]).toMatchObject({
+      responsible: true,
+      feeComponent: "lineage",
+      feeMinor: 700,
+    });
+  });
+
+  it("keeps waived legacy obligations visible and does not report waiver-only coverage as Paid", () => {
+    const week = occurrence("occ-4", "2026-10-05", 4);
+    const input = projectionInput({
+      schedule: schedule([occurrence("occ-1", "2026-09-14", 1), occurrence("occ-2", "2026-09-21", 2), occurrence("occ-3", "2026-09-28", 3), week]),
+      responsibilitiesByOccurrence: new Map([["occ-4", [{
+        responsibilityId: "waived-legacy-responsibility",
+        teamId: 31,
+        slotIndex: 0,
+        kind: "main",
+        payerBowlerId: 501,
+        mainBowlerId: 501,
+        substituteBowlerId: null,
+        lineagePayerBowlerId: null,
+        prizePayerBowlerId: null,
+        worksheetFeeComponent: null,
+        amountMinor: 1_000,
+        lineageAmountMinor: null,
+        prizeAmountMinor: null,
+        version: 1,
+      }]]]),
+      explicitConfirmationRevisions: new Map([["occ-4", 1]]),
+      confirmedOccurrenceIds: new Set(["occ-4"]),
+      finalObligations: [{
+        obligationId: "waived-legacy-obligation",
+        responsibilityId: "waived-legacy-responsibility",
+        occurrenceId: "occ-4",
+        teamId: 31,
+        component: "full",
+        payerBowlerId: 501,
+        debtorBowlerId: 501,
+        amountMinor: 1_000,
+        paidMinor: 0,
+        waivedMinor: 1_000,
+        outstandingMinor: 0,
+        reviewRequired: false,
+      }],
+    });
+
+    const row = buildManagePaymentsWorksheetSnapshot(input).teams[0]?.rows[0];
+    expect(row).toMatchObject({ responsible: true, feeComponent: "full", feeMinor: 1_000, finalTwoWeeksPaid: false });
   });
 
   it("keeps multiple exact cash/check receipts and distinct card funding portions visible", () => {
@@ -328,7 +525,12 @@ describe("Manage Payments worksheet projection", () => {
       version: 1,
     }]]));
     const obligations = weeks.slice(2).map((week) => ({
+      obligationId: `obligation:${week.occurrenceId}`,
+      responsibilityId: `worksheet:${week.occurrenceId}`,
       occurrenceId: week.occurrenceId,
+      teamId: 31,
+      component: "full" as const,
+      payerBowlerId: 501,
       debtorBowlerId: 501,
       amountMinor: 1_000,
       paidMinor: 1_000,
@@ -353,7 +555,12 @@ describe("Manage Payments worksheet projection", () => {
     const input = projectionInput({
       balances: new Map([[501, { availableCreditMinor: 2_500, confirmedOwedMinor: 600, netBalanceMinor: 1_900 }]]),
       finalObligations: [{
+        obligationId: "older-obligation",
+        responsibilityId: "older-responsibility",
         occurrenceId: "occ-2",
+        teamId: 31,
+        component: "full",
+        payerBowlerId: 501,
         debtorBowlerId: 501,
         amountMinor: 600,
         paidMinor: 0,

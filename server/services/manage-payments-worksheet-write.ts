@@ -9,6 +9,7 @@ import {
   paymentAllocationFundingApplications,
   paymentAllocations,
   paymentObligations,
+  paymentOperationRosterSnapshotItems,
   paymentVoids,
   payments,
   rotatingCreditApplications,
@@ -29,10 +30,17 @@ import {
 } from "@shared/manage-payments-contract";
 import { db } from "../db.js";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
+import { resolvePaymentObligationOwnersInTransaction, PaymentObligationOwnerError } from "./roster-obligation-owners.js";
 import { applyOwnedFundingFifoInTransaction, OwnedPaymentLedgerError, recordOwnedFundingInTransaction, releaseOwnedFundingApplicationInTransaction } from "./owned-payment-ledger.js";
 import { reverseRotatingCreditApplicationsForAssignmentChangeInTransaction, RotatingCreditLedgerError } from "./rotating-credit-applications.js";
 import { deriveRosterPaymentTimingInTransaction } from "./roster-payment-materializer.js";
 import { loadManagePaymentsWorksheetSnapshotInTransaction, ManagePaymentsWorksheetReadError } from "./manage-payments-worksheet-read.js";
+import {
+  ManagePaymentsReconciliationError,
+  reconcileManagePaymentsComponents,
+  type ManagePaymentsDesiredComponent,
+  type ManagePaymentsExistingEvidence,
+} from "./manage-payments-worksheet-reconciliation.js";
 
 const COMMAND_TYPE = "manage_payments.save_week";
 const REQUEST_FINGERPRINT_PREFIX = "lvmanagepaymentsrequest:v1:";
@@ -99,7 +107,9 @@ function throwWriteError(caught: unknown): never {
     throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Payment evidence needs review before this week can be saved");
   }
   if (caught instanceof OwnedPaymentLedgerError) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Payment evidence needs review before this week can be saved");
+  if (caught instanceof PaymentObligationOwnerError) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Payment owner evidence needs review before this week can be saved");
   if (caught instanceof RotatingCreditLedgerError) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Rotating credit evidence needs review before this week can be saved");
+  if (caught instanceof ManagePaymentsReconciliationError) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Responsibility components need review before this week can be saved");
   throw caught;
 }
 
@@ -168,23 +178,17 @@ async function activeResponsibilitiesForOccurrence(tx: Tx, scope: { organization
   )).orderBy(asc(occurrencePaymentResponsibilities.id)).for("update");
 }
 
-async function retireResponsibilitiesInTransaction(
+async function retireObligationsInTransaction(
   tx: Tx,
   input: SaveManagePaymentsWorksheetInput,
-  responsibilities: readonly Responsibility[],
+  obligations: readonly Obligation[],
   now: string,
 ): Promise<Set<number>> {
   const affectedOwners = new Set<number>();
-  if (responsibilities.length === 0) return affectedOwners;
-  const ids = responsibilities.map((row) => row.id);
-  const obligationRows = await tx.select().from(paymentObligations).where(and(
-    eq(paymentObligations.organizationId, input.organizationId),
-    eq(paymentObligations.leagueId, input.leagueId),
-    inArray(paymentObligations.responsibilityId, ids),
-    ne(paymentObligations.state, "voided"),
-  )).orderBy(asc(paymentObligations.id)).for("update");
-  const obligationIds = obligationRows.map((row) => row.id);
-  if (obligationIds.length > 0) {
+  if (obligations.length === 0) return affectedOwners;
+  const obligationIds = obligations.map((row) => row.id);
+  const responsibilityIds = [...new Set(obligations.map((row) => row.responsibilityId))];
+  {
     const typedApplications = await tx.select({ application: paymentAllocationFundingApplications })
       .from(paymentAllocationFundingApplications)
       .innerJoin(paymentAllocations, and(
@@ -232,7 +236,7 @@ async function retireResponsibilitiesInTransaction(
     const assignments = await tx.select().from(rotatingOccurrenceAssignments).where(and(
       eq(rotatingOccurrenceAssignments.organizationId, input.organizationId),
       eq(rotatingOccurrenceAssignments.leagueId, input.leagueId),
-      inArray(rotatingOccurrenceAssignments.responsibilityId, ids),
+      inArray(rotatingOccurrenceAssignments.responsibilityId, responsibilityIds),
     ));
     for (const { funding } of rotatingRows) affectedOwners.add(funding.bowlerId);
     for (const assignment of assignments) {
@@ -243,6 +247,7 @@ async function retireResponsibilitiesInTransaction(
         assignmentId: assignment.id,
         actorUserId: input.actorUserId,
         reason: "Weekly payment responsibility was changed",
+        obligationIds,
         now,
       });
     }
@@ -263,19 +268,161 @@ async function retireResponsibilitiesInTransaction(
       ne(paymentObligations.state, "voided"),
     ));
   }
-  for (const responsibility of responsibilities) {
-    for (const bowlerId of [responsibility.mainBowlerId, responsibility.substituteBowlerId, responsibility.payerBowlerId,
-      responsibility.lineagePayerBowlerId, responsibility.prizePayerBowlerId]) {
-      if (bowlerId !== null) affectedOwners.add(bowlerId);
+  return affectedOwners;
+}
+
+async function activeComponentEvidence(
+  tx: Tx,
+  input: SaveManagePaymentsWorksheetInput,
+  snapshot: ManagePaymentsSnapshot,
+  responsibilities: readonly Responsibility[],
+): Promise<{ obligations: Obligation[]; evidence: ManagePaymentsExistingEvidence[]; unassignedForecastObligations: Obligation[] }> {
+  if (responsibilities.length === 0) return { obligations: [], evidence: [], unassignedForecastObligations: [] };
+  const responsibilityById = new Map(responsibilities.map((row) => [row.id, row]));
+  const responsibilityIds = [...responsibilityById.keys()];
+  const obligations = await tx.select().from(paymentObligations).where(and(
+    eq(paymentObligations.organizationId, input.organizationId),
+    eq(paymentObligations.leagueId, input.leagueId),
+    inArray(paymentObligations.responsibilityId, responsibilityIds),
+    ne(paymentObligations.state, "voided"),
+  )).orderBy(asc(paymentObligations.id)).for("update");
+  const assignmentRows = await tx.select().from(rotatingOccurrenceAssignments).where(and(
+    eq(rotatingOccurrenceAssignments.organizationId, input.organizationId),
+    eq(rotatingOccurrenceAssignments.leagueId, input.leagueId),
+    inArray(rotatingOccurrenceAssignments.responsibilityId, responsibilityIds),
+  )).orderBy(asc(rotatingOccurrenceAssignments.responsibilityId), desc(rotatingOccurrenceAssignments.version));
+  const assignmentByResponsibility = new Map<string, typeof assignmentRows[number]>();
+  for (const assignment of assignmentRows) {
+    if (!assignmentByResponsibility.has(assignment.responsibilityId)) {
+      assignmentByResponsibility.set(assignment.responsibilityId, assignment);
     }
   }
+  const ownerByObligationId = obligations.length === 0 ? new Map() : await resolvePaymentObligationOwnersInTransaction(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    obligations: obligations.map((row) => ({ id: row.id, payerBowlerId: row.payerBowlerId })),
+  });
+  const obligationsByResponsibility = new Map<string, Obligation[]>();
+  for (const obligation of obligations) {
+    obligationsByResponsibility.set(obligation.responsibilityId, [
+      ...(obligationsByResponsibility.get(obligation.responsibilityId) ?? []),
+      obligation,
+    ]);
+  }
+  const evidence: ManagePaymentsExistingEvidence[] = [];
+  const unassignedForecastObligations: Obligation[] = [];
+  for (const obligation of obligations) {
+    const responsibility = responsibilityById.get(obligation.responsibilityId);
+    if (!responsibility) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "A payment component has no active responsibility");
+    const owner = ownerByObligationId.get(obligation.id);
+    if (!owner) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "A payment component is missing its authoritative owner");
+    let bowlerId: number;
+    if (owner.kind === "bowler") {
+      bowlerId = owner.bowlerId;
+    } else {
+      const assignment = assignmentByResponsibility.get(obligation.responsibilityId);
+      if (assignment && assignment.teamId !== owner.teamId) {
+        throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "A team-owned payment component has no exact assigned bowler");
+      }
+      if (!assignment || assignment.actualBowlerId === null) {
+        if (snapshot.weekConfirmed) {
+          throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "A confirmed team-owned payment component has no exact assigned bowler");
+        }
+        unassignedForecastObligations.push(obligation);
+        continue;
+      }
+      bowlerId = assignment.actualBowlerId;
+    }
+    const responsibilityObligations = obligationsByResponsibility.get(responsibility.id) ?? [];
+    const canCoalesceSamePayerSplit = responsibility.responsibilityKind === "split"
+      && responsibility.lineagePayerBowlerId === bowlerId
+      && responsibility.prizePayerBowlerId === bowlerId
+      && (responsibility.lineageAmountMinor === 0 || responsibilityObligations.some((row) => row.component === "lineage"))
+      && (responsibility.prizeFundAmountMinor === 0 || responsibilityObligations.some((row) => row.component === "prize"));
+    if (responsibility.responsibilityKind === "worksheet"
+      && (responsibility.payerBowlerId !== bowlerId
+        || responsibility.worksheetFeeComponent !== obligation.component
+        || responsibility.amountMinor !== obligation.amountMinor)) {
+      throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "A saved worksheet row does not match its exact obligation component");
+    }
+    evidence.push({
+      responsibilityId: obligation.responsibilityId,
+      teamId: responsibility.teamId,
+      bowlerId,
+      component: obligation.component,
+      amountMinor: obligation.amountMinor,
+      obligationId: obligation.id,
+      ...(canCoalesceSamePayerSplit ? { coalescedSplitResponsibility: true } : {}),
+    });
+  }
+  for (const responsibility of responsibilities) {
+    if (responsibility.responsibilityKind !== "worksheet" || responsibility.amountMinor !== 0 || responsibility.payerBowlerId === null) continue;
+    const hasObligation = obligations.some((row) => row.responsibilityId === responsibility.id);
+    if (hasObligation) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "A zero-fee worksheet row cannot own a positive obligation");
+    const component = responsibility.worksheetFeeComponent;
+    if (component === null) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "A zero-fee worksheet row is missing its component");
+    evidence.push({
+      responsibilityId: responsibility.id,
+      teamId: responsibility.teamId,
+      bowlerId: responsibility.payerBowlerId,
+      component,
+      amountMinor: 0,
+      obligationId: null,
+      zeroWorksheet: true,
+    });
+  }
+  return { obligations, evidence, unassignedForecastObligations };
+}
+
+async function assertSafeToRetireUnassignedForecasts(
+  tx: Tx,
+  input: SaveManagePaymentsWorksheetInput,
+  obligations: readonly Obligation[],
+): Promise<void> {
+  if (obligations.length === 0) return;
+  if (obligations.some((row) => row.state !== "open" || row.voidedAt !== null)) {
+    throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "An unassigned forecast has non-open financial state and needs review");
+  }
+  const ids = obligations.map((row) => row.id);
+  const allocations = await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, input.organizationId),
+    eq(paymentAllocations.leagueId, input.leagueId),
+    inArray(paymentAllocations.obligationId, ids),
+  )).limit(1).for("share");
+  const reservations = await tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).where(and(
+    eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+    eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+    inArray(paymentOperationRosterSnapshotItems.obligationId, ids),
+    inArray(paymentOperationRosterSnapshotItems.state, ["reserved", "finalized"]),
+  )).limit(1).for("share");
+  if (allocations.length > 0 || reservations.length > 0) {
+    throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "An unassigned forecast has payment or provider-operation evidence and needs review");
+  }
+}
+
+async function retireEmptyResponsibilitiesInTransaction(
+  tx: Tx,
+  input: SaveManagePaymentsWorksheetInput,
+  responsibilityIds: ReadonlySet<string>,
+  retainedZeroResponsibilityIds: ReadonlySet<string>,
+): Promise<void> {
+  const candidates = [...responsibilityIds].filter((id) => !retainedZeroResponsibilityIds.has(id));
+  if (candidates.length === 0) return;
+  const remaining = await tx.select({ responsibilityId: paymentObligations.responsibilityId }).from(paymentObligations).where(and(
+    eq(paymentObligations.organizationId, input.organizationId),
+    eq(paymentObligations.leagueId, input.leagueId),
+    inArray(paymentObligations.responsibilityId, candidates),
+    ne(paymentObligations.state, "voided"),
+  ));
+  const withRemainingComponents = new Set(remaining.map((row) => row.responsibilityId));
+  const emptyIds = candidates.filter((id) => !withRemainingComponents.has(id));
+  if (emptyIds.length === 0) return;
   await tx.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
     eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
     eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
-    inArray(occurrencePaymentResponsibilities.id, ids),
+    inArray(occurrencePaymentResponsibilities.id, emptyIds),
     eq(occurrencePaymentResponsibilities.state, "active"),
   ));
-  return affectedOwners;
 }
 
 async function existingWorksheetHistory(tx: Tx, input: SaveManagePaymentsWorksheetInput, occurrenceId: string): Promise<Responsibility[]> {
@@ -425,6 +572,7 @@ async function voidManualReceiptPayment(
       assignmentId,
       actorUserId: input.actorUserId,
       reason: "Weekly cash or check receipt was corrected",
+      paymentId: row.id,
       now,
     });
   }
@@ -686,15 +834,8 @@ export async function saveManagePaymentsWorksheet(input: SaveManagePaymentsWorks
         leagueId: input.leagueId,
         occurrenceId: request.occurrenceId,
       });
-      if (!firstExplicitConfirmation && activeResponsibilities.some((row) => row.responsibilityKind !== "worksheet")) {
-        throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "This confirmed week still contains legacy responsibility evidence that needs review");
-      }
+      const existingComponents = await activeComponentEvidence(tx, normalizedInput, snapshot, activeResponsibilities);
       const allWorksheetHistory = await existingWorksheetHistory(tx, normalizedInput, request.occurrenceId);
-      const currentWorksheetByBowler = new Map<number, Responsibility>();
-      for (const row of activeResponsibilities) {
-        if (row.responsibilityKind !== "worksheet" || row.payerBowlerId === null) continue;
-        currentWorksheetByBowler.set(row.payerBowlerId, row);
-      }
 
       const desiredRows = new Map<number, { teamId: number; bowlerId: number; responsible: boolean; feeComponent: ManagePaymentsChangedRow["feeComponent"]; feeMinor: number; changed: boolean }>();
       for (const team of snapshot.teams) {
@@ -728,21 +869,54 @@ export async function saveManagePaymentsWorksheet(input: SaveManagePaymentsWorks
       const now = nowResult.rows[0]?.databaseNow;
       if (!now) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Database time is not available for this save");
 
-      let toRetire: Responsibility[];
-      if (firstExplicitConfirmation) {
-        toRetire = activeResponsibilities;
-      } else {
-        const changedBowlerIds = new Set([...desiredRows.values()].filter((row) => row.changed).map((row) => row.bowlerId));
-        toRetire = activeResponsibilities.filter((row) => row.payerBowlerId !== null && changedBowlerIds.has(row.payerBowlerId));
+      const desiredComponents: ManagePaymentsDesiredComponent[] = [...desiredRows.values()].map((row) => ({
+        teamId: row.teamId,
+        bowlerId: row.bowlerId,
+        responsible: row.responsible,
+        component: row.feeComponent,
+        amountMinor: row.feeMinor,
+      }));
+      const reconciliation = reconcileManagePaymentsComponents(existingComponents.evidence, desiredComponents);
+      await assertSafeToRetireUnassignedForecasts(tx, normalizedInput, existingComponents.unassignedForecastObligations);
+      const obligationById = new Map(existingComponents.obligations.map((row) => [row.id, row]));
+      const obligationIdsToRetire = new Set([
+        ...reconciliation.retireObligationIds,
+        ...existingComponents.unassignedForecastObligations.map((row) => row.id),
+      ]);
+      const obligationsToRetire = [...obligationIdsToRetire].flatMap((id) => {
+        const obligation = obligationById.get(id);
+        return obligation ? [obligation] : [];
+      });
+      if (obligationsToRetire.length !== obligationIdsToRetire.size) {
+        throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "A responsibility component changed while this week was being saved");
       }
-      const affectedOwners = await retireResponsibilitiesInTransaction(tx, normalizedInput, toRetire, now);
-      for (const previous of toRetire) {
-        if (previous.payerBowlerId !== null) affectedOwners.add(previous.payerBowlerId);
+      const affectedOwners = await retireObligationsInTransaction(tx, normalizedInput, obligationsToRetire, now);
+      for (const evidence of existingComponents.evidence) {
+        if (evidence.obligationId !== null && obligationIdsToRetire.has(evidence.obligationId)) {
+          affectedOwners.add(evidence.bowlerId);
+        }
       }
 
-      const toCreate = firstExplicitConfirmation
-        ? [...desiredRows.values()].filter((row) => row.responsible)
-        : [...desiredRows.values()].filter((row) => row.changed && row.responsible);
+      const responsibilityIdsToReevaluate = new Set<string>();
+      if (firstExplicitConfirmation) {
+        for (const responsibility of activeResponsibilities) {
+          if (responsibility.responsibilityKind !== "vacant") responsibilityIdsToReevaluate.add(responsibility.id);
+        }
+      }
+      for (const obligation of obligationsToRetire) responsibilityIdsToReevaluate.add(obligation.responsibilityId);
+      for (const evidence of existingComponents.evidence) {
+        if (evidence.zeroWorksheet && !reconciliation.retainedZeroResponsibilityIds.has(evidence.responsibilityId)) {
+          responsibilityIdsToReevaluate.add(evidence.responsibilityId);
+        }
+      }
+      await retireEmptyResponsibilitiesInTransaction(
+        tx,
+        normalizedInput,
+        responsibilityIdsToReevaluate,
+        reconciliation.retainedZeroResponsibilityIds,
+      );
+
+      const toCreate = reconciliation.createWorksheetRows;
       let worksheetTiming: WorksheetPaymentTiming | undefined;
       if (toCreate.length > 0) {
         const [timingSource] = await tx.select({
@@ -766,8 +940,24 @@ export async function saveManagePaymentsWorksheet(input: SaveManagePaymentsWorks
       }
       for (const desired of toCreate) {
         if (!worksheetTiming) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Payment timing could not be resolved for the selected week");
-        await createWorksheetResponsibility(tx, normalizedInput, snapshot, desired, allWorksheetHistory, worksheetTiming, now);
+        await createWorksheetResponsibility(tx, normalizedInput, snapshot, {
+          teamId: desired.teamId,
+          bowlerId: desired.bowlerId,
+          responsible: desired.responsible,
+          feeComponent: desired.component,
+          feeMinor: desired.amountMinor,
+        }, allWorksheetHistory, worksheetTiming, now);
         affectedOwners.add(desired.bowlerId);
+      }
+      if (firstExplicitConfirmation) {
+        for (const desired of desiredComponents) {
+          if (desired.responsible) affectedOwners.add(desired.bowlerId);
+        }
+        for (const evidence of existingComponents.evidence) {
+          if (evidence.obligationId !== null && reconciliation.retainedObligationIds.has(evidence.obligationId)) {
+            affectedOwners.add(evidence.bowlerId);
+          }
+        }
       }
 
       const manualOwners = await saveManualReceiptEdits(tx, normalizedInput, snapshot, request.changedRows, now);

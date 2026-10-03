@@ -161,6 +161,7 @@ const UNIT_NO_DB = [
   'tests/unit/roster-payment-pr1-contract.test.ts',
   'tests/unit/manage-payments-contract.test.ts',
   'tests/unit/manage-payments-route.test.ts',
+  'tests/unit/manage-payments-worksheet-reconciliation.test.ts',
   'tests/unit/manage-payments-worksheet-projection.test.ts',
   'tests/unit/owned-payment-ledger.test.ts',
   'tests/unit/roster-standing-autopay-contract.test.ts',

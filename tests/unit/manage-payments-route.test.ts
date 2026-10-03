@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   configuredOrganization: vi.fn(),
   readSnapshot: vi.fn(),
   saveWorksheet: vi.fn(),
+  adminWriteLimiter: vi.fn((_req: unknown, _res: unknown, next: () => void) => next()),
 }));
 
 vi.mock("../../server/utils/access-control.js", () => ({
@@ -17,6 +18,9 @@ vi.mock("../../server/utils/access-control.js", () => ({
 }));
 vi.mock("../../server/middleware/organization.js", () => ({
   hasConfiguredOrganizationMembership: (...args: unknown[]) => mocks.hasMembership(...args),
+}));
+vi.mock("../../server/middleware/rate-limit.js", () => ({
+  adminWriteLimiter: (_req: unknown, _res: unknown, next: () => void) => mocks.adminWriteLimiter(_req, _res, next),
 }));
 vi.mock("../../server/services/single-tenant-context.js", () => ({
   configuredOrganizationId: () => mocks.configuredOrganization(),
@@ -181,6 +185,7 @@ describe("Manage Payments worksheet save route", () => {
       actorUserId: 1,
       request: saveRequest,
     });
+    expect(mocks.adminWriteLimiter).toHaveBeenCalledTimes(1);
   });
 
   it("denies payment managers and forged organization context before write", async () => {

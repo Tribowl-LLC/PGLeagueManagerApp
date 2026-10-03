@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   bowlerLeagues,
   bowlers,
@@ -587,20 +587,44 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
 
   const balancesRead = await readOwnedAccountBalancesInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId });
   const finalObligationsRead = await readConfirmedOwnedObligationsInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId });
+  const finalObligationIds = finalObligationsRead.map((row) => row.obligationId);
+  const finalObligationComponents = finalObligationIds.length === 0 ? [] : await tx.select({
+    obligationId: paymentObligations.id,
+    responsibilityId: paymentObligations.responsibilityId,
+    component: paymentObligations.component,
+    payerBowlerId: paymentObligations.payerBowlerId,
+  }).from(paymentObligations).where(and(
+    eq(paymentObligations.organizationId, input.organizationId),
+    eq(paymentObligations.leagueId, input.leagueId),
+    inArray(paymentObligations.id, finalObligationIds),
+    ne(paymentObligations.state, "voided"),
+  ));
+  const finalObligationComponentById = new Map(finalObligationComponents.map((row) => [row.obligationId, row]));
   const balances = new Map<number, ManagePaymentsProjectionBalance>([...balancesRead].map(([bowlerId, balance]) => [bowlerId, {
     availableCreditMinor: balance.availableCreditMinor,
     confirmedOwedMinor: balance.confirmedOwedMinor,
     netBalanceMinor: balance.netBalanceMinor,
   }]));
-  const finalObligations: ManagePaymentsProjectionFinalObligation[] = finalObligationsRead.map((row) => ({
-    occurrenceId: row.occurrenceId,
-    debtorBowlerId: row.debtorBowlerId,
-    amountMinor: row.amountMinor,
-    paidMinor: row.paidMinor,
-    waivedMinor: row.waivedMinor,
-    outstandingMinor: row.outstandingMinor,
-    reviewRequired: row.reviewRequired,
-  }));
+  const finalObligations: ManagePaymentsProjectionFinalObligation[] = finalObligationsRead.flatMap((row) => {
+    const component = finalObligationComponentById.get(row.obligationId);
+    if (!component || component.responsibilityId !== row.responsibilityId) {
+      throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "A confirmed payment obligation is missing its exact fee component");
+    }
+    return [{
+      obligationId: row.obligationId,
+      responsibilityId: row.responsibilityId,
+      occurrenceId: row.occurrenceId,
+      teamId: row.teamId,
+      component: component.component,
+      payerBowlerId: component.payerBowlerId,
+      debtorBowlerId: row.debtorBowlerId,
+      amountMinor: row.amountMinor,
+      paidMinor: row.paidMinor,
+      waivedMinor: row.waivedMinor,
+      outstandingMinor: row.outstandingMinor,
+      reviewRequired: row.reviewRequired,
+    }];
+  });
 
   const projectionLeague: ManagePaymentsProjectionLeague = {
     id: league.id,
