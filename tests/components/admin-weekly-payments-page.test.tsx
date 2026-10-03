@@ -708,6 +708,38 @@ describe("AdminWeeklyPaymentsPage", () => {
     expect(screen.queryByText(/latest server snapshot could not be refreshed/)).not.toBeInTheDocument();
   });
 
+  it("keeps a successful save after its background season refresh fails", async () => {
+    const user = userEvent.setup();
+    const failedRefresh = createDeferred<Response>();
+    const { posts, seasonGetCounts } = setupPage({
+      delaySeason: (leagueId, _signal, requestNumber) => leagueId === 7 && requestNumber === 2
+        ? failedRefresh.promise
+        : undefined,
+    });
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    await user.click(screen.getByRole("checkbox", { name: "Responsible this week for Blair Quinn" }));
+    await user.type(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" }), "12.34");
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+
+    expect(await screen.findByText("Recorded · $12.34")).toBeVisible();
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(2));
+    expect(posts).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Save week" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next week" })).toBeEnabled();
+
+    failedRefresh.resolve(jsonResponse({ error: { message: "Temporary season failure" } }, 503));
+    expect(await screen.findByText("The latest server snapshot could not be refreshed. Your current edits remain based on the version shown.")).toBeVisible();
+    expect(screen.getByText("Recorded · $12.34")).toBeVisible();
+    expect(screen.queryByText(/Week wasn’t saved/)).not.toBeInTheDocument();
+    expect(posts).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "Next week" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Collection week" })).toHaveTextContent("Mon Oct 5, 2026"));
+    expect(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" })).toBeVisible();
+    expect(posts).toHaveLength(1);
+  });
+
   it("rebases a dirty sibling week after save when only server-derived financial metadata changes", async () => {
     const user = userEvent.setup();
     const delayedRefresh = createDeferred<Response>();
