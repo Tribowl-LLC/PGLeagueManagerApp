@@ -3,6 +3,8 @@ import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
 import {
   accountPaymentOperationSnapshots,
+  autopayConsentPartners,
+  autopayConsents,
   leagueOccurrences,
   occurrencePaymentResponsibilities,
   paymentAllocationFundingApplications,
@@ -13,6 +15,7 @@ import {
   paymentOperationStandingAutopayBindings,
   paymentOperationStandingAutopayParticipants,
   rotatingCreditApplications,
+  rotatingCreditPaymentOperationSnapshots,
   weeklyPaymentFundingAuthorizationItems,
   paymentDisputes,
   paymentObligations,
@@ -37,6 +40,7 @@ import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 import { reconstructInteractivePartnerSnapshot, type InteractivePartnerPaymentSnapshot } from "./interactive-partner-payment-snapshot.js";
 import { reconstructRosterOperationSnapshot, type RosterOperationSemanticSnapshot } from "./roster-operation-snapshot.js";
 import { resolvePaymentObligationOwnersInTransaction } from "./roster-obligation-owners.js";
+import { reconstructAccountStandingFundingSnapshot } from "./account-standing-funding-snapshot.js";
 import {
   isConfirmedNoRefundCreditOutcome,
   isRotatingCreditRefundUnresolvedForReversal,
@@ -881,13 +885,12 @@ export async function recordOwnedFundingInTransaction(
     const portions = stored?.fundingPortions;
     const portionIndexes = portions?.map((portion) => portion.portionIndex) ?? [];
     const portionOwners = portions?.map((portion) => portion.creditedBowlerId) ?? [];
-    if (!operation || operation.operationType !== "interactive_charge" || operation.status !== "succeeded"
+    if (!operation || operation.status !== "succeeded"
       || operation.providerObjectId === null || payment.providerPaymentId !== operation.providerObjectId
       || operation.amountMinor !== payment.amount || operation.currency !== payment.currency
-      || !stored || stored.snapshotVersion !== 4 || stored.snapshotKind !== "interactive_funding"
+      || !stored
       || stored.snapshotFingerprint !== input.authorizationFingerprint || stored.amountMinor !== payment.amount
-      || stored.currency !== payment.currency || stored.payerBowlerId !== payment.bowlerId
-      || !/^lvaccountfunding:v4:[0-9a-f]{64}$/.test(stored.snapshotFingerprint)
+      || stored.currency !== payment.currency
       || !Array.isArray(portions) || portions.length === 0
       || portions.some((portion, index) => !Number.isSafeInteger(portion.portionIndex) || portion.portionIndex !== index
         || !Number.isSafeInteger(portion.creditedBowlerId) || portion.creditedBowlerId <= 0
@@ -897,6 +900,113 @@ export async function recordOwnedFundingInTransaction(
       || portions.reduce((sum, portion) => sum + portion.amountMinor, 0) !== payment.amount
       || !portions.some((portion) => portion.creditedBowlerId === input.creditedBowlerId
         && portion.portionIndex === input.portionIndex && portion.amountMinor === input.amountMinor)) {
+      throw new OwnedPaymentLedgerError("PROVIDER_RECIPIENT_PROOF_INVALID");
+    }
+    if (stored.snapshotKind === "interactive_funding") {
+      if (operation.operationType !== "interactive_charge" || stored.snapshotVersion !== 4
+        || stored.payerBowlerId !== payment.bowlerId
+        || !/^lvaccountfunding:v4:[0-9a-f]{64}$/.test(stored.snapshotFingerprint)) {
+        throw new OwnedPaymentLedgerError("PROVIDER_RECIPIENT_PROOF_INVALID");
+      }
+    } else if (stored.snapshotKind === "standing_funding") {
+      if (operation.operationType !== "standing_autopay_charge" || stored.snapshotVersion !== 5
+        || stored.payerBowlerId !== payment.bowlerId
+        || !/^lvstandingfunding:v1:[0-9a-f]{64}$/.test(stored.snapshotFingerprint)) {
+        throw new OwnedPaymentLedgerError("PROVIDER_RECIPIENT_PROOF_INVALID");
+      }
+      let snapshot;
+      try {
+        snapshot = reconstructAccountStandingFundingSnapshot({ operation, stored });
+      } catch {
+        throw new OwnedPaymentLedgerError("PROVIDER_RECIPIENT_PROOF_INVALID");
+      }
+      const evidence = snapshot.standingEvidence;
+
+      const [legacySnapshot, rosterItemRows, participantRows, rotatingSnapshot, consentRows, bindingRows, partnerRows] = await Promise.all([
+        tx.select({ operationId: paymentOperationRosterSnapshots.operationId }).from(paymentOperationRosterSnapshots).where(and(
+          eq(paymentOperationRosterSnapshots.operationId, authorizationOperationId),
+          eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
+          eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
+        )).limit(1),
+        tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).where(and(
+          eq(paymentOperationRosterSnapshotItems.operationId, authorizationOperationId),
+          eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+          eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+        )).limit(1),
+        tx.select({ operationId: paymentOperationStandingAutopayParticipants.operationId }).from(paymentOperationStandingAutopayParticipants).where(and(
+          eq(paymentOperationStandingAutopayParticipants.operationId, authorizationOperationId),
+          eq(paymentOperationStandingAutopayParticipants.organizationId, input.organizationId),
+          eq(paymentOperationStandingAutopayParticipants.leagueId, input.leagueId),
+        )).limit(1),
+        tx.select({ operationId: rotatingCreditPaymentOperationSnapshots.operationId }).from(rotatingCreditPaymentOperationSnapshots).where(and(
+          eq(rotatingCreditPaymentOperationSnapshots.operationId, authorizationOperationId),
+          eq(rotatingCreditPaymentOperationSnapshots.organizationId, input.organizationId),
+          eq(rotatingCreditPaymentOperationSnapshots.leagueId, input.leagueId),
+        )).limit(1),
+        tx.select({
+          id: autopayConsents.id,
+          consentVersion: autopayConsents.consentVersion,
+          payerBowlerId: autopayConsents.payerBowlerId,
+          consentFingerprint: autopayConsents.consentFingerprint,
+          providerName: autopayConsents.providerName,
+          providerLocationId: autopayConsents.providerLocationId,
+          encryptedSourceId: autopayConsents.encryptedSourceId,
+          encryptedCustomerId: autopayConsents.encryptedCustomerId,
+        }).from(autopayConsents).where(and(
+          eq(autopayConsents.id, evidence.consentId),
+          eq(autopayConsents.organizationId, input.organizationId),
+          eq(autopayConsents.leagueId, input.leagueId),
+        )).limit(1),
+        tx.select().from(paymentOperationStandingAutopayBindings).where(and(
+          eq(paymentOperationStandingAutopayBindings.operationId, authorizationOperationId),
+          eq(paymentOperationStandingAutopayBindings.organizationId, input.organizationId),
+          eq(paymentOperationStandingAutopayBindings.leagueId, input.leagueId),
+        )).limit(1),
+        tx.select({ partnerBowlerId: autopayConsentPartners.partnerBowlerId, paymentLinkId: autopayConsentPartners.paymentLinkId, linkFingerprint: autopayConsentPartners.linkFingerprint })
+          .from(autopayConsentPartners).where(and(
+            eq(autopayConsentPartners.consentId, evidence.consentId),
+            eq(autopayConsentPartners.consentVersion, evidence.consentVersion),
+            eq(autopayConsentPartners.organizationId, input.organizationId),
+            eq(autopayConsentPartners.leagueId, input.leagueId),
+          )),
+      ]);
+      const [consent] = consentRows;
+      const [binding] = bindingRows;
+      const partnersByBowler = new Map(partnerRows.map((row) => [row.partnerBowlerId, row]));
+      const partnerEvidence = snapshot.recipientEvidence.filter((row) => row.role === "partner");
+      const selfEvidence = snapshot.recipientEvidence.filter((row) => row.role === "self");
+      const partnerEvidenceMatches = partnerEvidence.length === partnerRows.length
+        && partnerEvidence.every((row) => {
+          const accepted = partnersByBowler.get(row.recipientBowlerId);
+          return accepted !== undefined && row.paymentLinkId === accepted.paymentLinkId
+            && row.linkFingerprint === accepted.linkFingerprint;
+        });
+      const groupEvidenceMatches = Boolean(binding)
+        && binding?.consentId === evidence.consentId
+        && binding?.consentVersion === evidence.consentVersion
+        && binding?.providerName === snapshot.providerName
+        && binding?.providerLocationId === snapshot.providerLocationId
+        && binding?.triggerOccurrenceId === evidence.triggerOccurrenceId
+        && binding?.pairedOccurrenceId === evidence.pairedOccurrenceId
+        && binding?.collectionGroupId === evidence.collectionGroupId
+        && binding?.collectionGroupRevision === evidence.collectionGroupRevision
+        && binding?.collectionGroupFingerprint === evidence.collectionGroupFingerprint
+        && binding?.triggerMemberId === evidence.triggerMemberId
+        && binding?.pairedMemberId === evidence.pairedMemberId
+        && binding?.collectionMode === evidence.collectionMode
+        && Date.parse(binding?.cutoffAt ?? "") === Date.parse(evidence.cutoffAt)
+        && binding?.evidenceFingerprint === evidence.bindingEvidenceFingerprint;
+      if (legacySnapshot.length > 0 || rosterItemRows.length > 0 || participantRows.length > 0 || rotatingSnapshot.length > 0
+        || !consent || consent.id !== evidence.consentId || consent.consentVersion !== evidence.consentVersion
+        || consent.payerBowlerId !== snapshot.payerBowlerId || consent.consentFingerprint !== evidence.consentFingerprint
+        || consent.providerName !== snapshot.providerName || consent.providerLocationId !== snapshot.providerLocationId
+        || !consent.encryptedSourceId?.trim() || !consent.encryptedCustomerId?.trim()
+        || !groupEvidenceMatches || !partnerEvidenceMatches || selfEvidence.length !== 1
+        || snapshot.recipientEvidence.length !== partnerRows.length + 1
+        || operation.triggerOccurrenceId !== evidence.triggerOccurrenceId) {
+        throw new OwnedPaymentLedgerError("PROVIDER_RECIPIENT_PROOF_INVALID");
+      }
+    } else {
       throw new OwnedPaymentLedgerError("PROVIDER_RECIPIENT_PROOF_INVALID");
     }
   }

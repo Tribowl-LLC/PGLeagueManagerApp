@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
+  accountPaymentOperationSnapshots,
   autopayConsentPartners,
   autopayConsents,
   bowlerLeagues,
@@ -44,7 +45,7 @@ import { buildCanonicalScheduleCommandFingerprint, cancelOccurrence, restoreCanc
 import { readCanonicalPaymentReport } from "../../server/services/roster-payment-archive-report";
 import { updateBowlerLeague } from "../../server/storage/bowlers";
 import { getNextStandingAutopayWake, recordStandingAutopayPreparationFailure } from "../../server/storage/payment-operations";
-import { canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
+import { buildPaymentOperationIdentity, canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
 import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
 import { RefundPaymentOperationExecutor } from "../../server/services/refund-payment-operation-executor";
 import { fifoCandidatesInTransaction, quoteInteractiveObligations, recordCanonicalManualPayment } from "../../server/services/roster-payment-core";
@@ -186,6 +187,170 @@ afterEach(async () => {
     eq(occurrencePaymentResponsibilities.organizationId, organizationId),
     eq(occurrencePaymentResponsibilities.state, "active"),
   ));
+});
+
+describe("V5 standing account snapshot constraints", () => {
+  it("rejects a standing snapshot with missing evidence at the database boundary", async () => {
+    const target = await publishOccurrence("2039-05-07T19:00:00.000Z");
+    const operationId = randomUUID();
+    const targetKey = `standing-missing-evidence-${operationId}`;
+    const identity = buildPaymentOperationIdentity({
+      organizationId,
+      operationType: "standing_autopay_charge",
+      targetKey,
+      amountMinor: 100,
+      currency: "USD",
+      providerName: "square",
+    });
+    await db.insert(paymentOperations).values({
+      id: operationId,
+      organizationId,
+      authorizingUserId: actorUserId,
+      operationType: "standing_autopay_charge",
+      targetKey,
+      triggerOccurrenceId: target.occurrence.id,
+      leagueId,
+      amountMinor: 100,
+      currency: "USD",
+      requestFingerprint: identity.requestFingerprint,
+      providerIdempotencyKey: identity.providerIdempotencyKey,
+      providerName: "square",
+      status: "pending",
+    });
+
+    try {
+      await expect(db.insert(accountPaymentOperationSnapshots).values({
+        operationId,
+        organizationId,
+        leagueId,
+        snapshotVersion: 5,
+        snapshotKind: "standing_funding",
+        payerBowlerId,
+        amountMinor: 100,
+        fundingPortions: [{ portionIndex: 0, creditedBowlerId: payerBowlerId, amountMinor: 100 }],
+        recipientEvidence: [{
+          recipientBowlerId: payerBowlerId,
+          role: "self",
+          paymentLinkId: null,
+          linkFingerprint: null,
+          target: {
+            confirmedDebtMinor: 0,
+            olderConfirmedDebtMinor: 0,
+            availableCreditMinor: 0,
+            creditAppliedToOlderDebtMinor: 0,
+            olderConfirmedDebtRemainingMinor: 0,
+            olderDebtReviewRequired: false,
+            currentDebtReviewRequired: false,
+            currentCollectionTargetMinor: 100,
+            forecastCollectionTargetMinor: 100,
+            newChargeMinor: 100,
+          },
+        }],
+        standingEvidence: null,
+        currency: "USD",
+        providerName: "square",
+        locationId,
+        providerLocationId: "square-location-fixture",
+        authorizingUserId: actorUserId,
+        requestKind: "standing",
+        sourceKind: null,
+        encryptedSourceId: null,
+        encryptedCustomerId: null,
+        encryptedBuyerEmail: null,
+        storeCard: false,
+        quoteFingerprint: null,
+        snapshotFingerprint: `lvstandingfunding:v1:${"f".repeat(64)}`,
+      })).rejects.toMatchObject({
+        cause: expect.objectContaining({
+          code: "23514",
+          constraint: "account_payment_operation_snapshots_amount_check",
+        }),
+      });
+    } finally {
+      await db.delete(paymentOperations).where(eq(paymentOperations.id, operationId));
+    }
+  });
+
+  it("keeps interactive V4 source and quote evidence required after the V5 extension", async () => {
+    const cases = [
+      {
+        encryptedSourceId: null,
+        quoteFingerprint: `lvaccountfundquote:v4:${"a".repeat(64)}`,
+        constraint: "account_payment_operation_snapshots_source_check",
+      },
+      {
+        encryptedSourceId: "test-ciphertext",
+        quoteFingerprint: null,
+        constraint: "account_payment_operation_snapshots_quote_fingerprint_check",
+      },
+    ] as const;
+
+    for (const [index, testCase] of cases.entries()) {
+      const operationId = randomUUID();
+      const targetKey = `interactive-v4-null-guard-${index}-${operationId}`;
+      const identity = buildPaymentOperationIdentity({
+        organizationId,
+        operationType: "interactive_charge",
+        targetKey,
+        amountMinor: 100,
+        currency: "USD",
+        providerName: "square",
+      });
+      await db.insert(paymentOperations).values({
+        id: operationId,
+        organizationId,
+        authorizingUserId: actorUserId,
+        operationType: "interactive_charge",
+        targetKey,
+        triggerOccurrenceId: null,
+        leagueId,
+        amountMinor: 100,
+        currency: "USD",
+        requestFingerprint: identity.requestFingerprint,
+        providerIdempotencyKey: identity.providerIdempotencyKey,
+        providerName: "square",
+        status: "pending",
+      });
+
+      try {
+        await expect(db.insert(accountPaymentOperationSnapshots).values({
+          operationId,
+          organizationId,
+          leagueId,
+          snapshotVersion: 4,
+          snapshotKind: "interactive_funding",
+          payerBowlerId,
+          amountMinor: 100,
+          fundingPortions: [{ portionIndex: 0, creditedBowlerId: payerBowlerId, amountMinor: 100 }],
+          recipientEvidence: [{
+            recipientBowlerId: payerBowlerId,
+            role: "self",
+            paymentLinkId: null,
+            linkFingerprint: null,
+            selection: { kind: "explicit_amount", amountMinor: 100 },
+          }],
+          standingEvidence: null,
+          currency: "USD",
+          providerName: "square",
+          locationId,
+          providerLocationId: "square-location-fixture",
+          authorizingUserId: actorUserId,
+          requestKind: "direct",
+          sourceKind: "saved_card",
+          encryptedSourceId: testCase.encryptedSourceId,
+          encryptedCustomerId: null,
+          encryptedBuyerEmail: null,
+          storeCard: false,
+          quoteFingerprint: testCase.quoteFingerprint,
+          snapshotFingerprint: `lvaccountfunding:v4:${"b".repeat(64)}`,
+        })).rejects.toMatchObject({
+          cause: expect.objectContaining({ code: "23514", constraint: testCase.constraint }),
+        });
+      } finally {
+        await db.delete(paymentOperations).where(eq(paymentOperations.id, operationId));
+      }
+    }
+  });
 });
 
 async function publishOccurrence(startAt: string) {

@@ -379,6 +379,13 @@
       "when": 1790979178740,
       "tag": "0053_owned_payment_refund_support",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1790986573310,
+      "tag": "0054_weekly_standing_account_funding",
+      "breakpoints": true
     }
   ]
 }
