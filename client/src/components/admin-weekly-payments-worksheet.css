@@ -244,6 +244,20 @@
   line-height: 1.45;
 }
 
+.manage-payments-layout-content [data-awpw="received-content"] [data-awpw="receipt-currency-prefix"] {
+  font-family: var(--familiar-font);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.manage-payments-layout-content [data-awpw="cancel-recorded-edit"] {
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
 .manage-payments-layout-inner {
   width: 100%;
   max-width: none;
@@ -352,6 +366,7 @@
   flex: 0 0 260px;
   border-radius: 6px;
   font-family: var(--familiar-font);
+  font-size: 13px;
   font-weight: 400;
   line-height: 1.45;
 }
@@ -420,6 +435,7 @@
   font-size: 16px;
   font-weight: 680;
   letter-spacing: -0.2px;
+  line-height: 1.45;
 }
 
 [data-awpw="table-scroll"] {
@@ -1074,6 +1090,10 @@
 }
 
 @media (max-width: 380px) {
+  [data-awpw="page"] {
+    --manage-payments-mobile-gutter: 12px;
+  }
+
   [data-awpw="toolbar"] {
     gap: 7px;
     margin-top: 12px;
@@ -1087,6 +1107,10 @@
   [data-awpw="page-heading"] p {
     font-size: 11px;
     line-height: 1.4;
+  }
+
+  [data-awpw="mobile-label"] {
+    font-size: 10px;
   }
 
   [data-awpw="team-controls"] > div > button {

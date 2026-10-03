@@ -418,7 +418,7 @@ function TeamWorksheet({
                                 <div className="flex min-w-0 flex-col gap-1">
                                   <div className="flex min-w-0 items-center gap-1">
                                     <div data-awpw="amount-input" data-awpw-edit-input>
-                                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+                                      <span data-awpw="receipt-currency-prefix" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
                                       <Input
                                         type="text"
                                         inputMode="decimal"
@@ -446,6 +446,7 @@ function TeamWorksheet({
                                       variant="paymentsGhost"
                                       size="paymentsIcon"
                                       className="shrink-0"
+                                      data-awpw="cancel-recorded-edit"
                                       disabled={saving}
                                       aria-label={`Cancel recorded payment edit received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                       onClick={() => onCancelManualReceiptEdit(manualKey)}
@@ -469,7 +470,7 @@ function TeamWorksheet({
                         {!hasReceiptEvidence && (
                           <div className="flex min-w-0 flex-col gap-1">
                             <div data-awpw="amount-input">
-                              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+                              <span data-awpw="receipt-currency-prefix" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
                               <Input
                                 type="text"
                                 inputMode="decimal"
