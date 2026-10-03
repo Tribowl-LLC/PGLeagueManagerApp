@@ -530,28 +530,31 @@ export async function chargeAccountPaymentFundingV4(input: {
   const [league] = await db.select({ id: leagues.id, organizationId: leagues.organizationId, locationId: leagues.locationId })
     .from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
   if (!league) throw new RosterPaymentError("NOT_FOUND", "League not found", 404);
-  const provider = await getPaymentProvider(league.locationId);
-  let ensuredCustomerId: string | undefined;
   const [existingRequest] = await db.select({ id: paymentOperations.id }).from(paymentOperations).where(and(
     eq(paymentOperations.organizationId, input.organizationId),
     eq(paymentOperations.leagueId, input.leagueId),
     eq(paymentOperations.operationType, "interactive_charge"),
     eq(paymentOperations.targetKey, `interactive-charge:${input.request.idempotencyKey}`),
   )).limit(1);
-  if (!existingRequest && input.request.storeCard && input.request.sourceKind === "new_card") {
-    const [payerForCustomer] = await db.select().from(bowlers).where(and(
-      eq(bowlers.id, input.payerBowlerId),
-      eq(bowlers.organizationId, input.organizationId),
-      eq(bowlers.active, true),
-    )).limit(1);
-    if (!payerForCustomer) throw new RosterPaymentError("PAYER_SCOPE_MISMATCH", "The payment payer is unavailable", 403);
-    if (!payerForCustomer.paymentCustomerId) {
-      ensuredCustomerId = await ensureProviderCustomer(provider, payerForCustomer);
-      if (ensuredCustomerId && payerForCustomer.paymentCustomerId !== ensuredCustomerId) {
-        const [persistedPayer] = await db.select({ paymentCustomerId: bowlers.paymentCustomerId }).from(bowlers).where(and(
-          eq(bowlers.id, input.payerBowlerId), eq(bowlers.organizationId, input.organizationId),
-        )).limit(1);
-        if (persistedPayer?.paymentCustomerId !== ensuredCustomerId) throw new RosterPaymentError("CARD_CUSTOMER_PERSISTENCE_FAILED", "The provider customer could not be saved for this payer", 503);
+  let provider: Awaited<ReturnType<typeof getPaymentProvider>> | undefined;
+  let ensuredCustomerId: string | undefined;
+  if (!existingRequest) {
+    provider = await getPaymentProvider(league.locationId);
+    if (input.request.storeCard && input.request.sourceKind === "new_card") {
+      const [payerForCustomer] = await db.select().from(bowlers).where(and(
+        eq(bowlers.id, input.payerBowlerId),
+        eq(bowlers.organizationId, input.organizationId),
+        eq(bowlers.active, true),
+      )).limit(1);
+      if (!payerForCustomer) throw new RosterPaymentError("PAYER_SCOPE_MISMATCH", "The payment payer is unavailable", 403);
+      if (!payerForCustomer.paymentCustomerId) {
+        ensuredCustomerId = await ensureProviderCustomer(provider, payerForCustomer);
+        if (ensuredCustomerId && payerForCustomer.paymentCustomerId !== ensuredCustomerId) {
+          const [persistedPayer] = await db.select({ paymentCustomerId: bowlers.paymentCustomerId }).from(bowlers).where(and(
+            eq(bowlers.id, input.payerBowlerId), eq(bowlers.organizationId, input.organizationId),
+          )).limit(1);
+          if (persistedPayer?.paymentCustomerId !== ensuredCustomerId) throw new RosterPaymentError("CARD_CUSTOMER_PERSISTENCE_FAILED", "The provider customer could not be saved for this payer", 503);
+        }
       }
     }
   }
@@ -571,6 +574,7 @@ export async function chargeAccountPaymentFundingV4(input: {
       }
       return { operation: existing, reused: true };
     }
+    if (!provider) throw new Error("Payment provider was not resolved for a new account funding operation");
     const adoption = await readOwnedLedgerAdoptionInTransaction(tx, input);
     if (!adoption) throw new RosterPaymentError("ACCOUNT_PAYMENT_V4_REQUIRED", "This league has not adopted account-based payment", 409);
     const quote = await quoteAccountPaymentFundingV4({
