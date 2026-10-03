@@ -32,7 +32,12 @@ import {
   applyOwnedFundingFifoInTransaction,
   isOwnedPaymentLedgerInvariantError,
   OwnedPaymentLedgerError,
+  OwnedPaymentRefundEvidenceError,
+  readCompletedOwnedPaymentRefundEvidenceInTransaction,
+  readGenericFundingAvailabilityInTransaction,
+  readOwnedLedgerAdoptionInTransaction,
   recordOwnedFundingInTransaction,
+  validateOwnedFundingPortionsForTenderInTransaction,
 } from "./owned-payment-ledger.js";
 
 /**
@@ -131,9 +136,32 @@ async function finalizeOwnedAccountFundingReceiptInTransaction(
     || providerPayment.leagueId !== input.leagueId || providerPayment.paymentOperationId !== operation.id
     || providerPayment.amount !== operation.amountMinor || providerPayment.currency !== operation.currency
     || providerPayment.bowlerId !== snapshot.payerBowlerId || providerPayment.paidByUserId !== operation.authorizingUserId
-    || providerPayment.status !== "paid" || providerPayment.type !== providerNameToPaymentType(operation.providerName)
+    || providerPayment.type !== providerNameToPaymentType(operation.providerName)
     || providerPayment.providerPaymentId !== operation.providerObjectId) {
     throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_MISMATCH", "Provider payment evidence does not match the immutable account funding snapshot");
+  }
+
+  if (providerPayment.status === "refunded") {
+    try {
+      const refundProof = await readCompletedOwnedPaymentRefundEvidenceInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: providerPayment.id,
+        chargeOperationId: operation.id,
+        providerPaymentId: operation.providerObjectId ?? "",
+        amountMinor: operation.amountMinor,
+      });
+      if (!refundProof) throw new OwnedPaymentRefundEvidenceError();
+    } catch (error) {
+      if (error instanceof OwnedPaymentLedgerError || error instanceof OwnedPaymentRefundEvidenceError) {
+        throw new RosterSnapshotFinalizationError("REFUNDED_SOURCE_EVIDENCE_INVALID", "The refunded account receipt has no exact completed refund proof");
+      }
+      throw error;
+    }
+    return { finalized: true, allocationIds: [] };
+  }
+  if (providerPayment.status !== "paid") {
+    throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_MISMATCH", "Provider payment evidence does not identify a paid account receipt");
   }
 
   try {
@@ -265,6 +293,89 @@ function validateInteractivePartnerSnapshot(
     if (error instanceof RosterSnapshotFinalizationError) throw error;
     throw new RosterSnapshotFinalizationError("SNAPSHOT_INVALID", "The interactive partner snapshot failed immutable validation");
   }
+}
+
+/** A successful legacy card tender may already have been adopted into the
+ * owned-credit ledger. Replaying that immutable provider operation must prove
+ * its original recipient partition and all later application/release/refund
+ * evidence, then return without rebuilding old obligation allocations. */
+async function finalizeAdoptedRosterPaymentReplayInTransaction(
+  tx: PaymentOperationTransaction,
+  input: { organizationId: number; leagueId: number },
+  operation: typeof paymentOperations.$inferSelect,
+  snapshot: typeof paymentOperationRosterSnapshots.$inferSelect,
+  payment: typeof payments.$inferSelect,
+): Promise<{ finalized: true; allocationIds: string[] } | null> {
+  const adoption = await readOwnedLedgerAdoptionInTransaction(tx, input);
+  if (!adoption) return null;
+  const fundings = await tx.select().from(weeklyPaymentFundings).where(and(
+    eq(weeklyPaymentFundings.organizationId, input.organizationId),
+    eq(weeklyPaymentFundings.leagueId, input.leagueId),
+    eq(weeklyPaymentFundings.paymentId, payment.id),
+  )).orderBy(asc(weeklyPaymentFundings.portionIndex), asc(weeklyPaymentFundings.id));
+  if (fundings.length === 0) return null;
+
+  if (!snapshot.payerBowlerId || snapshot.snapshotFingerprint === null
+    || !["interactive", "standing_autopay"].includes(snapshot.snapshotKind)
+    || (snapshot.snapshotKind === "interactive" && operation.operationType !== "interactive_charge")
+    || (snapshot.snapshotKind === "standing_autopay" && operation.operationType !== "standing_autopay_charge")
+    || operation.status !== "succeeded" || operation.providerObjectId === null
+    || operation.amountMinor !== payment.amount || operation.currency !== payment.currency
+    || payment.organizationId !== input.organizationId || payment.leagueId !== input.leagueId
+    || payment.paymentOperationId !== operation.id || payment.providerPaymentId !== operation.providerObjectId
+    || payment.bowlerId !== snapshot.payerBowlerId || payment.paidByUserId !== operation.authorizingUserId
+    || payment.type !== providerNameToPaymentType(operation.providerName)
+    || payment.status !== "paid" && payment.status !== "refunded"
+    || fundings.some((funding) => funding.source !== "legacy_adoption"
+      || funding.authorizationKind !== "legacy_provider_snapshot"
+      || funding.authorizationOperationId !== operation.id
+      || funding.authorizationFingerprint !== snapshot.snapshotFingerprint
+      || funding.adoptionId !== adoption.id
+      || funding.authorizationItemCount <= 0)) {
+    throw new RosterSnapshotFinalizationError("ADOPTED_SOURCE_EVIDENCE_INVALID", "The adopted provider receipt no longer matches its immutable source evidence");
+  }
+
+  try {
+    await validateOwnedFundingPortionsForTenderInTransaction(tx, {
+      payment,
+      fundings,
+      allowRefunded: payment.status === "refunded",
+    });
+    const refundProof = await readCompletedOwnedPaymentRefundEvidenceInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      paymentId: payment.id,
+      chargeOperationId: operation.id,
+      providerPaymentId: operation.providerObjectId,
+      amountMinor: operation.amountMinor,
+    });
+    if ((payment.status === "refunded") !== (refundProof !== null)) {
+      throw new OwnedPaymentRefundEvidenceError();
+    }
+    const lots = await readGenericFundingAvailabilityInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      paymentIds: [payment.id],
+    });
+    if (lots.length !== fundings.length || lots.some((lot) => lot.reviewRequired
+      || !fundings.some((funding) => funding.id === lot.fundingId
+        && funding.creditedBowlerId === lot.bowlerId && funding.amountMinor === lot.amountMinor))) {
+      throw new OwnedPaymentLedgerError("FUNDING_SOURCE_REQUIRES_REVIEW");
+    }
+  } catch (error) {
+    if (error instanceof OwnedPaymentLedgerError || error instanceof OwnedPaymentRefundEvidenceError) {
+      throw new RosterSnapshotFinalizationError("ADOPTED_SOURCE_EVIDENCE_INVALID", "The adopted provider receipt has inconsistent funding, release, or refund evidence");
+    }
+    throw error;
+  }
+
+  const activeAllocations = await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, input.organizationId),
+    eq(paymentAllocations.leagueId, input.leagueId),
+    eq(paymentAllocations.paymentId, payment.id),
+    eq(paymentAllocations.state, "active"),
+  )).orderBy(asc(paymentAllocations.id));
+  return { finalized: true, allocationIds: activeAllocations.map((row) => row.id) };
 }
 
 /** Validate the same immutable reservation immediately before the provider
@@ -687,6 +798,15 @@ export async function finalizeRosterSnapshotInTransaction(
   if (rows.length !== 1 || rows[0]?.amount !== operation.amountMinor || rows[0]?.organizationId !== input.organizationId) {
     throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_INCOMPLETE", "Provider payment evidence is incomplete for the roster snapshot");
   }
+
+  const adoptedReplay = await finalizeAdoptedRosterPaymentReplayInTransaction(
+    tx,
+    { organizationId: input.organizationId, leagueId: input.leagueId },
+    operation,
+    snapshot,
+    rows[0],
+  );
+  if (adoptedReplay) return adoptedReplay;
 
   const records = validatedPartnerSnapshot?.allocations ?? (Array.isArray(snapshot.obligations)
     ? snapshot.obligations as SnapshotRecord[]

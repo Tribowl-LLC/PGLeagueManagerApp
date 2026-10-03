@@ -68,6 +68,7 @@ let organizationId: number;
 let leagueId: number;
 let accountLeagueId: number;
 let accountFailureLeagueId: number;
+let adoptedReplayLeagueId: number;
 let locationId: number;
 let teamId: number;
 let accountTeamId: number;
@@ -141,6 +142,23 @@ beforeAll(async () => {
     timezone: "UTC",
   }).returning({ id: leagues.id });
   accountFailureLeagueId = accountFailureLeague.id;
+  const [adoptedReplayLeague] = await db.insert(leagues).values({
+    name: "Roster Adopted Replay League",
+    organizationId,
+    locationId: location.id,
+    payingLineupSize: 3,
+    substituteAccess: "team_only",
+    substitutePaymentRegime: "team_choice",
+    weeklyFee: 2_000,
+    lineageFee: null,
+    prizeFundFee: null,
+    paymentMode: "weekly",
+    seasonStart: "2038-01-01T00:00:00.000Z",
+    seasonEnd: "2038-12-31T23:59:59.000Z",
+    weekDay: "Monday",
+    timezone: "UTC",
+  }).returning({ id: leagues.id });
+  adoptedReplayLeagueId = adoptedReplayLeague.id;
   const [actor] = await db.insert(users).values({
     email: `roster-finalizer-${suffix}@example.test`,
     password: "deterministic-test-password-hash",
@@ -155,17 +173,22 @@ beforeAll(async () => {
   accountTeamId = accountTeam.id;
   const [accountFailureTeam] = await db.insert(teams).values({ name: "Roster Account Failure Team", number: 1, leagueId: accountFailureLeagueId }).returning({ id: teams.id });
   accountFailureTeamId = accountFailureTeam.id;
+  const [adoptedReplayTeam] = await db.insert(teams).values({ name: "Roster Adopted Replay Team", number: 1, leagueId: adoptedReplayLeagueId }).returning({ id: teams.id });
   const [bowler] = await db.insert(bowlers).values({ name: "Roster Fixture Main", email: "roster-main@example.test", organizationId }).returning({ id: bowlers.id });
   bowlerId = bowler.id;
   await db.insert(bowlerLeagues).values([
     { bowlerId, leagueId, teamId },
     { bowlerId, leagueId: accountLeagueId, teamId: accountTeamId },
     { bowlerId, leagueId: accountFailureLeagueId, teamId: accountFailureTeam.id },
+    { bowlerId, leagueId: adoptedReplayLeagueId, teamId: adoptedReplayTeam.id },
   ]);
   await db.insert(teamPaymentSlots).values([
     { organizationId, leagueId, teamId, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: bowlerId, recordedByUserId: actorUserId },
     { organizationId, leagueId, teamId, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
     { organizationId, leagueId, teamId, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    { organizationId, leagueId: adoptedReplayLeagueId, teamId: adoptedReplayTeam.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: bowlerId, recordedByUserId: actorUserId },
+    { organizationId, leagueId: adoptedReplayLeagueId, teamId: adoptedReplayTeam.id, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    { organizationId, leagueId: adoptedReplayLeagueId, teamId: adoptedReplayTeam.id, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
   ]);
 });
 
@@ -247,15 +270,17 @@ async function createOccurrence(options: {
   preserveOccurrenceOrdinal?: boolean;
   plannedOrdinal?: number;
   authoritativeLocalDate?: string;
+  targetLeagueId?: number;
 } = {}) {
   if (!options.preserveOccurrenceOrdinal) occurrenceOrdinal += 1;
   occurrenceFixtureIdentity += 1;
+  const targetLeagueId = options.targetLeagueId ?? leagueId;
   const plannedOrdinal = options.plannedOrdinal ?? occurrenceOrdinal;
   const commandId = randomUUID();
   await db.insert(leagueScheduleCommands).values({
     id: commandId,
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     actorUserId,
     commandType: "publish",
     idempotencyKey: `roster-finalizer-publish-${suffix}-${occurrenceFixtureIdentity}`,
@@ -266,7 +291,7 @@ async function createOccurrence(options: {
   const startAt = new Date(`${authoritativeLocalDate}T19:00:00.000Z`).toISOString();
   const [occurrence] = await db.insert(leagueOccurrences).values({
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     locationId,
     generationKey: `roster-finalizer-occurrence-${suffix}-${occurrenceFixtureIdentity}`,
     kind: "regular",
@@ -289,7 +314,7 @@ async function createOccurrence(options: {
   }).returning({ id: leagueOccurrences.id, authoritativeLocalDate: leagueOccurrences.authoritativeLocalDate, startAt: leagueOccurrences.startAt });
   await db.insert(leagueOccurrenceBillingTerms).values({
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     occurrenceId: occurrence.id,
     purpose: "league_weekly_fee",
     obligationPolicy: "eligible_bowlers",
@@ -303,17 +328,21 @@ async function createOccurrence(options: {
     publicationCommandId: commandId,
   });
   await db.transaction(async (tx) => {
-    await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId, leagueId, occurrenceId: occurrence.id, actorUserId });
+    await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId, leagueId: targetLeagueId, occurrenceId: occurrence.id, actorUserId });
   });
   const [responsibility] = await db.select().from(occurrencePaymentResponsibilities).where(and(
     eq(occurrencePaymentResponsibilities.organizationId, organizationId),
-    eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+    eq(occurrencePaymentResponsibilities.leagueId, targetLeagueId),
     eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id),
     eq(occurrencePaymentResponsibilities.state, "active"),
     eq(occurrencePaymentResponsibilities.slotIndex, 0),
   ));
   if (!responsibility) throw new Error("fixture responsibility was not materialized");
-  const [obligation] = await db.select().from(paymentObligations).where(eq(paymentObligations.responsibilityId, responsibility.id));
+  const [obligation] = await db.select().from(paymentObligations).where(and(
+    eq(paymentObligations.responsibilityId, responsibility.id),
+    eq(paymentObligations.organizationId, organizationId),
+    eq(paymentObligations.leagueId, targetLeagueId),
+  ));
   if (!obligation) throw new Error("fixture obligation was not materialized");
   return { occurrence, responsibility, obligation };
 }
@@ -2004,6 +2033,207 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     expect(obligation?.state).toBe("settled");
     expect(allocations).toHaveLength(1);
     expect(allocations[0]?.amountMinor).toBe(2_000);
+  });
+
+  it("replays an adopted V2 receipt after its original allocation was released", async () => {
+    const fixture = await createOccurrence({
+      targetLeagueId: adoptedReplayLeagueId,
+      authoritativeLocalDate: "2038-01-15",
+    });
+    const captureAt = "2038-01-16T20:00:00.000Z";
+    const providerPaymentId = `adopted-replay-provider-${randomUUID()}`;
+    const prepared = await db.transaction(async (tx) => {
+      await lockLeagueSchedule(tx, organizationId, adoptedReplayLeagueId);
+      const operation = await prepareInteractivePaymentOperation({
+        organizationId,
+        authorizingUserId: actorUserId,
+        requestKey: `adopted-replay-${randomUUID()}`,
+        amountMinor: fixture.obligation.amountMinor,
+        currency: "USD",
+        providerName: "square",
+        leagueId: adoptedReplayLeagueId,
+        locationId,
+        providerLocationId: null,
+        payerBowlerId: bowlerId,
+        requestKind: "direct",
+        sourceId: `cnon:adopted-replay-${randomUUID()}`,
+        customerId: null,
+        buyerEmail: null,
+        storeCard: false,
+        sourceKind: "new_card",
+        allocations: [{
+          allocationIndex: 0,
+          bowlerId,
+          amountMinor: fixture.obligation.amountMinor,
+          notes: null,
+          paidByUserId: actorUserId,
+          obligationId: fixture.obligation.id,
+          responsibilityId: fixture.responsibility.id,
+          responsibilityVersion: fixture.responsibility.version,
+        }],
+        lineItems: [],
+        quoteFingerprint: `lvrosterquote:v1:${"c".repeat(64)}`,
+        transaction: tx,
+      });
+      await tx.insert(paymentOperationRosterSnapshotItems).values({
+        operationId: operation.id,
+        organizationId,
+        leagueId: adoptedReplayLeagueId,
+        obligationId: fixture.obligation.id,
+        allocationIndex: 0,
+        amountMinor: fixture.obligation.amountMinor,
+        state: "reserved",
+      });
+      await tx.update(paymentOperations).set({
+        status: "succeeded",
+        nextAttemptAt: null,
+        providerObjectId: providerPaymentId,
+        errorClassification: null,
+        errorCode: null,
+        completedAt: captureAt,
+        updatedAt: captureAt,
+      }).where(and(eq(paymentOperations.id, operation.id), eq(paymentOperations.organizationId, organizationId)));
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        leagueId: adoptedReplayLeagueId,
+        bowlerId,
+        amount: fixture.obligation.amountMinor,
+        currency: "USD",
+        status: "paid",
+        type: "square",
+        providerPaymentId,
+        paymentOperationId: operation.id,
+        idempotencyKey: operation.id,
+        paidByUserId: actorUserId,
+        createdAt: captureAt,
+      }).returning();
+      if (!payment) throw new Error("adopted replay fixture receipt was not created");
+      await finalizeRosterSnapshotInTransaction(tx, {
+        organizationId,
+        leagueId: adoptedReplayLeagueId,
+        operationId: operation.id,
+        now: captureAt,
+        actorUserId,
+      });
+      const [snapshot] = await tx.select().from(paymentOperationRosterSnapshots).where(and(
+        eq(paymentOperationRosterSnapshots.organizationId, organizationId),
+        eq(paymentOperationRosterSnapshots.leagueId, adoptedReplayLeagueId),
+        eq(paymentOperationRosterSnapshots.operationId, operation.id),
+      ));
+      if (!snapshot) throw new Error("adopted replay fixture snapshot was not persisted");
+      return { operation, payment, snapshot };
+    });
+
+    await db.transaction(async (tx) => {
+      await lockLeagueSchedule(tx, organizationId, adoptedReplayLeagueId);
+      const [adoption] = await tx.insert(weeklyPaymentLedgerAdoptions).values({
+        organizationId,
+        leagueId: adoptedReplayLeagueId,
+        adoptedThroughLocalDate: "2038-01-31",
+        preflightFingerprint: `lvweeklyadoptpre:v1:${randomUUID().replaceAll("-", "").repeat(2)}`,
+        resultFingerprint: `lvweeklyadopt:v1:${randomUUID().replaceAll("-", "").repeat(2)}`,
+        grandfatheredAllocationCount: 0,
+        recordedByUserId: actorUserId,
+      }).returning({ id: weeklyPaymentLedgerAdoptions.id });
+      if (!adoption) throw new Error("adopted replay fixture marker was not created");
+      const [allocation] = await tx.select().from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, adoptedReplayLeagueId),
+        eq(paymentAllocations.paymentId, prepared.payment.id),
+        eq(paymentAllocations.state, "active"),
+      ));
+      if (!allocation) throw new Error("adopted replay fixture allocation was not finalized");
+      const funding = await ownedPaymentLedger.recordOwnedFundingInTransaction(tx, {
+        organizationId,
+        leagueId: adoptedReplayLeagueId,
+        paymentId: prepared.payment.id,
+        creditedBowlerId: bowlerId,
+        portionIndex: 0,
+        amountMinor: fixture.obligation.amountMinor,
+        currency: "USD",
+        source: "legacy_adoption",
+        authorizationKind: "legacy_provider_snapshot",
+        authorizationOperationId: prepared.operation.id,
+        authorizationItemCount: 1,
+        authorizationFingerprint: prepared.snapshot.snapshotFingerprint,
+        adoptionId: adoption.id,
+        recordedByUserId: actorUserId,
+        authorizationItems: [{
+          allocationIndex: 0,
+          amountMinor: fixture.obligation.amountMinor,
+          snapshotFingerprint: prepared.snapshot.snapshotFingerprint,
+        }],
+        now: captureAt,
+      });
+      await tx.insert(paymentAllocationFundingApplications).values({
+        organizationId,
+        leagueId: adoptedReplayLeagueId,
+        allocationId: allocation.id,
+        paymentId: prepared.payment.id,
+        creditedBowlerId: bowlerId,
+        genericFundingId: funding.id,
+        rotatingFundingId: null,
+        sourceAmountMinor: fixture.obligation.amountMinor,
+        amountMinor: allocation.amountMinor,
+        currency: "USD",
+        obligationId: fixture.obligation.id,
+        responsibilityId: fixture.responsibility.id,
+        occurrenceId: fixture.occurrence.id,
+        teamId: fixture.responsibility.teamId,
+        targetKind: "bowler_responsibility",
+        targetPayerBowlerId: bowlerId,
+        assignmentId: null,
+        appliedByUserId: actorUserId,
+        createdAt: captureAt,
+      });
+      const [application] = await tx.select({ id: paymentAllocationFundingApplications.id }).from(paymentAllocationFundingApplications).where(and(
+        eq(paymentAllocationFundingApplications.organizationId, organizationId),
+        eq(paymentAllocationFundingApplications.leagueId, adoptedReplayLeagueId),
+        eq(paymentAllocationFundingApplications.allocationId, allocation.id),
+      ));
+      if (!application) throw new Error("adopted replay fixture funding application was not created");
+      await ownedPaymentLedger.releaseOwnedFundingApplicationInTransaction(tx, {
+        organizationId,
+        leagueId: adoptedReplayLeagueId,
+        applicationId: application.id,
+        actorUserId,
+        reason: "ledger_adoption",
+        idempotencyKey: `adopted-replay-release-${randomUUID()}`,
+        now: "2038-01-17T20:00:00.000Z",
+      });
+      return adoption.id;
+    });
+    await db.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, adoptedReplayLeagueId),
+      eq(occurrencePaymentResponsibilities.id, fixture.responsibility.id),
+    ));
+
+    const first = await db.transaction((tx) => finalizeRosterSnapshotInTransaction(tx, {
+      organizationId,
+      leagueId: adoptedReplayLeagueId,
+      operationId: prepared.operation.id,
+      now: "2038-02-01T20:00:00.000Z",
+      actorUserId,
+    }));
+    const second = await db.transaction((tx) => finalizeRosterSnapshotInTransaction(tx, {
+      organizationId,
+      leagueId: adoptedReplayLeagueId,
+      operationId: prepared.operation.id,
+      now: "2038-02-02T20:00:00.000Z",
+      actorUserId,
+    }));
+    const allocations = await db.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, adoptedReplayLeagueId),
+      eq(paymentAllocations.paymentId, prepared.payment.id),
+    ));
+    expect(first).toMatchObject({ finalized: true, allocationIds: [] });
+    expect(second).toMatchObject({ finalized: true, allocationIds: [] });
+    expect(allocations).toHaveLength(1);
+    expect(allocations[0]).toMatchObject({ state: "voided", amountMinor: fixture.obligation.amountMinor });
+    expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.paymentId, prepared.payment.id))).toHaveLength(1);
+    expect(await db.select({ id: paymentAllocationFundingApplications.id }).from(paymentAllocationFundingApplications).where(eq(paymentAllocationFundingApplications.paymentId, prepared.payment.id))).toHaveLength(1);
   });
 
   it("persists reconciliation when a provider snapshot becomes stale and recovers by operation id", async () => {
