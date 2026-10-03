@@ -14,6 +14,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { Link } from "wouter";
 import type { TeamBowlerEntry } from "@/lib/bowler-league-utils";
 import { formatCurrency } from "@/lib/utils";
+import { isFinancialRowMoneyCovered, projectedOutstandingMinor } from "@/lib/financial-utils";
 import type { BowlerWithAccount, League } from "@shared/schema";
 import {
   serializeCanonicalRotatingRosterFingerprint,
@@ -264,7 +265,7 @@ export function RotatingPaymentsPanel({
         reviewRequired: false,
         rows: [],
       };
-      current.outstandingMinor += row.outstandingMinor;
+      current.outstandingMinor += projectedOutstandingMinor(row);
       current.reviewRequired ||= row.reviewRequired;
       current.rows.push(row);
       byOccurrence.set(row.occurrenceId, current);
@@ -876,8 +877,9 @@ export function RotatingPaymentsPanel({
                     }));
                     const bowlerId = value ? Number(value) : null;
                     const memberRows = bowlerId === null ? [] : teamRows.filter((row) => row.occurrenceId === selectedOccurrence.id && row.actualBowlerId === bowlerId);
-                    const memberOutstanding = memberRows.reduce((total, row) => total + row.outstandingMinor, 0);
+                    const memberOutstanding = memberRows.reduce((total, row) => total + projectedOutstandingMinor(row), 0);
                     const memberNeedsReview = memberRows.some((row) => row.reviewRequired);
+                    const memberMoneyCovered = memberRows.length > 0 && memberRows.every(isFinancialRowMoneyCovered);
                     const memberPaymentStatus = bowlerId === null
                       ? "No bowler confirmed"
                       : memberRows.length === 0
@@ -886,7 +888,7 @@ export function RotatingPaymentsPanel({
                           ? "Review required"
                           : memberOutstanding > 0
                             ? `Unpaid · ${money(memberOutstanding)} remaining`
-                            : memberRows.some((row) => row.state === "settled")
+                          : (balanceQuery.data?.data?.accountProjection ? memberMoneyCovered : memberRows.some((row) => row.state === "settled"))
                               ? "Paid/credited"
                               : "No current collectible balance";
                     return <tr key={slot.slotIndex} className="border-b last:border-b-0">
@@ -952,7 +954,13 @@ export function RotatingPaymentsPanel({
               : balanceQuery.error || balanceQuery.data?.success === false ? <div role="alert" className="flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between"><span>{apiMessage(balanceQuery.error, balanceQuery.data?.error?.message ?? "Team date balances could not be loaded.")}</span><Button variant="outline" size="sm" onClick={() => void balanceQuery.refetch()}>Retry</Button></div>
               : remainderByOccurrence.size === 0 ? <p className="text-sm text-muted-foreground">No team-owned rotating obligations are recorded for this team yet.</p>
                 : <div className="overflow-x-auto rounded-md border"><table className="w-full min-w-130 text-left text-sm"><thead className="border-b bg-muted/50"><tr><th className="px-3 py-2 font-medium">League date</th><th className="px-3 py-2 font-medium">Balance status</th><th className="px-3 py-2 text-right font-medium">Remaining</th></tr></thead><tbody>
-                  {[...remainderByOccurrence.entries()].sort((left, right) => left[1].localDate.localeCompare(right[1].localDate)).map(([occurrenceId, balance]) => <tr key={occurrenceId} className="border-b last:border-b-0"><th scope="row" className="px-3 py-3 font-medium">{balance.localDate}</th><td className="px-3 py-3"><Badge variant={balance.reviewRequired ? "destructive" : balance.outstandingMinor > 0 ? "secondary" : "default"}>{balance.reviewRequired ? "Review required" : balance.outstandingMinor > 0 ? "Unpaid" : balance.rows.some((row) => row.state === "settled") ? "Paid/credited" : "No current collectible balance"}</Badge></td><td className="px-3 py-3 text-right tabular-nums">{money(balance.outstandingMinor)}</td></tr>)}
+                  {[...remainderByOccurrence.entries()].sort((left, right) => left[1].localDate.localeCompare(right[1].localDate)).map(([occurrenceId, balance]) => {
+                    const moneyCovered = balance.rows.length > 0 && balance.rows.every(isFinancialRowMoneyCovered);
+                    const isPaid = balanceQuery.data?.data?.accountProjection
+                      ? moneyCovered
+                      : balance.rows.some((row) => row.state === "settled");
+                    return <tr key={occurrenceId} className="border-b last:border-b-0"><th scope="row" className="px-3 py-3 font-medium">{balance.localDate}</th><td className="px-3 py-3"><Badge variant={balance.reviewRequired ? "destructive" : balance.outstandingMinor > 0 ? "secondary" : "default"}>{balance.reviewRequired ? "Review required" : balance.outstandingMinor > 0 ? "Unpaid" : isPaid ? "Paid/credited" : "No current collectible balance"}</Badge></td><td className="px-3 py-3 text-right tabular-nums">{money(balance.outstandingMinor)}</td></tr>;
+                  })}
                 </tbody></table></div>}
         </div></CardContent>
       </Card>

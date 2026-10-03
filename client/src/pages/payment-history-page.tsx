@@ -14,7 +14,7 @@ import { BowlerErrorView } from "./payment-history-page/bowler-error-view";
 import { NoLeaguesView } from "./payment-history-page/no-leagues-view";
 import { NoLeagueView } from "./payment-history-page/no-league-view";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
-import { countCanonicalPaidWeeks, deriveBowlerFinancials } from "@/lib/financial-utils";
+import { accountProjectionForBowler, countCanonicalPaidWeeks, deriveBowlerFinancials } from "@/lib/financial-utils";
 import { paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
 import { resolveRotatingCreditDisplayState } from "@/components/payment-status-section";
 import { rotatingPaidTotalMinor } from "@/lib/rotating-paid-total";
@@ -97,7 +97,7 @@ export default function PaymentHistoryPage() {
 
   const report = reportResponse?.data;
   const rotatingCreditState = resolveRotatingCreditDisplayState(rotatingCreditResponse, loadingRotatingCredit, rotatingCreditError);
-  const resolved = useMemo(() => resolveInteractiveFinancialRead(financialResponse?.data), [financialResponse?.data]);
+  const resolved = useMemo(() => resolveInteractiveFinancialRead(financialResponse?.data, bowlerId), [financialResponse?.data, bowlerId]);
   // Keep the resolver as the fail-closed gate for checkout-facing financial
   // data. Summary cards may use the full canonical rows only after that gate
   // accepts the versioned contract.
@@ -107,9 +107,10 @@ export default function PaymentHistoryPage() {
     canonicalRows,
     canonicalReport?.asOf ?? "",
     canonicalReport?.totals.collectiblePastDueMinor ?? 0,
+    accountProjectionForBowler(canonicalReport, bowlerId),
   );
   const weeksPaid = canonicalReport ? countCanonicalPaidWeeks(canonicalRows, bowlerId) : null;
-  const isRotating = rotatingCreditState === "rotating";
+  const isRotating = rotatingCreditState === "rotating" && !canonicalReport?.accountProjection;
   const rotatingPaidMinor = isRotating ? rotatingPaidTotalMinor(report, leagueId ?? 0) : null;
   const summaryDisplayState = isRotating && rotatingPaidMinor === null ? "error" : rotatingCreditState;
   const financials = {

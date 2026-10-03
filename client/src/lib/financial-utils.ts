@@ -1,5 +1,6 @@
 import { getApiErrorCode, getApiErrorStatus, isSessionExpiredError } from "@/lib/api-error";
 import type { CanonicalDuePastDueRowV2 } from "@shared/roster-payment-contract";
+import type { FinancialReadAccountProjectionRow, FinancialReadRowContract } from "@shared/financial-contract";
 
 /** Presentation-only shape retained for the payment-history display. Amounts
  * and due status come from the canonical financial API, not this module. */
@@ -26,6 +27,59 @@ export interface BowlerViewFinancials {
   reviewCategory: "refund" | "dispute" | "evidence" | null;
 }
 
+type OwnedProjectionDisplayRow = Pick<FinancialReadRowContract,
+  "state" | "classification" | "outstandingMinor" | "reviewRequired" | "accountProjection"
+>;
+
+/** The raw obligation remains literal; projected account credit is a separate
+ * presentation amount and only applies to adopted owned-account reads. */
+export function projectedOutstandingMinor(row: Pick<FinancialReadRowContract, "outstandingMinor" | "accountProjection">): number {
+  const credit = row.accountProjection?.projectedCreditMinor ?? 0;
+  return Math.max(0, row.outstandingMinor - credit);
+}
+
+export function effectiveFinancialDebtorBowlerId(
+  row: Pick<FinancialReadRowContract, "accountProjection"> & { payerBowlerId: number | null },
+): number | null {
+  return row.accountProjection ? row.accountProjection.effectiveDebtorBowlerId : row.payerBowlerId;
+}
+
+export function isFinancialRowMoneyCovered(row: Pick<FinancialReadRowContract,
+  "amountMinor" | "allocatedMinor" | "waivedMinor" | "state" | "reviewRequired" | "accountProjection"
+>): boolean {
+  const projectedCreditMinor = row.accountProjection?.projectedCreditMinor ?? 0;
+  const requiredMinor = row.amountMinor - row.waivedMinor;
+  const coveredMinor = row.allocatedMinor + projectedCreditMinor;
+  return Number.isSafeInteger(row.amountMinor) && row.amountMinor > 0
+    && Number.isSafeInteger(row.allocatedMinor) && row.allocatedMinor >= 0
+    && Number.isSafeInteger(row.waivedMinor) && row.waivedMinor >= 0 && row.waivedMinor <= row.amountMinor
+    && Number.isSafeInteger(projectedCreditMinor) && projectedCreditMinor >= 0
+    && requiredMinor > 0 && coveredMinor > 0 && coveredMinor >= requiredMinor
+    && row.state !== "voided" && !row.reviewRequired;
+}
+
+export function confirmedCollectiblePastDueMinor(row: OwnedProjectionDisplayRow): number {
+  if (row.accountProjection?.confirmationStatus === "forecast"
+    || row.state === "voided" || row.state === "settled" || row.reviewRequired
+    || row.classification !== "past_due") return 0;
+  return projectedOutstandingMinor(row);
+}
+
+export function confirmedCurrentDueMinor(row: OwnedProjectionDisplayRow): number {
+  if (row.accountProjection?.confirmationStatus === "forecast"
+    || row.state === "voided" || row.state === "settled" || row.reviewRequired
+    || (row.classification !== "due" && row.classification !== "past_due")) return 0;
+  return projectedOutstandingMinor(row);
+}
+
+export function accountProjectionForBowler(
+  report: { accountProjection?: { accounts: FinancialReadAccountProjectionRow[] } } | undefined,
+  bowlerId: number | null | undefined,
+): FinancialReadAccountProjectionRow | undefined {
+  if (!report?.accountProjection || !Number.isSafeInteger(bowlerId) || !bowlerId || bowlerId <= 0) return undefined;
+  return report.accountProjection.accounts.find((account) => account.bowlerId === bowlerId);
+}
+
 /** Count unique active canonical weeks fully covered by this bowler's own
  * settled obligations. Effective allocations remain separate from waived
  * amounts so a waived-only week is never presented as paid. */
@@ -33,13 +87,17 @@ export function countCanonicalPaidWeeks(rows: CanonicalDuePastDueRowV2[], bowler
   if (!Number.isSafeInteger(bowlerId) || !bowlerId || bowlerId <= 0) return 0;
   const byOccurrence = new Map<string, CanonicalDuePastDueRowV2[]>();
   for (const row of rows) {
-    if (row.payerBowlerId !== bowlerId || row.state === "voided" || row.classification === "voided" || !row.occurrenceId) continue;
+    if ((row.accountProjection?.effectiveDebtorBowlerId ?? row.payerBowlerId) !== bowlerId
+      || row.state === "voided" || row.classification === "voided" || !row.occurrenceId) continue;
     byOccurrence.set(row.occurrenceId, [...(byOccurrence.get(row.occurrenceId) ?? []), row]);
   }
 
   let paidWeeks = 0;
   for (const obligations of byOccurrence.values()) {
     const isFullyCovered = obligations.every((row) => {
+      if (row.accountProjection) {
+        return Number.isSafeInteger(row.outstandingMinor) && row.outstandingMinor >= 0 && isFinancialRowMoneyCovered(row);
+      }
       const valuesAreValid = Number.isSafeInteger(row.amountMinor) && row.amountMinor > 0
         && Number.isSafeInteger(row.allocatedMinor) && row.allocatedMinor >= 0
         && Number.isSafeInteger(row.waivedMinor) && row.waivedMinor >= 0 && row.waivedMinor <= row.amountMinor
@@ -52,7 +110,8 @@ export function countCanonicalPaidWeeks(rows: CanonicalDuePastDueRowV2[], bowler
         && row.outstandingMinor === 0
         && row.allocatedMinor >= row.amountMinor - row.waivedMinor;
     });
-    const hasActualPayment = obligations.some((row) => row.allocatedMinor > 0);
+    const hasActualPayment = obligations.some((row) => row.allocatedMinor > 0
+      || (row.accountProjection?.projectedCreditMinor ?? 0) > 0);
     if (isFullyCovered && hasActualPayment) paidWeeks += 1;
   }
   return paidWeeks;
@@ -69,12 +128,14 @@ export function deriveBowlerFinancials(
   rows: CanonicalDuePastDueRowV2[],
   asOf: string,
   authoritativePastDueMinor: number,
+  ownedAccount?: FinancialReadAccountProjectionRow,
 ): BowlerViewFinancials {
   const activeRows = rows.filter((row) => row.state !== "voided" && row.classification !== "voided");
   const asOfMs = Date.parse(asOf);
   const dueToDateRows = activeRows.filter((row) => {
     const dueAtMs = Date.parse(row.dueAt);
-    return Number.isFinite(asOfMs) && Number.isFinite(dueAtMs) && dueAtMs <= asOfMs;
+    return (row.accountProjection?.confirmationStatus !== "forecast" || !row.accountProjection)
+      && Number.isFinite(asOfMs) && Number.isFinite(dueAtMs) && dueAtMs <= asOfMs;
   });
   const netDue = (row: CanonicalDuePastDueRowV2) => Math.max(0, row.amountMinor - row.waivedMinor);
   const occurrenceCount = (sourceRows: CanonicalDuePastDueRowV2[]) => new Set(sourceRows.map((row) => row.occurrenceId)).size;
@@ -85,16 +146,16 @@ export function deriveBowlerFinancials(
     totalWeeksInSeason: occurrenceCount(activeRows),
     fullSeasonAmount: activeRows.reduce((sum, row) => sum + netDue(row), 0),
     amountPastDue: authoritativePastDueMinor,
-    remainingBalance: activeRows
+    remainingBalance: ownedAccount?.seasonRemainingMinor ?? activeRows
       .filter((row) => !row.reviewRequired)
-      .reduce((sum, row) => sum + Math.max(0, row.outstandingMinor), 0),
+      .reduce((sum, row) => sum + projectedOutstandingMinor(row), 0),
     // Keep historical payment evidence, including allocations on a later
     // voided obligation, in the amount-paid card.
-    totalPaidAmount: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+    totalPaidAmount: ownedAccount?.amountPaidMinor ?? rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
     waivedAmount: activeRows.reduce((sum, row) => sum + row.waivedMinor, 0),
     totalUnpaidAmount: 0,
-    reviewRequired: rows.some((row) => row.reviewRequired),
-    reviewCategory: rows.some((row) => row.reviewRequired) ? "evidence" : null,
+    reviewRequired: ownedAccount?.reviewRequired ?? rows.some((row) => row.reviewRequired),
+    reviewCategory: (ownedAccount?.reviewRequired ?? rows.some((row) => row.reviewRequired)) ? "evidence" : null,
   };
 }
 

@@ -142,6 +142,37 @@ describe("ManagePaymentsPage", () => {
     expect(rows[1]?.balanceMinor).toBe(0);
   });
 
+  it("uses adopted season balance after projected credit while retaining the oldest actual debt date", () => {
+    const row = {
+      ...dueRow(1, 2_000),
+      accountProjection: {
+        owner: { kind: "bowler" as const, bowlerId: 1 },
+        effectiveDebtorBowlerId: 1,
+        confirmationStatus: "confirmed" as const,
+        projectedCreditMinor: 500,
+      },
+    };
+    const due = {
+      ...dueResponse([row]),
+      accountProjection: {
+        contractVersion: "owned-account-projection/1" as const,
+        accounts: [{
+          bowlerId: 1,
+          amountPaidMinor: 500,
+          availableCreditMinor: 0,
+          confirmedDebtMinor: 2_000,
+          netBalanceMinor: -2_000,
+          confirmedPastDueMinor: 1_500,
+          seasonRemainingMinor: 1_500,
+          reviewRequired: false,
+        }],
+      },
+    };
+
+    const rows = buildManagePaymentRows([membership(1, 1, "Alex Bowler", 10)], due, roster);
+    expect(rows[0]).toMatchObject({ balanceMinor: 1_500, oldestDueAt: row.dueAt, reviewRequired: false });
+  });
+
   it("preserves team roster order within each team", () => {
     const memberships = [
       membership(1, 1, "Zoe Bowler", 10, true, 0, 0),
