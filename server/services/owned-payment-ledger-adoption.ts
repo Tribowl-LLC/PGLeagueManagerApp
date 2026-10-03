@@ -38,6 +38,7 @@ import {
   weeklyPaymentWeekConfirmations,
   weeklyPaymentWorksheetReceiptRevisions,
   weeklyPaymentWorksheetReceipts,
+  users,
 } from "@shared/schema";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { db } from "../db.js";
@@ -48,9 +49,13 @@ import {
   mapCardReceiptCollectionOccurrence,
 } from "./manage-payments-worksheet-projection.js";
 import {
+  assertOwnedPaymentTenderInTransaction,
   OwnedPaymentLedgerError,
+  readGenericFundingAvailabilityInTransaction,
   readLegacyFundingAuthorizationInTransaction,
   readOwnedLedgerAdoptionInTransaction,
+  recordOwnedFundingInTransaction,
+  releaseOwnedFundingApplicationInTransaction,
   type LegacyFundingAuthorizationPortion,
 } from "./owned-payment-ledger.js";
 import {
@@ -62,7 +67,12 @@ import {
   isConfirmedNoRefundCreditOutcome,
   isRotatingCreditRefundUnresolvedForReversal,
   readRotatingCreditFundingBalancesInTransaction,
+  reverseRotatingCreditApplicationsForAssignmentChangeInTransaction,
 } from "./rotating-credit-applications.js";
+import {
+  appendManualReceiptRevisionInTransaction,
+  createManualReceiptHeadInTransaction,
+} from "./manual-payment-receipts.js";
 
 export const OWNED_PAYMENT_ADOPTION_PREFLIGHT_PREFIX = "lvweeklyadoptpre:v1:" as const;
 export const OWNED_PAYMENT_ADOPTION_RESULT_PREFIX = "lvweeklyadopt:v1:" as const;
@@ -121,6 +131,9 @@ type AdoptionApplication = {
   assignmentId: string | null;
   obligationOwner: EffectivePaymentObligationOwner;
   debtorBowlerId: number;
+  responsibilityId: string;
+  occurrenceId: string;
+  teamId: number;
 };
 
 type RotatingRelease = {
@@ -145,6 +158,30 @@ export interface OwnedPaymentAdoptionPlan extends OwnedPaymentAdoptionPreflight 
 
 function fingerprint(prefix: string, value: unknown): string {
   return `${prefix}${createHash("sha256").update(canonicalJsonStringify(value), "utf8").digest("hex")}`;
+}
+
+function correctionLineageFingerprint(application: AdoptionApplication): string {
+  return fingerprint("lvweeklyadoptcorr:v1:", {
+    paymentId: application.payment.id,
+    originalAllocationId: application.originalAllocationId,
+    allocationId: application.allocation.id,
+    obligationId: application.allocation.obligationId,
+    amountMinor: application.allocation.amountMinor,
+    currency: application.allocation.currency,
+    correctionPath: application.correctionPath.map((edge) => ({
+      correctionId: edge.id,
+      paymentId: edge.paymentId,
+      sourceAllocationId: edge.sourceAllocationId,
+      replacementAllocationId: edge.replacementAllocationId,
+      sourceObligationId: edge.sourceObligationId,
+      targetObligationId: edge.targetObligationId,
+      amountMinor: edge.amountMinor,
+      currency: edge.currency,
+      reason: edge.reason,
+      recordedByUserId: edge.recordedByUserId,
+      createdAt: edge.createdAt,
+    })),
+  });
 }
 
 function previousLocalDate(value: string): string {
@@ -462,6 +499,7 @@ async function buildOwnedPaymentAdoptionPlan(
     eq(paymentObligations.organizationId, input.organizationId),
     eq(paymentObligations.leagueId, input.leagueId),
   )).orderBy(asc(paymentObligations.occurrenceId), asc(paymentObligations.id));
+  const obligationById = new Map(obligations.map((row) => [row.id, row]));
   const responsibilities = await tx.select().from(occurrencePaymentResponsibilities).where(and(
     eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
     eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
@@ -835,9 +873,14 @@ async function buildOwnedPaymentAdoptionPlan(
       addBlocker(blockers, "LEGACY_ALLOCATION_SOURCE_OWNER_UNPROVEN", allocation.id);
       continue;
     }
-    const obligation = obligations.find((row) => row.id === allocation.obligationId);
+    const obligation = obligationById.get(allocation.obligationId);
     if (!obligation || !occurrenceById.has(obligation.occurrenceId)) {
       addBlocker(blockers, "ALLOCATION_OBLIGATION_MISSING", allocation.id);
+      continue;
+    }
+    const responsibility = responsibilityById.get(obligation.responsibilityId);
+    if (!responsibility) {
+      addBlocker(blockers, "ALLOCATION_RESPONSIBILITY_MISSING", allocation.id);
       continue;
     }
     const target = targetForObligation.get(allocation.obligationId);
@@ -847,8 +890,7 @@ async function buildOwnedPaymentAdoptionPlan(
       continue;
     }
     const decision = isConfirmed(obligation.occurrenceId) ? "retain" : "release";
-    const crossesOwner = target.owner.kind === "team"
-      || target.owner.bowlerId !== portion.creditedBowlerId;
+    const crossesOwner = target.debtorBowlerId !== portion.creditedBowlerId;
     const exactProviderItem = portion.authorizationKind === "legacy_provider_snapshot"
       && portion.authorizationOperationId !== null
       && authorizedAllocationIndex !== null
@@ -872,6 +914,9 @@ async function buildOwnedPaymentAdoptionPlan(
       assignmentId: target.assignmentId,
       obligationOwner: target.owner,
       debtorBowlerId: target.debtorBowlerId,
+      responsibilityId: obligation.responsibilityId,
+      occurrenceId: obligation.occurrenceId,
+      teamId: responsibility.teamId,
     });
   }
   for (const [itemKey, allocationIds] of allActiveAllocationIdsByAuthItem) {
@@ -1024,6 +1069,9 @@ async function buildOwnedPaymentAdoptionPlan(
       authorizedAllocationIndex: row.authorizedAllocationIndex,
       correctionPath: row.correctionPath.map((edge) => edge.id),
       obligationId: row.allocation.obligationId,
+      responsibilityId: row.responsibilityId,
+      occurrenceId: row.occurrenceId,
+      teamId: row.teamId,
       ownerKind: row.obligationOwner.kind,
       ownerId: row.obligationOwner.kind === "bowler" ? row.obligationOwner.bowlerId : row.obligationOwner.teamId,
       debtorBowlerId: row.debtorBowlerId,
@@ -1047,8 +1095,7 @@ async function buildOwnedPaymentAdoptionPlan(
   };
   const resultFingerprint = fingerprint(OWNED_PAYMENT_ADOPTION_RESULT_PREFIX, semanticPlan);
   const retained = applications.filter((row) => row.decision === "retain");
-  const grandfathered = retained.filter((row) => row.obligationOwner.kind === "team"
-    || (row.obligationOwner.kind === "bowler" && row.portion.creditedBowlerId !== row.obligationOwner.bowlerId));
+  const grandfathered = retained.filter((row) => row.debtorBowlerId !== row.portion.creditedBowlerId);
   return {
     organizationId: input.organizationId,
     leagueId: input.leagueId,
@@ -1098,4 +1145,506 @@ export async function readOwnedPaymentLedgerAdoptionPlanInTransaction(
 ): Promise<OwnedPaymentAdoptionPlan> {
   await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
   return buildOwnedPaymentAdoptionPlan(tx, input);
+}
+
+export class OwnedPaymentLedgerAdoptionError extends Error {
+  constructor(public readonly code: string) {
+    super("Owned-payment adoption was refused because its reviewed evidence no longer matches");
+    this.name = "OwnedPaymentLedgerAdoptionError";
+  }
+}
+
+export interface ApplyOwnedPaymentLedgerAdoptionInput {
+  organizationId: number;
+  leagueId: number;
+  actorUserId: number;
+  expectedSourceFingerprint: string;
+  expectedResultFingerprint: string;
+}
+
+export interface ApplyOwnedPaymentLedgerAdoptionResult {
+  adoptionId: string;
+  organizationId: number;
+  leagueId: number;
+  adoptedThroughLocalDate: string;
+  sourceFingerprint: string;
+  resultFingerprint: string;
+  grandfatheredAllocationCount: number;
+  recordedByUserId: number;
+  createdAt: string;
+  replayed: boolean;
+}
+
+function assertApplyScope(input: ApplyOwnedPaymentLedgerAdoptionInput): void {
+  if (!Number.isSafeInteger(input.organizationId) || input.organizationId <= 0
+    || !Number.isSafeInteger(input.leagueId) || input.leagueId <= 0
+    || !Number.isSafeInteger(input.actorUserId) || input.actorUserId <= 0) {
+    throw new OwnedPaymentLedgerAdoptionError("INVALID_SCOPE");
+  }
+  if (!new RegExp(`^${OWNED_PAYMENT_ADOPTION_PREFLIGHT_PREFIX}[0-9a-f]{64}$`).test(input.expectedSourceFingerprint)
+    || !new RegExp(`^${OWNED_PAYMENT_ADOPTION_RESULT_PREFIX}[0-9a-f]{64}$`).test(input.expectedResultFingerprint)) {
+    throw new OwnedPaymentLedgerAdoptionError("INVALID_EXPECTED_FINGERPRINT");
+  }
+}
+
+async function assertAdoptionActorInTransaction(
+  tx: PaymentOperationTransaction,
+  input: Pick<ApplyOwnedPaymentLedgerAdoptionInput, "organizationId" | "actorUserId">,
+): Promise<void> {
+  const actorQuery = tx.select({ id: users.id, organizationId: users.organizationId, role: users.role })
+    .from(users).where(eq(users.id, input.actorUserId));
+  const [actor] = await actorQuery.for("update");
+  if (!actor || (actor.role !== "system_admin"
+    && (actor.role !== "org_admin" || actor.organizationId !== input.organizationId))) {
+    throw new OwnedPaymentLedgerAdoptionError("UNAUTHORIZED_ACTOR");
+  }
+}
+
+function applyResult(
+  adoption: NonNullable<Awaited<ReturnType<typeof readOwnedLedgerAdoptionInTransaction>>>,
+  replayed: boolean,
+): ApplyOwnedPaymentLedgerAdoptionResult {
+  return {
+    adoptionId: adoption.id,
+    organizationId: adoption.organizationId,
+    leagueId: adoption.leagueId,
+    adoptedThroughLocalDate: adoption.adoptedThroughLocalDate,
+    sourceFingerprint: adoption.preflightFingerprint,
+    resultFingerprint: adoption.resultFingerprint,
+    grandfatheredAllocationCount: adoption.grandfatheredAllocationCount,
+    recordedByUserId: adoption.recordedByUserId,
+    createdAt: adoption.createdAt,
+    replayed,
+  };
+}
+
+function fundingOwnerKey(paymentId: number, creditedBowlerId: number): string {
+  return `${paymentId}:${creditedBowlerId}`;
+}
+
+function adoptionReleaseIdempotencyKey(adoptionId: string, applicationId: string): string {
+  return `lvadopt_${createHash("sha256").update(`${adoptionId}:${applicationId}`).digest("hex")}`;
+}
+
+async function assertAdoptionOutcomeInTransaction(
+  tx: PaymentOperationTransaction,
+  input: {
+    plan: OwnedPaymentAdoptionPlan;
+    adoption: NonNullable<Awaited<ReturnType<typeof readOwnedLedgerAdoptionInTransaction>>>;
+    actorUserId: number;
+    fundingByOwner: Map<string, typeof weeklyPaymentFundings.$inferSelect>;
+    applicationByAllocationId: Map<string, string>;
+    receiptIdByPaymentId: Map<number, string>;
+  },
+): Promise<void> {
+  const { plan, adoption, actorUserId } = input;
+  if (adoption.organizationId !== plan.organizationId || adoption.leagueId !== plan.leagueId
+    || adoption.adoptedThroughLocalDate !== plan.adoptedThroughLocalDate
+    || adoption.preflightFingerprint !== plan.sourceFingerprint
+    || adoption.resultFingerprint !== plan.resultFingerprint
+    || adoption.grandfatheredAllocationCount !== plan.counts.grandfatheredAllocations
+    || adoption.recordedByUserId !== actorUserId) {
+    throw new OwnedPaymentLedgerAdoptionError("ADOPTION_MARKER_VERIFY_FAILED");
+  }
+
+  const fundingRows = await tx.select().from(weeklyPaymentFundings).where(and(
+    eq(weeklyPaymentFundings.organizationId, plan.organizationId),
+    eq(weeklyPaymentFundings.leagueId, plan.leagueId),
+    eq(weeklyPaymentFundings.adoptionId, adoption.id),
+  )).orderBy(asc(weeklyPaymentFundings.paymentId), asc(weeklyPaymentFundings.portionIndex));
+  if (fundingRows.length !== plan.fundings.length) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_FUNDING_VERIFY_FAILED");
+  const expectedFundingKeys = new Set<string>();
+  for (const expected of plan.fundings) {
+    const key = fundingOwnerKey(expected.payment.id, expected.portion.creditedBowlerId);
+    expectedFundingKeys.add(key);
+    const actual = input.fundingByOwner.get(key);
+    if (!actual || actual.source !== "legacy_adoption" || actual.authorizationKind !== expected.portion.authorizationKind
+      || actual.paymentId !== expected.payment.id || actual.creditedBowlerId !== expected.portion.creditedBowlerId
+      || actual.portionIndex !== expected.portion.portionIndex || actual.amountMinor !== expected.portion.amountMinor
+      || actual.currency !== expected.payment.currency || actual.authorizationOperationId !== expected.portion.authorizationOperationId
+      || actual.authorizationItemCount !== expected.portion.authorizationItemCount
+      || actual.authorizationFingerprint !== expected.portion.authorizationFingerprint
+      || actual.adoptionId !== adoption.id || actual.recordedByUserId !== actorUserId) {
+      throw new OwnedPaymentLedgerAdoptionError("ADOPTION_FUNDING_VERIFY_FAILED");
+    }
+  }
+  if (fundingRows.some((row) => !expectedFundingKeys.has(fundingOwnerKey(row.paymentId, row.creditedBowlerId)))) {
+    throw new OwnedPaymentLedgerAdoptionError("ADOPTION_FUNDING_VERIFY_FAILED");
+  }
+
+  const expectedAuthorizationItems = plan.fundings.flatMap(({ payment, portion }) => {
+    const funding = input.fundingByOwner.get(fundingOwnerKey(payment.id, portion.creditedBowlerId));
+    if (!funding) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_FUNDING_VERIFY_FAILED");
+    return portion.authorizationItems.map((item) => ({ fundingId: funding.id, paymentId: payment.id,
+      creditedBowlerId: portion.creditedBowlerId, operationId: portion.authorizationOperationId,
+      allocationIndex: item.allocationIndex, amountMinor: item.amountMinor, fingerprint: item.snapshotFingerprint }));
+  });
+  const actualAuthorizationItems = fundingRows.length === 0 ? [] : await tx.select().from(weeklyPaymentFundingAuthorizationItems).where(and(
+    eq(weeklyPaymentFundingAuthorizationItems.organizationId, plan.organizationId),
+    eq(weeklyPaymentFundingAuthorizationItems.leagueId, plan.leagueId),
+    inArray(weeklyPaymentFundingAuthorizationItems.fundingId, fundingRows.map((row) => row.id)),
+  )).orderBy(asc(weeklyPaymentFundingAuthorizationItems.fundingId), asc(weeklyPaymentFundingAuthorizationItems.sourceAllocationIndex));
+  if (actualAuthorizationItems.length !== expectedAuthorizationItems.length
+    || expectedAuthorizationItems.some((expected, index) => {
+      const actual = actualAuthorizationItems[index];
+      return !actual || actual.fundingId !== expected.fundingId || actual.paymentId !== expected.paymentId
+        || actual.creditedBowlerId !== expected.creditedBowlerId || actual.sourceOperationId !== expected.operationId
+        || actual.sourceAllocationIndex !== expected.allocationIndex || actual.authorizedAmountMinor !== expected.amountMinor
+        || actual.sourceSnapshotFingerprint !== expected.fingerprint;
+    })) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_AUTHORIZATION_VERIFY_FAILED");
+
+  const applicationAllocationIds = plan.applications.map((row) => row.allocation.id);
+  const storedApplications = applicationAllocationIds.length === 0 ? [] : await tx.select().from(paymentAllocationFundingApplications).where(and(
+    eq(paymentAllocationFundingApplications.organizationId, plan.organizationId),
+    eq(paymentAllocationFundingApplications.leagueId, plan.leagueId),
+    inArray(paymentAllocationFundingApplications.allocationId, applicationAllocationIds),
+  )).orderBy(asc(paymentAllocationFundingApplications.allocationId));
+  if (storedApplications.length !== plan.applications.length) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_APPLICATION_VERIFY_FAILED");
+  const storedApplicationByAllocation = new Map(storedApplications.map((row) => [row.allocationId, row]));
+  const expectedReleaseSourceIds: string[] = [];
+  const expectedProofApplications: AdoptionApplication[] = [];
+  for (const expected of plan.applications) {
+    const actual = storedApplicationByAllocation.get(expected.allocation.id);
+    const funding = input.fundingByOwner.get(fundingOwnerKey(expected.payment.id, expected.portion.creditedBowlerId));
+    if (!actual || !funding || actual.paymentId !== expected.payment.id || actual.creditedBowlerId !== expected.portion.creditedBowlerId
+      || actual.genericFundingId !== funding.id || actual.rotatingFundingId !== null
+      || actual.sourceAmountMinor !== funding.amountMinor || actual.amountMinor !== expected.allocation.amountMinor
+      || actual.currency !== expected.allocation.currency || actual.obligationId !== expected.allocation.obligationId
+      || actual.responsibilityId !== expected.responsibilityId || actual.occurrenceId !== expected.occurrenceId
+      || actual.teamId !== expected.teamId || actual.targetKind !== expected.targetKind
+      || actual.targetPayerBowlerId !== expected.targetPayerBowlerId || actual.assignmentId !== expected.assignmentId
+      || actual.appliedByUserId !== actorUserId) {
+      throw new OwnedPaymentLedgerAdoptionError("ADOPTION_APPLICATION_VERIFY_FAILED");
+    }
+    input.applicationByAllocationId.set(expected.allocation.id, actual.id);
+    if (expected.decision === "release") expectedReleaseSourceIds.push(expected.allocation.id);
+    else if (expected.debtorBowlerId !== expected.portion.creditedBowlerId) expectedProofApplications.push(expected);
+  }
+  const storedAllocationRows = applicationAllocationIds.length === 0 ? [] : await tx.select().from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, plan.organizationId),
+    eq(paymentAllocations.leagueId, plan.leagueId),
+    inArray(paymentAllocations.id, applicationAllocationIds),
+  ));
+  const allocationById = new Map(storedAllocationRows.map((row) => [row.id, row]));
+  if (storedAllocationRows.length !== applicationAllocationIds.length || plan.applications.some((expected) => {
+    const actual = allocationById.get(expected.allocation.id);
+    return !actual || actual.state !== (expected.decision === "retain" ? "active" : "voided");
+  })) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_ALLOCATION_STATE_VERIFY_FAILED");
+
+  const releases = expectedReleaseSourceIds.length === 0 ? [] : await tx.select().from(weeklyPaymentAllocationReleases).where(and(
+    eq(weeklyPaymentAllocationReleases.organizationId, plan.organizationId),
+    eq(weeklyPaymentAllocationReleases.leagueId, plan.leagueId),
+    inArray(weeklyPaymentAllocationReleases.sourceAllocationId, expectedReleaseSourceIds),
+  )).orderBy(asc(weeklyPaymentAllocationReleases.sourceAllocationId));
+  if (releases.length !== expectedReleaseSourceIds.length || plan.applications.some((expected) => {
+    if (expected.decision !== "release") return false;
+    const actual = releases.find((row) => row.sourceAllocationId === expected.allocation.id);
+    const applicationId = input.applicationByAllocationId.get(expected.allocation.id);
+    return !actual || !applicationId || actual.fundingApplicationId !== applicationId
+      || actual.paymentId !== expected.payment.id || actual.creditedBowlerId !== expected.portion.creditedBowlerId
+      || actual.sourceObligationId !== expected.allocation.obligationId
+      || actual.sourceApplicationAmountMinor !== expected.allocation.amountMinor
+      || actual.releasedAmountMinor !== expected.allocation.amountMinor || actual.retainedAmountMinor !== 0
+      || actual.replacementAllocationId !== null || actual.reason !== "ledger_adoption"
+      || actual.recordedByUserId !== actorUserId || actual.idempotencyKey !== adoptionReleaseIdempotencyKey(adoption.id, applicationId);
+  })) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_RELEASE_VERIFY_FAILED");
+
+  const proofs = await tx.select().from(weeklyPaymentLedgerAdoptionAllocationProofs).where(and(
+    eq(weeklyPaymentLedgerAdoptionAllocationProofs.organizationId, plan.organizationId),
+    eq(weeklyPaymentLedgerAdoptionAllocationProofs.leagueId, plan.leagueId),
+    eq(weeklyPaymentLedgerAdoptionAllocationProofs.adoptionId, adoption.id),
+  )).orderBy(asc(weeklyPaymentLedgerAdoptionAllocationProofs.allocationId));
+  if (proofs.length !== expectedProofApplications.length) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PROOF_VERIFY_FAILED");
+  const proofByAllocationId = new Map(proofs.map((row) => [row.allocationId, row]));
+  for (const expected of expectedProofApplications) {
+    const actual = proofByAllocationId.get(expected.allocation.id);
+    const applicationId = input.applicationByAllocationId.get(expected.allocation.id);
+    if (!actual || !applicationId || actual.fundingApplicationId !== applicationId || actual.rotatingApplicationId !== null
+      || actual.paymentId !== expected.payment.id || actual.creditedBowlerId !== expected.portion.creditedBowlerId
+      || actual.originalAllocationId !== expected.originalAllocationId || actual.obligationId !== expected.allocation.obligationId
+      || actual.amountMinor !== expected.allocation.amountMinor || actual.currency !== expected.allocation.currency
+      || actual.correctionCount !== expected.correctionPath.length
+      || actual.correctionLineageFingerprint !== correctionLineageFingerprint(expected)
+      || actual.obligationOwnerKind !== expected.obligationOwner.kind
+      || actual.obligationOwnerBowlerId !== (expected.obligationOwner.kind === "bowler" ? expected.obligationOwner.bowlerId : null)
+      || actual.obligationOwnerTeamId !== (expected.obligationOwner.kind === "team" ? expected.obligationOwner.teamId : null)) {
+      throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PROOF_VERIFY_FAILED");
+    }
+  }
+  const proofIds = proofs.map((row) => row.id);
+  const proofSteps = proofIds.length === 0 ? [] : await tx.select().from(weeklyPaymentLedgerAdoptionAllocationProofSteps).where(and(
+    eq(weeklyPaymentLedgerAdoptionAllocationProofSteps.organizationId, plan.organizationId),
+    eq(weeklyPaymentLedgerAdoptionAllocationProofSteps.leagueId, plan.leagueId),
+    inArray(weeklyPaymentLedgerAdoptionAllocationProofSteps.proofId, proofIds),
+  )).orderBy(asc(weeklyPaymentLedgerAdoptionAllocationProofSteps.proofId), asc(weeklyPaymentLedgerAdoptionAllocationProofSteps.stepIndex));
+  const expectedStepCount = expectedProofApplications.reduce((sum, row) => sum + row.correctionPath.length, 0);
+  if (proofSteps.length !== expectedStepCount) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PROOF_STEPS_VERIFY_FAILED");
+  let stepOffset = 0;
+  for (const expected of expectedProofApplications) {
+    const proof = proofByAllocationId.get(expected.allocation.id);
+    if (!proof) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PROOF_VERIFY_FAILED");
+    for (const [stepIndex, edge] of expected.correctionPath.entries()) {
+      const actual = proofSteps[stepOffset];
+      stepOffset += 1;
+      if (!actual || actual.proofId !== proof.id || actual.stepIndex !== stepIndex || actual.correctionId !== edge.id
+        || actual.paymentId !== edge.paymentId || actual.sourceAllocationId !== edge.sourceAllocationId
+        || actual.replacementAllocationId !== edge.replacementAllocationId || actual.amountMinor !== edge.amountMinor
+        || actual.currency !== edge.currency) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PROOF_STEPS_VERIFY_FAILED");
+    }
+  }
+
+  for (const expected of plan.receipts) {
+    const receiptId = input.receiptIdByPaymentId.get(expected.paymentId);
+    if (!receiptId) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_RECEIPT_VERIFY_FAILED");
+    const [head] = await tx.select().from(weeklyPaymentWorksheetReceipts).where(and(
+      eq(weeklyPaymentWorksheetReceipts.id, receiptId),
+      eq(weeklyPaymentWorksheetReceipts.organizationId, plan.organizationId),
+      eq(weeklyPaymentWorksheetReceipts.leagueId, plan.leagueId),
+    )).limit(1);
+    const revisions = await tx.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, receiptId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, plan.organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, plan.leagueId),
+    )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision));
+    const revision = revisions[0];
+    if (!head || head.occurrenceId !== expected.occurrenceId || head.payerBowlerId !== expected.payerBowlerId
+      || head.receiptKind !== "manual" || revisions.length !== 1 || !revision || revision.receiptRevision !== 1
+      || revision.paymentId !== expected.paymentId || revision.revisionKind !== "manual_record"
+      || revision.amountMinor !== expected.amountMinor
+      || revision.businessCollectionLocalDate !== expected.businessCollectionLocalDate
+      || revision.recordedByUserId !== actorUserId) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_RECEIPT_VERIFY_FAILED");
+  }
+
+  const rotatingBalances = await readRotatingCreditFundingBalancesInTransaction(tx, {
+    organizationId: plan.organizationId,
+    leagueId: plan.leagueId,
+    bowlerIds: [...new Set(plan.rotatingReleases.map((row) => row.application.actualBowlerId))],
+  });
+  if (rotatingBalances.some((row) => row.reviewRequired)) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_ROTATING_VERIFY_FAILED");
+  const rotatingReversals = plan.rotatingReleases.length === 0 ? [] : await tx.select().from(rotatingCreditApplicationReversals).where(and(
+    eq(rotatingCreditApplicationReversals.organizationId, plan.organizationId),
+    eq(rotatingCreditApplicationReversals.leagueId, plan.leagueId),
+    inArray(rotatingCreditApplicationReversals.applicationId, plan.rotatingReleases.map((row) => row.application.id)),
+  ));
+  if (rotatingReversals.length !== plan.rotatingReleases.length || plan.rotatingReleases.some((expected) => {
+    const actual = rotatingReversals.find((row) => row.applicationId === expected.application.id);
+    return !actual || actual.assignmentId !== expected.assignmentId || actual.fundingPaymentId !== expected.application.paymentId
+      || actual.allocationId !== expected.application.allocationId || actual.obligationId !== expected.application.obligationId
+      || actual.bowlerId !== expected.application.actualBowlerId || actual.amountMinor !== expected.application.amountMinor
+      || actual.actorUserId !== actorUserId;
+  })) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_ROTATING_VERIFY_FAILED");
+
+  const genericLots = await readGenericFundingAvailabilityInTransaction(tx, {
+    organizationId: plan.organizationId,
+    leagueId: plan.leagueId,
+    bowlerIds: [...new Set(plan.fundings.map((row) => row.portion.creditedBowlerId))],
+  });
+  const genericLotById = new Map(genericLots.map((row) => [row.fundingId, row]));
+  if (fundingRows.some((row) => {
+    const balance = genericLotById.get(row.id);
+    return !balance || balance.reviewRequired || balance.paymentId !== row.paymentId
+      || balance.bowlerId !== row.creditedBowlerId || balance.amountMinor !== row.amountMinor;
+  })) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_GENERIC_BALANCE_VERIFY_FAILED");
+
+  for (const paymentId of new Set(plan.fundings.map((row) => row.payment.id))) {
+    await assertOwnedPaymentTenderInTransaction(tx, { organizationId: plan.organizationId, leagueId: plan.leagueId, paymentId });
+  }
+}
+
+/** Atomically turn one exact ready preflight into the existing owned ledger.
+ * The marker is checked before replanning so a matching retry remains stable
+ * after ordinary weekly payments mutate account balances. */
+export async function applyOwnedPaymentLedgerAdoption(
+  input: ApplyOwnedPaymentLedgerAdoptionInput,
+  executor: AdoptionPreflightExecutor = db,
+): Promise<ApplyOwnedPaymentLedgerAdoptionResult> {
+  assertApplyScope(input);
+  return executor.transaction(async (tx) => {
+    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    await assertAdoptionActorInTransaction(tx, input);
+
+    const existing = await readOwnedLedgerAdoptionInTransaction(tx, input);
+    if (existing) {
+      if (existing.preflightFingerprint !== input.expectedSourceFingerprint
+        || existing.resultFingerprint !== input.expectedResultFingerprint) {
+        throw new OwnedPaymentLedgerAdoptionError("ADOPTION_REPLAY_MISMATCH");
+      }
+      return applyResult(existing, true);
+    }
+
+    const plan = await buildOwnedPaymentAdoptionPlan(tx, input);
+    if (!plan.ready) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PREFLIGHT_BLOCKED");
+    if (plan.sourceFingerprint !== input.expectedSourceFingerprint
+      || plan.resultFingerprint !== input.expectedResultFingerprint) {
+      throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PREFLIGHT_STALE");
+    }
+    const now = await readDatabaseNow(tx);
+    const [adoption] = await tx.insert(weeklyPaymentLedgerAdoptions).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      adoptedThroughLocalDate: plan.adoptedThroughLocalDate,
+      preflightFingerprint: plan.sourceFingerprint,
+      resultFingerprint: plan.resultFingerprint,
+      grandfatheredAllocationCount: plan.counts.grandfatheredAllocations,
+      recordedByUserId: input.actorUserId,
+      createdAt: now,
+    }).returning();
+    if (!adoption) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_MARKER_CREATE_FAILED");
+
+    const fundingByOwner = new Map<string, typeof weeklyPaymentFundings.$inferSelect>();
+    for (const { payment, portion } of plan.fundings) {
+      const funding = await recordOwnedFundingInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        creditedBowlerId: portion.creditedBowlerId,
+        paymentId: payment.id,
+        portionIndex: portion.portionIndex,
+        amountMinor: portion.amountMinor,
+        currency: payment.currency,
+        source: "legacy_adoption",
+        authorizationKind: portion.authorizationKind,
+        authorizationOperationId: portion.authorizationOperationId,
+        authorizationItemCount: portion.authorizationItemCount,
+        authorizationFingerprint: portion.authorizationFingerprint,
+        adoptionId: adoption.id,
+        recordedByUserId: input.actorUserId,
+        authorizationItems: portion.authorizationItems,
+        now,
+      });
+      fundingByOwner.set(fundingOwnerKey(payment.id, portion.creditedBowlerId), funding);
+    }
+
+    const applicationByAllocationId = new Map<string, string>();
+    const expectedProofApplications: Array<{ plan: AdoptionApplication; applicationId: string }> = [];
+    for (const row of plan.applications) {
+      const funding = fundingByOwner.get(fundingOwnerKey(row.payment.id, row.portion.creditedBowlerId));
+      if (!funding) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_FUNDING_MISSING");
+      const [application] = await tx.insert(paymentAllocationFundingApplications).values({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        allocationId: row.allocation.id,
+        paymentId: row.payment.id,
+        creditedBowlerId: row.portion.creditedBowlerId,
+        genericFundingId: funding.id,
+        rotatingFundingId: null,
+        sourceAmountMinor: funding.amountMinor,
+        amountMinor: row.allocation.amountMinor,
+        currency: row.allocation.currency,
+        obligationId: row.allocation.obligationId,
+        responsibilityId: row.responsibilityId,
+        occurrenceId: row.occurrenceId,
+        teamId: row.teamId,
+        targetKind: row.targetKind,
+        targetPayerBowlerId: row.targetPayerBowlerId,
+        assignmentId: row.assignmentId,
+        appliedByUserId: input.actorUserId,
+        createdAt: now,
+      }).returning({ id: paymentAllocationFundingApplications.id });
+      if (!application) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_APPLICATION_CREATE_FAILED");
+      applicationByAllocationId.set(row.allocation.id, application.id);
+      if (row.decision === "retain" && row.debtorBowlerId !== row.portion.creditedBowlerId) {
+        expectedProofApplications.push({ plan: row, applicationId: application.id });
+      }
+    }
+
+    for (const { plan: row, applicationId } of expectedProofApplications) {
+      const [proof] = await tx.insert(weeklyPaymentLedgerAdoptionAllocationProofs).values({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        adoptionId: adoption.id,
+        fundingApplicationId: applicationId,
+        rotatingApplicationId: null,
+        paymentId: row.payment.id,
+        creditedBowlerId: row.portion.creditedBowlerId,
+        allocationId: row.allocation.id,
+        originalAllocationId: row.originalAllocationId,
+        obligationId: row.allocation.obligationId,
+        obligationOwnerKind: row.obligationOwner.kind,
+        obligationOwnerBowlerId: row.obligationOwner.kind === "bowler" ? row.obligationOwner.bowlerId : null,
+        obligationOwnerTeamId: row.obligationOwner.kind === "team" ? row.obligationOwner.teamId : null,
+        amountMinor: row.allocation.amountMinor,
+        currency: row.allocation.currency,
+        correctionCount: row.correctionPath.length,
+        correctionLineageFingerprint: correctionLineageFingerprint(row),
+        createdAt: now,
+      }).returning({ id: weeklyPaymentLedgerAdoptionAllocationProofs.id });
+      if (!proof) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PROOF_CREATE_FAILED");
+      if (row.correctionPath.length > 0) {
+        await tx.insert(weeklyPaymentLedgerAdoptionAllocationProofSteps).values(row.correctionPath.map((edge, stepIndex) => ({
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          proofId: proof.id,
+          stepIndex,
+          correctionId: edge.id,
+          paymentId: edge.paymentId,
+          sourceAllocationId: edge.sourceAllocationId,
+          replacementAllocationId: edge.replacementAllocationId,
+          amountMinor: edge.amountMinor,
+          currency: edge.currency,
+          createdAt: now,
+        })));
+      }
+    }
+
+    for (const row of plan.applications.filter((candidate) => candidate.decision === "release")) {
+      const applicationId = applicationByAllocationId.get(row.allocation.id);
+      if (!applicationId) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_APPLICATION_MISSING");
+      await releaseOwnedFundingApplicationInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        applicationId,
+        actorUserId: input.actorUserId,
+        reason: "ledger_adoption",
+        idempotencyKey: adoptionReleaseIdempotencyKey(adoption.id, applicationId),
+        now,
+      });
+    }
+
+    for (const row of plan.rotatingReleases) {
+      await reverseRotatingCreditApplicationsForAssignmentChangeInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        assignmentId: row.assignmentId,
+        obligationIds: [row.application.obligationId],
+        paymentId: row.application.paymentId,
+        actorUserId: input.actorUserId,
+        reason: `Owned payment ledger adoption ${plan.resultFingerprint}`,
+        now,
+      });
+    }
+
+    const receiptIdByPaymentId = new Map<number, string>();
+    for (const receipt of plan.receipts) {
+      const receiptId = await createManualReceiptHeadInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        occurrenceId: receipt.occurrenceId,
+        bowlerId: receipt.payerBowlerId,
+        now,
+      });
+      receiptIdByPaymentId.set(receipt.paymentId, receiptId);
+      await appendManualReceiptRevisionInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        actorUserId: input.actorUserId,
+        receiptId,
+        revision: 1,
+        paymentId: receipt.paymentId,
+        amountMinor: receipt.amountMinor,
+        businessCollectionLocalDate: receipt.businessCollectionLocalDate,
+        revisionKind: "manual_record",
+        now,
+      });
+    }
+
+    await assertAdoptionOutcomeInTransaction(tx, {
+      plan,
+      adoption,
+      actorUserId: input.actorUserId,
+      fundingByOwner,
+      applicationByAllocationId,
+      receiptIdByPaymentId,
+    });
+    return applyResult(adoption, false);
+  });
 }

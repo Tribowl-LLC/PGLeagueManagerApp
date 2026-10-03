@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   bowlers,
   leagueOccurrenceBillingTerms,
@@ -13,7 +13,11 @@ import {
   organizations,
   paymentAllocations,
   paymentObligations,
+  paymentObligationOwnerRevisions,
   payments,
+  rotatingCreditFundings,
+  rotatingOccurrenceAssignments,
+  teamPaymentSlots,
   teams,
   users,
   weeklyPaymentAllocationReleases,
@@ -27,8 +31,18 @@ import {
   weeklyPaymentWorksheetReceipts,
   paymentAllocationFundingApplications,
 } from "@shared/schema";
-import { deriveOwnedPaymentAdoptionCutoff, preflightOwnedPaymentLedgerAdoption } from "../../server/services/owned-payment-ledger-adoption";
+import {
+  applyOwnedPaymentLedgerAdoption,
+  deriveOwnedPaymentAdoptionCutoff,
+  preflightOwnedPaymentLedgerAdoption,
+} from "../../server/services/owned-payment-ledger-adoption";
 import { localDateForInstant } from "../../server/services/manage-payments-worksheet-projection";
+import { readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read";
+import {
+  appendManualReceiptRevisionInTransaction,
+  createManualReceiptHeadInTransaction,
+  createManualReceiptPaymentInTransaction,
+} from "../../server/services/manual-payment-receipts";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { getTestDb } from "../setup/test-db";
 
@@ -43,24 +57,42 @@ let teamId: number;
 let generationRunId: string;
 let occurrenceIds: string[] = [];
 
-async function createPublishedOccurrence(ordinal: number, localDate: string) {
+interface AdoptionScheduleFixtureScope {
+  organizationId: number;
+  leagueId: number;
+  locationId: number;
+  generationRunId: string;
+  actorUserId: number;
+  keySuffix: string;
+}
+
+interface AdoptionObligationFixtureScope extends AdoptionScheduleFixtureScope {
+  bowlerId: number;
+  teamId: number;
+}
+
+async function createPublishedOccurrence(
+  ordinal: number,
+  localDate: string,
+  scope: AdoptionScheduleFixtureScope = { organizationId, leagueId, locationId, generationRunId, actorUserId, keySuffix: suffix },
+) {
   const commandId = randomUUID();
   const startAt = `${localDate}T19:00:00.000Z`;
   await db.insert(leagueScheduleCommands).values({
     id: commandId,
-    organizationId,
-    leagueId,
-    actorUserId,
+    organizationId: scope.organizationId,
+    leagueId: scope.leagueId,
+    actorUserId: scope.actorUserId,
     commandType: "publish",
-    idempotencyKey: `owned-adoption-publish-${suffix}-${ordinal}`,
+    idempotencyKey: `owned-adoption-publish-${scope.keySuffix}-${ordinal}`,
     requestFingerprint: `owned-adoption-publish-fingerprint-${ordinal}`,
   });
   const [occurrence] = await db.insert(leagueOccurrences).values({
-    organizationId,
-    leagueId,
-    locationId,
-    generationRunId,
-    generationKey: `owned-adoption-occurrence-${suffix}-${ordinal}`,
+    organizationId: scope.organizationId,
+    leagueId: scope.leagueId,
+    locationId: scope.locationId,
+    generationRunId: scope.generationRunId,
+    generationKey: `owned-adoption-occurrence-${scope.keySuffix}-${ordinal}`,
     kind: "regular",
     status: "scheduled",
     lifecycle: "published",
@@ -76,12 +108,12 @@ async function createPublishedOccurrence(ordinal: number, localDate: string) {
     competitive: true,
     countsInStandings: true,
     publishedAt: startAt,
-    publishedByUserId: actorUserId,
+    publishedByUserId: scope.actorUserId,
     publicationCommandId: commandId,
   }).returning({ id: leagueOccurrences.id });
   await db.insert(leagueOccurrenceBillingTerms).values({
-    organizationId,
-    leagueId,
+    organizationId: scope.organizationId,
+    leagueId: scope.leagueId,
     occurrenceId: occurrence.id,
     purpose: "league_weekly_fee",
     obligationPolicy: "eligible_bowlers",
@@ -91,43 +123,279 @@ async function createPublishedOccurrence(ordinal: number, localDate: string) {
     version: 1,
     state: "published",
     publishedAt: startAt,
-    publishedByUserId: actorUserId,
+    publishedByUserId: scope.actorUserId,
     publicationCommandId: commandId,
   });
   return occurrence.id;
 }
 
-async function createPayerObligation(occurrenceId: string, localDate: string) {
+async function createPayerObligation(
+  occurrenceId: string,
+  localDate: string,
+  scope: AdoptionObligationFixtureScope = { organizationId, leagueId, locationId, generationRunId, actorUserId, keySuffix: suffix, bowlerId, teamId },
+) {
   const at = `${localDate}T19:00:00.000Z`;
   const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
-    organizationId,
-    leagueId,
+    organizationId: scope.organizationId,
+    leagueId: scope.leagueId,
     occurrenceId,
-    teamId,
+    teamId: scope.teamId,
     responsibilityKind: "worksheet",
     worksheetFeeComponent: "full",
-    payerBowlerId: bowlerId,
+    payerBowlerId: scope.bowlerId,
     amountMinor: 1_000,
     currency: "USD",
     dueAt: at,
     pastDueAt: at,
-    recordedByUserId: actorUserId,
+    recordedByUserId: scope.actorUserId,
   }).returning({ id: occurrencePaymentResponsibilities.id });
   const [obligation] = await db.insert(paymentObligations).values({
-    organizationId,
-    leagueId,
+    organizationId: scope.organizationId,
+    leagueId: scope.leagueId,
     occurrenceId,
     responsibilityId: responsibility.id,
     component: "full",
-    payerBowlerId: bowlerId,
+    payerBowlerId: scope.bowlerId,
     amountMinor: 1_000,
     currency: "USD",
     dueAt: at,
     pastDueAt: at,
     state: "open",
-    createdByUserId: actorUserId,
+    createdByUserId: scope.actorUserId,
   }).returning({ id: paymentObligations.id });
   return obligation.id;
+}
+
+interface SupplementalAdoptionFixture {
+  leagueId: number;
+  teamId: number;
+  bowlerId: number;
+  firstOccurrenceId: string;
+  secondOccurrenceId: string;
+  secondObligationId: string;
+  legacyManualPaymentId: number;
+  rotatingManualPaymentId: number;
+  legacyAllocationIds: string[];
+}
+
+async function createSupplementalAdoptionFixture(key: string): Promise<SupplementalAdoptionFixture> {
+  const fixtureSuffix = key.replace(/[^a-z0-9_-]/gi, "").slice(0, 40);
+  const [league] = await db.insert(leagues).values({
+    name: `Owned Adoption ${fixtureSuffix}`,
+    organizationId,
+    locationId,
+    payingLineupSize: 3,
+    weeklyFee: 10,
+    seasonStart: "2038-02-01T00:00:00.000Z",
+    seasonEnd: "2038-12-31T23:59:59.000Z",
+    weekDay: "Monday",
+    timezone: "UTC",
+    paymentMode: "weekly",
+  }).returning({ id: leagues.id });
+  if (!league) throw new Error("supplemental adoption league was not created");
+  const supplementalLeagueId = league.id;
+  const [team] = await db.insert(teams).values({
+    name: `Owned Adoption Team ${fixtureSuffix}`,
+    number: 1,
+    leagueId: supplementalLeagueId,
+  }).returning({ id: teams.id });
+  if (!team) throw new Error("supplemental adoption team was not created");
+  const [bowler] = await db.insert(bowlers).values({
+    organizationId,
+    name: `Owned Adoption Bowler ${fixtureSuffix}`,
+  }).returning({ id: bowlers.id });
+  if (!bowler) throw new Error("supplemental adoption bowler was not created");
+  const generationCommandId = randomUUID();
+  await db.insert(leagueScheduleCommands).values({
+    id: generationCommandId,
+    organizationId,
+    leagueId: supplementalLeagueId,
+    actorUserId,
+    commandType: "generate",
+    idempotencyKey: `owned-adoption-generation-${fixtureSuffix}`,
+    requestFingerprint: `owned-adoption-generation-fingerprint-${fixtureSuffix}`,
+  });
+  const supplementalGenerationRunId = randomUUID();
+  await db.insert(leagueOccurrenceGenerationRuns).values({
+    id: supplementalGenerationRunId,
+    organizationId,
+    leagueId: supplementalLeagueId,
+    originatingCommandId: generationCommandId,
+    generatorVersion: "owned-adoption-supplemental-v1",
+    inputFingerprint: `owned-adoption-supplemental-input-${fixtureSuffix}`,
+    sourceScheduleRevision: 1,
+    normalizedInputSnapshot: { fixtureKind: "legacy_published_schedule" },
+    rangeStartDate: "2038-02-01",
+    rangeEndDate: "2038-02-08",
+    candidateOccurrenceCount: 2,
+    generatedOccurrenceCount: 2,
+    skippedDateCount: 0,
+    discrepancyCount: 0,
+    state: "applied",
+    approvedAt: "2038-01-01T00:00:00.000Z",
+    approvedByUserId: actorUserId,
+    approvalCommandId: generationCommandId,
+  });
+  const scope: AdoptionScheduleFixtureScope = {
+    organizationId,
+    leagueId: supplementalLeagueId,
+    locationId,
+    generationRunId: supplementalGenerationRunId,
+    actorUserId,
+    keySuffix: fixtureSuffix,
+  };
+  const firstOccurrenceId = await createPublishedOccurrence(1, "2038-02-01", scope);
+  const secondOccurrenceId = await createPublishedOccurrence(2, "2038-02-08", scope);
+  const mainScope: AdoptionObligationFixtureScope = { ...scope, bowlerId: bowler.id, teamId: team.id };
+  const secondObligationId = await createPayerObligation(secondOccurrenceId, "2038-02-08", mainScope);
+  const dueAt = "2038-02-01T19:00:00.000Z";
+  const [slot] = await db.insert(teamPaymentSlots).values({
+    organizationId,
+    leagueId: supplementalLeagueId,
+    teamId: team.id,
+    slotIndex: 0,
+    lineupSize: 3,
+    occupant: "rotating",
+    mainBowlerId: null,
+    recordedByUserId: actorUserId,
+  }).returning({ id: teamPaymentSlots.id });
+  if (!slot) throw new Error("team payment slot is missing");
+  const [teamResponsibility] = await db.insert(occurrencePaymentResponsibilities).values({
+    organizationId,
+    leagueId: supplementalLeagueId,
+    occurrenceId: firstOccurrenceId,
+    teamId: team.id,
+    slotId: slot.id,
+    slotIndex: 0,
+    positionIndex: 0,
+    responsibilityKind: "rotating",
+    policy: "main_pays_full",
+    amountMinor: 1_000,
+    currency: "USD",
+    dueAt,
+    pastDueAt: dueAt,
+    recordedByUserId: actorUserId,
+  }).returning({ id: occurrencePaymentResponsibilities.id });
+  if (!teamResponsibility) throw new Error("team assignment responsibility is missing");
+  const teamObligationId = await db.transaction(async (tx) => {
+    const [teamObligation] = await tx.insert(paymentObligations).values({
+      organizationId,
+      leagueId: supplementalLeagueId,
+      occurrenceId: firstOccurrenceId,
+      responsibilityId: teamResponsibility.id,
+      component: "full",
+      payerBowlerId: null,
+      amountMinor: 1_000,
+      currency: "USD",
+      dueAt,
+      pastDueAt: dueAt,
+      state: "open",
+      createdByUserId: actorUserId,
+    }).returning({ id: paymentObligations.id });
+    if (!teamObligation) throw new Error("team assignment obligation is missing");
+    await tx.insert(rotatingOccurrenceAssignments).values({
+      organizationId,
+      leagueId: supplementalLeagueId,
+      occurrenceId: firstOccurrenceId,
+      teamId: team.id,
+      slotId: slot.id,
+      slotIndex: 0,
+      responsibilityId: teamResponsibility.id,
+      version: 1,
+      actualBowlerId: bowler.id,
+      recordedByUserId: actorUserId,
+    });
+    await tx.insert(paymentObligationOwnerRevisions).values({
+      organizationId,
+      leagueId: supplementalLeagueId,
+      obligationId: teamObligation.id,
+      revisionNumber: 1,
+      ownerKind: "team",
+      ownerBowlerId: null,
+      ownerTeamId: team.id,
+      reason: "rotating_conversion",
+      recordedByUserId: actorUserId,
+    });
+    return teamObligation.id;
+  });
+  await db.insert(weeklyPaymentWeekConfirmations).values({
+    organizationId,
+    leagueId: supplementalLeagueId,
+    occurrenceId: firstOccurrenceId,
+    revision: 1,
+    stateFingerprint: `lvmanagepayments:v1:${"4".repeat(64)}`,
+    requestFingerprint: `lvmanagepaymentsrequest:v1:${"5".repeat(64)}`,
+    responsibilitySetFingerprint: `lvmanagepaymentsrows:v1:${"6".repeat(64)}`,
+    idempotencyKey: `owned-adoption-confirm-${fixtureSuffix}`,
+    requestSnapshot: { fixture: true },
+    recordedByUserId: actorUserId,
+  });
+
+  const paymentCreatedAt = "2038-02-04T16:30:00.000Z";
+  const [legacyPaymentId, rotatingPaymentId, legacyAllocationIds] = await db.transaction(async (tx) => {
+    const [legacyPayment] = await tx.insert(payments).values({
+      organizationId,
+      leagueId: supplementalLeagueId,
+      bowlerId: bowler.id,
+      amount: 1_500,
+      currency: "USD",
+      status: "paid",
+      type: "cash",
+      createdAt: paymentCreatedAt,
+    }).returning({ id: payments.id });
+    if (!legacyPayment) throw new Error("legacy manual payment is missing");
+    const legacyAllocations = await tx.insert(paymentAllocations).values([
+      { obligationId: teamObligationId, amountMinor: 1_000 },
+      { obligationId: secondObligationId, amountMinor: 500 },
+    ].map((row) => ({
+      organizationId,
+      leagueId: supplementalLeagueId,
+      paymentId: legacyPayment.id,
+      obligationId: row.obligationId,
+      amountMinor: row.amountMinor,
+      currency: "USD" as const,
+      state: "active" as const,
+      allocationKind: "ordinary" as const,
+      recordedByUserId: actorUserId,
+    }))).returning({ id: paymentAllocations.id });
+    const [rotatingPayment] = await tx.insert(payments).values({
+      organizationId,
+      leagueId: supplementalLeagueId,
+      bowlerId: bowler.id,
+      amount: 700,
+      currency: "USD",
+      status: "paid",
+      type: "cash",
+      createdAt: paymentCreatedAt,
+    }).returning({ id: payments.id });
+    if (!rotatingPayment) throw new Error("rotating manual payment is missing");
+    await tx.insert(rotatingCreditFundings).values({
+      organizationId,
+      leagueId: supplementalLeagueId,
+      bowlerId: bowler.id,
+      paymentId: rotatingPayment.id,
+      amountMinor: 700,
+      currency: "USD",
+      fundingKind: "cash",
+      idempotencyKey: `owned-adopt-rotating-${fixtureSuffix}`,
+      requestFingerprint: `lvrotcrreq:v1:${"7".repeat(64)}`,
+      quoteFingerprint: `lvrotcrquote:v1:${"8".repeat(64)}`,
+      actorUserId,
+      createdAt: paymentCreatedAt,
+    });
+    return [legacyPayment.id, rotatingPayment.id, legacyAllocations.map((row) => row.id)] as const;
+  });
+  return {
+    leagueId: supplementalLeagueId,
+    teamId: team.id,
+    bowlerId: bowler.id,
+    firstOccurrenceId,
+    secondOccurrenceId,
+    secondObligationId,
+    legacyManualPaymentId: legacyPaymentId,
+    rotatingManualPaymentId: rotatingPaymentId,
+    legacyAllocationIds,
+  };
 }
 
 beforeAll(async () => {
@@ -375,5 +643,207 @@ describe("owned payment ledger adoption preflight", () => {
       count: 1,
       entityIds: [allocation.id],
     });
+  });
+
+  it("applies only the reviewed plan, keeps same-bowler team assignments, and preserves rotating cash receipts", async () => {
+    const fixture = await createSupplementalAdoptionFixture(`apply-${randomUUID().slice(0, 8)}`);
+    const plan = await preflightOwnedPaymentLedgerAdoption({ organizationId, leagueId: fixture.leagueId }, db);
+    expect(plan.ready).toBe(true);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.counts).toEqual({
+      paidPayments: 2,
+      genericFundingPortions: 1,
+      retainedAllocations: 1,
+      genericAllocationReleases: 1,
+      rotatingAllocationReleases: 0,
+      grandfatheredAllocations: 0,
+      manualReceipts: 2,
+      preservedVoidedPayments: 0,
+    });
+
+    const applied = await applyOwnedPaymentLedgerAdoption({
+      organizationId,
+      leagueId: fixture.leagueId,
+      actorUserId,
+      expectedSourceFingerprint: plan.sourceFingerprint,
+      expectedResultFingerprint: plan.resultFingerprint,
+    }, db);
+    expect(applied.replayed).toBe(false);
+    expect(applied.sourceFingerprint).toBe(plan.sourceFingerprint);
+    expect(applied.resultFingerprint).toBe(plan.resultFingerprint);
+    expect(applied.grandfatheredAllocationCount).toBe(0);
+
+    const storedApplications = await db.select().from(paymentAllocationFundingApplications).where(and(
+      eq(paymentAllocationFundingApplications.organizationId, organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, fixture.leagueId),
+    ));
+    expect(storedApplications).toHaveLength(2);
+    const teamApplication = storedApplications.find((row) => row.allocationId === fixture.legacyAllocationIds[0]);
+    expect(teamApplication?.targetKind).toBe("legacy_team_assignment");
+    expect(teamApplication?.creditedBowlerId).toBe(fixture.bowlerId);
+    expect(teamApplication?.assignmentId).not.toBeNull();
+    expect(await db.select().from(weeklyPaymentLedgerAdoptionAllocationProofs).where(and(
+      eq(weeklyPaymentLedgerAdoptionAllocationProofs.organizationId, organizationId),
+      eq(weeklyPaymentLedgerAdoptionAllocationProofs.leagueId, fixture.leagueId),
+    ))).toHaveLength(0);
+    const [futureAllocation] = await db.select().from(paymentAllocations).where(eq(paymentAllocations.id, fixture.legacyAllocationIds[1] ?? ""));
+    expect(futureAllocation?.state).toBe("voided");
+    const [release] = await db.select().from(weeklyPaymentAllocationReleases).where(eq(
+      weeklyPaymentAllocationReleases.sourceAllocationId,
+      fixture.legacyAllocationIds[1] ?? "",
+    ));
+    expect(release?.reason).toBe("ledger_adoption");
+
+    const [adoptedGenericFunding] = await db.select().from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, organizationId),
+      eq(weeklyPaymentFundings.leagueId, fixture.leagueId),
+      eq(weeklyPaymentFundings.paymentId, fixture.legacyManualPaymentId),
+    ));
+    expect(adoptedGenericFunding?.adoptionId).toBe(applied.adoptionId);
+    expect(await db.select().from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, organizationId),
+      eq(weeklyPaymentFundings.leagueId, fixture.leagueId),
+      eq(weeklyPaymentFundings.paymentId, fixture.rotatingManualPaymentId),
+    ))).toHaveLength(0);
+    const receiptRevisions = await db.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, fixture.leagueId),
+    ));
+    expect(receiptRevisions.map((row) => row.paymentId).sort()).toEqual([
+      fixture.legacyManualPaymentId,
+      fixture.rotatingManualPaymentId,
+    ].sort());
+    expect(receiptRevisions.every((row) => row.businessCollectionLocalDate === "2038-02-04")).toBe(true);
+
+    const snapshot = await readManagePaymentsWorksheetSnapshot({
+      organizationId,
+      leagueId: fixture.leagueId,
+      occurrenceId: fixture.firstOccurrenceId,
+    });
+    const worksheetRow = snapshot.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === fixture.bowlerId);
+    expect(worksheetRow?.manualReceipts.map((receipt) => receipt.paymentId).sort()).toEqual([
+      fixture.legacyManualPaymentId,
+      fixture.rotatingManualPaymentId,
+    ].sort());
+
+    await db.transaction(async (tx) => {
+      const receiptId = await createManualReceiptHeadInTransaction(tx, {
+        organizationId,
+        leagueId: fixture.leagueId,
+        occurrenceId: fixture.firstOccurrenceId,
+        bowlerId: fixture.bowlerId,
+        now: "2038-02-05T12:00:00.000Z",
+      });
+      const paymentId = await createManualReceiptPaymentInTransaction(tx, {
+        organizationId,
+        leagueId: fixture.leagueId,
+        actorUserId,
+        occurrenceId: fixture.firstOccurrenceId,
+        idempotencyKey: `owned-adoption-post-${randomUUID().slice(0, 8)}`,
+      }, {
+        receiptId,
+        bowlerId: fixture.bowlerId,
+        amountMinor: 100,
+        businessDate: "2038-02-05",
+      }, "2038-02-05T12:00:00.000Z");
+      await appendManualReceiptRevisionInTransaction(tx, {
+        organizationId,
+        leagueId: fixture.leagueId,
+        actorUserId,
+        receiptId,
+        revision: 1,
+        paymentId,
+        amountMinor: 100,
+        businessCollectionLocalDate: "2038-02-05",
+        revisionKind: "manual_record",
+        now: "2038-02-05T12:00:00.000Z",
+      });
+    });
+    const replay = await applyOwnedPaymentLedgerAdoption({
+      organizationId,
+      leagueId: fixture.leagueId,
+      actorUserId,
+      expectedSourceFingerprint: plan.sourceFingerprint,
+      expectedResultFingerprint: plan.resultFingerprint,
+    }, db);
+    expect(replay).toEqual({ ...applied, replayed: true });
+    expect(await db.select().from(weeklyPaymentLedgerAdoptions).where(and(
+      eq(weeklyPaymentLedgerAdoptions.organizationId, organizationId),
+      eq(weeklyPaymentLedgerAdoptions.leagueId, fixture.leagueId),
+    ))).toHaveLength(1);
+    expect(await db.select().from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, organizationId),
+      eq(weeklyPaymentFundings.leagueId, fixture.leagueId),
+      eq(weeklyPaymentFundings.adoptionId, applied.adoptionId),
+    ))).toHaveLength(1);
+  });
+
+  it("refuses a stale reviewed source fingerprint before writing any adoption rows", async () => {
+    const fixture = await createSupplementalAdoptionFixture(`stale-${randomUUID().slice(0, 8)}`);
+    const plan = await preflightOwnedPaymentLedgerAdoption({ organizationId, leagueId: fixture.leagueId }, db);
+    expect(plan.ready).toBe(true);
+    await db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        leagueId: fixture.leagueId,
+        bowlerId: fixture.bowlerId,
+        amount: 25,
+        currency: "USD",
+        status: "paid",
+        type: "cash",
+        createdAt: "2038-02-06T12:00:00.000Z",
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("stale plan payment was not created");
+      await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId: fixture.leagueId,
+        paymentId: payment.id,
+        obligationId: fixture.secondObligationId,
+        amountMinor: 25,
+        currency: "USD",
+        state: "active",
+        allocationKind: "ordinary",
+        recordedByUserId: actorUserId,
+      });
+    });
+    await expect(applyOwnedPaymentLedgerAdoption({
+      organizationId,
+      leagueId: fixture.leagueId,
+      actorUserId,
+      expectedSourceFingerprint: plan.sourceFingerprint,
+      expectedResultFingerprint: plan.resultFingerprint,
+    }, db)).rejects.toMatchObject({ code: "ADOPTION_PREFLIGHT_STALE" });
+    expect(await db.select().from(weeklyPaymentLedgerAdoptions).where(eq(weeklyPaymentLedgerAdoptions.leagueId, fixture.leagueId))).toHaveLength(0);
+    expect(await db.select().from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.leagueId, fixture.leagueId))).toHaveLength(0);
+    expect(await db.select().from(paymentAllocationFundingApplications).where(eq(paymentAllocationFundingApplications.leagueId, fixture.leagueId))).toHaveLength(0);
+  });
+
+  it("rolls back the marker and earlier writes when an adoption funding insert fails", async () => {
+    const fixture = await createSupplementalAdoptionFixture(`rollback-${randomUUID().slice(0, 8)}`);
+    const plan = await preflightOwnedPaymentLedgerAdoption({ organizationId, leagueId: fixture.leagueId }, db);
+    expect(plan.ready).toBe(true);
+    const token = randomUUID().replaceAll("-", "");
+    const functionName = `owned_adoption_fail_${token}`;
+    const triggerName = `owned_adoption_fail_${token}`;
+    await db.execute(sql.raw(`CREATE FUNCTION public.${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'owned adoption test fault'; END; $$`));
+    try {
+      await db.execute(sql.raw(`CREATE TRIGGER ${triggerName} BEFORE INSERT ON public.weekly_payment_fundings FOR EACH ROW EXECUTE FUNCTION public.${functionName}()`));
+      await expect(applyOwnedPaymentLedgerAdoption({
+        organizationId,
+        leagueId: fixture.leagueId,
+        actorUserId,
+        expectedSourceFingerprint: plan.sourceFingerprint,
+        expectedResultFingerprint: plan.resultFingerprint,
+      }, db)).rejects.toThrow();
+    } finally {
+      await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${triggerName} ON public.weekly_payment_fundings`));
+      await db.execute(sql.raw(`DROP FUNCTION IF EXISTS public.${functionName}()`));
+    }
+    expect(await db.select().from(weeklyPaymentLedgerAdoptions).where(eq(weeklyPaymentLedgerAdoptions.leagueId, fixture.leagueId))).toHaveLength(0);
+    expect(await db.select().from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.leagueId, fixture.leagueId))).toHaveLength(0);
+    expect(await db.select().from(paymentAllocationFundingApplications).where(eq(paymentAllocationFundingApplications.leagueId, fixture.leagueId))).toHaveLength(0);
+    expect(await db.select().from(weeklyPaymentWorksheetReceipts).where(eq(weeklyPaymentWorksheetReceipts.leagueId, fixture.leagueId))).toHaveLength(0);
+    const originalAllocations = await db.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId, fixture.legacyManualPaymentId));
+    expect(originalAllocations.map((row) => row.state)).toEqual(["active", "active"]);
   });
 });
