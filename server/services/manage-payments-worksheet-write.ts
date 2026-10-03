@@ -10,7 +10,6 @@ import {
   paymentAllocations,
   paymentObligations,
   paymentOperationRosterSnapshotItems,
-  paymentVoids,
   payments,
   rotatingCreditApplications,
   rotatingCreditFundings,
@@ -31,9 +30,16 @@ import {
 import { db } from "../db.js";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import { resolvePaymentObligationOwnersInTransaction, PaymentObligationOwnerError } from "./roster-obligation-owners.js";
-import { applyOwnedFundingFifoInTransaction, OwnedPaymentLedgerError, recordOwnedFundingInTransaction, releaseOwnedFundingApplicationInTransaction } from "./owned-payment-ledger.js";
+import { applyOwnedFundingFifoInTransaction, OwnedPaymentLedgerError, releaseOwnedFundingApplicationInTransaction } from "./owned-payment-ledger.js";
 import { reverseRotatingCreditApplicationsForAssignmentChangeInTransaction, RotatingCreditLedgerError } from "./rotating-credit-applications.js";
 import { deriveRosterPaymentTimingInTransaction } from "./roster-payment-materializer.js";
+import {
+  appendManualReceiptRevisionInTransaction as appendManualReceiptRevisionShared,
+  createManualReceiptHeadInTransaction,
+  createManualReceiptPaymentInTransaction as createManualReceiptPaymentShared,
+  ManualPaymentReceiptError,
+  voidManualReceiptPaymentInTransaction as voidManualReceiptPaymentShared,
+} from "./manual-payment-receipts.js";
 import { loadManagePaymentsWorksheetSnapshotInTransaction, ManagePaymentsWorksheetReadError } from "./manage-payments-worksheet-read.js";
 import {
   ManagePaymentsReconciliationError,
@@ -109,6 +115,10 @@ function throwWriteError(caught: unknown): never {
   if (caught instanceof OwnedPaymentLedgerError) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Payment evidence needs review before this week can be saved");
   if (caught instanceof PaymentObligationOwnerError) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Payment owner evidence needs review before this week can be saved");
   if (caught instanceof RotatingCreditLedgerError) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Rotating credit evidence needs review before this week can be saved");
+  if (caught instanceof ManualPaymentReceiptError) throw new ManagePaymentsWorksheetWriteError(
+    caught.code === "manual_receipt_conflict" ? "manual_receipt_conflict" : "incompatible_evidence",
+    caught.message,
+  );
   if (caught instanceof ManagePaymentsReconciliationError) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Responsibility components need review before this week can be saved");
   throw caught;
 }
@@ -497,18 +507,7 @@ export async function appendWorksheetManualReceiptRevisionInTransaction(
   tx: Tx,
   input: { organizationId: number; leagueId: number; actorUserId: number; receiptId: string; revision: number; paymentId: number | null; amountMinor: number; businessCollectionLocalDate: string; revisionKind: "manual_record" | "manual_edit" | "manual_clear"; now: string },
 ): Promise<void> {
-  await tx.insert(weeklyPaymentWorksheetReceiptRevisions).values({
-    organizationId: input.organizationId,
-    leagueId: input.leagueId,
-    receiptId: input.receiptId,
-    receiptRevision: input.revision,
-    paymentId: input.paymentId,
-    revisionKind: input.revisionKind,
-    amountMinor: input.amountMinor,
-    businessCollectionLocalDate: input.businessCollectionLocalDate,
-    recordedByUserId: input.actorUserId,
-    createdAt: input.now,
-  });
+  return appendManualReceiptRevisionShared(tx, input);
 }
 
 async function voidManualReceiptPayment(
@@ -518,90 +517,14 @@ async function voidManualReceiptPayment(
   receiptId: string,
   now: string,
 ): Promise<Set<number>> {
-  if (row.status !== "paid" || row.currency !== "USD" || row.providerPaymentId !== null || row.paymentOperationId !== null
-    || (row.type !== "cash" && row.type !== "check")) {
-    throw new ManagePaymentsWorksheetWriteError("manual_receipt_conflict", "This receipt is no longer an editable cash or check payment");
-  }
-  const fundingApplications = await tx.select({ application: paymentAllocationFundingApplications, allocation: paymentAllocations })
-    .from(paymentAllocationFundingApplications)
-    .innerJoin(paymentAllocations, and(
-      eq(paymentAllocations.id, paymentAllocationFundingApplications.allocationId),
-      eq(paymentAllocations.organizationId, input.organizationId),
-      eq(paymentAllocations.leagueId, input.leagueId),
-    )).where(and(
-      eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
-      eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
-      eq(paymentAllocationFundingApplications.paymentId, row.id),
-      eq(paymentAllocations.state, "active"),
-    )).orderBy(asc(paymentAllocationFundingApplications.id)).for("update", { of: [paymentAllocationFundingApplications, paymentAllocations] });
-  const affectedOwners = new Set<number>();
-  for (const { application } of fundingApplications) {
-    affectedOwners.add(application.creditedBowlerId);
-    await releaseOwnedFundingApplicationInTransaction(tx, {
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-      applicationId: application.id,
-      actorUserId: input.actorUserId,
-      reason: "worksheet_correction",
-      idempotencyKey: releaseKey(input.request.idempotencyKey, application.id),
-      now,
-    });
-  }
-  const rotatingRows = await tx.select({
-    application: rotatingCreditApplications,
-    funding: rotatingCreditFundings,
-  }).from(rotatingCreditApplications)
-    .innerJoin(rotatingCreditFundings, and(
-      eq(rotatingCreditFundings.id, rotatingCreditApplications.fundingId),
-      eq(rotatingCreditFundings.organizationId, input.organizationId),
-      eq(rotatingCreditFundings.leagueId, input.leagueId),
-    )).where(and(
-      eq(rotatingCreditApplications.organizationId, input.organizationId),
-      eq(rotatingCreditApplications.leagueId, input.leagueId),
-      eq(rotatingCreditApplications.paymentId, row.id),
-    )).orderBy(asc(rotatingCreditApplications.id));
-  const assignmentIds = new Set<string>();
-  for (const { application, funding } of rotatingRows) {
-    affectedOwners.add(funding.bowlerId);
-    assignmentIds.add(application.assignmentId);
-  }
-  for (const assignmentId of assignmentIds) {
-    await reverseRotatingCreditApplicationsForAssignmentChangeInTransaction(tx, {
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-      assignmentId,
-      actorUserId: input.actorUserId,
-      reason: "Weekly cash or check receipt was corrected",
-      paymentId: row.id,
-      now,
-    });
-  }
-  const activeAllocations = await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(
-    eq(paymentAllocations.organizationId, input.organizationId),
-    eq(paymentAllocations.leagueId, input.leagueId),
-    eq(paymentAllocations.paymentId, row.id),
-    eq(paymentAllocations.state, "active"),
-  ));
-  if (activeAllocations.length > 0) throw new ManagePaymentsWorksheetWriteError("manual_receipt_conflict", "This receipt has allocations that cannot be safely edited");
-  await tx.insert(paymentVoids).values({
+  return voidManualReceiptPaymentShared(tx, {
     organizationId: input.organizationId,
     leagueId: input.leagueId,
-    paymentId: row.id,
-    reason: `Weekly worksheet correction for receipt ${receiptId}`,
-    recordedByUserId: input.actorUserId,
-    createdAt: now,
-  });
-  await tx.update(payments).set({ status: "voided" }).where(and(
-    eq(payments.id, row.id),
-    eq(payments.organizationId, input.organizationId),
-    eq(payments.leagueId, input.leagueId),
-    eq(payments.status, "paid"),
-  ));
-  return affectedOwners;
-}
-
-function receiptAuthorizationFingerprint(input: { organizationId: number; leagueId: number; occurrenceId: string; receiptId: string; paymentId: number; bowlerId: number; amountMinor: number; businessDate: string; idempotencyKey: string }): string {
-  return `lvweeklyreceipt:v1:${createHash("sha256").update(canonicalJsonStringify(input), "utf8").digest("hex")}`;
+    actorUserId: input.actorUserId,
+    occurrenceId: input.request.occurrenceId,
+    idempotencyKey: input.request.idempotencyKey,
+    reason: "Weekly worksheet correction",
+  }, row, receiptId, now);
 }
 
 async function createManualReceiptPayment(
@@ -610,53 +533,13 @@ async function createManualReceiptPayment(
   values: { receiptId: string; bowlerId: number; amountMinor: number; businessDate: string; existingPayment?: { type: "cash" | "check"; checkNumber: string | null; notes: string | null; paidByUserId: number | null } },
   now: string,
 ): Promise<number> {
-  const receiptType = values.existingPayment?.type ?? "cash";
-  const [payment] = await tx.insert(payments).values({
-    organizationId: input.organizationId,
-    bowlerId: values.bowlerId,
-    leagueId: input.leagueId,
-    amount: values.amountMinor,
-    currency: "USD",
-    status: "paid",
-    type: receiptType,
-    checkNumber: values.existingPayment?.checkNumber ?? null,
-    providerPaymentId: null,
-    idempotencyKey: null,
-    receiptEmailMissing: false,
-    notes: values.existingPayment?.notes ?? null,
-    paidByUserId: values.existingPayment?.paidByUserId ?? input.actorUserId,
-    paymentOperationId: null,
-    createdAt: now,
-  }).returning({ id: payments.id });
-  if (!payment) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "The cash or check payment could not be recorded");
-  await recordOwnedFundingInTransaction(tx, {
+  return createManualReceiptPaymentShared(tx, {
     organizationId: input.organizationId,
     leagueId: input.leagueId,
-    creditedBowlerId: values.bowlerId,
-    paymentId: payment.id,
-    portionIndex: 0,
-    amountMinor: values.amountMinor,
-    currency: "USD",
-    source: "worksheet_manual",
-    authorizationKind: "manual_receipt",
-    authorizationFingerprint: receiptAuthorizationFingerprint({
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-      occurrenceId: input.request.occurrenceId,
-      receiptId: values.receiptId,
-      paymentId: payment.id,
-      bowlerId: values.bowlerId,
-      amountMinor: values.amountMinor,
-      businessDate: values.businessDate,
-      idempotencyKey: input.request.idempotencyKey,
-    }),
-    authorizationOperationId: null,
-    authorizationItemCount: 0,
-    adoptionId: null,
-    recordedByUserId: input.actorUserId,
-    now,
-  });
-  return payment.id;
+    actorUserId: input.actorUserId,
+    occurrenceId: input.request.occurrenceId,
+    idempotencyKey: input.request.idempotencyKey,
+  }, values, now);
 }
 
 async function saveManualReceiptEdits(
@@ -763,17 +646,15 @@ async function saveManualReceiptEdits(
 
     const newAmount = change.newManualReceiptAmountMinor ?? 0;
     if (newAmount > 0) {
-      const [receipt] = await tx.insert(weeklyPaymentWorksheetReceipts).values({
+      const receiptId = await createManualReceiptHeadInTransaction(tx, {
         organizationId: input.organizationId,
         leagueId: input.leagueId,
         occurrenceId: input.request.occurrenceId,
-        payerBowlerId: change.bowlerId,
-        receiptKind: "manual",
-        createdAt: now,
-      }).returning({ id: weeklyPaymentWorksheetReceipts.id });
-      if (!receipt) throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "The weekly cash receipt could not be created");
+        bowlerId: change.bowlerId,
+        now,
+      });
       const paymentId = await createManualReceiptPayment(tx, input, {
-        receiptId: receipt.id,
+        receiptId,
         bowlerId: change.bowlerId,
         amountMinor: newAmount,
         businessDate: snapshot.selectedOccurrence.localDate,
@@ -782,7 +663,7 @@ async function saveManualReceiptEdits(
         organizationId: input.organizationId,
         leagueId: input.leagueId,
         actorUserId: input.actorUserId,
-        receiptId: receipt.id,
+        receiptId,
         revision: 1,
         paymentId,
         amountMinor: newAmount,
