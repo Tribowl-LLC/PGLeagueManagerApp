@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   hasMembership: vi.fn(),
   configuredOrganization: vi.fn(),
   readSnapshot: vi.fn(),
+  readSeasonSnapshot: vi.fn(),
   saveWorksheet: vi.fn(),
   adminWriteLimiter: vi.fn((_req: unknown, _res: unknown, next: () => void) => next()),
 }));
@@ -34,6 +35,7 @@ vi.mock("../../server/services/manage-payments-worksheet-read.js", () => ({
     }
   },
   isManagePaymentsWorksheetReadAborted: (error: unknown) => error instanceof Error && error.name === "ManagePaymentsWorksheetReadAborted",
+  readManagePaymentsSeasonSnapshot: (...args: unknown[]) => mocks.readSeasonSnapshot(...args),
   readManagePaymentsWorksheetSnapshot: (...args: unknown[]) => mocks.readSnapshot(...args),
 }));
 vi.mock("../../server/services/manage-payments-worksheet-write.js", () => ({
@@ -80,6 +82,7 @@ beforeEach(() => {
   mocks.hasMembership.mockReturnValue(true);
   mocks.hasAdmin.mockResolvedValue(true);
   mocks.readSnapshot.mockResolvedValue({ contractVersion: 1, teams: [] });
+  mocks.readSeasonSnapshot.mockResolvedValue({ contractVersion: 1, snapshotsByOccurrence: {} });
   mocks.saveWorksheet.mockResolvedValue({ snapshot: { contractVersion: 1, teams: [] }, replayed: false });
 });
 
@@ -198,6 +201,58 @@ describe("Manage Payments worksheet read route", () => {
 
     expect(response.status).toBe(409);
     expect(body).toMatchObject({ success: false, error: { code: "WEEKLY_PAYMENT_LEDGER_NOT_ADOPTED" } });
+  });
+});
+
+describe("Manage Payments season read route", () => {
+  it("requires configured organization admin access and hides foreign leagues", async () => {
+    const anonymous = await get("/leagues/7/manage-payments/1/season");
+    const manager = await get("/leagues/7/manage-payments/1/season", user("payment_manager", 12), 12);
+    const mismatched = await get("/leagues/7/manage-payments/1/season", user("org_admin", 12), 99);
+    mocks.hasAdmin.mockResolvedValue(false);
+    const foreign = await get("/leagues/7/manage-payments/1/season", user("org_admin", 12), 12);
+
+    expect(anonymous.status).toBe(401);
+    expect(manager.status).toBe(403);
+    expect(mismatched.status).toBe(403);
+    expect(foreign.status).toBe(404);
+    expect(mocks.readSeasonSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("loads the complete season once with the resolved organization and an abort signal", async () => {
+    const response = await get("/leagues/7/manage-payments/1/season?organizationId=99", user("org_admin", 12), 12);
+    const body = await response.json() as { success: boolean; data: { contractVersion: number } };
+    const readInput = mocks.readSeasonSnapshot.mock.calls[0]?.[0] as { organizationId: number; leagueId: number; signal: AbortSignal };
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ success: true, data: { contractVersion: 1 } });
+    expect(mocks.readSeasonSnapshot).toHaveBeenCalledTimes(1);
+    expect(readInput).toMatchObject({ organizationId: 12, leagueId: 7 });
+    expect(readInput.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("signals the season reader when an in-flight request is abandoned", async () => {
+    let readSignal: AbortSignal | undefined;
+    mocks.readSeasonSnapshot.mockImplementation((input: { signal: AbortSignal }) => new Promise((_resolve, reject) => {
+      readSignal = input.signal;
+      const rejectAborted = () => reject(Object.assign(new Error("aborted"), { name: "ManagePaymentsWorksheetReadAborted" }));
+      if (input.signal.aborted) rejectAborted();
+      else input.signal.addEventListener("abort", rejectAborted, { once: true });
+    }));
+    const requestController = new AbortController();
+    const pendingResponse = fetch(`${baseUrl}/api/financials/leagues/7/manage-payments/1/season`, {
+      signal: requestController.signal,
+      headers: {
+        "x-test-user": JSON.stringify(user("org_admin", 12)),
+        "x-test-org-context": "12",
+      },
+    });
+    await vi.waitFor(() => expect(readSignal).toBeInstanceOf(AbortSignal));
+
+    requestController.abort();
+
+    await expect(pendingResponse).rejects.toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(readSignal?.aborted).toBe(true));
   });
 });
 

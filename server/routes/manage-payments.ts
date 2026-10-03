@@ -9,6 +9,7 @@ import { adminWriteLimiter } from "../middleware/rate-limit.js";
 import {
   ManagePaymentsWorksheetReadError,
   isManagePaymentsWorksheetReadAborted,
+  readManagePaymentsSeasonSnapshot,
   readManagePaymentsWorksheetSnapshot,
 } from "../services/manage-payments-worksheet-read.js";
 import {
@@ -76,6 +77,61 @@ router.get("/leagues/:leagueId/manage-payments/1", async (req, res) => {
         return sendError(res, "This league's payment ledger is not ready for weekly worksheet reads", 409, "WEEKLY_PAYMENT_LEDGER_NOT_ADOPTED");
       }
       if (caught.code === "invalid_occurrence") return sendError(res, "The selected week is unavailable", 400, "INVALID_OCCURRENCE_ID");
+      return sendError(res, "Weekly payment evidence requires review", 409, "WEEKLY_PAYMENT_EVIDENCE_INCOMPATIBLE");
+    }
+    return sendError(res, "Unable to read the weekly payment worksheet", 500, "INTERNAL_ERROR");
+  } finally {
+    req.off("aborted", abortOnRequestAborted);
+    res.off("close", abortOnPrematureResponseClose);
+  }
+});
+
+router.get("/leagues/:leagueId/manage-payments/1/season", async (req, res) => {
+  if (!req.user) return sendError(res, "Authentication required", 401, "AUTH_REQUIRED");
+  if (req.user.role !== "org_admin" && req.user.role !== "system_admin") {
+    return sendError(res, "Administrator access required", 403, "ADMIN_ACCESS_REQUIRED");
+  }
+
+  const leagueId = positiveId(req.params.leagueId);
+  if (leagueId === null) return sendError(res, "Invalid league id", 400, "INVALID_LEAGUE_ID");
+
+  const organizationId = configuredOrganizationId();
+  if (organizationId === undefined
+    || req.organizationContextId === undefined
+    || req.organizationContextId !== organizationId
+    || !hasConfiguredOrganizationMembership(req.user, organizationId)) {
+    return sendError(res, "Configured business access is unavailable", 403, "ORG_ACCESS_DENIED");
+  }
+  if (!(await hasAdminAccessToLeague(req, leagueId))) {
+    return sendError(res, "Not found", 404, "NOT_FOUND");
+  }
+
+  const abortController = new AbortController();
+  const abortOnRequestAborted = () => abortController.abort();
+  const abortOnPrematureResponseClose = () => {
+    if (!res.writableEnded) abortController.abort();
+  };
+  req.once("aborted", abortOnRequestAborted);
+  res.once("close", abortOnPrematureResponseClose);
+  if (req.aborted || res.destroyed) abortController.abort();
+
+  try {
+    const snapshot = await readManagePaymentsSeasonSnapshot({
+      organizationId,
+      leagueId,
+      signal: abortController.signal,
+    });
+    if (abortController.signal.aborted || req.aborted || res.destroyed) return;
+    return sendSuccess(res, snapshot);
+  } catch (caught) {
+    if (isManagePaymentsWorksheetReadAborted(caught)) return;
+    if (req.aborted || res.destroyed) throw caught;
+    if (caught instanceof ManagePaymentsWorksheetReadError) {
+      if (caught.code === "league_not_found") return sendError(res, "Not found", 404, "NOT_FOUND");
+      if (caught.code === "ledger_not_adopted") {
+        return sendError(res, "This league's payment ledger is not ready for weekly worksheet reads", 409, "WEEKLY_PAYMENT_LEDGER_NOT_ADOPTED");
+      }
+      if (caught.code === "invalid_occurrence") return sendError(res, "The league has no available billable weeks", 400, "INVALID_OCCURRENCE_ID");
       return sendError(res, "Weekly payment evidence requires review", 409, "WEEKLY_PAYMENT_EVIDENCE_INCOMPATIBLE");
     }
     return sendError(res, "Unable to read the weekly payment worksheet", 500, "INTERNAL_ERROR");

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   bowlerLeagues,
   bowlers,
@@ -24,7 +24,12 @@ import {
   weeklyPaymentWorksheetReceiptRevisions,
   weeklyPaymentWorksheetReceipts,
 } from "@shared/schema";
-import type { ManagePaymentsChangedRow, ManagePaymentsSnapshot } from "@shared/manage-payments-contract";
+import {
+  rehydrateManagePaymentsSeasonWeekSnapshot,
+  type ManagePaymentsChangedRow,
+  type ManagePaymentsSeasonSnapshot,
+  type ManagePaymentsSnapshot,
+} from "@shared/manage-payments-contract";
 import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION } from "@shared/league-setup-integration";
 import { createLeagueWithCanonicalSetup } from "../../server/services/league-setup-integration.js";
 import { prepareAccountPaymentOperation } from "../../server/services/account-payment-operation-preparation.js";
@@ -47,7 +52,7 @@ import { canonicalManualReceiptQuoteFingerprint } from "../../server/services/ma
 import { historicalCashAllocationFingerprint } from "@shared/historical-payment-repair";
 import { calculateRosterPaymentTiming } from "@shared/roster-payment-contract";
 import { readOwnedAccountBalancesInTransaction } from "../../server/services/owned-payment-ledger.js";
-import { readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read.js";
+import { readManagePaymentsSeasonSnapshot, readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read.js";
 import { saveManagePaymentsWorksheet, ManagePaymentsWorksheetWriteError } from "../../server/services/manage-payments-worksheet-write.js";
 import { readCanonicalPaymentReport, readPaymentReceiptProjection } from "../../server/services/canonical-payment-report.js";
 import { getPaymentsPaginated, getVisiblePaymentByIdForOrganization } from "../../server/storage/payments.js";
@@ -218,6 +223,122 @@ function rowChange(snapshot: ManagePaymentsSnapshot, bowlerId: number, overrides
 }
 
 describe("Manage Payments worksheet atomic writer", () => {
+  it("reads every week from one shared owned-ledger projection and refreshes the selected week after a save", async () => {
+    const serviceDb = (await import("../../server/db.js")).db;
+    const ownedLedger = await import("../../server/services/owned-payment-ledger.js");
+    const rosterPaymentCore = await import("../../server/services/roster-payment-core.js");
+    const transactionSpy = vi.spyOn(serviceDb, "transaction");
+    const ledgerReadSpy = vi.spyOn(ownedLedger, "readOwnedPaymentLedgerReadSnapshotInTransaction");
+    const canonicalProjectionSpy = vi.spyOn(rosterPaymentCore, "readCanonicalDuePastDueV3InTransaction");
+    let season: ManagePaymentsSeasonSnapshot | undefined;
+    try {
+      season = await readManagePaymentsSeasonSnapshot({ organizationId, leagueId });
+      expect(transactionSpy).toHaveBeenCalledTimes(1);
+      expect(transactionSpy).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
+        isolationLevel: "repeatable read",
+        accessMode: "read only",
+      }));
+      expect(ledgerReadSpy).toHaveBeenCalledTimes(1);
+      expect(canonicalProjectionSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      canonicalProjectionSpy.mockRestore();
+      ledgerReadSpy.mockRestore();
+      transactionSpy.mockRestore();
+    }
+    if (!season) throw new Error("Manage Payments season snapshot was not read");
+    expect(Object.keys(season.snapshotsByOccurrence).sort()).toEqual(season.weekOptions.map((week) => week.occurrenceId).sort());
+    expect(season.defaultOccurrenceId).toBeTruthy();
+
+    for (const week of season.weekOptions) {
+      const hydrated = rehydrateManagePaymentsSeasonWeekSnapshot(season, week.occurrenceId);
+      if (hydrated.status !== "ready") throw new Error(`fixture week ${week.occurrenceId} was unexpectedly unavailable`);
+      const individual = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: week.occurrenceId });
+      expect(hydrated.snapshot).toEqual(individual);
+    }
+
+    const selected = rehydrateManagePaymentsSeasonWeekSnapshot(season, selectedOccurrenceId);
+    if (selected.status !== "ready") throw new Error("selected fixture week was unexpectedly unavailable");
+    const saveResponse = await saveManagePaymentsWorksheet(saveInput(selected.snapshot, [
+      rowChange(selected.snapshot, thirdBowlerId, { newManualReceiptAmountMinor: 321 }),
+    ], `season-cache-refresh-${suffix}`));
+    const refreshedSeason = await readManagePaymentsSeasonSnapshot({ organizationId, leagueId });
+    const refreshed = rehydrateManagePaymentsSeasonWeekSnapshot(refreshedSeason, selectedOccurrenceId);
+    if (refreshed.status !== "ready") throw new Error("saved fixture week became unexpectedly unavailable");
+    expect(refreshed.snapshot.revision).toBe(saveResponse.snapshot.revision);
+    expect(refreshed.snapshot.stateFingerprint).toBe(saveResponse.snapshot.stateFingerprint);
+    expect(refreshed.snapshot.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === thirdBowlerId)).toMatchObject({
+      balanceMinor: 321,
+      manualReceipts: [expect.objectContaining({ amountMinor: 321, revision: 1 })],
+    });
+  });
+
+  it("isolates unresolved historical receipt evidence to its week", async () => {
+    const seasonBefore = await readManagePaymentsSeasonSnapshot({ organizationId, leagueId });
+    const badOccurrenceId = seasonBefore.weekOptions.find((week) => week.occurrenceId !== selectedOccurrenceId)?.occurrenceId;
+    const goodOccurrenceId = seasonBefore.weekOptions.find((week) => week.occurrenceId !== badOccurrenceId)?.occurrenceId;
+    if (!badOccurrenceId || !goodOccurrenceId) throw new Error("fixture needs at least two billable weeks");
+    const [occurrence] = await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.id, badOccurrenceId)).limit(1);
+    if (!occurrence?.authoritativeLocalDate) throw new Error("historical receipt occurrence fixture was not found");
+
+    const [orphanBowler] = await db.insert(bowlers).values({
+      name: `Unassigned historical receipt owner ${suffix}`,
+      organizationId,
+      active: false,
+    }).returning({ id: bowlers.id });
+    if (!orphanBowler) throw new Error("unassigned historical receipt owner was not created");
+    let paymentId: number | undefined;
+    const receiptId = randomUUID();
+    try {
+      const [payment] = await db.insert(payments).values({
+        organizationId,
+        leagueId,
+        bowlerId: orphanBowler.id,
+        amount: 1,
+        type: "cash",
+        status: "paid",
+        paidByUserId: actorUserId,
+      }).returning({ id: payments.id });
+      if (!payment) throw new Error("historical receipt payment was not created");
+      paymentId = payment.id;
+      await db.insert(weeklyPaymentWorksheetReceipts).values({
+        id: receiptId,
+        organizationId,
+        leagueId,
+        occurrenceId: badOccurrenceId,
+        payerBowlerId: orphanBowler.id,
+        receiptKind: "manual",
+      });
+      await db.insert(weeklyPaymentWorksheetReceiptRevisions).values({
+        organizationId,
+        leagueId,
+        receiptId,
+        receiptRevision: 1,
+        paymentId: payment.id,
+        revisionKind: "manual_record",
+        amountMinor: 1,
+        businessCollectionLocalDate: occurrence.authoritativeLocalDate,
+        recordedByUserId: actorUserId,
+      });
+
+      const season = await readManagePaymentsSeasonSnapshot({ organizationId, leagueId });
+      expect(season.snapshotsByOccurrence[badOccurrenceId]).toMatchObject({
+        status: "unavailable",
+        code: "receipt_owner_unresolved",
+      });
+      const good = rehydrateManagePaymentsSeasonWeekSnapshot(season, goodOccurrenceId);
+      if (good.status !== "ready") throw new Error("unaffected fixture week became unavailable");
+      await expect(readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: badOccurrenceId }))
+        .rejects.toMatchObject({ code: "incompatible_canonical_state" });
+      const individualGood = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: goodOccurrenceId });
+      expect(good.snapshot).toEqual(individualGood);
+    } finally {
+      await db.delete(weeklyPaymentWorksheetReceiptRevisions).where(eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, receiptId));
+      await db.delete(weeklyPaymentWorksheetReceipts).where(eq(weeklyPaymentWorksheetReceipts.id, receiptId));
+      if (paymentId !== undefined) await db.delete(payments).where(eq(payments.id, paymentId));
+      await db.delete(bowlers).where(eq(bowlers.id, orphanBowler.id));
+    }
+  });
+
   it("blocks adopted legacy weekly responsibility, rotating assignment, and allocation repair writers", async () => {
     const occurrence = (await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.id, selectedOccurrenceId)).limit(1))[0];
     if (!occurrence) throw new Error("selected weekly occurrence fixture was not found");

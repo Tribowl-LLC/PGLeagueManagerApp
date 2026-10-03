@@ -23,7 +23,10 @@ vi.mock("../../server/services/roster-payment-core.js", () => ({
   readCanonicalDuePastDueV3InTransaction: vi.fn(),
 }));
 
-const { loadManagePaymentsWorksheetSnapshotInTransaction } = await import("../../server/services/manage-payments-worksheet-read.js");
+const {
+  indexManagePaymentsManualReceiptHistoryTeams,
+  loadManagePaymentsWorksheetSnapshotInTransaction,
+} = await import("../../server/services/manage-payments-worksheet-read.js");
 
 function debt(overrides: Partial<OwnedConfirmedObligation> & Pick<OwnedConfirmedObligation, "obligationId" | "dueAt" | "outstandingMinor">): OwnedConfirmedObligation {
   return {
@@ -104,6 +107,36 @@ describe("owned payment ledger confirmation eligibility", () => {
   it("does not infer confirmation from a current calendar date or malformed local date", () => {
     expect(isOccurrenceConfirmedInOwnedLedger(null, "2026-10-02", false)).toBe(false);
     expect(isOccurrenceConfirmedInOwnedLedger({ adoptedThroughLocalDate: "2026-10-30" }, "not-a-date", false)).toBe(false);
+  });
+});
+
+describe("Manage Payments manual receipt history occurrence scoping", () => {
+  it("keeps the same historical owner and payment distinct across different weeks", () => {
+    const parents = [
+      { id: "receipt-week-one", occurrenceId: "week-one", payerBowlerId: 42 },
+      { id: "receipt-week-two", occurrenceId: "week-two", payerBowlerId: 42 },
+    ];
+    const paymentIdByReceipt = new Map([
+      ["receipt-week-one", 501],
+      ["receipt-week-two", 501],
+    ]);
+    const evidence = [
+      { occurrenceId: "week-one", paymentId: 501, bowlerId: 42, teamId: 31 },
+      { occurrenceId: "week-two", paymentId: 501, bowlerId: 42, teamId: 44 },
+    ];
+
+    const separateWeeks = indexManagePaymentsManualReceiptHistoryTeams(parents, paymentIdByReceipt, evidence);
+    expect(separateWeeks.teamByOccurrence.get("week-one")?.get(42)).toBe(31);
+    expect(separateWeeks.teamByOccurrence.get("week-two")?.get(42)).toBe(44);
+    expect(separateWeeks.ambiguousOccurrenceIds.size).toBe(0);
+
+    const oneWeekConflict = indexManagePaymentsManualReceiptHistoryTeams(parents, paymentIdByReceipt, [
+      ...evidence,
+      { occurrenceId: "week-one", paymentId: 501, bowlerId: 42, teamId: 32 },
+    ]);
+    expect(oneWeekConflict.ambiguousOccurrenceIds).toEqual(new Set(["week-one"]));
+    expect(oneWeekConflict.teamByOccurrence.get("week-two")?.get(42)).toBe(44);
+    expect(oneWeekConflict.ambiguousOccurrenceIds.has("week-two")).toBe(false);
   });
 });
 

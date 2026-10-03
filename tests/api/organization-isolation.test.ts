@@ -11,6 +11,7 @@ import {
   paymentAllocations,
   paymentObligations,
   payments,
+  leagues as leaguesTable,
   teams as teamsTable,
   locations as locationsTable,
   teamPaymentSlots,
@@ -290,18 +291,38 @@ describe('Resource authorization boundaries', () => {
       expect(JSON.stringify(data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
 
-    it('org A cannot read org B weekly Manage Payments worksheet, including a selected week', async () => {
+    it('org A cannot read foreign or org-less weekly Manage Payments worksheets', async () => {
       expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
-      // Coverage marker: /api/financials/leagues/:leagueId/manage-payments/1?occurrenceId=...
+      // Coverage markers: /api/financials/leagues/:leagueId/manage-payments/1?occurrenceId=...
+      // /api/financials/leagues/:leagueId/manage-payments/1/season
       const paths = [
         `/api/financials/leagues/${orgBLeagueId}/manage-payments/1`,
         `/api/financials/leagues/${orgBLeagueId}/manage-payments/1?occurrenceId=00000000-0000-4000-8000-000000000001`,
+        `/api/financials/leagues/${orgBLeagueId}/manage-payments/1/season`,
       ];
       for (const path of paths) {
         const response = await apiGet(path, sessionA);
         expect([403, 404]).toContain(response.status);
         expect(response.data.success).toBe(false);
         expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+      }
+
+      const [orglessLeague] = await db.insert(leaguesTable).values({
+        name: `Vitest Org-less Manage Payments ${Date.now()}`,
+        seasonStart: '2035-09-03 00:00:00',
+        seasonEnd: '2035-10-01 00:00:00',
+        weekDay: 'Monday',
+        organizationId: null,
+      }).returning({ id: leaguesTable.id });
+      expect(orglessLeague?.id).toBeTruthy();
+      if (!orglessLeague) throw new Error('org-less Manage Payments fixture was not created');
+      try {
+        const response = await apiGet(`/api/financials/leagues/${orglessLeague.id}/manage-payments/1/season`, sessionA);
+        expect([403, 404]).toContain(response.status);
+        expect(response.data.success).toBe(false);
+        expect(JSON.stringify(response.data)).not.toContain(`"organizationId":null`);
+      } finally {
+        await db.delete(leaguesTable).where(eq(leaguesTable.id, orglessLeague.id));
       }
     });
 

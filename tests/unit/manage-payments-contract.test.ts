@@ -149,7 +149,6 @@ describe("Manage Payments contract", () => {
     expect(managePaymentsSeasonSnapshotSchema.safeParse({ ...base, snapshotsByOccurrence: {} }).success).toBe(false);
     expect(managePaymentsSeasonSnapshotSchema.safeParse({
       ...base,
-      defaultOccurrenceId: "b8cc77db-79b5-4515-95c6-5482c56c3835",
       snapshotsByOccurrence: {
         [occurrenceId]: {
           status: "ready",
@@ -160,6 +159,35 @@ describe("Manage Payments contract", () => {
           stateFingerprint: snapshot.stateFingerprint,
           teams: [snapshot.teams[0], { teamId: 5, teamName: "Splitters", rows: [snapshot.teams[0].rows[0]] }],
         },
+      },
+    }).success).toBe(false);
+    expect(managePaymentsSeasonSnapshotSchema.safeParse({
+      ...base,
+      defaultOccurrenceId: "b8cc77db-79b5-4515-95c6-5482c56c3835",
+      snapshotsByOccurrence: {
+        [occurrenceId]: {
+          status: "ready",
+          feeTerms: snapshot.league.feeTerms,
+          weekConfirmed: snapshot.weekConfirmed,
+          needsConfirmation: snapshot.needsConfirmation,
+          revision: snapshot.revision,
+          stateFingerprint: snapshot.stateFingerprint,
+          teams: snapshot.teams,
+        },
+      },
+    }).success).toBe(false);
+    expect(managePaymentsSeasonSnapshotSchema.safeParse({
+      ...base,
+      snapshotsByOccurrence: {
+        [occurrenceId]: { status: "unavailable", code: "invalid_occurrence", message: "Unavailable." },
+        ["b8cc77db-79b5-4515-95c6-5482c56c3835"]: { status: "unavailable", code: "invalid_occurrence", message: "Unavailable." },
+      },
+    }).success).toBe(false);
+    expect(managePaymentsSeasonSnapshotSchema.safeParse({
+      ...base,
+      weekOptions: [...snapshot.weekOptions, ...snapshot.weekOptions],
+      snapshotsByOccurrence: {
+        [occurrenceId]: { status: "unavailable", code: "invalid_occurrence", message: "Unavailable." },
       },
     }).success).toBe(false);
   });
