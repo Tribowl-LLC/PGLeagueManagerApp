@@ -2143,6 +2143,19 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         eq(paymentAllocations.state, "active"),
       ));
       if (!allocation) throw new Error("adopted replay fixture allocation was not finalized");
+      await expect(finalizeRosterSnapshotInTransaction(tx, {
+        organizationId,
+        leagueId: adoptedReplayLeagueId,
+        operationId: prepared.operation.id,
+        now: captureAt,
+        actorUserId,
+      })).rejects.toMatchObject({ code: "ADOPTED_SOURCE_EVIDENCE_MISSING" });
+      expect(await tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, adoptedReplayLeagueId),
+        eq(paymentAllocations.paymentId, prepared.payment.id),
+        eq(paymentAllocations.state, "active"),
+      ))).toEqual([{ id: allocation.id }]);
       const funding = await ownedPaymentLedger.recordOwnedFundingInTransaction(tx, {
         organizationId,
         leagueId: adoptedReplayLeagueId,
@@ -2202,6 +2215,59 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         now: "2038-01-17T20:00:00.000Z",
       });
       return adoption.id;
+    });
+
+    await db.transaction(async (tx) => {
+      const [releasedAllocation] = await tx.select().from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, adoptedReplayLeagueId),
+        eq(paymentAllocations.paymentId, prepared.payment.id),
+      ));
+      if (!releasedAllocation) throw new Error("adopted replay fixture allocation was not retained");
+      const pendingRefundOperationId = randomUUID();
+      await tx.insert(paymentOperations).values({
+        id: pendingRefundOperationId,
+        organizationId,
+        authorizingUserId: actorUserId,
+        operationType: "refund",
+        targetKey: `payment-refund:${prepared.payment.id}`,
+        leagueId: adoptedReplayLeagueId,
+        amountMinor: prepared.payment.amount,
+        currency: "USD",
+        requestFingerprint: `lvpayreq:v1:${"d".repeat(64)}`,
+        providerIdempotencyKey: `adopted-pending-refund-${pendingRefundOperationId}`.slice(0, 45),
+        providerName: "square",
+        status: "pending",
+        nextAttemptAt: "2038-01-18T20:00:00.000Z",
+        createdAt: "2038-01-18T20:00:00.000Z",
+        updatedAt: "2038-01-18T20:00:00.000Z",
+      });
+      await tx.insert(refundPaymentOperationSnapshots).values({
+        operationId: pendingRefundOperationId,
+        snapshotVersion: 2,
+        snapshotFingerprint: `lvpayexecrf:v2:${"e".repeat(64)}`,
+        paymentId: prepared.payment.id,
+        leagueId: adoptedReplayLeagueId,
+        locationId,
+        encryptedProviderPaymentId: "fixture-encrypted-provider-payment-id",
+        reason: "pending refund hold during charge replay",
+        requestedByUserId: actorUserId,
+        requestedByRole: "org_admin",
+        requestedByOrganizationId: organizationId,
+        disposition: "still_owed",
+        allocationSnapshot: [{
+          allocationId: releasedAllocation.id,
+          obligationId: fixture.obligation.id,
+          amountMinor: fixture.obligation.amountMinor,
+          currency: "USD",
+        }],
+      });
+      const balances = await ownedPaymentLedger.readOwnedAccountBalancesInTransaction(tx, {
+        organizationId,
+        leagueId: adoptedReplayLeagueId,
+        bowlerIds: [bowlerId],
+      });
+      expect(balances.get(bowlerId)?.availableCreditMinor).toBe(0);
     });
     await db.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
       eq(occurrencePaymentResponsibilities.organizationId, organizationId),

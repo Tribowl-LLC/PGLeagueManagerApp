@@ -34,7 +34,6 @@ import {
   OwnedPaymentLedgerError,
   OwnedPaymentRefundEvidenceError,
   readCompletedOwnedPaymentRefundEvidenceInTransaction,
-  readGenericFundingAvailabilityInTransaction,
   readOwnedLedgerAdoptionInTransaction,
   recordOwnedFundingInTransaction,
   validateOwnedFundingPortionsForTenderInTransaction,
@@ -313,7 +312,9 @@ async function finalizeAdoptedRosterPaymentReplayInTransaction(
     eq(weeklyPaymentFundings.leagueId, input.leagueId),
     eq(weeklyPaymentFundings.paymentId, payment.id),
   )).orderBy(asc(weeklyPaymentFundings.portionIndex), asc(weeklyPaymentFundings.id));
-  if (fundings.length === 0) return null;
+  if (fundings.length === 0) {
+    throw new RosterSnapshotFinalizationError("ADOPTED_SOURCE_EVIDENCE_MISSING", "The adopted provider receipt has no owned funding source evidence");
+  }
 
   if (!snapshot.payerBowlerId || snapshot.snapshotFingerprint === null
     || !["interactive", "standing_autopay"].includes(snapshot.snapshotKind)
@@ -352,15 +353,23 @@ async function finalizeAdoptedRosterPaymentReplayInTransaction(
     if ((payment.status === "refunded") !== (refundProof !== null)) {
       throw new OwnedPaymentRefundEvidenceError();
     }
-    const lots = await readGenericFundingAvailabilityInTransaction(tx, {
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-      paymentIds: [payment.id],
-    });
-    if (lots.length !== fundings.length || lots.some((lot) => lot.reviewRequired
-      || !fundings.some((funding) => funding.id === lot.fundingId
-        && funding.creditedBowlerId === lot.bowlerId && funding.amountMinor === lot.amountMinor))) {
-      throw new OwnedPaymentLedgerError("FUNDING_SOURCE_REQUIRES_REVIEW");
+    // This is a source-integrity check, not a spendability check. Account
+    // balance readers deliberately mark pending refunds and disputes held;
+    // those later holds must not make replay of the already-captured charge
+    // fail. The SQL source assertion validates the immutable portion and
+    // application/release lineage without treating a legitimate hold as
+    // corruption. Spendable-credit reads continue to honor every hold.
+    if (payment.status === "paid") {
+      try {
+        await tx.execute(sql`SELECT assert_owned_payment_source_applications(
+          ${input.organizationId}, ${input.leagueId}, ${payment.id}
+        )`);
+      } catch (error) {
+        if (isOwnedPaymentFundingInvariantError(error)) {
+          throw new OwnedPaymentLedgerError("FUNDING_SOURCE_EVIDENCE_INVALID");
+        }
+        throw error;
+      }
     }
   } catch (error) {
     if (error instanceof OwnedPaymentLedgerError || error instanceof OwnedPaymentRefundEvidenceError) {
@@ -376,6 +385,16 @@ async function finalizeAdoptedRosterPaymentReplayInTransaction(
     eq(paymentAllocations.state, "active"),
   )).orderBy(asc(paymentAllocations.id));
   return { finalized: true, allocationIds: activeAllocations.map((row) => row.id) };
+}
+
+function isOwnedPaymentFundingInvariantError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 6 && current !== null && typeof current === "object"; depth += 1) {
+    const candidate = current as { code?: unknown; constraint?: unknown; cause?: unknown };
+    if (candidate.code === "PWL01" && candidate.constraint === "owned_payment_funding_ledger_guard") return true;
+    current = candidate.cause;
+  }
+  return false;
 }
 
 /** Validate the same immutable reservation immediately before the provider
