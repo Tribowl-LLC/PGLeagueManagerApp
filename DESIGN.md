@@ -63,6 +63,8 @@ colors:
   familiar-line: "rgb(100 116 139 / 0.24)"
   familiar-surface: "#ffffff"
   familiar-canvas: "#f1f5f9"
+  familiar-table-header: "#f8fafc"
+  familiar-link-underline: "#c2ccda"
   familiar-nav-active: "#0f172a"
   familiar-nav-active-surface: "rgb(15 23 42 / 0.08)"
   familiar-paid: "#166534"
@@ -251,6 +253,12 @@ in the public and bowler flows. The navy and cool-gray Familiar A surfaces are
 separate from the staff/admin interface's blue-violet active-navigation
 accent.
 
+Manage Payments is a route-scoped exception within the authenticated admin
+shell. Its worksheet and navigation use Instrument Sans, a cool slate canvas,
+white ledger panels, compact table rows, and a white active Manage Payments
+navigation item. The app header, search, organization identity, authorization,
+and every other admin route retain their existing behavior and visual system.
+
 **Key Characteristics:**
 
 - Familiar A uses Instrument Sans, navy structure, cool-gray surfaces, and
@@ -333,13 +341,15 @@ caution, and information roles when adding or redesigning components.
 ## Typography
 
 Familiar A is the default for public account and authenticated bowler pages.
-The staff/admin interface retains its incumbent system-sans stack.
+The staff/admin interface retains its incumbent system-sans stack, except for
+the worksheet and navigation inside the Manage Payments route.
 
 **Familiar A font:** Instrument Sans, with a system-sans fallback.
 
 **Admin font:** `ui-sans-serif, system-ui, sans-serif`. Monospace appears only
 where data presentation requires it, such as selected technical values or
-payment details.
+payment details. Manage Payments uses Instrument Sans within its worksheet and
+navigation only; other staff/admin routes keep the system-sans stack.
 
 **Character:** Familiar A uses clear Instrument Sans headings and compact
 supporting labels. The admin system remains compact and neutral, using modest

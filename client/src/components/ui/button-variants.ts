@@ -14,6 +14,14 @@ export const buttonVariants = cva(
           "text-destructive hover:bg-destructive/10 hover:text-destructive",
         outline:
           "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
+        paymentsSecondary:
+          "border border-familiar-line bg-familiar-surface text-familiar-ink hover:bg-navigation-50 hover:text-familiar-ink",
+        paymentsGhost:
+          "text-familiar-muted hover:bg-navigation-50 hover:text-familiar-ink",
+        paymentsTeam:
+          "bg-familiar-surface text-familiar-ink hover:bg-familiar-surface",
+        paymentsPrimary:
+          "bg-familiar-navy text-white hover:bg-navigation-900 hover:text-white",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost: "hover:bg-accent hover:text-accent-foreground",
@@ -34,6 +42,9 @@ export const buttonVariants = cva(
         icon: "size-10",
         iconXs: "size-6",
         iconSm: "size-8",
+        paymentsControl: "h-11 px-3",
+        paymentsIcon: "size-11 rounded-md",
+        paymentsSave: "h-12 px-6",
       },
       spacing: {
         default: "",
