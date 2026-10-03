@@ -112,6 +112,135 @@ export const managePaymentsSnapshotSchema = z.object({
 });
 export type ManagePaymentsSnapshot = z.infer<typeof managePaymentsSnapshotSchema>;
 
+const managePaymentsSeasonLeagueSchema = z.object({
+  leagueId: positiveId,
+  name: z.string().min(1).max(200),
+  timeZone: z.string().min(1).max(128),
+});
+
+export const MANAGE_PAYMENTS_SEASON_WEEK_ERROR_CODES = [
+  "ambiguous_receipt_history",
+  "receipt_association_conflict",
+  "receipt_owner_unresolved",
+  "ambiguous_roster",
+  "missing_historical_team",
+  "duplicate_bowler_row",
+  "incompatible_responsibility",
+  "invalid_occurrence",
+] as const;
+export type ManagePaymentsSeasonWeekErrorCode = (typeof MANAGE_PAYMENTS_SEASON_WEEK_ERROR_CODES)[number];
+
+export const managePaymentsSeasonWeekSnapshotDataSchema = z.object({
+  feeTerms: managePaymentsFeeTermsSchema,
+  weekConfirmed: z.boolean(),
+  needsConfirmation: z.boolean(),
+  revision: z.number().int().nonnegative(),
+  stateFingerprint,
+  teams: z.array(managePaymentsTeamSchema),
+});
+export type ManagePaymentsSeasonWeekSnapshotData = z.infer<typeof managePaymentsSeasonWeekSnapshotDataSchema>;
+
+export const managePaymentsSeasonWeekSnapshotEntrySchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("ready"),
+    ...managePaymentsSeasonWeekSnapshotDataSchema.shape,
+  }),
+  z.object({
+    status: z.literal("unavailable"),
+    code: z.enum(MANAGE_PAYMENTS_SEASON_WEEK_ERROR_CODES),
+    message: z.string().min(1).max(240),
+  }),
+]);
+export type ManagePaymentsSeasonWeekSnapshotEntry = z.infer<typeof managePaymentsSeasonWeekSnapshotEntrySchema>;
+
+export const managePaymentsSeasonSnapshotSchema = z.object({
+  contractVersion: z.literal(MANAGE_PAYMENTS_CONTRACT_VERSION),
+  league: managePaymentsSeasonLeagueSchema,
+  weekOptions: z.array(managePaymentsWeekOptionSchema),
+  defaultOccurrenceId: z.string().uuid(),
+  snapshotsByOccurrence: z.record(z.string().uuid(), managePaymentsSeasonWeekSnapshotEntrySchema),
+}).superRefine((season, context) => {
+  const optionById = new Map(season.weekOptions.map((option) => [option.occurrenceId, option]));
+  if (optionById.size !== season.weekOptions.length) {
+    context.addIssue({ code: "custom", path: ["weekOptions"], message: "Season weeks must be unique." });
+  }
+  if (!optionById.has(season.defaultOccurrenceId)) {
+    context.addIssue({ code: "custom", path: ["defaultOccurrenceId"], message: "The default week must be available." });
+  }
+
+  const entryIds = Object.keys(season.snapshotsByOccurrence);
+  if (entryIds.length !== optionById.size || entryIds.some((id) => !optionById.has(id))) {
+    context.addIssue({ code: "custom", path: ["snapshotsByOccurrence"], message: "Season results must match the available weeks exactly." });
+  }
+
+  for (const [occurrenceId, entry] of Object.entries(season.snapshotsByOccurrence)) {
+    if (entry.status !== "ready") continue;
+    const option = optionById.get(occurrenceId);
+    if (!option) continue;
+    const parsed = managePaymentsSnapshotSchema.safeParse({
+      contractVersion: season.contractVersion,
+      league: { ...season.league, feeTerms: entry.feeTerms },
+      weekOptions: season.weekOptions,
+      selectedOccurrence: {
+        occurrenceId: option.occurrenceId,
+        localDate: option.localDate,
+        localStartTime: option.localStartTime,
+        timeZone: option.timeZone,
+      },
+      weekConfirmed: entry.weekConfirmed,
+      needsConfirmation: entry.needsConfirmation,
+      revision: entry.revision,
+      stateFingerprint: entry.stateFingerprint,
+      teams: entry.teams,
+    });
+    if (!parsed.success) {
+      context.addIssue({
+        code: "custom",
+        path: ["snapshotsByOccurrence", occurrenceId],
+        message: "A ready week does not match the Manage Payments snapshot contract.",
+      });
+    }
+  }
+});
+export type ManagePaymentsSeasonSnapshot = z.infer<typeof managePaymentsSeasonSnapshotSchema>;
+
+export type ManagePaymentsSeasonWeekHydrationResult =
+  | { status: "ready"; snapshot: ManagePaymentsSnapshot }
+  | { status: "unavailable"; code: ManagePaymentsSeasonWeekErrorCode; message: string };
+
+/** Rebuild the established single-week contract from one season response entry. */
+export function rehydrateManagePaymentsSeasonWeekSnapshot(
+  season: ManagePaymentsSeasonSnapshot,
+  occurrenceId: string,
+): ManagePaymentsSeasonWeekHydrationResult {
+  const entry = season.snapshotsByOccurrence[occurrenceId];
+  if (!entry) {
+    return { status: "unavailable", code: "invalid_occurrence", message: "The selected week is unavailable." };
+  }
+  if (entry.status === "unavailable") return entry;
+  const option = season.weekOptions.find((candidate) => candidate.occurrenceId === occurrenceId);
+  if (!option) {
+    return { status: "unavailable", code: "invalid_occurrence", message: "The selected week is unavailable." };
+  }
+  const snapshot = managePaymentsSnapshotSchema.parse({
+    contractVersion: season.contractVersion,
+    league: { ...season.league, feeTerms: entry.feeTerms },
+    weekOptions: season.weekOptions,
+    selectedOccurrence: {
+      occurrenceId: option.occurrenceId,
+      localDate: option.localDate,
+      localStartTime: option.localStartTime,
+      timeZone: option.timeZone,
+    },
+    weekConfirmed: entry.weekConfirmed,
+    needsConfirmation: entry.needsConfirmation,
+    revision: entry.revision,
+    stateFingerprint: entry.stateFingerprint,
+    teams: entry.teams,
+  });
+  return { status: "ready", snapshot };
+}
+
 const managePaymentsManualReceiptEditSchema = z.object({
   receiptId: z.string().uuid(),
   expectedRevision: z.number().int().positive(),
@@ -202,5 +331,6 @@ export type ManagePaymentsSaveResponse = z.infer<typeof managePaymentsSaveRespon
 
 export const managePaymentsApiPaths = {
   leagueSnapshot: (leagueId: number) => `/api/financials/leagues/${leagueId}/manage-payments/1`,
+  leagueSeasonSnapshot: (leagueId: number) => `/api/financials/leagues/${leagueId}/manage-payments/1/season`,
   saveWeek: (leagueId: number) => `/api/financials/leagues/${leagueId}/manage-payments/1`,
 } as const;
