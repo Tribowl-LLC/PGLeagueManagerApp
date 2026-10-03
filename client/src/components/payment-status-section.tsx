@@ -15,7 +15,7 @@ import {
   type LeagueOccurrenceScheduleOccurrence,
   type LeagueOccurrenceScheduleReadContract,
 } from "@shared/league-occurrence-schedule";
-import { deriveBowlerFinancials } from "@/lib/financial-utils";
+import { accountProjectionForBowler, confirmedCurrentDueMinor, deriveBowlerFinancials } from "@/lib/financial-utils";
 import { rotatingPaidTotalMinor } from "@/lib/rotating-paid-total";
 
 interface PaymentStatusSectionProps {
@@ -46,13 +46,12 @@ function readCurrentDueMinor(rows: CanonicalDuePastDueRowV2[] | undefined): numb
   for (const row of rows) {
     if (!Number.isSafeInteger(row.outstandingMinor) || row.outstandingMinor < 0) return null;
     if (row.reviewRequired && row.outstandingMinor > 0) return null;
-    if (row.reviewRequired || row.state === "voided" || row.state === "settled") continue;
-    if (row.classification === "due" || row.classification === "past_due") currentDueMinor += row.outstandingMinor;
+    currentDueMinor += confirmedCurrentDueMinor(row);
   }
   return Number.isSafeInteger(currentDueMinor) ? currentDueMinor : null;
 }
 
-type DuePeriodRow = Pick<CanonicalDuePastDueRowV2, "occurrenceId" | "classification" | "state" | "outstandingMinor" | "reviewRequired">;
+type DuePeriodRow = Pick<CanonicalDuePastDueRowV2, "occurrenceId" | "classification" | "state" | "outstandingMinor" | "reviewRequired" | "accountProjection">;
 type DuePeriodOccurrence = Pick<LeagueOccurrenceScheduleOccurrence, "occurrenceId" | "status" | "authoritativeLocalDate" | "plannedOrdinal">;
 
 function formatDuePeriodDate(value: string): string | null {
@@ -73,7 +72,7 @@ export function deriveCurrentDuePeriodLabel(
 ): string | null {
   if (!Array.isArray(rows) || !Array.isArray(occurrences)) return null;
   const currentOccurrenceIds = new Set(rows
-    .filter((row) => row.outstandingMinor > 0
+    .filter((row) => confirmedCurrentDueMinor(row) > 0
       && row.state !== "voided"
       && row.state !== "settled"
       && !row.reviewRequired
@@ -182,6 +181,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({ league, bo
     report?.rows ?? [],
     report?.asOf ?? "",
     report?.totals.collectiblePastDueMinor ?? 0,
+    accountProjectionForBowler(report, bowler.id),
   );
   const currentDueMinor = readCurrentDueMinor(report?.rows);
   const schedule = scheduleResponse?.data;
@@ -190,7 +190,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({ league, bo
     ? schedule.occurrences
     : undefined;
   const duePeriod = deriveCurrentDuePeriodLabel(report?.rows, scheduleOccurrences);
-  const isRotating = rotatingCreditState === "rotating";
+  const isRotating = rotatingCreditState === "rotating" && !report?.accountProjection;
   const rotatingPaidMinor = isRotating
     ? rotatingPaidTotalMinor(paymentReportResponse?.data, league.id)
     : null;
@@ -202,7 +202,7 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({ league, bo
     // Keep the dashboard's existing authoritative balance projection. The
     // profile/history surfaces expose review evidence separately before using
     // their collectible balance policy.
-    remainingBalance: report?.totals.outstandingMinor ?? 0,
+    remainingBalance: report?.accountProjection ? summary.remainingBalance : report?.totals.outstandingMinor ?? 0,
     waivedAmount: summary.waivedAmount,
   };
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading canonical payment evidence…</p>;

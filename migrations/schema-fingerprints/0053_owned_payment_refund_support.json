@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0053_owned_payment_refund_support",
+    "hash": "17ac4776d2d0d3b510398d456e3c37b82a7af34e6963bb08ffa674ee111e45f7",
+    "createdAt": 1790979178740
+  },
+  "digest": "9afec006bda89dd0319980da2d7980c3f226050e13b9b8f59e39b70d4ccf5687",
+  "counts": {
+    "tables": 97,
+    "columns": 1363,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 32,
+    "constraints": 776,
+    "indexes": 428,
+    "types": 1,
+    "functions": 35,
+    "triggers": 76,
+    "policies": 0
+  }
+}

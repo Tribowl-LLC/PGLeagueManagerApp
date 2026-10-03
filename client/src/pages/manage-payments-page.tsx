@@ -14,6 +14,7 @@ import { beginPaymentIntent, clearPaymentIntent } from "@/lib/payment-request-id
 import { useToast } from "@/hooks/use-toast";
 import type { ApiResponse, BowlerLeague, League, Team } from "@shared/schema";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
+import { confirmedCurrentDueMinor, effectiveFinancialDebtorBowlerId } from "@/lib/financial-utils";
 
 export type EnrichedMembership = BowlerLeague & {
   bowler: { id: number; name: string; active: boolean; email: string | null } | null;
@@ -133,16 +134,28 @@ export function buildManagePaymentRows(
   roster: RosterResponse | undefined,
 ): PaymentRow[] {
   const balanceByBowler = new Map<number, { balanceMinor: number; oldestDueAt: string | null; reviewRequired: boolean }>();
-  for (const row of due?.rows ?? []) {
-    if (row.outstandingMinor <= 0 || row.state === "voided") continue;
-    const previous = balanceByBowler.get(row.payerBowlerId);
-    const currentDue = previous?.oldestDueAt;
-    const rowDue = row.dueAt;
-    balanceByBowler.set(row.payerBowlerId, {
-      balanceMinor: (previous?.balanceMinor ?? 0) + row.outstandingMinor,
-      oldestDueAt: !currentDue || rowDue < currentDue ? rowDue : currentDue,
-      reviewRequired: (previous?.reviewRequired ?? false) || row.reviewRequired,
-    });
+  if (due?.accountProjection) {
+    for (const account of due.accountProjection.accounts) {
+      const currentDebtRows = due.rows.filter((row) => effectiveFinancialDebtorBowlerId(row) === account.bowlerId
+        && confirmedCurrentDueMinor(row) > 0);
+      balanceByBowler.set(account.bowlerId, {
+        balanceMinor: account.seasonRemainingMinor,
+        oldestDueAt: currentDebtRows.map((row) => row.dueAt).sort()[0] ?? null,
+        reviewRequired: account.reviewRequired,
+      });
+    }
+  } else {
+    for (const row of due?.rows ?? []) {
+      if (row.outstandingMinor <= 0 || row.state === "voided") continue;
+      const previous = balanceByBowler.get(row.payerBowlerId);
+      const currentDue = previous?.oldestDueAt;
+      const rowDue = row.dueAt;
+      balanceByBowler.set(row.payerBowlerId, {
+        balanceMinor: (previous?.balanceMinor ?? 0) + row.outstandingMinor,
+        oldestDueAt: !currentDue || rowDue < currentDue ? rowDue : currentDue,
+        reviewRequired: (previous?.reviewRequired ?? false) || row.reviewRequired,
+      });
+    }
   }
 
   const teamNames = new Map((roster?.teams ?? []).map((team) => [team.id, team]));
@@ -293,7 +306,14 @@ export default function ManagePaymentsPage() {
       prepared.push({ ...row, values, amountMinor, requestKey, fingerprint: values.fingerprint, intentScope });
     }
 
-    const quotedRows = prepared.filter((row) => !row.fingerprint).map((row) => ({ rowKey: row.requestKey, amountMinor: row.amountMinor, payerBowlerId: row.bowlerId }));
+    const quotedRows = prepared.filter((row) => !row.fingerprint).map((row) => ({
+      rowKey: row.requestKey,
+      amountMinor: row.amountMinor,
+      payerBowlerId: row.bowlerId,
+      type: row.values.type,
+      ...(row.values.type === "check" ? { checkNumber: row.values.checkNumber.trim() } : {}),
+      notes: row.values.notes.trim() || null,
+    }));
     const quoteResults = new Map<string, { fingerprint: string; payerBowlerId: number }>();
     if (quotedRows.length > 0) {
       try {

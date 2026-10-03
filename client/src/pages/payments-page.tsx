@@ -43,6 +43,9 @@ export function invalidateRefundPaymentViews(leagueId: number, bowlerId: number,
   const affectedIds = [...new Set([bowlerId, ...affectedBowlerIds])].filter((id) => Number.isSafeInteger(id) && id > 0);
   void queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
+  void queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", leagueId] });
+  void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-participants/4"] });
+  void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-quote/4"] });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "canonical-due-past-due/2"] });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] });
@@ -55,6 +58,15 @@ export function invalidateRefundPaymentViews(leagueId: number, bowlerId: number,
   void queryClient.invalidateQueries({
     predicate: ({ queryKey }) => typeof queryKey[0] === "string" && queryKey[0].startsWith("/api/financials/due-past-due"),
   });
+}
+
+export function refundAffectedBowlerIds(refundEvidence: CanonicalPaymentReport["rows"][number] | null | undefined): number[] {
+  if (!refundEvidence) return [];
+  const ids = [
+    ...refundEvidence.allocations.map((allocation) => allocation.bowlerId),
+    ...(refundEvidence.fundingPortions ?? []).flatMap((portion) => portion.creditedBowlerId === undefined ? [] : [portion.creditedBowlerId]),
+  ];
+  return [...new Set(ids)].filter((id) => Number.isSafeInteger(id) && id > 0);
 }
 
 interface PaginatedPaymentsResponse {
@@ -404,7 +416,7 @@ export default function PaymentsPage() {
                   disposition,
                   leagueId: paymentToRefund.leagueId,
                   bowlerId: paymentToRefund.bowlerId,
-                  affectedBowlerIds: refundEvidence?.allocations.map((allocation) => allocation.bowlerId) ?? [],
+                  affectedBowlerIds: refundAffectedBowlerIds(refundEvidence),
                 });
               }
             }}

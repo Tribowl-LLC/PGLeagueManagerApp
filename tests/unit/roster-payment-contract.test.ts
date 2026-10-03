@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   canonicalManualRecordBatchQuoteRequestSchema,
   canonicalManualRecordBatchRequestSchema,
+  canonicalManualRecordQuoteRequestSchema,
   canonicalManualRecordRequestSchema,
   occurrenceResponsibilityInputSchema,
   rosterPaymentResponsibilityRequestSchema,
@@ -10,6 +11,24 @@ import {
 } from "@shared/roster-payment-contract";
 
 describe("roster-driven payment contracts", () => {
+  it("quotes manual receipts using normalized cash/check metadata identity", () => {
+    expect(canonicalManualRecordQuoteRequestSchema.parse({
+      amountMinor: 1200,
+      payerBowlerId: 11,
+      type: "check",
+      checkNumber: " 0042 ",
+      notes: "League night",
+    })).toEqual({
+      amountMinor: 1200,
+      payerBowlerId: 11,
+      type: "check",
+      checkNumber: "0042",
+      notes: "League night",
+    });
+    expect(canonicalManualRecordQuoteRequestSchema.safeParse({ amountMinor: 1200, payerBowlerId: 11, type: "check" }).success).toBe(false);
+    expect(canonicalManualRecordQuoteRequestSchema.safeParse({ amountMinor: 1200, payerBowlerId: 11, type: "cash", checkNumber: "0042" }).success).toBe(false);
+  });
+
   it("requires every stable slot and permits explicit VACANT", () => {
     const parsed = rosterPaymentResponsibilityRequestSchema.safeParse({
       commandKey: "roster-1",

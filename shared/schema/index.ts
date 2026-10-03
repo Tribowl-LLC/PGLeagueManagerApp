@@ -20,6 +20,19 @@ export { payments, insertPaymentSchema, updatePaymentSchema } from "./payments";
 export type { Payment, InsertPaymentInput, InsertPayment, UpdatePayment } from "./payments";
 
 export {
+  accountPaymentOperationSnapshots,
+  ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_VERSION,
+  ACCOUNT_PAYMENT_OPERATION_SNAPSHOT_KINDS,
+  ACCOUNT_PAYMENT_OPERATION_SOURCE_KINDS,
+} from "./account-payment-operations";
+export type {
+  AccountPaymentFundingPortionV4,
+  AccountPaymentRecipientAuthorizationEvidenceV4,
+  AccountPaymentOperationSnapshot,
+  InsertAccountPaymentOperationSnapshot,
+} from "./account-payment-operations";
+
+export {
   paymentOperations,
   refundPaymentOperationSnapshots,
   PAYMENT_OPERATION_TYPES,
@@ -31,9 +44,10 @@ export {
   PAYMENT_OPERATION_MAX_RETRY_DELAY_MS,
   REFUND_PAYMENT_SNAPSHOT_VERSION,
   REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION,
+  REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION,
   REFUND_PAYMENT_DISPOSITIONS,
 } from "./payment-operations";
-export type { RefundPaymentDisposition, RefundPaymentAllocationSnapshot } from "./payment-operations";
+export type { RefundPaymentDisposition, RefundPaymentAllocationSnapshot, RefundPaymentFundingSnapshotV3 } from "./payment-operations";
 export {
   ROSTER_OPERATION_SNAPSHOT_VERSION,
   ROSTER_OPERATION_REQUEST_KINDS,
@@ -44,6 +58,46 @@ export type {
   RosterOperationRequestKind,
   RosterOperationSourceKind,
 } from "./roster-payments";
+
+export {
+  weeklyPaymentLedgerAdoptions,
+  weeklyPaymentFundings,
+  weeklyPaymentFundingAuthorizationItems,
+  paymentAllocationFundingApplications,
+  weeklyPaymentLedgerAdoptionAllocationProofs,
+  weeklyPaymentLedgerAdoptionAllocationProofSteps,
+  weeklyPaymentWeekConfirmations,
+  weeklyPaymentWorksheetReceipts,
+  weeklyPaymentWorksheetReceiptRevisions,
+  weeklyPaymentAllocationReleases,
+  WEEKLY_PAYMENT_FUNDING_SOURCES,
+  WEEKLY_PAYMENT_FUNDING_AUTHORIZATION_KINDS,
+  WEEKLY_PAYMENT_APPLICATION_TARGETS,
+  WEEKLY_PAYMENT_OBLIGATION_OWNER_KINDS,
+  WEEKLY_PAYMENT_RECEIPT_KINDS,
+  WEEKLY_PAYMENT_RECEIPT_REVISION_KINDS,
+  WEEKLY_PAYMENT_ALLOCATION_RELEASE_REASONS,
+  WEEKLY_PAYMENT_ADOPTION_VERSION,
+} from "./weekly-payments";
+export type {
+  WeeklyPaymentFundingSource,
+  WeeklyPaymentFundingAuthorizationKind,
+  WeeklyPaymentApplicationTarget,
+  WeeklyPaymentObligationOwnerKind,
+  WeeklyPaymentReceiptKind,
+  WeeklyPaymentReceiptRevisionKind,
+  WeeklyPaymentAllocationReleaseReason,
+  WeeklyPaymentLedgerAdoption,
+  WeeklyPaymentFunding,
+  WeeklyPaymentFundingAuthorizationItem,
+  PaymentAllocationFundingApplication,
+  WeeklyPaymentLedgerAdoptionAllocationProof,
+  WeeklyPaymentLedgerAdoptionAllocationProofStep,
+  WeeklyPaymentWeekConfirmation,
+  WeeklyPaymentWorksheetReceipt,
+  WeeklyPaymentWorksheetReceiptRevision,
+  WeeklyPaymentAllocationRelease,
+} from "./weekly-payments";
 
 export {
   rotatingCreditFundings,

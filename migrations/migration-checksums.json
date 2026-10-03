@@ -312,6 +312,30 @@
       "tag": "0051_square_historical_allocation_correction",
       "createdAt": 1790190160145,
       "hash": "07c4a86e1cace467cb5b2cadbb8d8c96ffb07b584304ee53bc0b2ee8c97a1660"
+    },
+    {
+      "idx": 52,
+      "tag": "0052_weekly_admin_payments_ledger",
+      "createdAt": 1790975580460,
+      "hash": "194faa58d01ea1d5504ce26257bce11b2fe458c2853d539482df5b0247ff555f"
+    },
+    {
+      "idx": 53,
+      "tag": "0053_owned_payment_refund_support",
+      "createdAt": 1790979178740,
+      "hash": "17ac4776d2d0d3b510398d456e3c37b82a7af34e6963bb08ffa674ee111e45f7"
+    },
+    {
+      "idx": 54,
+      "tag": "0054_weekly_standing_account_funding",
+      "createdAt": 1790986573310,
+      "hash": "a08976a36bd4b420380bb8339a9219a1b3d972c218d93ac2683f403cffe2ffea"
+    },
+    {
+      "idx": 55,
+      "tag": "0055_owned_account_refunds_v3",
+      "createdAt": 1790992831001,
+      "hash": "37b36ce0c401190c6c215090f5670e99fda10fefdd883fb9a4ac69e433af9607"
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { db } from "../db.js";
 import {
@@ -29,6 +29,7 @@ import {
   rotatingCreditFundings,
   rotatingCreditApplications,
   rotatingCreditApplicationReversals,
+  weeklyPaymentLedgerAdoptions,
   paymentAllocationCorrections,
   paymentOperationRosterSnapshots,
   paymentOperationRosterSnapshotItems,
@@ -36,6 +37,9 @@ import {
   canonicalCollectionGroups,
   leagueOccurrenceBillingTerms,
   paymentVoids,
+  paymentAllocationFundingApplications,
+  weeklyPaymentWorksheetReceipts,
+  weeklyPaymentWorksheetReceiptRevisions,
   users,
   emailSchema,
   type TeamPaymentPolicy,
@@ -50,6 +54,7 @@ import type {
   CanonicalCorrectionRequest,
   CanonicalCashPaymentDeleteRequest,
   CanonicalManualRecordRequest,
+  CanonicalManualRecordQuoteRequest,
   OccurrenceResponsibilityInput,
   RosterPaymentResponsibilityRequest,
   RosterPaymentResponsibilityRequestV2,
@@ -90,7 +95,37 @@ import { resolveCanonicalLocalDateTime } from "@shared/canonical-dst-resolver";
 import { isCurrentBowlerOwnedObligationSql, resolvePaymentObligationOwnerInTransaction, resolvePaymentObligationOwnersInTransaction, type EffectivePaymentObligationOwner, PaymentObligationOwnerError } from "./roster-obligation-owners.js";
 import { reverseRotatingCreditApplicationsForAssignmentChangeInTransaction } from "./rotating-credit-applications.js";
 import { applyRotatingCreditToConfirmedObligationsInTransaction } from "./rotating-credit-applications.js";
+import {
+  readOwnedAccountFinancialProjectionInTransaction,
+  readPublishedCollectionOrderInTransaction,
+  type OwnedAccountProjectionResult,
+} from "./owned-account-financial-projection.js";
 import { readConfirmedRotatingObligationsForCredit } from "./rotating-team-payments.js";
+import {
+  applyOwnedFundingFifoInTransaction,
+  OwnedPaymentLedgerError,
+  readOwnedAccountBalancesInTransaction,
+  readOwnedLedgerAdoptionInTransaction,
+} from "./owned-payment-ledger.js";
+import {
+  appendManualReceiptRevisionInTransaction,
+  canonicalManualReceiptQuoteFingerprint,
+  createManualReceiptHeadInTransaction,
+  createManualReceiptPaymentInTransaction,
+  ManualPaymentReceiptError,
+  readActiveManualReceiptForPaymentInTransaction,
+  voidManualReceiptPaymentInTransaction,
+  type ManualReceiptPaymentRow,
+} from "./manual-payment-receipts.js";
+import { LeagueOccurrenceScheduleError, loadLeagueOccurrenceScheduleSnapshot } from "./league-occurrence-schedule.js";
+import {
+  localDateForInstant,
+  mapCardReceiptCollectionOccurrence,
+  ManagePaymentsWorksheetProjectionError,
+  selectManagePaymentsOccurrence,
+  type ManagePaymentsForecastCoverage,
+  type ManagePaymentsForecastTarget,
+} from "./manage-payments-worksheet-projection.js";
 
 export { calculateRosterPaymentTiming };
 
@@ -121,6 +156,12 @@ function resolveInteractiveBuyerEmail(providerName: string, requestedEmail: stri
 }
 
 export type RosterPaymentTransaction = PaymentOperationTransaction;
+
+export interface CanonicalV3ProjectionReadResult {
+  contract: FinancialReadContractV3;
+  accountProjectionResult: OwnedAccountProjectionResult | null;
+  forecastCoverageByTargetId: ReadonlyMap<string, ManagePaymentsForecastCoverage>;
+}
 
 async function assertPaymentIsNotRotatingCreditFundingInTransaction(
   tx: RosterPaymentTransaction,
@@ -172,6 +213,20 @@ async function beginFinancialCommand(
   });
 }
 
+async function requireManagePaymentsForLegacyWeeklyWrite(
+  tx: RosterPaymentTransaction,
+  scope: { organizationId: number; leagueId: number },
+): Promise<void> {
+  const adoption = await readOwnedLedgerAdoptionInTransaction(tx, scope);
+  if (adoption) {
+    throw new RosterPaymentError(
+      "MANAGE_PAYMENTS_REQUIRED",
+      "This league's weekly responsibility and receipt corrections are managed in Manage Payments.",
+      409,
+    );
+  }
+}
+
 /** Applied manual-record, void, and cash-edit commands can outlive a direct
  * cash deletion. Keep their audit rows, but never replay a result containing
  * a payment that no longer exists. */
@@ -190,13 +245,20 @@ async function assertCommandReplayPaymentsExist(
   };
 
   if (input.commandType === "roster_payment.manual_record") {
-    const records = result?.records;
-    if (!Array.isArray(records) || records.length === 0 || records.some((record) => {
-      if (typeof record !== "object" || record === null) return true;
-      const payment = (record as Record<string, unknown>).payment;
-      return typeof payment !== "object" || payment === null || !addPaymentId((payment as Record<string, unknown>).id);
-    })) {
-      throw new RosterPaymentError("COMMAND_RESULT_UNVERIFIABLE", "The earlier payment command cannot be replayed because its stored result is incomplete", 409);
+    const payment = result?.payment;
+    if (typeof payment === "object" && payment !== null) {
+      if (!addPaymentId((payment as Record<string, unknown>).id)) {
+        throw new RosterPaymentError("COMMAND_RESULT_UNVERIFIABLE", "The earlier payment command cannot be replayed because its stored result is incomplete", 409);
+      }
+    } else {
+      const records = result?.records;
+      if (!Array.isArray(records) || records.length === 0 || records.some((record) => {
+        if (typeof record !== "object" || record === null) return true;
+        const recordPayment = (record as Record<string, unknown>).payment;
+        return typeof recordPayment !== "object" || recordPayment === null || !addPaymentId((recordPayment as Record<string, unknown>).id);
+      })) {
+        throw new RosterPaymentError("COMMAND_RESULT_UNVERIFIABLE", "The earlier payment command cannot be replayed because its stored result is incomplete", 409);
+      }
     }
   } else if (input.commandType === "roster_payment.void_payment") {
     const payment = result?.payment;
@@ -222,6 +284,53 @@ async function assertCommandReplayPaymentsExist(
   }
 }
 
+function paymentFromManualRecordResult(result: unknown): Record<string, unknown> | null {
+  if (typeof result !== "object" || result === null) return null;
+  const source = result as Record<string, unknown>;
+  if (typeof source.payment === "object" && source.payment !== null) return source.payment as Record<string, unknown>;
+  const records = source.records;
+  if (!Array.isArray(records)) return null;
+  for (const value of records) {
+    if (typeof value !== "object" || value === null) continue;
+    const payment = (value as Record<string, unknown>).payment;
+    if (typeof payment === "object" && payment !== null) return payment as Record<string, unknown>;
+  }
+  return null;
+}
+
+async function replayManualRecordCommandBeforeRequote(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; actorUserId: number; request: CanonicalManualRecordRequest },
+): Promise<void> {
+  const [existing] = await tx.select().from(financialCommands).where(and(
+    eq(financialCommands.organizationId, input.organizationId),
+    eq(financialCommands.leagueId, input.leagueId),
+    eq(financialCommands.commandType, "roster_payment.manual_record"),
+    eq(financialCommands.idempotencyKey, input.request.idempotencyKey),
+  )).limit(1).for("update");
+  if (!existing) return;
+  if (existing.actorUserId !== input.actorUserId) throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key belongs to another actor", 409);
+  if (existing.state === "failed") throw new RosterPaymentError(existing.errorCode ?? "COMMAND_FAILED", "The command previously failed", 409);
+  if (existing.state !== "applied" || existing.result === null) {
+    throw new RosterPaymentError("COMMAND_IN_PROGRESS", "This payment command is still being resolved; retry the same request", 409);
+  }
+  await assertCommandReplayPaymentsExist(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    commandType: "roster_payment.manual_record",
+    result: existing.result,
+  });
+  const payment = paymentFromManualRecordResult(existing.result);
+  const exactPayload = payment
+    && payment.bowlerId === input.request.payerBowlerId
+    && payment.amount === input.request.amountMinor
+    && payment.type === input.request.type
+    && (input.request.type !== "check" || (payment.checkNumber ?? null) === (input.request.checkNumber ?? null))
+    && (payment.notes ?? null) === (input.request.notes ?? null);
+  if (!exactPayload) throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different manual payment", 409);
+  throw new RosterPaymentReplay(existing.result);
+}
+
 async function completeFinancialCommand(tx: RosterPaymentTransaction, input: { organizationId: number; leagueId: number; commandType: string; idempotencyKey: string; result: unknown }): Promise<void> {
   await tx.update(financialCommands).set({ state: "applied", result: input.result }).where(and(
     eq(financialCommands.organizationId, input.organizationId),
@@ -234,6 +343,22 @@ async function completeFinancialCommand(tx: RosterPaymentTransaction, input: { o
 function quoteFingerprint(obligations: Array<{ id: string; amountMinor: number; dueAt: string; effectiveCollectionAt: string; payerBowlerId: number; pairedCollectionReady?: boolean }>): string {
   const value = obligations.map((row) => [row.id, row.amountMinor, row.dueAt, row.effectiveCollectionAt, row.payerBowlerId, row.pairedCollectionReady === true]).join("|");
   return `lvrosterquote:v1:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+async function assertManualPaymentPayerInTransaction(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; payerBowlerId: number },
+): Promise<void> {
+  const [payer] = await tx.select({ id: bowlers.id }).from(bowlers).innerJoin(bowlerLeagues, and(
+    eq(bowlerLeagues.bowlerId, bowlers.id),
+    eq(bowlerLeagues.leagueId, input.leagueId),
+    eq(bowlerLeagues.active, true),
+  )).where(and(
+    eq(bowlers.id, input.payerBowlerId),
+    eq(bowlers.organizationId, input.organizationId),
+    eq(bowlers.active, true),
+  )).limit(1);
+  if (!payer) throw new RosterPaymentError("PAYER_SCOPE_MISMATCH", "The payment payer is not an active member of this league", 403);
 }
 
 function commandFingerprint(prefix: string, value: unknown): string {
@@ -339,7 +464,7 @@ export async function readRosterPaymentResponsibility(input: { organizationId: n
       inArray(leagueOccurrences.status, ["scheduled", "completed"] as const),
     ))
     .orderBy(asc(leagueOccurrences.startAt), asc(leagueOccurrences.id));
-  const occurrenceResponsibilities = await db.select({
+  const occurrenceResponsibilitiesRows = await db.select({
     occurrenceId: occurrencePaymentResponsibilities.occurrenceId,
     teamId: occurrencePaymentResponsibilities.teamId,
     slotIndex: occurrencePaymentResponsibilities.slotIndex,
@@ -356,7 +481,18 @@ export async function readRosterPaymentResponsibility(input: { organizationId: n
     eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
     eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
     eq(occurrencePaymentResponsibilities.state, "active"),
+    ne(occurrencePaymentResponsibilities.responsibilityKind, "worksheet"),
+    isNotNull(occurrencePaymentResponsibilities.slotId),
+    isNotNull(occurrencePaymentResponsibilities.slotIndex),
+    isNotNull(occurrencePaymentResponsibilities.positionIndex),
+    isNotNull(occurrencePaymentResponsibilities.policy),
   )).orderBy(asc(occurrencePaymentResponsibilities.occurrenceId), asc(occurrencePaymentResponsibilities.teamId), asc(occurrencePaymentResponsibilities.slotIndex), asc(occurrencePaymentResponsibilities.positionIndex));
+  const occurrenceResponsibilities = occurrenceResponsibilitiesRows.filter((row): row is typeof row & {
+    slotIndex: number;
+    positionIndex: number;
+    policy: NonNullable<typeof row.policy>;
+    responsibilityKind: Exclude<typeof row.responsibilityKind, "worksheet">;
+  } => row.slotIndex !== null && row.positionIndex !== null && row.policy !== null && row.responsibilityKind !== "worksheet");
   const slotsByTeam = new Map<number, typeof slots>();
   for (const slot of slots) slotsByTeam.set(slot.teamId, [...(slotsByTeam.get(slot.teamId) ?? []), slot]);
   const activeMainRows = await db.select({ bowlerId: bowlerLeagues.bowlerId, teamId: bowlerLeagues.teamId })
@@ -951,6 +1087,7 @@ export async function saveRotatingOccurrenceAssignments(input: {
       idempotencyKey: input.request.commandKey,
       requestFingerprint: input.request.requestFingerprint,
     });
+    await requireManagePaymentsForLegacyWeeklyWrite(tx, input);
     const ordered = [...input.request.assignments].sort((a, b) => a.occurrenceId.localeCompare(b.occurrenceId)
       || a.teamId - b.teamId
       || a.slotIndex - b.slotIndex);
@@ -1238,8 +1375,12 @@ export async function readCanonicalDuePastDue(input: { organizationId: number; l
     const asOfResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS as_of`);
     const asOf = (asOfResult.rows[0] as { as_of?: string } | undefined)?.as_of ?? new Date().toISOString();
     const now = new Date(asOf).getTime();
+    const accountAdoption = await readOwnedLedgerAdoptionInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+    });
     const conditions = [eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)];
-    if (input.payerBowlerId !== undefined) {
+    if (input.payerBowlerId !== undefined && !accountAdoption) {
       conditions.push(eq(paymentObligations.payerBowlerId, input.payerBowlerId));
       conditions.push(isCurrentBowlerOwnedObligationSql({
         organizationId: input.organizationId,
@@ -1250,22 +1391,127 @@ export async function readCanonicalDuePastDue(input: { organizationId: number; l
       }));
     }
     let obligations = await tx.select().from(paymentObligations).where(and(...conditions)).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentObligations.id));
-    if (input.payerBowlerId === undefined && obligations.length > 0) {
-      const owners = await resolvePaymentObligationOwnersInTransaction(tx, {
+    let ownerByObligationId: Map<string, EffectivePaymentObligationOwner> | null = null;
+    if ((accountAdoption || input.payerBowlerId === undefined) && obligations.length > 0) {
+      ownerByObligationId = await resolvePaymentObligationOwnersInTransaction(tx, {
         organizationId: input.organizationId,
         leagueId: input.leagueId,
         obligations,
       });
-      obligations = obligations.filter((obligation) => owners.get(obligation.id)?.kind === "bowler");
+      if (!accountAdoption && input.payerBowlerId === undefined) {
+        obligations = obligations.filter((obligation) => ownerByObligationId?.get(obligation.id)?.kind === "bowler");
+      }
     }
-    const responsibilities = obligations.length === 0 ? [] : await tx.select({ id: occurrencePaymentResponsibilities.id, teamId: occurrencePaymentResponsibilities.teamId }).from(occurrencePaymentResponsibilities).where(and(
+    const responsibilities = obligations.length === 0 ? [] : await tx.select({
+      id: occurrencePaymentResponsibilities.id,
+      teamId: occurrencePaymentResponsibilities.teamId,
+      slotIndex: occurrencePaymentResponsibilities.slotIndex,
+      occurrenceId: occurrencePaymentResponsibilities.occurrenceId,
+      responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind,
+    }).from(occurrencePaymentResponsibilities).where(and(
       eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
       eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
       inArray(occurrencePaymentResponsibilities.id, obligations.map((obligation) => obligation.responsibilityId)),
     ));
     const teamByResponsibilityId = new Map(responsibilities.map((responsibility) => [responsibility.id, responsibility.teamId]));
+    const responsibilityById = new Map(responsibilities.map((responsibility) => [responsibility.id, responsibility]));
     if (responsibilities.length !== new Set(obligations.map((obligation) => obligation.responsibilityId)).size) {
       throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its canonical responsibility", 503);
+    }
+    const effectiveDebtorByResponsibilityId = new Map<string, number | null>();
+    const collectionOrderByOccurrence = new Map<string, { effectiveCollectionAt: string; memberOrdinal: number; billingOrdinal: number }>();
+    let occurrenceLocalDateById = new Map<string, string>();
+    let occurrenceStatusById = new Map<string, { status: string; lifecycle: string }>();
+    let plannedOrdinalByOccurrence = new Map<string, number>();
+    let billingOrdinalByOccurrence = new Map<string, number>();
+    if (accountAdoption && obligations.length > 0) {
+      const occurrenceIds = [...new Set(obligations.map((obligation) => obligation.occurrenceId))];
+      const occurrenceRows = await tx.select({
+        id: leagueOccurrences.id,
+        occurrenceLocalDate: leagueOccurrences.authoritativeLocalDate,
+        status: leagueOccurrences.status,
+        lifecycle: leagueOccurrences.lifecycle,
+        plannedOrdinal: leagueOccurrences.plannedOrdinal,
+      }).from(leagueOccurrences).where(and(
+        eq(leagueOccurrences.organizationId, input.organizationId),
+        eq(leagueOccurrences.leagueId, input.leagueId),
+        inArray(leagueOccurrences.id, occurrenceIds),
+      ));
+      const occurrenceById = new Map(occurrenceRows.map((row) => [row.id, row]));
+      occurrenceLocalDateById = new Map(occurrenceRows.flatMap((row) => row.occurrenceLocalDate === null ? [] : [[row.id, row.occurrenceLocalDate] as const]));
+      occurrenceStatusById = new Map(occurrenceRows.map((row) => [row.id, { status: row.status, lifecycle: row.lifecycle }]));
+      plannedOrdinalByOccurrence = new Map(occurrenceRows.flatMap((row) => row.plannedOrdinal === null ? [] : [[row.id, row.plannedOrdinal] as const]));
+      const billingTerms = await tx.select({
+        occurrenceId: leagueOccurrenceBillingTerms.occurrenceId,
+        billingOrdinal: leagueOccurrenceBillingTerms.billingOrdinal,
+      }).from(leagueOccurrenceBillingTerms).where(and(
+        eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
+        eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
+        eq(leagueOccurrenceBillingTerms.state, "published"),
+        inArray(leagueOccurrenceBillingTerms.occurrenceId, occurrenceIds),
+      ));
+      const billingTermsByOccurrence = new Map<string, typeof billingTerms>();
+      for (const term of billingTerms) {
+        billingTermsByOccurrence.set(term.occurrenceId, [...(billingTermsByOccurrence.get(term.occurrenceId) ?? []), term]);
+      }
+      if (occurrenceIds.some((occurrenceId) => !occurrenceLocalDateById.has(occurrenceId))) {
+        throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An adopted account obligation has no authoritative occurrence date", 503);
+      }
+      const targetOccurrenceIds = [...new Set(obligations
+        .filter((obligation) => obligation.state === "open" || obligation.state === "partially_settled")
+        .filter((obligation) => {
+          const occurrence = occurrenceById.get(obligation.occurrenceId);
+          return occurrence?.lifecycle === "published" || occurrence?.lifecycle === "locked"
+            ? occurrence.status === "scheduled" || occurrence.status === "completed"
+            : false;
+        })
+        .map((obligation) => obligation.occurrenceId))];
+      const billingByOccurrence = new Map<string, number>();
+      for (const occurrenceId of targetOccurrenceIds) {
+        const terms = billingTermsByOccurrence.get(occurrenceId) ?? [];
+        if (terms.length !== 1 || terms[0]?.billingOrdinal === null || terms[0]?.billingOrdinal === undefined) {
+          throw new RosterPaymentError("ROTATING_BILLING_ORDER_MISSING", "An adopted account obligation has no unique published collection order", 503);
+        }
+        billingByOccurrence.set(occurrenceId, terms[0].billingOrdinal);
+      }
+      billingOrdinalByOccurrence = billingByOccurrence;
+      const seeds = targetOccurrenceIds.map((occurrenceId) => {
+        const sample = obligations.find((obligation) => obligation.occurrenceId === occurrenceId
+          && (obligation.state === "open" || obligation.state === "partially_settled"));
+        const billingOrdinal = billingByOccurrence.get(occurrenceId);
+        if (!sample || billingOrdinal === undefined) throw new RosterPaymentError("ROTATING_BILLING_ORDER_MISSING", "An adopted account obligation has no published collection order", 503);
+        return { occurrenceId, dueAt: sample.dueAt, billingOrdinal };
+      });
+      for (const [occurrenceId, order] of await readPublishedCollectionOrderInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        occurrences: seeds,
+      })) collectionOrderByOccurrence.set(occurrenceId, order);
+      const teamIds = [...new Set(responsibilities.map((responsibility) => responsibility.teamId))];
+      const assignments = occurrenceIds.length === 0 || teamIds.length === 0 ? [] : await tx.select().from(rotatingOccurrenceAssignments).where(and(
+        eq(rotatingOccurrenceAssignments.organizationId, input.organizationId),
+        eq(rotatingOccurrenceAssignments.leagueId, input.leagueId),
+        inArray(rotatingOccurrenceAssignments.occurrenceId, occurrenceIds),
+        inArray(rotatingOccurrenceAssignments.teamId, teamIds),
+      )).orderBy(asc(rotatingOccurrenceAssignments.occurrenceId), asc(rotatingOccurrenceAssignments.teamId), asc(rotatingOccurrenceAssignments.slotIndex), desc(rotatingOccurrenceAssignments.version));
+      const latestAssignmentBySlot = new Map<string, typeof assignments[number]>();
+      for (const assignment of assignments) {
+        const key = `${assignment.occurrenceId}:${assignment.teamId}:${assignment.slotIndex}`;
+        if (!latestAssignmentBySlot.has(key)) latestAssignmentBySlot.set(key, assignment);
+      }
+      for (const responsibility of responsibilities) {
+        const assignment = latestAssignmentBySlot.get(`${responsibility.occurrenceId}:${responsibility.teamId}:${responsibility.slotIndex}`);
+        if (assignment && assignment.responsibilityId !== responsibility.id) {
+          const hasCurrentTeamLiability = obligations.some((obligation) => obligation.responsibilityId === responsibility.id
+            && (obligation.state === "open" || obligation.state === "partially_settled")
+            && ownerByObligationId?.get(obligation.id)?.kind === "team");
+          if (hasCurrentTeamLiability) {
+            throw new RosterPaymentError("ROTATING_ASSIGNMENT_EVIDENCE_INVALID", "An active team obligation does not match its current assignment responsibility", 503);
+          }
+          continue;
+        }
+        effectiveDebtorByResponsibilityId.set(responsibility.id, assignment?.actualBowlerId ?? null);
+      }
     }
     const allocations = obligations.length === 0 ? [] : await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
       eq(paymentAllocations.organizationId, input.organizationId),
@@ -1279,10 +1525,17 @@ export async function readCanonicalDuePastDue(input: { organizationId: number; l
       inArray(refundAllocationAdjustments.sourceAllocationId, allocations.map((allocation) => allocation.id)),
     ));
     const adjustmentsByAllocationId = new Map(adjustments.map((adjustment) => [adjustment.sourceAllocationId, adjustment]));
-    const rows = obligations.map((obligation) => {
-      if (obligation.payerBowlerId === null) {
+    const rawRows = obligations.map((obligation) => {
+      const owner = accountAdoption ? ownerByObligationId?.get(obligation.id) : null;
+      const responsibility = responsibilityById.get(obligation.responsibilityId);
+      if (!responsibility) throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its canonical responsibility", 503);
+      if (accountAdoption && !owner) throw new RosterPaymentError("OWNER_EVIDENCE_INVALID", "An adopted obligation is missing canonical owner evidence", 503);
+      if (!accountAdoption && obligation.payerBowlerId === null) {
         throw new RosterPaymentError("OWNER_EVIDENCE_INVALID", "A legacy due response cannot include a team-owned obligation", 503);
       }
+      const effectiveDebtorBowlerId = accountAdoption
+        ? owner?.kind === "bowler" ? owner.bowlerId : effectiveDebtorByResponsibilityId.get(obligation.responsibilityId) ?? null
+      : obligation.payerBowlerId;
       const linked = allocations.filter((allocation) => allocation.obligationId === obligation.id);
       const balance = canonicalObligationBalance({
         amountMinor: obligation.amountMinor,
@@ -1294,20 +1547,85 @@ export async function readCanonicalDuePastDue(input: { organizationId: number; l
         }),
       });
       const reviewRequired = linked.some((allocation) => allocation.reviewRequired);
+      return {
+        ...obligation,
+        owner,
+        effectiveDebtorBowlerId,
+        currency: "USD" as const,
+        teamId: responsibility.teamId,
+        allocatedMinor: balance.effectiveAllocatedMinor,
+        grossAllocatedMinor: balance.grossAllocatedMinor,
+        refundedMinor: balance.refundedMinor,
+        waivedMinor: balance.waivedMinor,
+        stillOwed: balance.stillOwed,
+        outstandingMinor: balance.outstandingMinor,
+        reviewRequired,
+      };
+    });
+    const projectionInputs = accountAdoption ? rawRows.flatMap((row) => {
+      const occurrenceLocalDate = occurrenceLocalDateById.get(row.occurrenceId);
+      const collectionOrder = collectionOrderByOccurrence.get(row.occurrenceId);
+      if (!occurrenceLocalDate || !row.owner) {
+        throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An adopted obligation is missing collection projection evidence", 503);
+      }
+      return [{
+        obligationId: row.id,
+        occurrenceId: row.occurrenceId,
+        occurrenceLocalDate,
+        dueAt: new Date(row.dueAt).toISOString(),
+        effectiveCollectionAt: collectionOrder?.effectiveCollectionAt ?? new Date(row.dueAt).toISOString(),
+        memberOrdinal: collectionOrder?.memberOrdinal ?? 0,
+        billingOrdinal: collectionOrder?.billingOrdinal ?? billingOrdinalByOccurrence.get(row.occurrenceId) ?? plannedOrdinalByOccurrence.get(row.occurrenceId) ?? 0,
+        owner: row.owner,
+        effectiveDebtorBowlerId: row.effectiveDebtorBowlerId,
+        forecastEligible: (() => {
+          const occurrence = occurrenceStatusById.get(row.occurrenceId);
+          return Boolean(occurrence
+            && (occurrence.lifecycle === "published" || occurrence.lifecycle === "locked")
+            && (occurrence.status === "scheduled" || occurrence.status === "completed"));
+        })(),
+        state: row.state,
+        outstandingMinor: row.outstandingMinor,
+        reviewRequired: row.reviewRequired,
+      }];
+    }) : [];
+    const accountProjectionResult = accountAdoption ? await readOwnedAccountFinancialProjectionInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      asOf,
+      rows: projectionInputs,
+      ...(input.payerBowlerId === undefined ? {} : { bowlerId: input.payerBowlerId }),
+    }) : null;
+    if (accountAdoption && !accountProjectionResult) {
+      throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Owned account adoption evidence changed during the financial read", 503);
+    }
+    const rows = rawRows.flatMap((row) => {
+      const reviewRequired = accountProjectionResult?.reviewRequiredByObligationId.get(row.id) ?? row.reviewRequired;
+      if (accountAdoption && row.effectiveDebtorBowlerId === null) return [];
+      if (accountAdoption && input.payerBowlerId !== undefined && row.effectiveDebtorBowlerId !== input.payerBowlerId) return [];
+      const payerBowlerId = accountAdoption ? row.effectiveDebtorBowlerId : row.payerBowlerId;
+      if (payerBowlerId === null) return [];
       const classification = reviewRequired
         ? "review_required" as const
-        : obligation.state === "voided"
+        : row.state === "voided"
           ? "voided" as const
-          : balance.outstandingMinor === 0
-          ? "settled" as const
-          : now < new Date(obligation.dueAt).getTime()
-            ? "future" as const
-            : now < new Date(obligation.pastDueAt).getTime()
-              ? "due" as const
-              : "past_due" as const;
-      const teamId = teamByResponsibilityId.get(obligation.responsibilityId);
-      if (teamId === undefined) throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its canonical team", 503);
-      return { ...obligation, payerBowlerId: obligation.payerBowlerId, currency: "USD" as const, teamId, allocatedMinor: balance.effectiveAllocatedMinor, grossAllocatedMinor: balance.grossAllocatedMinor, refundedMinor: balance.refundedMinor, waivedMinor: balance.waivedMinor, stillOwed: balance.stillOwed, outstandingMinor: balance.outstandingMinor, classification, reviewRequired };
+          : row.outstandingMinor === 0
+            ? "settled" as const
+            : now < new Date(row.dueAt).getTime()
+              ? "future" as const
+              : now < new Date(row.pastDueAt).getTime()
+                ? "due" as const
+                : "past_due" as const;
+      const { owner: _owner, effectiveDebtorBowlerId: _effectiveDebtorBowlerId, ...responseRow } = row;
+      const rowProjection = accountProjectionResult?.rowsByObligationId.get(row.id);
+      if (accountProjectionResult && !rowProjection) throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An adopted obligation has no account projection", 503);
+      return [{
+        ...responseRow,
+        payerBowlerId,
+        classification,
+        reviewRequired,
+        ...(rowProjection ? { accountProjection: rowProjection } : {}),
+      }];
     });
     return {
     contractVersion: "canonical-due-past-due/2" as const,
@@ -1317,11 +1635,13 @@ export async function readCanonicalDuePastDue(input: { organizationId: number; l
     authoritativeSource: "payment_obligations" as const,
     asOf,
     rows,
+    ...(accountProjectionResult ? { accountProjection: accountProjectionResult.accountProjection } : {}),
     totals: {
       amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
       allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
       outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
-      collectiblePastDueMinor: rows.filter((row) => row.classification === "past_due" && !row.reviewRequired).reduce((sum, row) => sum + row.outstandingMinor, 0),
+      collectiblePastDueMinor: accountProjectionResult?.collectiblePastDueMinor
+        ?? rows.filter((row) => row.classification === "past_due" && !row.reviewRequired).reduce((sum, row) => sum + row.outstandingMinor, 0),
       reviewCount: rows.filter((row) => row.reviewRequired).length,
       settledCount: rows.filter((row) => row.classification === "settled").length,
       voidedCount: rows.filter((row) => row.classification === "voided").length,
@@ -1334,6 +1654,15 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
   await leagueScope(input.organizationId, input.leagueId);
   return db.transaction(async (tx) => {
     await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+    return (await readCanonicalDuePastDueV3InTransaction(tx, input)).contract;
+  });
+}
+
+/** Shared V3 canonical-row read for callers already inside a repeatable-read snapshot. */
+export async function readCanonicalDuePastDueV3InTransaction(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; bowlerId?: number; forecastTargets?: readonly ManagePaymentsForecastTarget[] },
+): Promise<CanonicalV3ProjectionReadResult> {
     if (input.bowlerId !== undefined) {
       const [member] = await tx.select({ id: bowlers.id }).from(bowlers).innerJoin(bowlerLeagues, and(
         eq(bowlerLeagues.bowlerId, bowlers.id),
@@ -1350,6 +1679,10 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
     const asOfResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS as_of`);
     const asOf = (asOfResult.rows[0] as { as_of?: string } | undefined)?.as_of ?? new Date().toISOString();
     const now = new Date(asOf).getTime();
+    const accountAdoption = await readOwnedLedgerAdoptionInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+    });
     const obligations = await tx.select().from(paymentObligations).where(and(
       eq(paymentObligations.organizationId, input.organizationId),
       eq(paymentObligations.leagueId, input.leagueId),
@@ -1359,6 +1692,7 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
       id: occurrencePaymentResponsibilities.id,
       teamId: occurrencePaymentResponsibilities.teamId,
       slotIndex: occurrencePaymentResponsibilities.slotIndex,
+      responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind,
       occurrenceId: occurrencePaymentResponsibilities.occurrenceId,
       state: occurrencePaymentResponsibilities.state,
     }).from(occurrencePaymentResponsibilities).where(and(
@@ -1375,11 +1709,18 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
       leagueId: input.leagueId,
       obligations,
     });
-    const occurrenceIds = [...new Set(obligations.map((row) => row.occurrenceId))];
+    const forecastTargets = input.forecastTargets ?? [];
+    if (!accountAdoption && forecastTargets.length > 0) {
+      throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Worksheet forecasts require owned-account adoption", 503);
+    }
+    const forecastTargetOccurrenceIds = [...new Set(forecastTargets.map((row) => row.occurrenceId))];
+    const occurrenceIds = [...new Set([...obligations.map((row) => row.occurrenceId), ...forecastTargetOccurrenceIds])];
     const occurrenceRows = occurrenceIds.length === 0 ? [] : await tx.select({
       id: leagueOccurrences.id,
       occurrenceLocalDate: leagueOccurrences.authoritativeLocalDate,
       plannedOrdinal: leagueOccurrences.plannedOrdinal,
+      status: leagueOccurrences.status,
+      lifecycle: leagueOccurrences.lifecycle,
     }).from(leagueOccurrences).where(and(
       eq(leagueOccurrences.organizationId, input.organizationId),
       eq(leagueOccurrences.leagueId, input.leagueId),
@@ -1399,6 +1740,49 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
     for (const row of billingTerms) {
       if (row.billingOrdinal !== null && !billingByOccurrence.has(row.occurrenceId)) billingByOccurrence.set(row.occurrenceId, row.billingOrdinal);
     }
+    const forecastEligibleOccurrenceIds = new Set(accountAdoption ? [
+      ...obligations.flatMap((obligation) => {
+      if (obligation.state !== "open" && obligation.state !== "partially_settled") return [];
+      const occurrence = occurrenceById.get(obligation.occurrenceId);
+      return occurrence
+        && (occurrence.lifecycle === "published" || occurrence.lifecycle === "locked")
+        && (occurrence.status === "scheduled" || occurrence.status === "completed")
+        ? [obligation.occurrenceId]
+        : [];
+      }),
+      ...forecastTargetOccurrenceIds,
+    ] : []);
+    if (accountAdoption && obligations.some((obligation) => (
+      !occurrenceById.get(obligation.occurrenceId)
+      || occurrenceById.get(obligation.occurrenceId)?.occurrenceLocalDate === null
+      || (forecastEligibleOccurrenceIds.has(obligation.occurrenceId) && !billingByOccurrence.has(obligation.occurrenceId))
+    ))) {
+      throw new RosterPaymentError("ROTATING_BILLING_ORDER_MISSING", "An adopted account obligation has no published collection order", 503);
+    }
+    const orderSeedByOccurrence = new Map<string, { occurrenceId: string; dueAt: string; billingOrdinal: number }>();
+    for (const obligation of obligations) {
+      if (!forecastEligibleOccurrenceIds.has(obligation.occurrenceId)) continue;
+      const billingOrdinal = billingByOccurrence.get(obligation.occurrenceId);
+      if (billingOrdinal === undefined || orderSeedByOccurrence.has(obligation.occurrenceId)) continue;
+      orderSeedByOccurrence.set(obligation.occurrenceId, {
+        occurrenceId: obligation.occurrenceId,
+        dueAt: obligation.dueAt,
+        billingOrdinal,
+      });
+    }
+    for (const target of forecastTargets) {
+      if (orderSeedByOccurrence.has(target.occurrenceId)) continue;
+      orderSeedByOccurrence.set(target.occurrenceId, {
+        occurrenceId: target.occurrenceId,
+        dueAt: target.dueAt,
+        billingOrdinal: target.billingOrdinal,
+      });
+    }
+    const collectionOrderByOccurrence = accountAdoption ? await readPublishedCollectionOrderInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      occurrences: [...orderSeedByOccurrence.values()],
+    }) : new Map();
     const teamIds = [...new Set(responsibilities.map((row) => row.teamId))];
     const assignmentRows = occurrenceIds.length === 0 || teamIds.length === 0 ? [] : await tx.select().from(rotatingOccurrenceAssignments).where(and(
       eq(rotatingOccurrenceAssignments.organizationId, input.organizationId),
@@ -1489,6 +1873,21 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
       ));
     const unresolvedRefundPaymentIds = new Set(unresolvedRefundRows.map((row) => row.paymentId));
     const allRows: FinancialReadRowContractV3[] = [];
+    const projectionRows = [] as Array<{
+      obligationId: string;
+      occurrenceId: string;
+      occurrenceLocalDate: string;
+      dueAt: string;
+      effectiveCollectionAt: string;
+      memberOrdinal: number;
+      billingOrdinal: number;
+      owner: { kind: "bowler"; bowlerId: number } | { kind: "team"; teamId: number };
+      effectiveDebtorBowlerId: number | null;
+      forecastEligible: boolean;
+      state: "open" | "partially_settled" | "settled" | "voided";
+      outstandingMinor: number;
+      reviewRequired: boolean;
+    }>;
     for (const obligation of obligations) {
       const owner = owners.get(obligation.id);
       const responsibility = responsibilityById.get(obligation.responsibilityId);
@@ -1497,7 +1896,7 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
         throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing canonical owner or date evidence", 503);
       }
       const billingOrdinal = billingByOccurrence.get(obligation.occurrenceId) ?? occurrence.plannedOrdinal;
-      if (owner.kind === "team" && (obligation.state === "open" || obligation.state === "partially_settled")
+      if (owner.kind === "team" && forecastEligibleOccurrenceIds.has(obligation.occurrenceId)
         && !billingByOccurrence.has(obligation.occurrenceId)) {
         throw new RosterPaymentError("ROTATING_BILLING_ORDER_MISSING", "An obligation has no published canonical billing order", 503);
       }
@@ -1530,8 +1929,6 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
       }
       const assignment = assignmentByResponsibility.get(responsibility.id);
       const actualBowlerId = owner.kind === "team" ? assignment?.actualBowlerId ?? null : null;
-      if (input.bowlerId !== undefined && !(owner.kind === "bowler" && owner.bowlerId === input.bowlerId)
-        && !(owner.kind === "team" && actualBowlerId === input.bowlerId)) continue;
       const classification = reviewRequired
         ? "review_required" as const
         : obligation.state === "voided"
@@ -1553,6 +1950,7 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
         responsibilityId: obligation.responsibilityId,
         teamId: responsibility.teamId,
         slotIndex: responsibility.slotIndex,
+        responsibilityKind: responsibility.responsibilityKind,
         component: obligation.component,
         payerBowlerId: obligation.payerBowlerId,
         owner,
@@ -1574,30 +1972,133 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
         classification,
         reviewRequired,
       });
+      const publishedOrder = collectionOrderByOccurrence.get(obligation.occurrenceId);
+      projectionRows.push({
+        obligationId: obligation.id,
+        occurrenceId: obligation.occurrenceId,
+        occurrenceLocalDate: occurrence.occurrenceLocalDate,
+        dueAt: new Date(obligation.dueAt).toISOString(),
+        effectiveCollectionAt: publishedOrder?.effectiveCollectionAt ?? new Date(obligation.dueAt).toISOString(),
+        memberOrdinal: publishedOrder?.memberOrdinal ?? 0,
+        billingOrdinal: publishedOrder?.billingOrdinal ?? billingOrdinal,
+        owner,
+        effectiveDebtorBowlerId: owner.kind === "bowler" ? owner.bowlerId : actualBowlerId,
+        forecastEligible: (() => {
+          const occurrence = occurrenceById.get(obligation.occurrenceId);
+          return (obligation.state === "open" || obligation.state === "partially_settled")
+            && Boolean(occurrence
+              && (occurrence.lifecycle === "published" || occurrence.lifecycle === "locked")
+              && (occurrence.status === "scheduled" || occurrence.status === "completed"));
+        })(),
+        state: obligation.state,
+        outstandingMinor: balance.outstandingMinor,
+        reviewRequired,
+      });
+    }
+    const forecastCoverageByTargetId = new Map<string, ManagePaymentsForecastCoverage>();
+    const projectionRowById = new Map(projectionRows.map((row) => [row.obligationId, row]));
+    for (const target of forecastTargets) {
+      const sameOwnerResponsibilityRows = allRows.filter((row) => row.occurrenceId === target.occurrenceId
+        && row.responsibilityId === target.responsibilityId
+        && row.teamId === target.teamId
+        && row.state !== "voided"
+        && projectionRowById.get(row.id)?.effectiveDebtorBowlerId === target.bowlerId);
+      const fullRows = sameOwnerResponsibilityRows.filter((row) => row.component === "full");
+      const splitRows = sameOwnerResponsibilityRows.filter((row) => row.component === "lineage" || row.component === "prize");
+      if (target.feeComponent === "full" && fullRows.length > 0 && splitRows.length > 0) {
+        throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "A forecast responsibility has ambiguous canonical fee components", 503);
+      }
+      const matchedRows = target.feeComponent === "full"
+        ? (fullRows.length > 0 ? fullRows : splitRows)
+        : sameOwnerResponsibilityRows.filter((row) => row.component === target.feeComponent);
+      if (matchedRows.length === 0 && sameOwnerResponsibilityRows.length > 0) {
+        throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "A forecast responsibility does not match its canonical fee component", 503);
+      }
+      if (matchedRows.length > 0) {
+        const componentCounts = new Map<string, number>();
+        for (const row of matchedRows) componentCounts.set(row.component, (componentCounts.get(row.component) ?? 0) + 1);
+        if ([...componentCounts.values()].some((count) => count > 1)) {
+          throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "A forecast responsibility has duplicate canonical fee components", 503);
+        }
+        forecastCoverageByTargetId.set(target.projectionId, {
+          obligationIds: matchedRows.map((row) => row.id),
+          requiredMinor: matchedRows.reduce((sum, row) => sum + row.amountMinor, 0),
+          paidMinor: matchedRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+          reviewRequired: matchedRows.some((row) => row.reviewRequired),
+        });
+        continue;
+      }
+      const order = collectionOrderByOccurrence.get(target.occurrenceId);
+      if (!order) throw new RosterPaymentError("ROTATING_BILLING_ORDER_MISSING", "A worksheet forecast has no published collection order", 503);
+      projectionRows.push({
+        obligationId: target.projectionId,
+        occurrenceId: target.occurrenceId,
+        occurrenceLocalDate: target.occurrenceLocalDate,
+        dueAt: target.dueAt,
+        effectiveCollectionAt: order.effectiveCollectionAt,
+        memberOrdinal: order.memberOrdinal,
+        billingOrdinal: order.billingOrdinal,
+        owner: { kind: "bowler", bowlerId: target.bowlerId },
+        effectiveDebtorBowlerId: target.bowlerId,
+        forecastEligible: true,
+        state: "open",
+        outstandingMinor: target.feeMinor,
+        reviewRequired: false,
+      });
+      forecastCoverageByTargetId.set(target.projectionId, {
+        obligationIds: [target.projectionId],
+        requiredMinor: target.feeMinor,
+        paidMinor: 0,
+        reviewRequired: false,
+      });
+    }
+    const accountProjectionResult = accountAdoption ? await readOwnedAccountFinancialProjectionInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      asOf,
+      rows: projectionRows,
+      ...(input.bowlerId === undefined ? {} : { bowlerId: input.bowlerId }),
+    }) : null;
+    if (accountAdoption && !accountProjectionResult) {
+      throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Owned account adoption evidence changed during the financial read", 503);
+    }
+    if (accountProjectionResult && [...forecastCoverageByTargetId.values()].some((coverage) => coverage.obligationIds.some((id) => !accountProjectionResult.rowsByObligationId.has(id)))) {
+      throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "A forecast target has no shared account projection row", 503);
     }
     allRows.sort((a, b) => a.dueAt.localeCompare(b.dueAt)
       || (a.owner.kind === "team" ? `team:${a.owner.teamId}` : `bowler:${a.owner.bowlerId}`).localeCompare(b.owner.kind === "team" ? `team:${b.owner.teamId}` : `bowler:${b.owner.bowlerId}`)
       || a.occurrenceId.localeCompare(b.occurrenceId)
       || a.id.localeCompare(b.id));
-    return {
+    const scopedRows = allRows.filter((row) => accountProjectionResult
+      ? input.bowlerId === undefined || accountProjectionResult.rowsByObligationId.get(row.id)?.effectiveDebtorBowlerId === input.bowlerId
+      : row.slotIndex !== null && row.responsibilityKind !== "worksheet"
+        && (input.bowlerId === undefined
+          || (row.owner.kind === "bowler" && row.owner.bowlerId === input.bowlerId)
+          || (row.owner.kind === "team" && row.actualBowlerId === input.bowlerId)));
+    const responseRows = accountProjectionResult
+      ? scopedRows.map((row) => ({ ...row, accountProjection: accountProjectionResult.rowsByObligationId.get(row.id) }))
+      : scopedRows;
+    const contract: FinancialReadContractV3 = {
       contractVersion: "canonical-due-past-due/3" as const,
       orderVersion: "due-at,owner,occurrence,obligation/3" as const,
       organizationId: input.organizationId,
       leagueId: input.leagueId,
       authoritativeSource: "payment_obligations" as const,
       asOf,
-      rows: allRows,
+      ...(accountProjectionResult ? { accountProjection: accountProjectionResult.accountProjection } : {}),
+      rows: responseRows,
       totals: {
-        amountMinor: allRows.reduce((sum, row) => sum + row.amountMinor, 0),
-        allocatedMinor: allRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
-        outstandingMinor: allRows.reduce((sum, row) => sum + row.outstandingMinor, 0),
-        collectiblePastDueMinor: allRows.filter((row) => row.classification === "past_due" && !row.reviewRequired).reduce((sum, row) => sum + row.outstandingMinor, 0),
-        reviewCount: allRows.filter((row) => row.reviewRequired).length,
-        settledCount: allRows.filter((row) => row.classification === "settled").length,
-        voidedCount: allRows.filter((row) => row.classification === "voided").length,
+        amountMinor: responseRows.reduce((sum, row) => sum + row.amountMinor, 0),
+        allocatedMinor: responseRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+        outstandingMinor: responseRows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+        collectiblePastDueMinor: accountProjectionResult?.collectiblePastDueMinor
+          ?? responseRows.filter((row) => row.classification === "past_due" && !row.reviewRequired).reduce((sum, row) => sum + row.outstandingMinor, 0),
+        reviewCount: responseRows.filter((row) => row.reviewRequired).length,
+        settledCount: responseRows.filter((row) => row.classification === "settled").length,
+        voidedCount: responseRows.filter((row) => row.classification === "voided").length,
       },
     };
-  });
+    return { contract, accountProjectionResult, forecastCoverageByTargetId };
 }
 
 /** Resolve one published occurrence from explicit roster payment evidence. */
@@ -1635,6 +2136,7 @@ export async function recordOccurrenceResponsibilities(input: {
       idempotencyKey: input.commandKey,
       requestFingerprint: input.requestFingerprint,
     });
+    await requireManagePaymentsForLegacyWeeklyWrite(tx, input);
     const occurrenceIds = [...new Set(input.responsibilities.map((row) => row.occurrenceId))];
     const occurrences = await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt, status: leagueOccurrences.status }).from(leagueOccurrences).where(and(eq(leagueOccurrences.organizationId, input.organizationId), eq(leagueOccurrences.leagueId, input.leagueId), inArray(leagueOccurrences.id, occurrenceIds), inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const), inArray(leagueOccurrences.status, ["scheduled", "completed"] as const)));
     if (occurrences.length !== occurrenceIds.length) throw new RosterPaymentError("OCCURRENCE_NOT_PUBLISHED", "Responsibilities require published canonical occurrences", 422);
@@ -1865,7 +2367,7 @@ type FifoQuoteInput = {
 
 export async function fifoCandidatesInTransaction(
   tx: RosterPaymentTransaction,
-  input: { organizationId: number; leagueId: number; payerBowlerId: number; includeSettledObligationIds?: string[] },
+  input: { organizationId: number; leagueId: number; payerBowlerId: number; includeSettledObligationIds?: string[]; forUpdate?: boolean },
 ): Promise<FifoPaymentCandidate[]> {
   const stateFilter = input.includeSettledObligationIds && input.includeSettledObligationIds.length > 0
     ? or(
@@ -1873,7 +2375,7 @@ export async function fifoCandidatesInTransaction(
       and(inArray(paymentObligations.id, input.includeSettledObligationIds), eq(paymentObligations.state, "settled")),
     )
     : inArray(paymentObligations.state, ["open", "partially_settled"] as const);
-  const rows = await tx.select().from(paymentObligations).where(and(
+  const candidatesQuery = tx.select().from(paymentObligations).where(and(
     eq(paymentObligations.organizationId, input.organizationId),
     eq(paymentObligations.leagueId, input.leagueId),
     eq(paymentObligations.payerBowlerId, input.payerBowlerId),
@@ -1885,7 +2387,8 @@ export async function fifoCandidatesInTransaction(
       bowlerId: input.payerBowlerId,
     }),
     stateFilter,
-  )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.occurrenceId), asc(paymentObligations.id)).for("update");
+  )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.occurrenceId), asc(paymentObligations.id));
+  const rows = await (input.forUpdate === false ? candidatesQuery : candidatesQuery.for("update"));
   if (rows.length === 0) return [];
   const responsibilityIds = [...new Set(rows.map((row) => row.responsibilityId))];
   const responsibilities = await tx.select({
@@ -1977,12 +2480,13 @@ export async function fifoCandidatesInTransaction(
     throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Each published collection group must have exactly one trigger occurrence", 503);
   }
   for (const row of triggerEvidence) triggerAtByGroup.set(row.groupId, new Date(row.startAt).toISOString());
-  const allocations = await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
+  const allocationsQuery = tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
     eq(paymentAllocations.organizationId, input.organizationId),
     eq(paymentAllocations.leagueId, input.leagueId),
     eq(paymentAllocations.state, "active"),
     inArray(paymentAllocations.obligationId, rows.map((row) => row.id)),
-  )).for("update");
+  ));
+  const allocations = await (input.forUpdate === false ? allocationsQuery : allocationsQuery.for("update"));
   const allocatedById = new Map<string, number>();
   const reviewById = new Map<string, boolean>();
   for (const row of allocations) {
@@ -2003,12 +2507,13 @@ export async function fifoCandidatesInTransaction(
       { amountMinor: adjustment.amountMinor, disposition: adjustment.disposition },
     ]);
   }
-  const reservations = await tx.select({ obligationId: paymentOperationRosterSnapshotItems.obligationId, amountMinor: paymentOperationRosterSnapshotItems.amountMinor }).from(paymentOperationRosterSnapshotItems).where(and(
+  const reservationsQuery = tx.select({ obligationId: paymentOperationRosterSnapshotItems.obligationId, amountMinor: paymentOperationRosterSnapshotItems.amountMinor }).from(paymentOperationRosterSnapshotItems).where(and(
     eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
     eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
     eq(paymentOperationRosterSnapshotItems.state, "reserved"),
     inArray(paymentOperationRosterSnapshotItems.obligationId, rows.map((row) => row.id)),
-  )).for("update");
+  ));
+  const reservations = await (input.forUpdate === false ? reservationsQuery : reservationsQuery.for("update"));
   const reservedById = new Map<string, number>();
   for (const row of reservations) reservedById.set(row.obligationId, (reservedById.get(row.obligationId) ?? 0) + row.amountMinor);
   // The query above deliberately keeps its dueAt order for row-lock
@@ -2080,6 +2585,77 @@ export async function quoteInteractiveObligations(input: FifoQuoteInput & { orga
     return { contractVersion: "interactive-obligation-quote/2" as const, automaticContractVersion: "automatic-fifo-payment/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, currency: "USD" as const, payerBowlerId, amountMinor, obligations: selectedObligations, allocations, fingerprint: quoteFingerprint(fingerprintRows) };
   };
   return input.transaction ? run(input.transaction) : db.transaction(run);
+}
+
+/** Quote manual tender without requiring adopted account receipts to consume
+ * only today's confirmed debt. In adopted mode the incoming amount is always
+ * the exact cash/check amount; balances are context for staff and owned FIFO
+ * remains authoritative when the real receipt is committed. */
+export async function quoteCanonicalManualPayment(input: {
+  organizationId: number;
+  leagueId: number;
+  request: CanonicalManualRecordQuoteRequest;
+}) {
+  return db.transaction(async (tx) => {
+    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    const adoption = await readOwnedLedgerAdoptionInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+    });
+    const normalized = {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      payerBowlerId: input.request.payerBowlerId,
+      amountMinor: input.request.amountMinor,
+      type: input.request.type,
+      checkNumber: input.request.type === "check" ? input.request.checkNumber ?? null : null,
+      notes: input.request.notes ?? null,
+    };
+    if (!adoption) {
+      const quote = await quoteInteractiveObligations({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        payerBowlerId: input.request.payerBowlerId,
+        amountMinor: input.request.amountMinor,
+        transaction: tx,
+      });
+      return {
+        ...quote,
+        type: normalized.type,
+        checkNumber: normalized.checkNumber,
+        notes: normalized.notes,
+        fingerprint: canonicalManualReceiptQuoteFingerprint(normalized, quote.fingerprint),
+      };
+    }
+    await assertManualPaymentPayerInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      payerBowlerId: input.request.payerBowlerId,
+    });
+    const balance = (await readOwnedAccountBalancesInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      bowlerIds: [input.request.payerBowlerId],
+    })).get(input.request.payerBowlerId);
+    if (!balance) throw new RosterPaymentError("ACCOUNT_BALANCE_UNAVAILABLE", "The payer account could not be read", 503);
+    return {
+      contractVersion: "canonical-manual-record-quote/1" as const,
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      currency: "USD" as const,
+      payerBowlerId: normalized.payerBowlerId,
+      amountMinor: normalized.amountMinor,
+      type: normalized.type,
+      checkNumber: normalized.checkNumber,
+      notes: normalized.notes,
+      fingerprint: canonicalManualReceiptQuoteFingerprint(normalized),
+      account: {
+        availableCreditMinor: balance.availableCreditMinor,
+        confirmedOwedMinor: balance.confirmedOwedMinor,
+        netBalanceMinor: balance.netBalanceMinor,
+      },
+    };
+  });
 }
 
 /** Prepare and dispatch one automatically allocated interactive charge. Provider
@@ -2156,6 +2732,13 @@ export async function chargeInteractiveObligations(input: {
         throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different FIFO payment", 409);
       }
       return { operation: existingOperation, quote: null, reused: true };
+    }
+    const [ownedLedgerAdoption] = await tx.select({ id: weeklyPaymentLedgerAdoptions.id }).from(weeklyPaymentLedgerAdoptions).where(and(
+      eq(weeklyPaymentLedgerAdoptions.organizationId, input.organizationId),
+      eq(weeklyPaymentLedgerAdoptions.leagueId, input.leagueId),
+    )).limit(1).for("share");
+    if (ownedLedgerAdoption) {
+      throw new RosterPaymentError("ACCOUNT_PAYMENT_V4_REQUIRED", "This league now uses account-based payment collection. Start a new payment from the account checkout.", 409);
     }
     const payerBowlerIdInput = input.payerBowlerId;
     const quote = await quoteInteractiveObligations({ organizationId: input.organizationId, leagueId: input.leagueId, amountMinor: input.request.amountMinor, payerBowlerId: payerBowlerIdInput, transaction: tx });
@@ -2298,51 +2881,483 @@ export async function chargeInteractiveObligations(input: {
   });
 }
 
-export async function recordCanonicalManualPayment(input: { organizationId: number; leagueId: number; actorUserId: number; request: CanonicalManualRecordRequest }) {
-  return db.transaction(async (tx) => {
-    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
-    await beginFinancialCommand(tx, {
+async function resolveCanonicalManualReceiptCollectionInTransaction(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; businessCollectionLocalDate?: string },
+): Promise<{ occurrenceId: string; businessCollectionLocalDate: string; now: string }> {
+  const [league] = await tx.select({ timezone: leagues.timezone }).from(leagues).where(and(
+    eq(leagues.id, input.leagueId),
+    eq(leagues.organizationId, input.organizationId),
+  )).limit(1).for("share");
+  if (!league) throw new RosterPaymentError("NOT_FOUND", "League not found", 404);
+  const nowResult = await tx.execute<{ now: string }>(sql`SELECT transaction_timestamp()::text AS now`);
+  const databaseNow = nowResult.rows[0]?.now;
+  if (!databaseNow) throw new RosterPaymentError("COLLECTION_PERIOD_UNAVAILABLE", "The current collection period could not be resolved", 409);
+  const now = new Date(databaseNow).toISOString();
+  try {
+    const schedule = await loadLeagueOccurrenceScheduleSnapshot({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      includeAdministratorEvidence: false,
+    }, tx);
+    const timeZone = league.timezone ?? schedule.occurrences[0]?.timezone;
+    if (!timeZone) throw new RosterPaymentError("COLLECTION_PERIOD_UNAVAILABLE", "The league time zone is unavailable", 409);
+    const occurrenceId = input.businessCollectionLocalDate === undefined
+      ? selectManagePaymentsOccurrence(schedule, timeZone, now).occurrenceId
+      : mapCardReceiptCollectionOccurrence({
+        explicitCollectionOccurrenceId: null,
+        triggerOccurrenceId: null,
+        collectionLocalDate: input.businessCollectionLocalDate,
+      }, schedule);
+    if (occurrenceId === null) throw new RosterPaymentError("COLLECTION_PERIOD_UNAVAILABLE", "The requested payment date is outside the canonical collection schedule", 409);
+    return {
+      occurrenceId,
+      businessCollectionLocalDate: input.businessCollectionLocalDate ?? localDateForInstant(now, timeZone),
+      now,
+    };
+  } catch (error) {
+    if (error instanceof RosterPaymentError) throw error;
+    if (error instanceof LeagueOccurrenceScheduleError || error instanceof ManagePaymentsWorksheetProjectionError) {
+      throw new RosterPaymentError("COLLECTION_PERIOD_UNAVAILABLE", "The current canonical collection period is unavailable", 409);
+    }
+    throw error;
+  }
+}
+
+function mapManualReceiptMutationError(error: unknown): never {
+  if (error instanceof ManualPaymentReceiptError) {
+    throw new RosterPaymentError(
+      error.code === "manual_receipt_conflict" ? "MANUAL_RECEIPT_CONFLICT" : "PAYMENT_WRITE_FAILED",
+      error.message,
+      error.code === "manual_receipt_conflict" ? 409 : 503,
+    );
+  }
+  if (error instanceof OwnedPaymentLedgerError) {
+    throw new RosterPaymentError("FINANCIAL_EVIDENCE_REQUIRES_REVIEW", "Payment evidence needs review before this cash or check change", 409);
+  }
+  throw error;
+}
+
+async function requireActiveManualReceiptForPayment(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; paymentId: number },
+) {
+  let receipt;
+  try {
+    receipt = await readActiveManualReceiptForPaymentInTransaction(tx, input);
+  } catch (error) {
+    mapManualReceiptMutationError(error);
+  }
+  if (!receipt) throw new RosterPaymentError("MANUAL_RECEIPT_NOT_FOUND", "This cash or check payment has no active worksheet receipt history", 409);
+  return receipt;
+}
+
+async function clearAdoptedManualReceiptInTransaction(input: {
+  tx: RosterPaymentTransaction;
+  organizationId: number;
+  leagueId: number;
+  actorUserId: number;
+  idempotencyKey: string;
+  now: string;
+  reason: string;
+  payment: ManualReceiptPaymentRow;
+  receipt: NonNullable<Awaited<ReturnType<typeof readActiveManualReceiptForPaymentInTransaction>>>;
+}): Promise<{ affectedOwners: Set<number>; receiptId: string }> {
+  if (input.payment.bowlerId !== input.receipt.payerBowlerId || input.payment.amount !== input.receipt.amountMinor) {
+    throw new RosterPaymentError("MANUAL_RECEIPT_CONFLICT", "The saved receipt no longer matches its cash or check payment", 409);
+  }
+  let affectedOwners: Set<number>;
+  try {
+    affectedOwners = await voidManualReceiptPaymentInTransaction(input.tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
       actorUserId: input.actorUserId,
-      commandType: "roster_payment.manual_record",
-      idempotencyKey: input.request.idempotencyKey,
-      requestFingerprint: input.request.requestFingerprint,
-    });
-    const quote = await quoteInteractiveObligations({
+      occurrenceId: input.receipt.occurrenceId,
+      idempotencyKey: input.idempotencyKey,
+      reason: input.reason,
+    }, input.payment, input.receipt.receiptId, input.now);
+    await appendManualReceiptRevisionInTransaction(input.tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
-      amountMinor: input.request.amountMinor,
-      payerBowlerId: input.request.payerBowlerId,
-      transaction: tx,
+      actorUserId: input.actorUserId,
+      receiptId: input.receipt.receiptId,
+      revision: input.receipt.revision + 1,
+      paymentId: null,
+      amountMinor: 0,
+      businessCollectionLocalDate: input.receipt.businessCollectionLocalDate,
+      revisionKind: "manual_clear",
+      now: input.now,
     });
-    if (input.request.requestFingerprint !== quote.fingerprint) throw new RosterPaymentError("STALE_QUOTE", "The obligation quote is stale; request a new quote", 409);
-    const payerBowlerId = quote.payerBowlerId;
-    const [payment] = await tx.insert(payments).values({ organizationId: input.organizationId, bowlerId: payerBowlerId, leagueId: input.leagueId, amount: quote.amountMinor, status: "paid", type: input.request.type, checkNumber: input.request.checkNumber, notes: input.request.notes, idempotencyKey: input.request.idempotencyKey, paidByUserId: input.actorUserId }).returning();
-    if (!payment) throw new RosterPaymentError("PAYMENT_WRITE_FAILED", "The payment could not be recorded", 503);
-    const created = [];
-    for (const obligation of quote.obligations) {
-      const [allocation] = await tx.insert(paymentAllocations).values({ organizationId: input.organizationId, leagueId: input.leagueId, paymentId: payment.id, obligationId: obligation.id, amountMinor: obligation.selectedMinor, currency: obligation.currency, recordedByUserId: input.actorUserId }).returning();
-      if (!allocation) throw new RosterPaymentError("ALLOCATION_WRITE_FAILED", "The payment allocation could not be recorded", 503);
-      const activeRows = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, obligation.id), eq(paymentAllocations.state, "active"))).for("update");
-      const adjustmentRows = activeRows.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
-        eq(refundAllocationAdjustments.organizationId, input.organizationId),
-        eq(refundAllocationAdjustments.leagueId, input.leagueId),
-        inArray(refundAllocationAdjustments.sourceAllocationId, activeRows.map((row) => row.id)),
-      ));
-      const balance = canonicalObligationBalance({
-        amountMinor: obligation.amountMinor,
-        state: obligation.state,
-        grossAllocatedMinor: activeRows.reduce((sum, row) => sum + row.amountMinor, 0),
-        adjustments: adjustmentRows,
+  } catch (error) {
+    mapManualReceiptMutationError(error);
+  }
+  affectedOwners.add(input.payment.bowlerId);
+  for (const bowlerId of [...affectedOwners].sort((left, right) => left - right)) {
+    try {
+      await applyOwnedFundingFifoInTransaction(input.tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        bowlerId,
+        actorUserId: input.actorUserId,
+        now: input.now,
       });
-      await tx.update(paymentObligations).set({ state: balance.outstandingMinor === 0 ? "settled" : "partially_settled" }).where(and(eq(paymentObligations.id, obligation.id), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)));
-      created.push({ payment, allocation });
+    } catch (error) {
+      mapManualReceiptMutationError(error);
     }
-    const result = { contractVersion: "canonical-manual-record/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, records: created };
-    await completeFinancialCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: "roster_payment.manual_record", idempotencyKey: input.request.idempotencyKey, result });
-    return result;
+  }
+  return { affectedOwners, receiptId: input.receipt.receiptId };
+}
+
+async function editAdoptedManualReceiptInTransaction(input: {
+  tx: RosterPaymentTransaction;
+  organizationId: number;
+  leagueId: number;
+  actorUserId: number;
+  request: CanonicalCorrectionInput;
+  payment: ManualReceiptPaymentRow;
+  receipt: NonNullable<Awaited<ReturnType<typeof readActiveManualReceiptForPaymentInTransaction>>>;
+}) {
+  const amountMinor = input.request.amountMinor;
+  const paymentDate = input.request.paymentDate;
+  if (amountMinor === undefined || paymentDate === undefined) throw new RosterPaymentError("INVALID_REQUEST", "A cash edit requires an amount and payment date", 422);
+  if (input.payment.type !== "cash") throw new RosterPaymentError("CASH_EDIT_UNAVAILABLE", "Only an active cash payment can be edited", 409);
+  if (input.payment.bowlerId !== input.receipt.payerBowlerId || input.payment.amount !== input.receipt.amountMinor) {
+    throw new RosterPaymentError("MANUAL_RECEIPT_CONFLICT", "The saved receipt no longer matches its cash payment", 409);
+  }
+  if (amountMinor === input.receipt.amountMinor && paymentDate === input.receipt.businessCollectionLocalDate) {
+    throw new RosterPaymentError("UNCHANGED_PAYMENT", "Change the amount or payment date before saving", 422);
+  }
+  const collection = await resolveCanonicalManualReceiptCollectionInTransaction(input.tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    businessCollectionLocalDate: paymentDate,
   });
+  const oldScope = {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    actorUserId: input.actorUserId,
+    occurrenceId: input.receipt.occurrenceId,
+    idempotencyKey: input.request.idempotencyKey,
+  };
+  let affectedOwners: Set<number>;
+  try {
+    affectedOwners = await voidManualReceiptPaymentInTransaction(input.tx, {
+      ...oldScope,
+      reason: input.request.reason,
+    }, input.payment, input.receipt.receiptId, collection.now);
+  } catch (error) {
+    mapManualReceiptMutationError(error);
+  }
+
+  const sameCollectionOccurrence = collection.occurrenceId === input.receipt.occurrenceId;
+  let replacementReceiptId = input.receipt.receiptId;
+  if (!sameCollectionOccurrence) {
+    try {
+      await appendManualReceiptRevisionInTransaction(input.tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        actorUserId: input.actorUserId,
+        receiptId: input.receipt.receiptId,
+        revision: input.receipt.revision + 1,
+        paymentId: null,
+        amountMinor: 0,
+        businessCollectionLocalDate: input.receipt.businessCollectionLocalDate,
+        revisionKind: "manual_clear",
+        now: collection.now,
+      });
+      replacementReceiptId = await createManualReceiptHeadInTransaction(input.tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        occurrenceId: collection.occurrenceId,
+        bowlerId: input.payment.bowlerId,
+        now: collection.now,
+      });
+    } catch (error) {
+      mapManualReceiptMutationError(error);
+    }
+  }
+  const replacementScope = {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    actorUserId: input.actorUserId,
+    occurrenceId: collection.occurrenceId,
+    idempotencyKey: input.request.idempotencyKey,
+  };
+  let replacementPaymentId: number;
+  try {
+    replacementPaymentId = await createManualReceiptPaymentInTransaction(input.tx, replacementScope, {
+      receiptId: replacementReceiptId,
+      bowlerId: input.payment.bowlerId,
+      amountMinor,
+      businessDate: paymentDate,
+      existingPayment: {
+        type: "cash",
+        checkNumber: null,
+        notes: input.payment.notes,
+        paidByUserId: input.payment.paidByUserId,
+      },
+    }, collection.now);
+    await appendManualReceiptRevisionInTransaction(input.tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      actorUserId: input.actorUserId,
+      receiptId: replacementReceiptId,
+      revision: sameCollectionOccurrence ? input.receipt.revision + 1 : 1,
+      paymentId: replacementPaymentId,
+      amountMinor,
+      businessCollectionLocalDate: paymentDate,
+      revisionKind: sameCollectionOccurrence ? "manual_edit" : "manual_record",
+      now: collection.now,
+    });
+  } catch (error) {
+    mapManualReceiptMutationError(error);
+  }
+
+  affectedOwners.add(input.payment.bowlerId);
+  for (const bowlerId of [...affectedOwners].sort((left, right) => left - right)) {
+    try {
+      await applyOwnedFundingFifoInTransaction(input.tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        bowlerId,
+        actorUserId: input.actorUserId,
+        now: collection.now,
+      });
+    } catch (error) {
+      mapManualReceiptMutationError(error);
+    }
+  }
+  const [replacementPayment] = await input.tx.select().from(payments).where(and(
+    eq(payments.id, replacementPaymentId),
+    eq(payments.organizationId, input.organizationId),
+    eq(payments.leagueId, input.leagueId),
+  )).limit(1).for("share");
+  if (!replacementPayment) throw new RosterPaymentError("PAYMENT_EVIDENCE_INCOMPLETE", "The replacement cash payment could not be read", 503);
+  const allocations = await input.tx.select().from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, input.organizationId),
+    eq(paymentAllocations.leagueId, input.leagueId),
+    eq(paymentAllocations.paymentId, replacementPaymentId),
+    eq(paymentAllocations.state, "active"),
+  )).orderBy(asc(paymentAllocations.id));
+  const [voidEvidence] = await input.tx.select().from(paymentVoids).where(and(
+    eq(paymentVoids.organizationId, input.organizationId),
+    eq(paymentVoids.leagueId, input.leagueId),
+    eq(paymentVoids.paymentId, input.payment.id),
+  )).limit(1).for("share");
+  return {
+    contractVersion: "canonical-cash-payment-edit/2" as const,
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    mode: "edit_cash" as const,
+    originalPaymentId: input.payment.id,
+    replacementPaymentId,
+    oldAmountMinor: input.payment.amount,
+    newAmountMinor: amountMinor,
+    oldPaymentDate: input.receipt.businessCollectionLocalDate,
+    newPaymentDate: paymentDate,
+    allocationMode: "owned_fifo_reapplied" as const,
+    allocationCount: allocations.length,
+    originalReceiptId: input.receipt.receiptId,
+    replacementReceiptId,
+    receiptRevision: sameCollectionOccurrence ? input.receipt.revision + 1 : 1,
+    payment: replacementPayment,
+    voidEvidence: voidEvidence ?? null,
+    allocations,
+  };
+}
+
+export async function recordCanonicalManualPayment(input: {
+  organizationId: number;
+  leagueId: number;
+  actorUserId: number;
+  request: CanonicalManualRecordRequest;
+}) {
+  try {
+    return await db.transaction(async (tx) => {
+      await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+      await replayManualRecordCommandBeforeRequote(tx, input);
+      const adoption = await readOwnedLedgerAdoptionInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+      });
+      const quoteIdentity = {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        payerBowlerId: input.request.payerBowlerId,
+        amountMinor: input.request.amountMinor,
+        type: input.request.type,
+        checkNumber: input.request.type === "check" ? input.request.checkNumber ?? null : null,
+        notes: input.request.notes ?? null,
+      };
+
+      if (adoption) {
+        await assertManualPaymentPayerInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          payerBowlerId: input.request.payerBowlerId,
+        });
+        const requestFingerprint = canonicalManualReceiptQuoteFingerprint(quoteIdentity);
+        if (input.request.requestFingerprint !== requestFingerprint) {
+          throw new RosterPaymentError("STALE_QUOTE", "The manual payment details changed; request a new quote", 409);
+        }
+        await beginFinancialCommand(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          actorUserId: input.actorUserId,
+          commandType: "roster_payment.manual_record",
+          idempotencyKey: input.request.idempotencyKey,
+          requestFingerprint,
+        });
+        const collection = await resolveCanonicalManualReceiptCollectionInTransaction(tx, input);
+        const receiptScope = {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          actorUserId: input.actorUserId,
+          occurrenceId: collection.occurrenceId,
+          idempotencyKey: input.request.idempotencyKey,
+        };
+        const receiptId = await createManualReceiptHeadInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          occurrenceId: collection.occurrenceId,
+          bowlerId: input.request.payerBowlerId,
+          now: collection.now,
+        });
+        const paymentId = await createManualReceiptPaymentInTransaction(tx, receiptScope, {
+          receiptId,
+          bowlerId: input.request.payerBowlerId,
+          amountMinor: input.request.amountMinor,
+          businessDate: collection.businessCollectionLocalDate,
+          paymentIdempotencyKey: input.request.idempotencyKey,
+          existingPayment: {
+            type: input.request.type,
+            checkNumber: quoteIdentity.checkNumber,
+            notes: input.request.notes ?? null,
+            paidByUserId: input.actorUserId,
+          },
+        }, collection.now);
+        await appendManualReceiptRevisionInTransaction(tx, {
+          ...receiptScope,
+          receiptId,
+          revision: 1,
+          paymentId,
+          amountMinor: input.request.amountMinor,
+          businessCollectionLocalDate: collection.businessCollectionLocalDate,
+          revisionKind: "manual_record",
+          now: collection.now,
+        });
+        await applyOwnedFundingFifoInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          bowlerId: input.request.payerBowlerId,
+          actorUserId: input.actorUserId,
+          now: collection.now,
+        });
+        const [payment] = await tx.select().from(payments).where(and(
+          eq(payments.id, paymentId),
+          eq(payments.organizationId, input.organizationId),
+          eq(payments.leagueId, input.leagueId),
+        )).limit(1).for("share");
+        if (!payment) throw new RosterPaymentError("PAYMENT_EVIDENCE_INCOMPLETE", "The cash or check receipt could not be read after recording", 503);
+        const allocations = await tx.select().from(paymentAllocations).where(and(
+          eq(paymentAllocations.organizationId, input.organizationId),
+          eq(paymentAllocations.leagueId, input.leagueId),
+          eq(paymentAllocations.paymentId, paymentId),
+          eq(paymentAllocations.state, "active"),
+        )).orderBy(asc(paymentAllocations.id));
+        const balance = (await readOwnedAccountBalancesInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          bowlerIds: [input.request.payerBowlerId],
+        })).get(input.request.payerBowlerId);
+        if (!balance) throw new RosterPaymentError("ACCOUNT_BALANCE_UNAVAILABLE", "The payer account could not be read after recording", 503);
+        const result = {
+          contractVersion: "canonical-manual-record/2" as const,
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          payerBowlerId: input.request.payerBowlerId,
+          amountMinor: input.request.amountMinor,
+          payment,
+          receipt: {
+            receiptId,
+            revision: 1,
+            occurrenceId: collection.occurrenceId,
+            businessCollectionLocalDate: collection.businessCollectionLocalDate,
+          },
+          allocations,
+          records: allocations.map((allocation) => ({ payment, allocation })),
+          appliedAmountMinor: allocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+          account: {
+            availableCreditMinor: balance.availableCreditMinor,
+            confirmedOwedMinor: balance.confirmedOwedMinor,
+            netBalanceMinor: balance.netBalanceMinor,
+          },
+        };
+        await completeFinancialCommand(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          commandType: "roster_payment.manual_record",
+          idempotencyKey: input.request.idempotencyKey,
+          result,
+        });
+        return result;
+      }
+
+      const quote = await quoteInteractiveObligations({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        amountMinor: input.request.amountMinor,
+        payerBowlerId: input.request.payerBowlerId,
+        transaction: tx,
+      });
+      const requestFingerprint = canonicalManualReceiptQuoteFingerprint(quoteIdentity, quote.fingerprint);
+      if (input.request.requestFingerprint !== requestFingerprint && input.request.requestFingerprint !== quote.fingerprint) {
+        throw new RosterPaymentError("STALE_QUOTE", "The obligation quote is stale; request a new quote", 409);
+      }
+      await beginFinancialCommand(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        actorUserId: input.actorUserId,
+        commandType: "roster_payment.manual_record",
+        idempotencyKey: input.request.idempotencyKey,
+        requestFingerprint,
+      });
+      const payerBowlerId = quote.payerBowlerId;
+      const [payment] = await tx.insert(payments).values({ organizationId: input.organizationId, bowlerId: payerBowlerId, leagueId: input.leagueId, amount: quote.amountMinor, status: "paid", type: input.request.type, checkNumber: input.request.checkNumber ?? null, notes: input.request.notes ?? null, idempotencyKey: input.request.idempotencyKey, paidByUserId: input.actorUserId }).returning();
+      if (!payment) throw new RosterPaymentError("PAYMENT_WRITE_FAILED", "The payment could not be recorded", 503);
+      const created = [];
+      for (const obligation of quote.obligations) {
+        const [allocation] = await tx.insert(paymentAllocations).values({ organizationId: input.organizationId, leagueId: input.leagueId, paymentId: payment.id, obligationId: obligation.id, amountMinor: obligation.selectedMinor, currency: obligation.currency, recordedByUserId: input.actorUserId }).returning();
+        if (!allocation) throw new RosterPaymentError("ALLOCATION_WRITE_FAILED", "The payment allocation could not be recorded", 503);
+        const activeRows = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, obligation.id), eq(paymentAllocations.state, "active"))).for("update");
+        const adjustmentRows = activeRows.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
+          eq(refundAllocationAdjustments.organizationId, input.organizationId),
+          eq(refundAllocationAdjustments.leagueId, input.leagueId),
+          inArray(refundAllocationAdjustments.sourceAllocationId, activeRows.map((row) => row.id)),
+        ));
+        const balance = canonicalObligationBalance({
+          amountMinor: obligation.amountMinor,
+          state: obligation.state,
+          grossAllocatedMinor: activeRows.reduce((sum, row) => sum + row.amountMinor, 0),
+          adjustments: adjustmentRows,
+        });
+        await tx.update(paymentObligations).set({ state: balance.outstandingMinor === 0 ? "settled" : "partially_settled" }).where(and(eq(paymentObligations.id, obligation.id), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)));
+        created.push({ payment, allocation });
+      }
+      const result = { contractVersion: "canonical-manual-record/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId, amountMinor: quote.amountMinor, payment, records: created };
+      await completeFinancialCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: "roster_payment.manual_record", idempotencyKey: input.request.idempotencyKey, result });
+      return result;
+    });
+  } catch (error) {
+    if (error instanceof ManualPaymentReceiptError) {
+      throw new RosterPaymentError(
+        error.code === "manual_receipt_conflict" ? "MANUAL_RECEIPT_CONFLICT" : "PAYMENT_WRITE_FAILED",
+        error.message,
+        error.code === "manual_receipt_conflict" ? 409 : 503,
+      );
+    }
+    throw error;
+  }
 }
 
 export async function correctCanonicalAllocation(input: { organizationId: number; leagueId: number; actorUserId: number; request: CanonicalCorrectionInput }) {
@@ -2356,7 +3371,58 @@ export async function correctCanonicalAllocation(input: { organizationId: number
       idempotencyKey: input.request.idempotencyKey,
       requestFingerprint: input.request.requestFingerprint,
     });
-    const [payment] = await tx.select().from(payments).where(and(eq(payments.id, input.request.paymentId), eq(payments.organizationId, input.organizationId), eq(payments.leagueId, input.leagueId))).limit(1).for("share");
+    const [payment] = await tx.select().from(payments).where(and(eq(payments.id, input.request.paymentId), eq(payments.organizationId, input.organizationId), eq(payments.leagueId, input.leagueId))).limit(1).for("update");
+    const adoption = await readOwnedLedgerAdoptionInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId });
+    if (adoption) {
+      if (!payment || (payment.type !== "cash" && payment.type !== "check") || payment.status !== "paid"
+        || payment.paymentOperationId !== null || payment.providerPaymentId !== null || payment.refundedAt !== null
+        || payment.squareRefundId !== null || payment.disputeId !== null || payment.disputedAt !== null) {
+        throw new RosterPaymentError("PROVIDER_ALLOCATION_IMMUTABLE", "Provider payment evidence requires refund or reconciliation; it cannot be directly corrected", 409);
+      }
+      if (input.request.correctionMode !== "void_only") {
+        throw new RosterPaymentError("INVALID_CORRECTION_MODE", "This command only clears an adopted manual payment; use the cash edit command to change its amount", 422);
+      }
+      if (input.request.requestFingerprint !== canonicalCorrectionFingerprint(input.request)) {
+        throw new RosterPaymentError("INVALID_FINGERPRINT", "The correction request fingerprint is invalid", 422);
+      }
+      const receipt = await requireActiveManualReceiptForPayment(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: payment.id,
+      });
+      const nowResult = await tx.execute<{ now: string }>(sql`SELECT transaction_timestamp()::text AS now`);
+      const nowText = nowResult.rows[0]?.now;
+      if (!nowText) throw new RosterPaymentError("PAYMENT_WRITE_FAILED", "The correction timestamp could not be recorded", 503);
+      const now = new Date(nowText).toISOString();
+      const cleared = await clearAdoptedManualReceiptInTransaction({
+        tx,
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        actorUserId: input.actorUserId,
+        idempotencyKey: input.request.idempotencyKey,
+        now,
+        reason: input.request.reason,
+        payment,
+        receipt,
+      });
+      const result = {
+        contractVersion: "canonical-correction/4" as const,
+        mode: "void_only" as const,
+        payment: { ...payment, status: "voided" as const },
+        receipt: { receiptId: receipt.receiptId, revision: receipt.revision + 1, occurrenceId: receipt.occurrenceId, cleared: true as const },
+        voidEvidence: { paymentId: payment.id, reason: input.request.reason, recordedAt: now },
+        cleared: true as const,
+        affectedBowlerIds: [...cleared.affectedOwners],
+      };
+      await completeFinancialCommand(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        commandType: "roster_payment.void_payment",
+        idempotencyKey: input.request.idempotencyKey,
+        result,
+      });
+      return result;
+    }
     if (payment) await assertPaymentIsNotRotatingCreditFundingInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, paymentId: payment.id });
     if (!payment || (payment.type !== "cash" && payment.type !== "check") || payment.status !== "paid" || payment.paymentOperationId !== null || payment.providerPaymentId !== null || payment.refundedAt !== null || payment.squareRefundId !== null || payment.disputeId !== null || payment.disputedAt !== null) {
       throw new RosterPaymentError("PROVIDER_ALLOCATION_IMMUTABLE", "Provider payment evidence requires refund or reconciliation; it cannot be directly corrected", 409);
@@ -2430,6 +3496,56 @@ export async function deleteCanonicalCashPayment(input: {
       eq(payments.leagueId, input.leagueId),
     )).limit(1).for("update");
     if (!payment) throw new RosterPaymentError("NOT_FOUND", "Payment not found", 404);
+    const adoption = await readOwnedLedgerAdoptionInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId });
+    if (adoption) {
+      if (payment.type !== "cash" || payment.status !== "paid" || payment.paymentOperationId !== null
+        || payment.providerPaymentId !== null || payment.refundedAt !== null || payment.squareRefundId !== null
+        || payment.refundReason !== null || payment.disputeId !== null || payment.disputedAt !== null) {
+        throw new RosterPaymentError("CASH_PAYMENT_DELETE_UNAVAILABLE", "Only an active manual cash receipt can be cleared here", 409);
+      }
+      const receipt = await requireActiveManualReceiptForPayment(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: payment.id,
+      });
+      const nowResult = await tx.execute<{ now: string }>(sql`SELECT transaction_timestamp()::text AS now`);
+      const nowText = nowResult.rows[0]?.now;
+      if (!nowText) throw new RosterPaymentError("PAYMENT_WRITE_FAILED", "The correction timestamp could not be recorded", 503);
+      const now = new Date(nowText).toISOString();
+      await clearAdoptedManualReceiptInTransaction({
+        tx,
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        actorUserId: input.actorUserId,
+        idempotencyKey: input.request.idempotencyKey,
+        now,
+        reason: input.request.reason,
+        payment,
+        receipt,
+      });
+      const result = {
+        contractVersion: "canonical-cash-payment-delete/2" as const,
+        deleted: false as const,
+        cleared: true as const,
+        paymentId: payment.id,
+        paymentType: payment.type,
+        previousStatus: payment.status,
+        amountMinor: payment.amount,
+        currency: payment.currency,
+        reason: input.request.reason,
+        receiptId: receipt.receiptId,
+        receiptRevision: receipt.revision + 1,
+        payment: { ...payment, status: "voided" as const },
+      };
+      await completeFinancialCommand(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        commandType: "roster_payment.delete_cash_payment",
+        idempotencyKey: input.request.idempotencyKey,
+        result,
+      });
+      return result;
+    }
     if (payment.type !== "cash" || (payment.status !== "paid" && payment.status !== "voided")
       || payment.paymentOperationId !== null || payment.providerPaymentId !== null
       || payment.refundedAt !== null || payment.squareRefundId !== null || payment.refundReason !== null
@@ -2670,7 +3786,6 @@ export async function editCanonicalCashPayment(input: { organizationId: number; 
       eq(payments.leagueId, input.leagueId),
     )).limit(1).for("update");
     if (!league || !payment) throw new RosterPaymentError("NOT_FOUND", "Payment not found", 404);
-    await assertPaymentIsNotRotatingCreditFundingInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, paymentId: payment.id });
     if (input.request.correctionMode !== "edit_cash") {
       throw new RosterPaymentError("INVALID_CORRECTION_MODE", "The cash edit command requires correctionMode=edit_cash", 422);
     }
@@ -2688,6 +3803,33 @@ export async function editCanonicalCashPayment(input: { organizationId: number; 
       || payment.disputeId !== null || payment.disputedAt !== null) {
       throw new RosterPaymentError("CASH_EDIT_UNAVAILABLE", "Only an active cash payment can be edited", 409);
     }
+
+    const adoption = await readOwnedLedgerAdoptionInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId });
+    if (adoption) {
+      const receipt = await requireActiveManualReceiptForPayment(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: payment.id,
+      });
+      const result = await editAdoptedManualReceiptInTransaction({
+        tx,
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        actorUserId: input.actorUserId,
+        request: input.request,
+        payment,
+        receipt,
+      });
+      await completeFinancialCommand(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        commandType: "roster_payment.edit_cash_payment",
+        idempotencyKey: input.request.idempotencyKey,
+        result,
+      });
+      return result;
+    }
+    await assertPaymentIsNotRotatingCreditFundingInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, paymentId: payment.id });
 
     const timezone = league.timezone ?? "UTC";
     const oldPaymentDate = paymentLocalDate(payment.createdAt, timezone);
@@ -2952,6 +4094,7 @@ export async function repairHistoricalCashPaymentAllocation(input: {
       idempotencyKey: request.idempotencyKey,
       requestFingerprint: request.requestFingerprint,
     });
+    await requireManagePaymentsForLegacyWeeklyWrite(tx, input);
 
     const [payment] = await tx.select().from(payments).where(and(
       eq(payments.id, request.paymentId),

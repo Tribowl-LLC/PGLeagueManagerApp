@@ -15,7 +15,7 @@ import type { League, Team, BowlerLeague, BowlerWithAccount, User } from "@share
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { Link } from "wouter";
 import { throwIfResNotOk } from "@/lib/queryClient";
-import { financialReadErrorMessage } from "@/lib/financial-utils";
+import { confirmedCollectiblePastDueMinor, effectiveFinancialDebtorBowlerId, financialReadErrorMessage } from "@/lib/financial-utils";
 
 export default function PastDuePage() {
   const { data: userResponse } = useQuery<{ data: User }>({ queryKey: ["/api/user"], staleTime: 1000 * 60 * 5 });
@@ -82,10 +82,13 @@ export default function PastDuePage() {
   }
 
   const groupedRows = [...financialLeagues.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId }))).reduce((map, row) => {
-    const key = `${row.leagueId}:${row.payerBowlerId}:none`;
+    const bowlerId = effectiveFinancialDebtorBowlerId(row);
+    if (bowlerId === null) return map;
+    const normalized = { ...row, payerBowlerId: bowlerId };
+    const key = `${row.leagueId}:${bowlerId}:none`;
     const prior = map.get(key);
-    const collectible = row.classification === "past_due" ? row.outstandingMinor : 0;
-    const next = prior ? { ...prior, outstandingMinor: prior.outstandingMinor + row.outstandingMinor, collectiblePastDueMinor: prior.collectiblePastDueMinor + collectible, reviewRequired: prior.reviewRequired || row.reviewRequired, reviewMinor: prior.reviewMinor + (row.reviewRequired ? row.outstandingMinor : 0), classification: prior.reviewRequired || row.reviewRequired ? "review_required" : prior.collectiblePastDueMinor + collectible > 0 ? "past_due" : row.classification } : { ...row, collectiblePastDueMinor: collectible, reviewMinor: row.reviewRequired ? row.outstandingMinor : 0 };
+    const collectible = confirmedCollectiblePastDueMinor(normalized);
+    const next = prior ? { ...prior, outstandingMinor: prior.outstandingMinor + row.outstandingMinor, collectiblePastDueMinor: prior.collectiblePastDueMinor + collectible, reviewRequired: prior.reviewRequired || row.reviewRequired, reviewMinor: prior.reviewMinor + (row.reviewRequired ? row.outstandingMinor : 0), classification: prior.reviewRequired || row.reviewRequired ? "review_required" : prior.collectiblePastDueMinor + collectible > 0 ? "past_due" : row.classification } : { ...normalized, collectiblePastDueMinor: collectible, reviewMinor: row.reviewRequired ? row.outstandingMinor : 0 };
     map.set(key, next);
     return map;
   }, new Map<string, (typeof financialLeagues[number]["report"]["rows"][number] & { leagueId: number; collectiblePastDueMinor: number; reviewMinor: number })>()).values()];

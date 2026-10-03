@@ -4,6 +4,8 @@ import { Link, useLocation, useSearch } from "wouter";
 import type { ApiResponse, BowlerDetailsResponse, SavedCard, User } from "@shared/schema";
 import type { RotatingCreditBalanceWire } from "@shared/rotating-credit-contract";
 import type { StandingAutopayConsentWire } from "@shared/standing-autopay-contract";
+import { accountPaymentFundingQuoteResponseV4Schema } from "@shared/account-payment-v4-contract";
+import type { AccountPaymentFundingQuoteResponseV4, AccountPaymentParticipantsResponseV4 } from "@shared/account-payment-v4-contract";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { LeagueBottomSheet } from "@/components/league-bottom-sheet";
 import { BowlerOneTimePaymentCard, type CompletedPayment, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
@@ -40,8 +42,19 @@ import {
   type InteractivePaymentMode,
   type InteractivePaymentParticipant,
   type InteractivePaymentParticipantsResponse,
+  type InteractivePaymentRecipientSelection,
   type InteractivePaymentQuote,
 } from "@/lib/interactive-payment-v3";
+import {
+  accountPaymentParticipantsQueryKey,
+  accountParticipantsForPaymentChooser,
+  buildAccountPaymentSelectionsV4,
+  defaultSelectedAccountRecipients,
+  loadAccountPaymentParticipantsV4,
+  parseExplicitPaymentAmountMinor,
+  type AccountPaymentRecipientSelectionV4,
+  type ConfirmedAccountPaymentParticipantsV4,
+} from "@/lib/account-payment-v4";
 
 type EditorMode = "one-time" | "autopay" | null;
 type CombinedAutopayConsentRecovery = {
@@ -51,6 +64,19 @@ type CombinedAutopayConsentRecovery = {
   commandKey: string;
   phase: "charging" | "consent";
   message: string;
+};
+
+type PaymentQuoteView = {
+  fingerprint: string;
+  amountMinor: number;
+  recipients: Array<{
+    bowlerId: number;
+    name: string;
+    role: "self" | "partner";
+    subtotalMinor: number;
+    coveredWeeks: string[];
+    allocations: PaymentBreakdownRow["allocations"];
+  }>;
 };
 
 const COMBINED_AUTOPAY_CONSENT_STORAGE_PREFIX = "leaguevault:standing-consent-intent:v1:";
@@ -250,6 +276,9 @@ export function invalidatePaymentViews(
     void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-participants/3"] });
     void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-quote/3"] });
   }
+  void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-participants/4"] });
+  void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-quote/4"] });
+  void queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", leagueId] });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
   void queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowlerId}`] });
 }
@@ -287,6 +316,7 @@ export default function MakePaymentPage() {
   const restoredCombinedConsentScopeRef = useRef<string | null>(null);
   const [selectedRecipients, setSelectedRecipients] = useState<Record<number, boolean>>({});
   const [recipientWeeks, setRecipientWeeks] = useState<Record<number, number>>({});
+  const [explicitAmountText, setExplicitAmountText] = useState("");
   const [selectionStale, setSelectionStale] = useState(false);
 
   const { data: currentUser, isLoading: loadingUser, error: userError } = useQuery<ApiResponse<User>>({ queryKey: ["/api/user"] });
@@ -321,12 +351,18 @@ export default function MakePaymentPage() {
     setLeagueSheetOpen(true);
   }, []);
 
-  const {
-    data: participantsResponse,
-    isLoading: loadingParticipants,
-    error: participantsError,
-    refetch: refetchParticipants,
-  } = useQuery<ApiResponse<InteractivePaymentParticipantsResponse>>({
+  const accountParticipantsQuery = useQuery<AccountPaymentParticipantsResponseV4>({
+    queryKey: accountPaymentParticipantsQueryKey(leagueId ?? 0, bowlerId ?? 0),
+    queryFn: ({ signal }) => loadAccountPaymentParticipantsV4(leagueId ?? 0, bowlerId ?? 0, signal),
+    enabled: !!bowlerId && !!leagueId,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const refetchAccountParticipants = accountParticipantsQuery.refetch;
+  const accountParticipants = accountParticipantsQuery.data?.accountingMode === "confirmed_account_v4"
+    ? accountParticipantsQuery.data
+    : undefined;
+  const legacyParticipantsQuery = useQuery<ApiResponse<InteractivePaymentParticipantsResponse>>({
     queryKey: ["/api/financials/leagues", leagueId ?? 0, "interactive-payment-participants/3"],
     queryFn: async ({ signal }) => {
       const response = await fetch(`/api/financials/leagues/${leagueId}/interactive-payment-participants/3`, {
@@ -338,19 +374,50 @@ export default function MakePaymentPage() {
       if (!response.ok) throw makeApiError(body, response.status, "Payment recipients are unavailable");
       return body;
     },
-    enabled: !!bowlerId && !!leagueId,
+    enabled: !!bowlerId && !!leagueId && accountParticipantsQuery.data?.accountingMode === "legacy_roster_v3",
     staleTime: 30_000,
     retry: false,
   });
-  const participants = useMemo(() => participantsResponse?.data?.participants ?? [], [participantsResponse?.data?.participants]);
-  const paymentMode: InteractivePaymentMode = participantsResponse?.data?.paymentMode ?? league?.paymentMode ?? "weekly";
+  const refetchLegacyParticipants = legacyParticipantsQuery.refetch;
+  const isAccountMode = accountParticipants !== undefined;
+  const participants = useMemo(() => accountParticipants
+    ? accountParticipantsForPaymentChooser(accountParticipants)
+    : legacyParticipantsQuery.data?.data?.participants ?? [], [accountParticipants, legacyParticipantsQuery.data?.data?.participants]);
+  const participantsReady = isAccountMode || legacyParticipantsQuery.data?.data !== undefined;
+  const participantsError = accountParticipantsQuery.error ?? (accountParticipantsQuery.data?.accountingMode === "legacy_roster_v3" ? legacyParticipantsQuery.error : null);
+  const loadingParticipants = accountParticipantsQuery.isLoading
+    || (accountParticipantsQuery.data?.accountingMode === "legacy_roster_v3" && legacyParticipantsQuery.isLoading);
+  const refetchParticipants = useCallback(async () => {
+    const discovery = await refetchAccountParticipants();
+    if (discovery.error || !discovery.data) {
+      return { data: undefined, error: discovery.error ?? new Error("Account payment mode is unavailable"), isError: true };
+    }
+    if (discovery.data.accountingMode === "confirmed_account_v4") {
+      return { data: { data: { participants: accountParticipantsForPaymentChooser(discovery.data) } }, error: null, isError: false };
+    }
+    const legacy = await refetchLegacyParticipants();
+    return legacy;
+  }, [refetchLegacyParticipants, refetchAccountParticipants]);
+  const paymentMode: InteractivePaymentMode = accountParticipants?.paymentMode ?? legacyParticipantsQuery.data?.data?.paymentMode ?? league?.paymentMode ?? "weekly";
+  const hasAccountForecastChoices = !accountParticipants || (paymentMode === "upfront"
+    ? participants.some((participant) => participant.remainingMinor > 0)
+    : participants.some((participant) => participant.weeklyOptions.some((option) => option.amountMinor > 0)));
+  const explicitAmount = parseExplicitPaymentAmountMinor(explicitAmountText);
+  const explicitAmountMinor = explicitAmountText.trim() && explicitAmount.valid ? explicitAmount.amountMinor : null;
+  const explicitAmountError = !explicitAmount.valid
+    ? "Enter an amount with up to two decimal places."
+    : explicitAmount.amountMinor === 0 && explicitAmountText.trim()
+      ? "Enter an amount greater than zero."
+      : null;
   const rotatingCreditEligibilityQuery = useQuery<ApiResponse<RotatingCreditBalanceWire>>({
     queryKey: [`/api/financials/leagues/${leagueId ?? 0}/rotating-credit/1`],
-    enabled: !!bowlerId && !!leagueId,
+    enabled: !!bowlerId && !!leagueId && accountParticipantsQuery.data?.accountingMode === "legacy_roster_v3",
     retry: false,
   });
   const isRotatingPoolMember = rotatingCreditEligibilityQuery.data?.success === true && rotatingCreditEligibilityQuery.data.data?.eligibleForCredit === true;
-  const rotatingEligibilityPending = Boolean(bowlerId && leagueId) && (rotatingCreditEligibilityQuery.isLoading || rotatingCreditEligibilityQuery.isFetching || (!rotatingCreditEligibilityQuery.data && !rotatingCreditEligibilityQuery.error));
+  const rotatingEligibilityPending = accountParticipantsQuery.data?.accountingMode === "legacy_roster_v3"
+    && Boolean(bowlerId && leagueId)
+    && (rotatingCreditEligibilityQuery.isLoading || rotatingCreditEligibilityQuery.isFetching || (!rotatingCreditEligibilityQuery.data && !rotatingCreditEligibilityQuery.error));
   const standingAutopayStatusQuery = useQuery<ApiResponse<StandingAutopayConsentWire>>({
     queryKey: [`/api/financials/leagues/${leagueId ?? 0}/standing-autopay/1`],
     enabled: !!bowlerId && !!leagueId && paymentMode !== "upfront",
@@ -405,6 +472,15 @@ export default function MakePaymentPage() {
     if (combinedAutopayMode) {
       return Object.fromEntries(participants.map((participant) => [participant.bowlerId, participant.role === "self" && participant.eligible && participant.remainingMinor > 0]));
     }
+    if (accountParticipants) {
+      const defaults = defaultSelectedAccountRecipients(accountParticipants);
+      return Object.fromEntries(participants.map((participant) => [
+        participant.bowlerId,
+        participant.role === "self" && explicitAmountMinor !== null && explicitAmountMinor > 0
+          ? true
+          : selectedRecipients[participant.bowlerId] ?? defaults[participant.bowlerId] ?? false,
+      ]));
+    }
     const next = { ...selectedRecipients };
     for (const participant of participants) {
       const isSoloSelf = !hasPaymentPartner && participant.role === "self";
@@ -413,7 +489,7 @@ export default function MakePaymentPage() {
       }
     }
     return next;
-  }, [combinedAutopayMode, hasPaymentPartner, participants, selectedRecipients]);
+  }, [accountParticipants, combinedAutopayMode, explicitAmountMinor, hasPaymentPartner, participants, selectedRecipients]);
   const selectedRecipientRows = useMemo<PaymentRecipientRow[]>(() => participants.map((participant) => {
     const maximumWeeks = participant.weeklyOptions.at(-1)?.weeks ?? 0;
     const weeks = combinedAutopayMode && participant.catchUpWeeks && participant.catchUpWeeks > 0
@@ -429,42 +505,113 @@ export default function MakePaymentPage() {
       pastDueMinor: participant.pastDueMinor,
       weeks,
       maximumWeekCount: Math.max(1, maximumWeeks),
-      amountMinor: combinedAutopayMode && participant.role === "self" && ((participant.catchUpAmountMinor ?? participant.dueNowMinor) ?? 0) > 0
-        ? (participant.catchUpAmountMinor ?? participant.dueNowMinor ?? 0)
-        : participantAmountForSelection(participant, weeks, paymentMode),
+      amountMinor: accountParticipants && !combinedAutopayMode && participant.bowlerId === accountParticipants.payerBowlerId && explicitAmountMinor !== null && explicitAmountMinor > 0
+        ? explicitAmountMinor
+        : combinedAutopayMode && participant.role === "self" && ((participant.catchUpAmountMinor ?? participant.dueNowMinor) ?? 0) > 0
+          ? (participant.catchUpAmountMinor ?? participant.dueNowMinor ?? 0)
+          : participantAmountForSelection(participant, weeks, paymentMode),
       selected: effectiveSelectedRecipients[participant.bowlerId] === true,
-      eligible: participant.eligible && participant.remainingMinor > 0,
+      eligible: accountParticipants && participant.bowlerId === accountParticipants.payerBowlerId
+        ? true
+        : participant.eligible && participant.remainingMinor > 0,
       reason: participant.reason,
     };
-  }), [combinedAutopayMode, participants, fullBalanceOnly, paymentMode, recipientWeeks, effectiveSelectedRecipients]);
-  const recipientSelections = useMemo(() => selectionStale ? [] : buildInteractivePaymentRecipients(participants, effectiveSelectedRecipients, recipientWeeks, paymentMode, combinedAutopayMode ? selfParticipant?.bowlerId : undefined), [combinedAutopayMode, participants, effectiveSelectedRecipients, recipientWeeks, paymentMode, selectionStale, selfParticipant?.bowlerId]);
+  }), [accountParticipants, combinedAutopayMode, explicitAmountMinor, participants, fullBalanceOnly, paymentMode, recipientWeeks, effectiveSelectedRecipients]);
+  const legacyRecipientSelections = useMemo(() => selectionStale || accountParticipants
+    ? []
+    : buildInteractivePaymentRecipients(participants, effectiveSelectedRecipients, recipientWeeks, paymentMode, combinedAutopayMode ? selfParticipant?.bowlerId : undefined),
+  [accountParticipants, combinedAutopayMode, effectiveSelectedRecipients, participants, paymentMode, recipientWeeks, selectionStale, selfParticipant?.bowlerId]);
+  const accountRecipientSelections = useMemo<AccountPaymentRecipientSelectionV4[]>(() => {
+    if (selectionStale || !accountParticipants || (!combinedAutopayMode && explicitAmountError)) return [];
+    return buildAccountPaymentSelectionsV4({
+        response: accountParticipants,
+        selected: effectiveSelectedRecipients,
+        weeksByBowlerId: recipientWeeks,
+        explicitPayerAmountMinor: combinedAutopayMode ? null : explicitAmountMinor,
+        currentCollectionOnly: combinedAutopayMode,
+      });
+  }, [accountParticipants, combinedAutopayMode, effectiveSelectedRecipients, explicitAmountError, explicitAmountMinor, recipientWeeks, selectionStale]);
+  const recipientSelections: (InteractivePaymentRecipientSelection | AccountPaymentRecipientSelectionV4)[] = accountParticipants
+    ? accountRecipientSelections
+    : legacyRecipientSelections;
   const recipientSelectionKey = useMemo(() => JSON.stringify(recipientSelections), [recipientSelections]);
   const [isRecoveryBlocked, setIsRecoveryBlocked] = useState(false);
   const [paymentRefreshState, setPaymentRefreshState] = useState<"idle" | "refreshing" | "retry">("idle");
   const [paymentRefreshError, setPaymentRefreshError] = useState<string | null>(null);
-  const {
-    data: quoteResponse,
-    isLoading: loadingQuote,
-    isFetching: fetchingQuote,
-    error: quoteError,
-  } = useQuery<ApiResponse<InteractivePaymentQuote>>({
-    queryKey: ["/api/financials/leagues", leagueId ?? 0, "interactive-payment-quote/3", recipientSelectionKey, recipientSelections],
+  const legacyQuoteQuery = useQuery<ApiResponse<InteractivePaymentQuote>>({
+    queryKey: ["/api/financials/leagues", leagueId ?? 0, "interactive-payment-quote/3", recipientSelectionKey, legacyRecipientSelections],
     queryFn: async ({ signal }) => {
       const response = await csrfFetch(`/api/financials/leagues/${leagueId}/interactive-payment-quote/3`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recipients: recipientSelections }),
+        body: JSON.stringify({ recipients: legacyRecipientSelections }),
         signal,
       });
       const body = await response.json().catch(() => ({})) as ApiResponse<InteractivePaymentQuote>;
       if (!response.ok) throw makeApiError(body, response.status, "Payment quote is unavailable");
       return body;
     },
-    enabled: !!bowlerId && !!leagueId && participantsResponse?.data !== undefined && recipientSelections.length > 0 && paymentRefreshState === "idle" && !isRecoveryBlocked,
+    enabled: !!bowlerId && !!leagueId && participantsReady && !isAccountMode && legacyRecipientSelections.length > 0 && paymentRefreshState === "idle" && !isRecoveryBlocked,
     staleTime: 0,
     retry: false,
   });
-  const quote = quoteResponse?.data;
+  const accountQuoteQuery = useQuery<ApiResponse<AccountPaymentFundingQuoteResponseV4>>({
+    queryKey: ["/api/financials/leagues", leagueId ?? 0, "interactive-payment-quote/4", bowlerId ?? 0, recipientSelectionKey, accountRecipientSelections],
+    queryFn: async ({ signal }) => {
+      const response = await csrfFetch(`/api/financials/leagues/${leagueId}/interactive-payment-quote/4`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payerBowlerId: bowlerId, recipients: accountRecipientSelections }),
+        signal,
+      });
+      const body = await response.json().catch(() => ({})) as ApiResponse<AccountPaymentFundingQuoteResponseV4>;
+      if (!response.ok) throw makeApiError(body, response.status, "Payment quote is unavailable");
+      return body;
+    },
+    enabled: !!bowlerId && !!leagueId && isAccountMode && accountRecipientSelections.length > 0 && paymentRefreshState === "idle" && !isRecoveryBlocked,
+    staleTime: 0,
+    retry: false,
+  });
+  const quoteError = isAccountMode ? accountQuoteQuery.error : legacyQuoteQuery.error;
+  const loadingQuote = isAccountMode ? accountQuoteQuery.isLoading : legacyQuoteQuery.isLoading;
+  const fetchingQuote = isAccountMode ? accountQuoteQuery.isFetching : legacyQuoteQuery.isFetching;
+  const quote = useMemo<PaymentQuoteView | null>(() => {
+    if (isAccountMode) {
+      const data = accountQuoteQuery.data?.data;
+      return data ? {
+        fingerprint: data.quoteFingerprint,
+        amountMinor: data.providerChargeAmountMinor,
+        recipients: data.recipients.map((row) => ({
+          bowlerId: row.bowlerId,
+          name: row.name,
+          role: row.role,
+          subtotalMinor: row.providerChargeAmountMinor,
+          coveredWeeks: [],
+          allocations: [],
+        })),
+      } : null;
+    }
+    const data = legacyQuoteQuery.data?.data;
+    return data ? {
+      fingerprint: data.fingerprint,
+      amountMinor: data.amountMinor,
+      recipients: data.recipients.map((row) => ({
+        bowlerId: row.bowlerId,
+        name: row.name,
+        role: row.role,
+        subtotalMinor: row.subtotalMinor,
+        coveredWeeks: row.coveredWeeks,
+        allocations: row.allocations.map((allocation) => ({
+          obligationId: allocation.obligationId,
+          amountMinor: allocation.amountMinor,
+          occurrenceLocalDate: allocation.occurrenceLocalDate,
+          plannedOrdinal: allocation.plannedOrdinal,
+          label: allocation.label,
+          isPairedFinalWeek: allocation.isPairedFinalWeek,
+        })),
+      })),
+    } : null;
+  }, [accountQuoteQuery.data?.data, isAccountMode, legacyQuoteQuery.data?.data]);
   const paymentAmountMinor = quote?.amountMinor ?? 0;
   const breakdownRows = useMemo<PaymentBreakdownRow[]>(() => quote?.recipients?.map((row) => ({
     bowlerId: row.bowlerId,
@@ -472,14 +619,7 @@ export default function MakePaymentPage() {
     role: row.role,
     amountMinor: row.subtotalMinor,
     coveredWeeks: row.coveredWeeks,
-    allocations: row.allocations.map((allocation) => ({
-      obligationId: allocation.obligationId,
-      amountMinor: allocation.amountMinor,
-      occurrenceLocalDate: allocation.occurrenceLocalDate,
-      plannedOrdinal: allocation.plannedOrdinal,
-      label: allocation.label,
-      isPairedFinalWeek: allocation.isPairedFinalWeek,
-    })),
+    allocations: row.allocations,
   })) ?? [], [quote]);
   const hasPositivePaymentAmount = paymentAmountMinor > 0;
   const bowlerEmail = details?.bowler?.email ?? "";
@@ -568,7 +708,9 @@ export default function MakePaymentPage() {
     const nextSelected: Record<number, boolean> = {};
     const nextWeeks: Record<number, number> = {};
     for (const participant of nextParticipants) {
-      nextSelected[participant.bowlerId] = isInteractiveParticipantSelectedByDefault(participant);
+      nextSelected[participant.bowlerId] = accountParticipants
+        ? participant.role === "self"
+        : isInteractiveParticipantSelectedByDefault(participant);
       nextWeeks[participant.bowlerId] = initialInteractivePaymentWeeks(participant, paymentModeRef.current);
     }
     participantSnapshotRef.current = null;
@@ -576,7 +718,7 @@ export default function MakePaymentPage() {
     setSelectionStale(false);
     setSelectedRecipients(nextSelected);
     setRecipientWeeks(nextWeeks);
-  }, []);
+  }, [accountParticipants]);
 
   const refreshAfterPayment = useCallback(async (affectedIds: readonly number[], options: { recovery?: boolean } = {}): Promise<boolean> => {
     const refreshLeagueId = leagueId;
@@ -592,13 +734,16 @@ export default function MakePaymentPage() {
     if (!options.recovery) setSelectionStale(true);
     walletStartQuoteRef.current = null;
 
-    const quoteKey = ["/api/financials/leagues", leagueId ?? 0, "interactive-payment-quote/3"];
+    const quoteKeys = [
+      ["/api/financials/leagues", leagueId ?? 0, "interactive-payment-quote/3"],
+      ["/api/financials/leagues", leagueId ?? 0, "interactive-payment-quote/4"],
+    ];
     try {
       // Remove the old quote from the active cache before participants are
       // read. This prevents a structurally shared participant response from
       // making an old successful quote look current after payment.
-      await queryClient.cancelQueries({ queryKey: quoteKey });
-      queryClient.removeQueries({ queryKey: quoteKey });
+      await Promise.all(quoteKeys.map((queryKey) => queryClient.cancelQueries({ queryKey })));
+      quoteKeys.forEach((queryKey) => queryClient.removeQueries({ queryKey }));
       invalidatePaymentViews(leagueId ?? 0, bowlerId ?? 0, affectedIds, { skipInteractivePaymentQueries: true });
       await Promise.all(affectedIds.map((affectedId) => invalidatePaymentHistoryFinancials(queryClient, leagueId ?? 0, affectedId)));
 
@@ -650,7 +795,8 @@ export default function MakePaymentPage() {
           const bowlerId = Number(id);
           const previous = previousById.get(bowlerId);
           const current = currentById.get(bowlerId);
-          if (!previous || !current || !current.eligible || current.remainingMinor <= 0) return true;
+          const explicitPayerCanFund = accountParticipants?.payerBowlerId === bowlerId && bowlerId === Number(id);
+          if (!previous || !current || !current.eligible || (!explicitPayerCanFund && current.remainingMinor <= 0)) return true;
           const selectedWeeks = recipientWeeksRef.current[bowlerId] ?? 1;
           const maximumWeeks = current.weeklyOptions.at(-1)?.weeks ?? 0;
           return selectedWeeks > maximumWeeks
@@ -672,9 +818,12 @@ export default function MakePaymentPage() {
     setSelectedRecipients((current) => {
       const next: Record<number, boolean> = {};
       for (const participant of participants) {
-        const isPayable = participant.eligible && participant.remainingMinor > 0;
+        const canFundExplicitly = accountParticipants?.payerBowlerId === participant.bowlerId;
+        const isPayable = participant.eligible && (participant.remainingMinor > 0 || canFundExplicitly);
         const isSoloSelf = !hasPaymentPartner && participant.role === "self";
-        const defaultSelected = isInteractiveParticipantSelectedByDefault(participant);
+        const defaultSelected = accountParticipants
+          ? participant.role === "self"
+          : isInteractiveParticipantSelectedByDefault(participant);
         if (!isPayable) next[participant.bowlerId] = false;
         else if (isSoloSelf) next[participant.bowlerId] = defaultSelected;
         else next[participant.bowlerId] = current[participant.bowlerId] ?? defaultSelected;
@@ -694,7 +843,7 @@ export default function MakePaymentPage() {
       const nextKeys = Object.keys(next);
       return currentKeys.length === nextKeys.length && nextKeys.every((key) => current[Number(key)] === next[Number(key)]) ? current : next;
     });
-  }, [combinedAutopayMode, hasPaymentPartner, participants, paymentMode, selectionStale]);
+  }, [accountParticipants, combinedAutopayMode, hasPaymentPartner, participants, paymentMode, selectionStale]);
 
   useEffect(() => {
     if (previousLeagueIdRef.current === undefined || previousLeagueIdRef.current === leagueId) return;
@@ -704,6 +853,7 @@ export default function MakePaymentPage() {
     setSelectionStale(false);
     setSelectedRecipients({});
     setRecipientWeeks({});
+    setExplicitAmountText("");
     setPaymentRefreshState("idle");
     setPaymentRefreshError(null);
     recoveryRefreshKeyRef.current = null;
@@ -922,7 +1072,9 @@ export default function MakePaymentPage() {
     const nextSelected: Record<number, boolean> = {};
     const nextWeeks: Record<number, number> = {};
     for (const participant of participants) {
-      nextSelected[participant.bowlerId] = isInteractiveParticipantSelectedByDefault(participant);
+      nextSelected[participant.bowlerId] = accountParticipants
+        ? participant.role === "self"
+        : isInteractiveParticipantSelectedByDefault(participant);
       nextWeeks[participant.bowlerId] = initialInteractivePaymentWeeks(participant, paymentMode);
     }
     participantSnapshotRef.current = null;
@@ -931,12 +1083,12 @@ export default function MakePaymentPage() {
     setSelectionStale(false);
     setSelectedRecipients(nextSelected);
     setRecipientWeeks(nextWeeks);
-  }, [participants, paymentMode]);
+  }, [accountParticipants, participants, paymentMode]);
 
   const retryInteractivePaymentQuote = useCallback(() => {
     quoteRefreshKeyRef.current = null;
-    void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId ?? 0, "interactive-payment-quote/3"] });
-  }, [leagueId]);
+    void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId ?? 0, isAccountMode ? "interactive-payment-quote/4" : "interactive-payment-quote/3"] });
+  }, [isAccountMode, leagueId]);
 
   const retryPaymentRefresh = useCallback(() => {
     const retryGeneration = pageGenerationRef.current;
@@ -1088,18 +1240,46 @@ export default function MakePaymentPage() {
     const overrideEmail = !bowlerEmail && receiptEmail.trim() ? receiptEmail.trim() : undefined;
     try {
       setIsWalletProcessing(true);
-      const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-quote/3`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients: recipientSelections }) });
-      const quoteBody = await quoteResponse.json().catch(() => ({}));
-      if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment allocation is unavailable.");
-      const quotedAmountMinor = quoteBody.data.amountMinor;
+      let quoteFingerprint: string;
+      let quotedAmountMinor: number;
+      if (accountParticipants) {
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-quote/4`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ payerBowlerId: accountParticipants.payerBowlerId, recipients: accountRecipientSelections }),
+        });
+        const quoteBody = await quoteResponse.json().catch(() => ({}));
+        if (!quoteResponse.ok) throw makeApiError(quoteBody, quoteResponse.status, "Account funding quote is unavailable.");
+        const accountQuote = accountPaymentFundingQuoteResponseV4Schema.parse(quoteBody.data);
+        quoteFingerprint = accountQuote.quoteFingerprint;
+        quotedAmountMinor = accountQuote.providerChargeAmountMinor;
+      } else {
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-quote/3`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients: legacyRecipientSelections }) });
+        const quoteBody = await quoteResponse.json().catch(() => ({}));
+        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment allocation is unavailable.");
+        quoteFingerprint = quoteBody.data.fingerprint;
+        quotedAmountMinor = quoteBody.data.amountMinor;
+      }
       if (!Number.isSafeInteger(quotedAmountMinor) || quotedAmountMinor <= 0) throw new Error("Payment allocation is unavailable.");
-      if (submittedSelectionKey !== recipientSelectionKeyRef.current || !isInteractivePaymentQuoteCurrent(walletStartQuote, quoteBody.data, submittedSelectionKey)) throw new Error("Payment quote changed. Review the recipients and try again.");
+      if (submittedSelectionKey !== recipientSelectionKeyRef.current
+        || walletStartQuote.fingerprint !== quoteFingerprint
+        || walletStartQuote.amountMinor !== quotedAmountMinor) throw new Error("Payment quote changed. Review the recipients and try again.");
       if (!paymentIntentScope) throw new Error("Payment identity is unavailable. Refresh and try again.");
       const scope = paymentIntentScope;
       const requestKey = walletRequestKeyRef.current;
       if (!requestKey) throw new Error("Payment identity is unavailable. Retry payment recovery before trying again.");
       walletRequestKeyRef.current = requestKey;
-      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-charge/3`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ recipients: recipientSelections, sourceId: token, sourceKind: "wallet", buyerEmail: (overrideEmail ?? bowlerEmail) || null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
+      const response = await paymentRequestWithRecovery(requestKey, () => accountParticipants
+        ? csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-charge/4`, {
+          method: "POST",
+          headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" },
+          body: JSON.stringify({ payerBowlerId: accountParticipants.payerBowlerId, recipients: accountRecipientSelections, sourceId: token, sourceKind: "wallet", buyerEmail: (overrideEmail ?? bowlerEmail) || null, storeCard: false, idempotencyKey: requestKey, quoteFingerprint }),
+        })
+        : csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-charge/3`, {
+          method: "POST",
+          headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" },
+          body: JSON.stringify({ recipients: legacyRecipientSelections, sourceId: token, sourceKind: "wallet", buyerEmail: (overrideEmail ?? bowlerEmail) || null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteFingerprint }),
+        }), league.id);
       const body = await response.json().catch(() => ({}));
       const status = body.data?.status ?? body.status;
       clearWalletRequestKeyForTerminalStatus(status, walletRequestKeyRef);
@@ -1139,7 +1319,7 @@ export default function MakePaymentPage() {
       toast(isProviderNotConfiguredError(error) ? providerNotConfiguredToast({ navigate, locationId: league.locationId }) : { title: "Payment Failed", description: sanitizePaymentErrorMessage(error, "Unable to process payment."), variant: "destructive" });
     }
     finally { setIsWalletProcessing(false); }
-  }, [bowlerId, leagueId, league, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, paymentIntentScope, resetWalletRecovery, recipientSelections, refreshAfterPayment, paymentRefreshState, isRecoveryBlocked, completeSuccessfulPaymentUi, combinedAutopayMode]);
+  }, [accountParticipants, accountRecipientSelections, legacyRecipientSelections, bowlerId, leagueId, league, paymentAmountMinor, bowlerEmail, receiptEmail, toast, navigate, paymentIntentScope, resetWalletRecovery, recipientSelections, refreshAfterPayment, paymentRefreshState, isRecoveryBlocked, completeSuccessfulPaymentUi, combinedAutopayMode]);
   const beginWalletPayment = useCallback(() => {
     const displayedQuote = displayedQuoteRef.current;
     if (combinedAutopayMode || !walletRecoveryReady || paymentRefreshState !== "idle" || isRecoveryBlocked || selectionStale || recipientSelections.length === 0 || !displayedQuote || displayedQuote.selectionKey !== recipientSelectionKeyRef.current) {
@@ -1159,6 +1339,7 @@ export default function MakePaymentPage() {
   useEffect(() => () => cleanupWallet(), [cleanupWallet]);
 
   const submitOneTimePayment = async () => {
+    if (!combinedAutopayMode && explicitAmountError) { toast({ title: "Payment unavailable", description: explicitAmountError, variant: "destructive" }); return; }
     if (!bowlerId || !leagueId || !league || recipientSelections.length === 0 || quoteError || selectionStale || paymentRefreshState !== "idle" || isRecoveryBlocked) { toast({ title: "Payment unavailable", description: "Select at least one payable recipient and wait for an exact payment quote.", variant: "destructive" }); return; }
     if (isWalletProcessing || wallet.isProcessing) return;
     const paymentGeneration = pageGenerationRef.current;
@@ -1173,7 +1354,9 @@ export default function MakePaymentPage() {
       toast({ title: "Payment unavailable", description: "Payment quote changed. Review the recipients and try again.", variant: "destructive" });
       return;
     }
-    const completedCoverage = formatCompletedCoverage([...new Set(breakdownRows.flatMap((row) => row.coveredWeeks))]);
+    const completedCoverage = isAccountMode
+      ? "account credit"
+      : formatCompletedCoverage([...new Set(breakdownRows.flatMap((row) => row.coveredWeeks))]);
     const completedPaymentSnapshot: CompletedPayment = {
       amountMinor: paymentAmountMinor,
       isUpfront: fullBalanceOnly,
@@ -1184,7 +1367,7 @@ export default function MakePaymentPage() {
         name: row.name,
         role: row.role,
         amountMinor: row.amountMinor,
-        coverage: formatCompletedCoverage(row.coveredWeeks),
+        coverage: isAccountMode ? "account credit" : formatCompletedCoverage(row.coveredWeeks),
       })),
     };
     let combinedMarkerForRecovery: CombinedAutopayConsentRecovery | null = null;
@@ -1257,12 +1440,32 @@ export default function MakePaymentPage() {
       if (cardMode === "new" && (!card || !isInitialized)) throw new Error("Card details required. Enter your card details before paying.");
       if (cardMode === "saved" && !selectedSavedCardId) throw new Error("Card required. Select a saved card before paying.");
       const requestKey = preparedIntent.requestKey;
-      const latestQuoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-quote/3`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients: recipientSelections }) });
-      const quoteBody = await latestQuoteResponse.json().catch(() => ({})) as ApiResponse<InteractivePaymentQuote>;
-      if (!latestQuoteResponse.ok || !quoteBody?.data?.fingerprint || !Number.isSafeInteger(quoteBody.data.amountMinor) || quoteBody.data.amountMinor <= 0) throw makeApiError(quoteBody, latestQuoteResponse.status, "Exact payment obligations are unavailable.");
+      let quoteFingerprint: string;
+      let quotedAmountMinor: number;
+      if (accountParticipants) {
+        const latestQuoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-quote/4`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ payerBowlerId: accountParticipants.payerBowlerId, recipients: accountRecipientSelections }),
+        });
+        const quoteBody = await latestQuoteResponse.json().catch(() => ({}));
+        if (!latestQuoteResponse.ok) throw makeApiError(quoteBody, latestQuoteResponse.status, "Account funding quote is unavailable.");
+        const accountQuote = accountPaymentFundingQuoteResponseV4Schema.parse(quoteBody.data);
+        quoteFingerprint = accountQuote.quoteFingerprint;
+        quotedAmountMinor = accountQuote.providerChargeAmountMinor;
+      } else {
+        const latestQuoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-quote/3`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipients: legacyRecipientSelections }) });
+        const quoteBody = await latestQuoteResponse.json().catch(() => ({})) as ApiResponse<InteractivePaymentQuote>;
+        if (!latestQuoteResponse.ok || !quoteBody?.data?.fingerprint) throw makeApiError(quoteBody, latestQuoteResponse.status, "Exact payment obligations are unavailable.");
+        quoteFingerprint = quoteBody.data.fingerprint;
+        quotedAmountMinor = quoteBody.data.amountMinor;
+      }
+      if (!Number.isSafeInteger(quotedAmountMinor) || quotedAmountMinor <= 0) throw new Error("The payment quote must be greater than zero.");
       const combinedTargetMinor = selfParticipant?.catchUpAmountMinor ?? selfParticipant?.dueNowMinor ?? 0;
-      if (combinedEnrollment && combinedTargetMinor > 0 && quoteBody.data.amountMinor !== combinedTargetMinor) throw new Error("The amount needed to get up to date changed. Review the payment before continuing.");
-      if (submittedSelectionKey !== recipientSelectionKeyRef.current || !isInteractivePaymentQuoteCurrent(acceptedQuote, quoteBody.data, submittedSelectionKey)) {
+      if (combinedEnrollment && combinedTargetMinor > 0 && quotedAmountMinor !== combinedTargetMinor) throw new Error("The amount needed to get up to date changed. Review the payment before continuing.");
+      if (submittedSelectionKey !== recipientSelectionKeyRef.current
+        || acceptedQuote.fingerprint !== quoteFingerprint
+        || acceptedQuote.amountMinor !== quotedAmountMinor) {
         throw new Error("Payment quote changed. Review the recipients and try again.");
       }
       const cardToTokenize = card;
@@ -1282,7 +1485,17 @@ export default function MakePaymentPage() {
         combinedMarkerForRecovery = combinedMarker;
         persistCombinedAutopayConsentRecovery(combinedMarker);
       }
-      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-charge/3`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ recipients: recipientSelections, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: bowlerEmail || receiptEmail.trim() || null, storeCard: combinedEnrollment ? cardMode === "new" : (cardMode === "new" ? storeCard : false), idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), league.id);
+      const response = await paymentRequestWithRecovery(requestKey, () => accountParticipants
+        ? csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-charge/4`, {
+          method: "POST",
+          headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" },
+          body: JSON.stringify({ payerBowlerId: accountParticipants.payerBowlerId, recipients: accountRecipientSelections, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: bowlerEmail || receiptEmail.trim() || null, storeCard: combinedEnrollment ? cardMode === "new" : (cardMode === "new" ? storeCard : false), idempotencyKey: requestKey, quoteFingerprint }),
+        })
+        : csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-charge/3`, {
+          method: "POST",
+          headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" },
+          body: JSON.stringify({ recipients: legacyRecipientSelections, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: bowlerEmail || receiptEmail.trim() || null, storeCard: combinedEnrollment ? cardMode === "new" : (cardMode === "new" ? storeCard : false), idempotencyKey: requestKey, requestFingerprint: quoteFingerprint }),
+        }), league.id);
       const body = await response.json().catch(() => ({}));
       const chargeStatus = body.data?.status ?? body.status;
       if (combinedEnrollment && chargeStatus !== "succeeded") {
@@ -1338,13 +1551,20 @@ export default function MakePaymentPage() {
         };
         combinedConsentCommandKeyRef.current = recovery.commandKey;
         persistCombinedAutopayConsentRecovery(recovery);
-        try {
-          if (!(await postCombinedAutopayConsent(recovery.operationId as string, recovery.commandKey, false))) throw new Error("Automatic-payment consent is still awaiting confirmation.");
-          setCombinedAutopayConsentRecovery(null);
-          clearCombinedAutopayConsentRecovery(recovery.scope);
-        } catch (error) {
-          combinedConsentFailure = error instanceof Error ? error : new Error("Automatic-payment consent needs confirmation.");
+        const selfFundingPresent = !accountParticipants || (Array.isArray(body.data?.recipientFunding)
+          && body.data.recipientFunding.some((portion: { bowlerId?: unknown; amountMinor?: unknown }) => portion.bowlerId === accountParticipants.payerBowlerId && typeof portion.amountMinor === "number" && portion.amountMinor > 0));
+        if (!selfFundingPresent) {
+          combinedConsentFailure = new Error("Automatic-payment setup needs a successful payment portion for your account.");
           setCombinedAutopayConsentRecovery(recovery);
+        } else {
+          try {
+            if (!(await postCombinedAutopayConsent(recovery.operationId as string, recovery.commandKey, false))) throw new Error("Automatic-payment consent is still awaiting confirmation.");
+            setCombinedAutopayConsentRecovery(null);
+            clearCombinedAutopayConsentRecovery(recovery.scope);
+          } catch (error) {
+            combinedConsentFailure = error instanceof Error ? error : new Error("Automatic-payment consent needs confirmation.");
+            setCombinedAutopayConsentRecovery(recovery);
+          }
         }
       }
       completeSuccessfulPaymentUi({
@@ -1404,12 +1624,13 @@ export default function MakePaymentPage() {
   if (currentUser?.data && !currentUser.data.bowlerId) return <PageLoadingState message="A bowler profile is required to make a payment" />;
   if (detailsError) return <MakePaymentReadError message="Payment profile data could not be loaded. Try again." onRetry={() => { void refetchDetails(); }} leagueId={selectedLeagueId ?? undefined} />;
   if (participantsError && paymentRefreshState !== "retry") return <MakePaymentReadError message="Payment recipient data could not be loaded. Try again." onRetry={() => { void refetchParticipants(); }} leagueId={selectedLeagueId ?? undefined} />;
-  if (rotatingCreditEligibilityQuery.error || rotatingCreditEligibilityQuery.data?.success === false) return <MakePaymentReadError message="Rotating payment eligibility could not be confirmed. Try again." onRetry={() => { void rotatingCreditEligibilityQuery.refetch(); }} leagueId={selectedLeagueId ?? undefined} />;
+  if (accountParticipantsQuery.data?.accountingMode === "legacy_roster_v3" && (rotatingCreditEligibilityQuery.error || rotatingCreditEligibilityQuery.data?.success === false)) return <MakePaymentReadError message="Rotating payment eligibility could not be confirmed. Try again." onRetry={() => { void rotatingCreditEligibilityQuery.refetch(); }} leagueId={selectedLeagueId ?? undefined} />;
   if (savedCardReadState === "unavailable") return <MakePaymentReadError message="Saved payment methods could not be loaded. Try again." onRetry={() => { void refetchSavedCards(); }} leagueId={selectedLeagueId ?? undefined} />;
   if (!league || leagueId === undefined || !bowlerId) return <MakePaymentReadError message="Payment information is unavailable. Try again or view payment history." onRetry={() => { void refetchDetails(); void refetchParticipants(); }} leagueId={selectedLeagueId ?? undefined} />;
 
-  const hasEligibleParticipant = participants.some((participant) => participant.eligible && participant.remainingMinor > 0);
-  const isNoBalanceAvailable = selfParticipant !== undefined && !hasEligibleParticipant && selfParticipant.remainingMinor <= 0;
+  const hasEligibleParticipant = participants.some((participant) => participant.eligible
+    && (participant.remainingMinor > 0 || (accountParticipants?.payerBowlerId === participant.bowlerId)));
+  const isNoBalanceAvailable = !isAccountMode && selfParticipant !== undefined && !hasEligibleParticipant && selfParticipant.remainingMinor <= 0;
   const combinedConsentRecoveryProps = combinedAutopayConsentRecovery === null ? null : {
     message: combinedAutopayConsentRecovery.message,
     onRetry: () => void retryCombinedAutopayConsent(),
@@ -1424,7 +1645,7 @@ export default function MakePaymentPage() {
   const partnerAutopayNote = hasPaymentPartner && paymentPartner
     ? `Automatic payments apply to ${details?.bowler?.name ?? "you"} only. ${paymentPartner.name} is not included.`
     : undefined;
-  const showPaymentContext = paymentMode !== "upfront" && !isRotatingPoolMember;
+  const showPaymentContext = paymentMode !== "upfront" && (isAccountMode || !isRotatingPoolMember);
   const activeBowlerLeague = bowlerLeagues.find((membership) => membership.leagueId === leagueId && membership.active);
   const bowlerTeam = details?.teams?.find((team) => team.id === activeBowlerLeague?.teamId);
   return <BowlerLayout bowlerName={details?.bowler?.name ?? ""} leagueName={league.name} currentLeagueId={leagueId} onOpenLeagueSheet={activeSwitcherLeagues.length > 0 ? openLeagueSheet : undefined} teamName={bowlerTeam?.name} leagueStartTime={league.competitionStartTime}>
@@ -1443,7 +1664,7 @@ export default function MakePaymentPage() {
         </section>}
         <div className="familiar-autopay-section"><ErrorBoundary level="section"><StandingAutopayCard league={league} bowlerId={bowlerId} savedCards={savedCards} bowlerHasEmail={!!bowlerEmail} card={card} isInitialized={isInitialized && cardEditorMode === "autopay"} cardEditorMode={cardEditorMode} initializeCard={initializeCard} cleanupCard={cleanupCard} onCardEditorModeChange={selectEditorMode} dueNowMinor={selfParticipant?.catchUpAmountMinor ?? selfParticipant?.dueNowMinor} dueNowDataAvailable={selfParticipant !== undefined && ("catchUpAmountMinor" in selfParticipant || "dueNowMinor" in selfParticipant)} combinedCheckoutActive={combinedAutopayMode || !!combinedAutopayConsentRecovery} onPayDueNow={beginCombinedAutopay} partnerAutopayNote={partnerAutopayNote} /></ErrorBoundary></div>
       </div>}
-      {!isRotatingPoolMember && <div className="familiar-one-time-section"><ErrorBoundary level="section">
+      {(!isRotatingPoolMember || isAccountMode) && <div className="familiar-one-time-section"><ErrorBoundary level="section">
         {isRecoveryBlocked ? <div role="status" className="rounded-lg border border-warning-500/50 bg-warning-500/5 p-6 text-center"><h2 className="text-lg font-semibold">Payment confirmation in progress</h2><p className="mt-1 text-sm text-muted-foreground">Your previous payment is still being confirmed. Check its status before trying another card.</p><button type="button" className="mt-3 text-sm underline disabled:opacity-50" onClick={retryRecoveryStatus} disabled={paymentRefreshState === "refreshing"}>Check payment status again</button></div> : combinedAutopayConsentRecovery ? <div role="alert" className="flex flex-col gap-3 rounded-lg border border-warning-300 bg-warning-50 p-6 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm text-warning-900">{combinedAutopayConsentRecovery.message}</p><Button type="button" variant="outline" onClick={() => void retryCombinedAutopayConsent()} disabled={isRetryingCombinedConsent}>{isRetryingCombinedConsent ? "Checking status…" : "Retry automatic payments"}</Button></div> : isNoBalanceAvailable && !completedCardPayment ? <div role="status" className="rounded-lg border bg-muted/30 p-6 text-center"><h2 className="text-lg font-semibold">No one-time balance available</h2><p className="mt-1 text-sm text-muted-foreground">There is no remaining one-time balance.</p></div> : <BowlerOneTimePaymentCard
           key={oneTimeCardEditorKey}
           paymentAmountMinor={paymentAmountMinor}
@@ -1493,6 +1714,11 @@ export default function MakePaymentPage() {
           onResetRecipientSelection={resetRecipientSelection}
           dueNowOnly={combinedAutopayMode}
           rotatingMode={isRotatingPoolMember}
+          accountFunding={isAccountMode}
+          hasAccountForecastChoices={isAccountMode ? hasAccountForecastChoices : undefined}
+          explicitAmountValue={isAccountMode ? explicitAmountText : undefined}
+          explicitAmountError={isAccountMode && !combinedAutopayMode ? explicitAmountError : null}
+          onExplicitAmountChange={isAccountMode ? setExplicitAmountText : undefined}
           onCancelDueNow={combinedAutopayConsentRecovery ? undefined : cancelCombinedAutopay}
           combinedConsentRecovery={combinedConsentRecoveryProps}
         />}

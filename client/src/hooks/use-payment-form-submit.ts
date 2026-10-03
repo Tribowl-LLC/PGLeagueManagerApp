@@ -8,6 +8,8 @@ import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/paymen
 import { beginPaymentIntent, clearPaymentIntent, interactivePaymentIntentScope, paymentRequestHeaders, paymentRequestWithRecovery, assertRosterPaymentSucceeded, prepareRosterPaymentIntent } from "@/lib/payment-request-identity";
 import { tokenizeCard } from "@/lib/square";
 import { logger } from "@/lib/logger";
+import { accountPaymentParticipantsQueryKey, loadAccountPaymentParticipantsV4 } from "@/lib/account-payment-v4";
+import { accountPaymentFundingQuoteResponseV4Schema } from "@shared/account-payment-v4-contract";
 import type { InsertPaymentInput, InsertPayment } from "@shared/schema";
 import type { SquareCard } from "@/hooks/use-square-payment";
 
@@ -83,15 +85,53 @@ export function usePaymentFormSubmit({
         }
         requestKey = preparedIntent.requestKey;
       }
-      const quoteResponse = await csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-quote/2`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amountMinor: data.amount, payerBowlerId: data.bowlerId }),
-      });
-      const quoteBody = await quoteResponse.json().catch(() => ({}));
-      if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment quote is unavailable");
+      let legacyRequestFingerprint: string | null = null;
+      let accountQuoteFingerprint: string | null = null;
+      if (isCardPayment) {
+        const participants = await queryClient.fetchQuery({
+          queryKey: accountPaymentParticipantsQueryKey(data.leagueId, data.bowlerId),
+          queryFn: ({ signal }) => loadAccountPaymentParticipantsV4(data.leagueId, data.bowlerId, signal),
+          staleTime: 30_000,
+        });
+        if (participants.accountingMode === "confirmed_account_v4") {
+          const recipients = [{ bowlerId: data.bowlerId, selection: { kind: "explicit_amount" as const, amountMinor: data.amount } }];
+          const quoteResponse = await csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-payment-quote/4`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ payerBowlerId: data.bowlerId, recipients }),
+          });
+          const quoteBody = await quoteResponse.json().catch(() => ({}));
+          if (!quoteResponse.ok) throw makeApiError(quoteBody, quoteResponse.status, "Payment quote is unavailable");
+          const quote = accountPaymentFundingQuoteResponseV4Schema.parse(quoteBody.data);
+          if (quote.providerChargeAmountMinor !== data.amount || quote.recipients.length !== 1 || quote.recipients[0]?.bowlerId !== data.bowlerId) {
+            throw new Error("The exact account funding amount could not be confirmed. Refresh and try again.");
+          }
+          accountQuoteFingerprint = quote.quoteFingerprint;
+        }
+      }
+      if (!accountQuoteFingerprint) {
+        const isManualPayment = data.type === "cash" || data.type === "check";
+        const quoteResponse = await csrfFetch(isManualPayment
+          ? `/api/financials/leagues/${data.leagueId}/canonical/manual-record/quote/1`
+          : `/api/financials/leagues/${data.leagueId}/interactive-obligation-quote/2`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(isManualPayment
+            ? {
+              amountMinor: data.amount,
+              payerBowlerId: data.bowlerId,
+              type: data.type,
+              ...(data.type === "check" && data.checkNumber ? { checkNumber: data.checkNumber } : {}),
+              notes: data.notes ?? null,
+            }
+            : { amountMinor: data.amount, payerBowlerId: data.bowlerId }),
+        });
+        const quoteBody = await quoteResponse.json().catch(() => ({}));
+        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment quote is unavailable");
+        legacyRequestFingerprint = quoteBody.data.fingerprint;
+      }
       if (!isCardPayment) {
-        paymentScope = `admin:${data.leagueId}:${data.bowlerId}:${data.amount}:${quoteBody.data.fingerprint}:${data.type}:${cardMode}`;
+        paymentScope = `admin:${data.leagueId}:${data.bowlerId}:${data.amount}:${legacyRequestFingerprint}:${data.type}:${cardMode}`;
         requestKey = beginPaymentIntent(paymentScope);
       }
 
@@ -99,7 +139,7 @@ export function usePaymentFormSubmit({
         const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${data.leagueId}/canonical/manual-record/1`, {
           method: "POST",
           headers: paymentRequestHeaders(requestKey),
-          body: JSON.stringify({ amountMinor: data.amount, payerBowlerId: data.bowlerId, type: data.type, checkNumber: data.checkNumber, notes: data.notes ?? null, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
+          body: JSON.stringify({ amountMinor: data.amount, payerBowlerId: data.bowlerId, type: data.type, checkNumber: data.checkNumber, notes: data.notes ?? null, idempotencyKey: requestKey, requestFingerprint: legacyRequestFingerprint }),
         }));
         const body = await response.json();
         if (!response.ok) throw makeApiError(body, response.status, "Failed to record payment");
@@ -109,11 +149,17 @@ export function usePaymentFormSubmit({
         const sourceId = cardMode === "saved" ? selectedSavedCardId : card ? await tokenizeCard(card) : "";
         if (!sourceId) throw new Error("Credit card form is not ready.");
         const storeCard = resolveStoreCardRequest(allowStoreCard, data.storeCard);
-        const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-charge/2`, {
-          method: "POST",
-          headers: paymentRequestHeaders(requestKey),
-          body: JSON.stringify({ amountMinor: data.amount, payerBowlerId: quoteBody.data.payerBowlerId ?? data.bowlerId, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: buyerEmail?.trim() || null, storeCard, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }),
-        }), data.leagueId);
+        const response = await paymentRequestWithRecovery(requestKey, () => accountQuoteFingerprint
+          ? csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-payment-charge/4`, {
+            method: "POST",
+            headers: paymentRequestHeaders(requestKey),
+            body: JSON.stringify({ payerBowlerId: data.bowlerId, recipients: [{ bowlerId: data.bowlerId, selection: { kind: "explicit_amount", amountMinor: data.amount } }], sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: buyerEmail?.trim() || null, storeCard, idempotencyKey: requestKey, quoteFingerprint: accountQuoteFingerprint }),
+          })
+          : csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-charge/2`, {
+            method: "POST",
+            headers: paymentRequestHeaders(requestKey),
+            body: JSON.stringify({ amountMinor: data.amount, payerBowlerId: data.bowlerId, sourceId, sourceKind: cardMode === "saved" ? "saved_card" : "new_card", buyerEmail: buyerEmail?.trim() || null, storeCard, idempotencyKey: requestKey, requestFingerprint: legacyRequestFingerprint }),
+          }), data.leagueId);
         const body = await response.json();
         if (!response.ok) throw makeApiError(body, response.status, "Failed to process payment");
         assertRosterPaymentSucceeded(body.data?.status);
@@ -122,6 +168,8 @@ export function usePaymentFormSubmit({
       }
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
+      queryClient.invalidateQueries({ queryKey: accountPaymentParticipantsQueryKey(data.leagueId, data.bowlerId).slice(0, 3) });
+      queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", data.leagueId] });
       if (allowStoreCard && data.storeCard === true && cardMode === "new") {
         queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${data.bowlerId}`] });
       }

@@ -11,8 +11,10 @@ import { useToast } from "@/hooks/use-toast";
 import { fingerprintCanonicalRequest } from "@/lib/rotating-payment-fingerprint";
 import { nearestCanonicalOccurrence } from "@/lib/rotating-payment-date";
 import { apiRequest } from "@/lib/queryClient";
+import { Link } from "wouter";
 import type { TeamBowlerEntry } from "@/lib/bowler-league-utils";
 import { formatCurrency } from "@/lib/utils";
+import { areFinancialRowsMoneyCovered, projectedOutstandingMinor } from "@/lib/financial-utils";
 import type { BowlerWithAccount, League } from "@shared/schema";
 import {
   serializeCanonicalRotatingRosterFingerprint,
@@ -60,6 +62,7 @@ interface RotatingPaymentsPanelProps {
   league: League | undefined;
   teamBowlers: TeamBowlerEntry<BowlerWithAccount>[];
   canManage: boolean;
+  isOrganizationAdmin?: boolean;
   roster: RosterPaymentResponsibilityReadContractV2 | undefined;
   rosterLoading: boolean;
   rosterError: unknown;
@@ -161,6 +164,7 @@ export function RotatingPaymentsPanel({
   league,
   teamBowlers,
   canManage,
+  isOrganizationAdmin = false,
   roster,
   rosterLoading,
   rosterError,
@@ -261,7 +265,7 @@ export function RotatingPaymentsPanel({
         reviewRequired: false,
         rows: [],
       };
-      current.outstandingMinor += row.outstandingMinor;
+      current.outstandingMinor += projectedOutstandingMinor(row);
       current.reviewRequired ||= row.reviewRequired;
       current.rows.push(row);
       byOccurrence.set(row.occurrenceId, current);
@@ -368,7 +372,18 @@ export function RotatingPaymentsPanel({
       setCorrectionReasons({});
       toast({ title: "Lineup confirmation saved", description: "Payment status updates separately from who is confirmed to bowl." });
     },
-    onError: (error: Error) => toast({ title: "Lineup confirmation could not be saved", description: error.message, variant: "destructive" }),
+    onError: (error: Error) => {
+      const managePaymentsRequired = "code" in error && error.code === "MANAGE_PAYMENTS_REQUIRED";
+      toast({
+        title: "Lineup confirmation could not be saved",
+        description: managePaymentsRequired
+          ? isOrganizationAdmin
+            ? <>{error.message} <Link href="/manage-payments">Open Manage Payments</Link>.</>
+            : "This weekly assignment is now managed by an organization administrator. Ask an administrator to review it in Manage Payments."
+          : error.message,
+        variant: "destructive",
+      });
+    },
   });
 
   const toggleRotation = (enabled: boolean) => {
@@ -862,8 +877,9 @@ export function RotatingPaymentsPanel({
                     }));
                     const bowlerId = value ? Number(value) : null;
                     const memberRows = bowlerId === null ? [] : teamRows.filter((row) => row.occurrenceId === selectedOccurrence.id && row.actualBowlerId === bowlerId);
-                    const memberOutstanding = memberRows.reduce((total, row) => total + row.outstandingMinor, 0);
+                    const memberOutstanding = memberRows.reduce((total, row) => total + projectedOutstandingMinor(row), 0);
                     const memberNeedsReview = memberRows.some((row) => row.reviewRequired);
+                    const memberMoneyCovered = areFinancialRowsMoneyCovered(memberRows);
                     const memberPaymentStatus = bowlerId === null
                       ? "No bowler confirmed"
                       : memberRows.length === 0
@@ -872,7 +888,7 @@ export function RotatingPaymentsPanel({
                           ? "Review required"
                           : memberOutstanding > 0
                             ? `Unpaid · ${money(memberOutstanding)} remaining`
-                            : memberRows.some((row) => row.state === "settled")
+                          : (balanceQuery.data?.data?.accountProjection ? memberMoneyCovered : memberRows.some((row) => row.state === "settled"))
                               ? "Paid/credited"
                               : "No current collectible balance";
                     return <tr key={slot.slotIndex} className="border-b last:border-b-0">
@@ -938,7 +954,13 @@ export function RotatingPaymentsPanel({
               : balanceQuery.error || balanceQuery.data?.success === false ? <div role="alert" className="flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between"><span>{apiMessage(balanceQuery.error, balanceQuery.data?.error?.message ?? "Team date balances could not be loaded.")}</span><Button variant="outline" size="sm" onClick={() => void balanceQuery.refetch()}>Retry</Button></div>
               : remainderByOccurrence.size === 0 ? <p className="text-sm text-muted-foreground">No team-owned rotating obligations are recorded for this team yet.</p>
                 : <div className="overflow-x-auto rounded-md border"><table className="w-full min-w-130 text-left text-sm"><thead className="border-b bg-muted/50"><tr><th className="px-3 py-2 font-medium">League date</th><th className="px-3 py-2 font-medium">Balance status</th><th className="px-3 py-2 text-right font-medium">Remaining</th></tr></thead><tbody>
-                  {[...remainderByOccurrence.entries()].sort((left, right) => left[1].localDate.localeCompare(right[1].localDate)).map(([occurrenceId, balance]) => <tr key={occurrenceId} className="border-b last:border-b-0"><th scope="row" className="px-3 py-3 font-medium">{balance.localDate}</th><td className="px-3 py-3"><Badge variant={balance.reviewRequired ? "destructive" : balance.outstandingMinor > 0 ? "secondary" : "default"}>{balance.reviewRequired ? "Review required" : balance.outstandingMinor > 0 ? "Unpaid" : balance.rows.some((row) => row.state === "settled") ? "Paid/credited" : "No current collectible balance"}</Badge></td><td className="px-3 py-3 text-right tabular-nums">{money(balance.outstandingMinor)}</td></tr>)}
+                  {[...remainderByOccurrence.entries()].sort((left, right) => left[1].localDate.localeCompare(right[1].localDate)).map(([occurrenceId, balance]) => {
+                    const moneyCovered = areFinancialRowsMoneyCovered(balance.rows);
+                    const isPaid = balanceQuery.data?.data?.accountProjection
+                      ? moneyCovered
+                      : balance.rows.some((row) => row.state === "settled");
+                    return <tr key={occurrenceId} className="border-b last:border-b-0"><th scope="row" className="px-3 py-3 font-medium">{balance.localDate}</th><td className="px-3 py-3"><Badge variant={balance.reviewRequired ? "destructive" : balance.outstandingMinor > 0 ? "secondary" : "default"}>{balance.reviewRequired ? "Review required" : balance.outstandingMinor > 0 ? "Unpaid" : isPaid ? "Paid/credited" : "No current collectible balance"}</Badge></td><td className="px-3 py-3 text-right tabular-nums">{money(balance.outstandingMinor)}</td></tr>;
+                  })}
                 </tbody></table></div>}
         </div></CardContent>
       </Card>

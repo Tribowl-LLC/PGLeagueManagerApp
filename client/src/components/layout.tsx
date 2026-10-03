@@ -91,6 +91,12 @@ const navItems: NavItem[] = [
   },
   {
     icon: ClipboardPlus,
+    label: "Manage Payments",
+    href: "/manage-payments",
+    orgAdminOnly: true,
+  },
+  {
+    icon: ClipboardPlus,
     label: "Reports",
     href: "/reports",
     orgAdminOnly: true,
@@ -192,6 +198,7 @@ const pageLabels: Record<string, string> = {
   "/leagues": "Leagues",
   "/bowlers": "Bowlers",
   "/payments": "Payments",
+  "/manage-payments": "Manage Payments",
   "/reports": "Reports",
   "/integrations": "Integrations",
   "/messaging": "Messaging",

@@ -16,6 +16,15 @@ vi.mock('@/pages/bowler-dashboard-page', () => ({
 vi.mock('@/pages/league-schedule-page', () => ({
   default: () => <div data-testid="staff-schedule">Staff schedule</div>,
 }));
+vi.mock('@/pages/admin-weekly-payments-page', () => ({
+  default: () => <div data-testid="admin-weekly-payments">Admin weekly payments</div>,
+}));
+vi.mock('@/pages/payments-page', () => ({
+  default: () => <div data-testid="payments-page">Payments page</div>,
+}));
+vi.mock('@/pages/leagues-page', () => ({
+  default: () => <div data-testid="leagues-page">Leagues page</div>,
+}));
 vi.mock('@/pages/registration-complete-page', () => ({
   default: () => <div data-testid="registration-complete">Registration pending</div>,
 }));
@@ -55,6 +64,7 @@ describe('staff routes', () => {
     '/home',
     '/leagues',
     '/leagues/7',
+    '/manage-payments',
     '/leagues/7/payments/manage',
     '/leagues/7/schedule',
     '/leagues/7/teams',
@@ -86,6 +96,25 @@ describe('staff routes', () => {
 
     expect(await screen.findByTestId('registration-complete')).toBeInTheDocument();
     expect(location.history.at(-1)).toBe('/registration-complete');
+  });
+
+  it('allows organization admins on Manage Payments and keeps payment managers on the existing Payments route only', async () => {
+    const adminLocation = renderRoute('/manage-payments', { role: 'org_admin', bowlerId: null });
+    expect(await screen.findByTestId('admin-weekly-payments')).toBeInTheDocument();
+    expect(adminLocation.history).toEqual(['/manage-payments']);
+    cleanup();
+    queryClient.clear();
+
+    const managerLocation = renderRoute('/payments', { role: 'payment_manager', bowlerId: null, locationId: 4 });
+    expect(await screen.findByTestId('payments-page')).toBeInTheDocument();
+    expect(managerLocation.history).toEqual(['/payments']);
+    cleanup();
+    queryClient.clear();
+
+    const deniedLocation = renderRoute('/manage-payments', { role: 'payment_manager', bowlerId: null, locationId: 4 });
+    expect(await screen.findByText('Access Denied')).toBeInTheDocument();
+    expect(screen.queryByTestId('admin-weekly-payments')).not.toBeInTheDocument();
+    expect(deniedLocation.history.at(-1)).toBe('/');
   });
 
   it('keeps forced password rotation ahead of the bowler redirect', async () => {

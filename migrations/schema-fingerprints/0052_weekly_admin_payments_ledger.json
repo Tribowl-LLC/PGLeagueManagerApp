@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0052_weekly_admin_payments_ledger",
+    "hash": "194faa58d01ea1d5504ce26257bce11b2fe458c2853d539482df5b0247ff555f",
+    "createdAt": 1790975580460
+  },
+  "digest": "d36c89beadf82eb9335b7cd421afe25295eca6ef046716f52387995742403057",
+  "counts": {
+    "tables": 96,
+    "columns": 1339,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 32,
+    "constraints": 765,
+    "indexes": 424,
+    "types": 1,
+    "functions": 28,
+    "triggers": 55,
+    "policies": 0
+  }
+}

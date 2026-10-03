@@ -29,6 +29,15 @@ export interface RefundPaymentAllocationSnapshot {
   currency: "USD";
 }
 
+export interface RefundPaymentFundingSnapshotV3 {
+  fundingId: string;
+  paymentId: number;
+  creditedBowlerId: number;
+  fundingAmountMinor: number;
+  unusedCreditMinor: number;
+  currency: "USD";
+}
+
 export const PAYMENT_OPERATION_TYPES = [
   "interactive_charge",
   "refund",
@@ -354,6 +363,9 @@ export const paymentOperations = pgTable("payment_operations", {
  * can be recovered or failed closed without rewriting its immutable evidence. */
 export const REFUND_PAYMENT_SNAPSHOT_VERSION = 2;
 export const REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION = 1;
+/** Adopted-account V3 snapshots include every funding portion and may have no
+ * allocations when the tender is entirely unused account credit. */
+export const REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION = 3;
 
 /** Immutable authorization and exact Square request for one full local-row refund. */
 export const refundPaymentOperationSnapshots = pgTable("refund_payment_operation_snapshots", {
@@ -382,25 +394,33 @@ export const refundPaymentOperationSnapshots = pgTable("refund_payment_operation
     .$type<RefundPaymentAllocationSnapshot[]>()
     .notNull()
     .default(sql`'[]'::jsonb`),
+  fundingSnapshot: jsonb("funding_snapshot")
+    .$type<RefundPaymentFundingSnapshotV3[]>()
+    .notNull()
+    .default(sql`'[]'::jsonb`),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 }, (table) => ({
   paymentUnique: uniqueIndex("refund_payment_operation_snapshots_payment_unique").on(table.paymentId),
   leagueIdx: index("refund_payment_operation_snapshots_league_idx").on(table.leagueId),
   versionCheck: check(
     "refund_payment_operation_snapshots_version_check",
-    sql`${table.snapshotVersion} IN (${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION))}, ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_VERSION))})`,
+    sql`${table.snapshotVersion} IN (${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION))}, ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_VERSION))}, ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION))})`,
   ),
   fingerprintCheck: check(
     "refund_payment_operation_snapshots_fingerprint_check",
-    sql`(${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION))} AND ${table.snapshotFingerprint} ~ '^lvpayexecrf:v1:[0-9a-f]{64}$') OR (${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_VERSION))} AND ${table.snapshotFingerprint} ~ '^lvpayexecrf:v2:[0-9a-f]{64}$')`,
+    sql`(${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION))} AND ${table.snapshotFingerprint} ~ '^lvpayexecrf:v1:[0-9a-f]{64}$') OR (${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_VERSION))} AND ${table.snapshotFingerprint} ~ '^lvpayexecrf:v2:[0-9a-f]{64}$') OR (${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION))} AND ${table.snapshotFingerprint} ~ '^lvpayexecrf:v3:[0-9a-f]{64}$')`,
   ),
   dispositionCheck: check(
     "refund_payment_operation_snapshots_disposition_check",
-    sql`(${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION))} AND ${table.disposition} IS NULL) OR (${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_VERSION))} AND ${table.disposition} IS NOT NULL AND ${table.disposition} IN ('still_owed', 'waived'))`,
+    sql`(${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION))} AND ${table.disposition} IS NULL) OR (${table.snapshotVersion} IN (${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_VERSION))}, ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION))}) AND ${table.disposition} IS NOT NULL AND ${table.disposition} IN ('still_owed', 'waived'))`,
   ),
   allocationSnapshotCheck: check(
     "refund_payment_operation_snapshots_allocation_snapshot_check",
-    sql`jsonb_typeof(${table.allocationSnapshot}) = 'array' AND (${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION))} OR jsonb_array_length(${table.allocationSnapshot}) > 0)`,
+    sql`jsonb_typeof(${table.allocationSnapshot}) = 'array' AND (${table.snapshotVersion} IN (${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION))}, ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION))}) OR jsonb_array_length(${table.allocationSnapshot}) > 0)`,
+  ),
+  fundingSnapshotCheck: check(
+    "refund_payment_operation_snapshots_funding_snapshot_check",
+    sql`jsonb_typeof(${table.fundingSnapshot}) = 'array' AND ((${table.snapshotVersion} IN (${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION))}, ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_VERSION))}) AND jsonb_array_length(${table.fundingSnapshot}) = 0) OR (${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION))} AND jsonb_array_length(${table.fundingSnapshot}) > 0))`,
   ),
   actorCheck: check(
     "refund_payment_operation_snapshots_actor_check",

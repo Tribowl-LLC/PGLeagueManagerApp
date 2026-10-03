@@ -9,6 +9,7 @@ const apiRequestMock = vi.hoisted(() => vi.fn());
 const queryClientMock = vi.hoisted(() => ({
   invalidateQueries: vi.fn((input: { queryKey?: readonly unknown[]; predicate?: (query: { queryKey: readonly unknown[] }) => boolean }) => { void input; return Promise.resolve(); }),
 }));
+const toastMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/queryClient", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/queryClient")>()),
@@ -19,6 +20,7 @@ vi.mock("@/lib/queryClient", async (importOriginal) => ({
 vi.mock("wouter", () => ({
   Link: ({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) => <a href={href} className={className}>{children}</a>,
 }));
+vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: toastMock }) }));
 
 import { TeamViewBowlersTable } from "@/pages/team-view-page/bowlers-table";
 
@@ -110,6 +112,7 @@ function renderRosterWithThreeMainsAndVacancy() {
 afterEach(() => {
   apiRequestMock.mockReset();
   queryClientMock.invalidateQueries.mockReset();
+  toastMock.mockReset();
   vi.unstubAllGlobals();
 });
 
@@ -239,6 +242,26 @@ describe("Team Rosters payment responsibility surface", () => {
     }]);
     const expectedFingerprint = `lvresponsibility:v1:${createHash("sha256").update(canonicalProjection).digest("hex")}`;
     expect(body.requestFingerprint).toBe(expectedFingerprint);
+  });
+
+  it("directs an organization admin to Manage Payments when a saved-week override is blocked", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(rosterResponse), { status: 200, headers: { "content-type": "application/json" } })));
+    apiRequestMock.mockRejectedValue(Object.assign(
+      new Error("This league's weekly responsibility and receipt corrections are managed in Manage Payments."),
+      { code: "MANAGE_PAYMENTS_REQUIRED" },
+    ));
+    renderRoster();
+
+    const occurrenceId = "00000000-0000-4000-8000-000000000001";
+    await screen.findByText("Payment override for one occurrence");
+    fireEvent.change(screen.getByLabelText(`Override bowler ${occurrenceId}:0`), { target: { value: "12" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /^Save$/ })[0]);
+
+    await waitFor(() => expect(toastMock).toHaveBeenCalledOnce());
+    const toast = toastMock.mock.calls[0]?.[0] as { description?: React.ReactNode };
+    const description = toast.description as React.ReactElement<{ children?: React.ReactNode }>;
+    const children = description.props.children as React.ReactNode[];
+    expect(children[2]).toMatchObject({ props: { href: "/manage-payments", children: "Open Manage Payments" } });
   });
 
   it("renders an existing VACANT slot beside three Main and three Substitute members", async () => {

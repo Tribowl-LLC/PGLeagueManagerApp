@@ -134,7 +134,13 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
       return apiRequest(`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1/occurrences`, "POST", { commandKey: crypto.randomUUID(), requestFingerprint, responsibilities: [{ ...responsibility, dueAt, pastDueAt }] });
     },
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }); void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }); toast({ title: "Substitute assignment saved" }); },
-    onError: (error: Error) => toast({ title: "Substitute assignment could not be saved", description: error.message, variant: "destructive" }),
+    onError: (error: Error) => toast({
+      title: "Substitute assignment could not be saved",
+      description: "code" in error && error.code === "MANAGE_PAYMENTS_REQUIRED"
+        ? <>{error.message} <Link href="/manage-payments">Open Manage Payments</Link>.</>
+        : error.message,
+      variant: "destructive",
+    }),
   });
 
   const memberById = new Map(teamBowlers.map(({ bowler }) => [bowler.id, bowler]));

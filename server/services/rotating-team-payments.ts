@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import {
   leagueOccurrenceBillingTerms,
   leagueOccurrences,
@@ -110,11 +110,16 @@ export async function readConfirmedRotatingObligationsForCredit(
     eq(occurrencePaymentResponsibilities.organizationId, scope.organizationId),
     eq(occurrencePaymentResponsibilities.leagueId, scope.leagueId),
     eq(occurrencePaymentResponsibilities.state, "active"),
+    ne(occurrencePaymentResponsibilities.responsibilityKind, "worksheet"),
+    isNotNull(occurrencePaymentResponsibilities.slotId),
+    isNotNull(occurrencePaymentResponsibilities.slotIndex),
+    isNotNull(occurrencePaymentResponsibilities.positionIndex),
     inArray(occurrencePaymentResponsibilities.occurrenceId, occurrenceIds),
     inArray(occurrencePaymentResponsibilities.teamId, rotatingTeamIds),
   ));
   const rotatingSlotKeys = new Set(slots.map((slot) => `${slot.teamId}:${slot.slotIndex}`));
-  const currentResponsibilities = responsibilities.filter((row) => rotatingSlotKeys.has(`${row.teamId}:${row.slotIndex}`));
+  const currentResponsibilities = responsibilities.filter((row): row is typeof row & { slotIndex: number } => row.slotIndex !== null
+    && rotatingSlotKeys.has(`${row.teamId}:${row.slotIndex}`));
   if (currentResponsibilities.length === 0) return [];
   const assignments = await tx.select().from(rotatingOccurrenceAssignments).where(and(
     eq(rotatingOccurrenceAssignments.organizationId, scope.organizationId),

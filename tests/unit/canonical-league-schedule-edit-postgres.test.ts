@@ -26,7 +26,6 @@ import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION } from "@shared/league-setup-i
 import { createLeagueWithCanonicalSetup } from "../../server/services/league-setup-integration";
 import { CanonicalLeagueScheduleEditError, editCanonicalLeagueSchedule } from "../../server/services/canonical-league-schedule-edit";
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
-import { canonicalResponsibilityFingerprint, recordOccurrenceResponsibilities } from "../../server/services/roster-payment-core";
 import { occurrenceSnapshot } from "../../server/services/fall-draft-review";
 import * as leagueOccurrenceSchedule from "../../server/services/league-occurrence-schedule";
 import { deleteOrganization } from "../../server/storage/organizations";
@@ -233,28 +232,98 @@ describe("canonical schedule edits (PostgreSQL)", () => {
     const [splitOccurrence] = await db.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt }).from(leagueOccurrences)
       .where(and(eq(leagueOccurrences.leagueId, leagueId), eq(leagueOccurrences.authoritativeLocalDate, "2032-09-12")));
     if (!splitOccurrence) throw new Error("schedule edit split occurrence fixture is missing");
-    const splitResponsibility = {
-      occurrenceId: splitOccurrence.id,
-      teamId,
-      slotIndex: 0,
-      positionIndex: 0,
-      kind: "split" as const,
-      mainBowlerId: payerBowlerId,
-      substituteBowlerId: substitute.id,
-      payerBowlerId: substitute.id,
-      policy: "special_split" as const,
-      amountMinor: 2_000,
-      assignmentNote: "schedule edit split fixture",
-      dueAt: splitOccurrence.startAt,
-      pastDueAt: "2032-09-12T23:00:00.000Z",
-    };
-    await recordOccurrenceResponsibilities({
-      organizationId,
-      leagueId,
-      actorUserId,
-      commandKey: "schedule-edit-split-responsibility",
-      requestFingerprint: canonicalResponsibilityFingerprint([splitResponsibility]),
-      responsibilities: [splitResponsibility],
+    // Stage existing split evidence directly. The legacy responsibility
+    // writer is intentionally guarded for leagues created through canonical
+    // setup, while this schedule-edit case needs a pre-existing split row to
+    // verify that edits retain its payer identities.
+    const [mainSlot] = await db.select({ id: teamPaymentSlots.id }).from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, teamId),
+      eq(teamPaymentSlots.slotIndex, 0),
+    ));
+    if (!mainSlot) throw new Error("schedule edit split slot fixture is missing");
+    const [priorResponsibility] = await db.select({
+      id: occurrencePaymentResponsibilities.id,
+      responsibilityKey: occurrencePaymentResponsibilities.responsibilityKey,
+      version: occurrencePaymentResponsibilities.version,
+    }).from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, splitOccurrence.id),
+      eq(occurrencePaymentResponsibilities.teamId, teamId),
+      eq(occurrencePaymentResponsibilities.slotIndex, 0),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+    ));
+    if (!priorResponsibility) throw new Error("schedule edit prior split slot responsibility is missing");
+    await db.transaction(async (tx) => {
+      const voidedAt = new Date().toISOString();
+      await tx.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(eq(occurrencePaymentResponsibilities.id, priorResponsibility.id));
+      await tx.update(paymentObligations).set({ state: "voided", voidedAt }).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        eq(paymentObligations.responsibilityId, priorResponsibility.id),
+        eq(paymentObligations.state, "open"),
+      ));
+      const [responsibility] = await tx.insert(occurrencePaymentResponsibilities).values({
+        organizationId,
+        leagueId,
+        occurrenceId: splitOccurrence.id,
+        teamId,
+        responsibilityKey: priorResponsibility.responsibilityKey,
+        slotId: mainSlot.id,
+        slotIndex: 0,
+        positionIndex: 0,
+        version: priorResponsibility.version + 1,
+        state: "active",
+        responsibilityKind: "split",
+        mainBowlerId: payerBowlerId,
+        substituteBowlerId: substitute.id,
+        payerBowlerId: substitute.id,
+        lineagePayerBowlerId: substitute.id,
+        prizePayerBowlerId: payerBowlerId,
+        policy: "special_split",
+        worksheetFeeComponent: null,
+        amountMinor: 2_000,
+        lineageAmountMinor: 1_000,
+        prizeFundAmountMinor: 1_000,
+        currency: "USD",
+        dueAt: splitOccurrence.startAt,
+        pastDueAt: splitOccurrence.startAt,
+        assignmentNote: "schedule edit split fixture",
+        recordedByUserId: actorUserId,
+      }).returning({ id: occurrencePaymentResponsibilities.id });
+      if (!responsibility) throw new Error("schedule edit split responsibility fixture was not created");
+      await tx.insert(paymentObligations).values([
+        {
+          organizationId,
+          leagueId,
+          occurrenceId: splitOccurrence.id,
+          responsibilityId: responsibility.id,
+          component: "lineage",
+          payerBowlerId: substitute.id,
+          amountMinor: 1_000,
+          currency: "USD",
+          dueAt: splitOccurrence.startAt,
+          pastDueAt: splitOccurrence.startAt,
+          state: "open",
+          createdByUserId: actorUserId,
+        },
+        {
+          organizationId,
+          leagueId,
+          occurrenceId: splitOccurrence.id,
+          responsibilityId: responsibility.id,
+          component: "prize",
+          payerBowlerId,
+          amountMinor: 1_000,
+          currency: "USD",
+          dueAt: splitOccurrence.startAt,
+          pastDueAt: splitOccurrence.startAt,
+          state: "open",
+          createdByUserId: actorUserId,
+        },
+      ]);
     });
     const [splitBefore] = await db.select({ payer: occurrencePaymentResponsibilities.payerBowlerId, lineagePayer: occurrencePaymentResponsibilities.lineagePayerBowlerId, prizePayer: occurrencePaymentResponsibilities.prizePayerBowlerId, amount: occurrencePaymentResponsibilities.amountMinor, lineageAmount: occurrencePaymentResponsibilities.lineageAmountMinor, prizeAmount: occurrencePaymentResponsibilities.prizeFundAmountMinor, state: occurrencePaymentResponsibilities.state }).from(occurrencePaymentResponsibilities)
       .where(and(eq(occurrencePaymentResponsibilities.organizationId, organizationId), eq(occurrencePaymentResponsibilities.leagueId, leagueId), eq(occurrencePaymentResponsibilities.occurrenceId, splitOccurrence.id), eq(occurrencePaymentResponsibilities.state, "active")));

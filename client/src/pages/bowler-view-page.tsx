@@ -19,7 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import type { BowlerDetailsResponse, ApiResponse } from "@shared/schema";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { filterActiveBowlerLeagues } from "@/lib/bowler-league-utils";
-import { deriveBowlerFinancials } from "@/lib/financial-utils";
+import { accountProjectionForBowler, deriveBowlerFinancials } from "@/lib/financial-utils";
 import { BowlerFinancialSummary } from "@/components/bowler-financial-summary";
 import { PaymentSyncRetryStatus } from "@/components/payment-sync-retry-status";
 import { AdminBowlerLinkPanel } from "@/components/admin-bowler-link-panel";
@@ -152,6 +152,7 @@ export default function BowlerViewPage() {
     financialRows,
     financialResponse.data.asOf,
     financialResponse.data.totals.collectiblePastDueMinor,
+    accountProjectionForBowler(financialResponse.data, bowlerId),
   );
 
   return (

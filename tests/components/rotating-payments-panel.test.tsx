@@ -142,7 +142,7 @@ function refundQuote(providerRefundAvailable: boolean): RotatingCreditRefundQuot
   };
 }
 
-function renderPanel(roster = baseRoster, financeRows: unknown[] = []) {
+function renderPanel(roster = baseRoster, financeRows: unknown[] = [], isOrganizationAdmin = false) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -180,6 +180,7 @@ function renderPanel(roster = baseRoster, financeRows: unknown[] = []) {
     league={league}
     teamBowlers={teamBowlers}
     canManage
+    isOrganizationAdmin={isOrganizationAdmin}
     roster={roster}
     rosterLoading={false}
     rosterError={undefined}
@@ -242,6 +243,34 @@ describe("RotatingPaymentsPanel", () => {
       expectedRevision: null,
       actualBowlerId: 11,
     }]);
+  });
+
+  it("routes admins to Manage Payments when weekly lineup editing is no longer supported here", async () => {
+    renderPanel(baseRoster, [], true);
+    const bowlerSelect = await screen.findByRole("combobox", { name: "Confirmed bowler for rotating position 2" });
+    fireEvent.change(bowlerSelect, { target: { value: "11" } });
+    mocks.apiRequest.mockResolvedValue({ success: false, error: { code: "MANAGE_PAYMENTS_REQUIRED", message: "This league uses Manage Payments for weekly responsibility and receipt corrections. Open Manage Payments to review the saved week." } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm lineup" }));
+
+    await waitFor(() => expect(mocks.toast).toHaveBeenCalledOnce());
+    const toast = mocks.toast.mock.calls[0]?.[0] as { description?: React.ReactNode };
+    const description = toast.description as React.ReactElement<{ children?: React.ReactNode }>;
+    const children = description.props.children as React.ReactNode[];
+    expect(children[2]).toMatchObject({ props: { href: "/manage-payments", children: "Open Manage Payments" } });
+  });
+
+  it("explains that payment managers need an organization admin for adopted weekly assignments", async () => {
+    renderPanel();
+    const bowlerSelect = await screen.findByRole("combobox", { name: "Confirmed bowler for rotating position 2" });
+    fireEvent.change(bowlerSelect, { target: { value: "11" } });
+    mocks.apiRequest.mockResolvedValue({ success: false, error: { code: "MANAGE_PAYMENTS_REQUIRED", message: "This league uses Manage Payments for weekly responsibility and receipt corrections. Open Manage Payments to review the saved week." } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm lineup" }));
+
+    await waitFor(() => expect(mocks.toast).toHaveBeenCalledOnce());
+    expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({
+      description: "This weekly assignment is now managed by an organization administrator. Ask an administrator to review it in Manage Payments.",
+      variant: "destructive",
+    }));
   });
 
   it("shows the authoritative unpaid remainder for a confirmed rotating bowler", async () => {

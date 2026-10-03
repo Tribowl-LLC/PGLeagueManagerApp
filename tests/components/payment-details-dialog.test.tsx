@@ -90,6 +90,49 @@ type NamedPaymentEvidence = CanonicalPaymentRow & {
   allocations: Array<CanonicalPaymentRow["allocations"][number] & { bowlerName?: string | null }>;
 };
 
+function ownedCashAllocation(allocationId: string, amountMinor: number, state: "active" | "reversed"): CanonicalPaymentRow["allocations"][number] {
+  return {
+    allocationId,
+    obligationId: `${allocationId}-obligation`,
+    occurrenceId: `${allocationId}-occurrence`,
+    occurrenceLocalDate: "2034-09-03",
+    plannedOrdinal: 1,
+    bowlerId: 42,
+    amountMinor,
+    currency: "USD",
+    state,
+  };
+}
+
+function ownedCashEvidence(input: {
+  availableMinor: number;
+  appliedMinor: number;
+  allocations: CanonicalPaymentRow["allocations"];
+}): CanonicalPaymentRow {
+  return {
+    ...evidence,
+    source: input.appliedMinor === 0 ? "prepaid_credit" : "canonical_allocation",
+    allocatedMinor: input.appliedMinor,
+    grossAllocatedMinor: input.appliedMinor,
+    unallocatedMinor: input.availableMinor,
+    creditRefunds: { completedAmountMinor: 0, heldAmountMinor: 0, reviewRequired: false, providerRefundIds: [] },
+    allocations: input.allocations,
+    fundingPortions: [{
+      fundingId: "owned-cash-funding-1",
+      creditedBowlerId: 42,
+      creditedBowlerName: "Test Bowler",
+      portionIndex: 0,
+      amountMinor: payment.amount,
+      availableMinor: input.availableMinor,
+      appliedMinor: input.appliedMinor,
+      refundedCreditMinor: 0,
+      totalRefundedMinor: 0,
+      heldCreditMinor: 0,
+      reviewRequired: false,
+    }],
+  };
+}
+
 beforeEach(() => {
   mocks.csrfFetch.mockReset();
   mocks.csrfFetch.mockResolvedValue(new Response(JSON.stringify({ data: {} }), { status: 200 }));
@@ -600,6 +643,57 @@ describe("PaymentDetailsDialog", () => {
     render(<PaymentDetailsDialog payment={payment} evidence={creditFundingEvidence} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
 
     expect(screen.queryByRole("region", { name: "Payment correction" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
+  });
+
+  it("allows only an admin to edit a cash tender backed by exact unused owned funding", async () => {
+    const user = userEvent.setup();
+    const unusedOwnedCredit = ownedCashEvidence({ availableMinor: 5000, appliedMinor: 0, allocations: [] });
+    expect(unusedOwnedCredit.creditRefunds).toEqual({ completedAmountMinor: 0, heldAmountMinor: 0, reviewRequired: false, providerRefundIds: [] });
+    render(<PaymentDetailsDialog payment={payment} evidence={unusedOwnedCredit} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    await user.click(screen.getByRole("button", { name: "Edit cash payment" }));
+    expect(screen.getByRole("button", { name: "Save payment edit" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    const nonAdmin = render(<PaymentDetailsDialog payment={payment} evidence={unusedOwnedCredit} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
+    expect(nonAdmin.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["fully spent", 0, 5000, [ownedCashAllocation("fully-spent-active", 5000, "active")]],
+    ["partly spent", 3000, 2000, [ownedCashAllocation("partly-spent-active", 2000, "active")]],
+    ["released and reapplied", 0, 5000, [
+      ownedCashAllocation("released-historical", 2000, "reversed"),
+      ownedCashAllocation("reapplied-active", 5000, "active"),
+    ]],
+  ] as const)("keeps cash edit available for a %s owned receipt", async (_label, availableMinor, appliedMinor, allocations) => {
+    const user = userEvent.setup();
+    const ownedCash = ownedCashEvidence({ availableMinor, appliedMinor, allocations: [...allocations] });
+    expect(ownedCash.creditRefunds).toMatchObject({ completedAmountMinor: 0, heldAmountMinor: 0, reviewRequired: false });
+    render(<PaymentDetailsDialog payment={payment} evidence={ownedCash} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    await user.click(screen.getByRole("button", { name: "Edit cash payment" }));
+    expect(screen.getByRole("button", { name: "Save payment edit" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
+  });
+
+  it("keeps cash edit closed when owned unused-source evidence is incomplete", () => {
+    const incompleteOwnedCredit: CanonicalPaymentRow = {
+      ...evidence,
+      source: "prepaid_credit",
+      allocatedMinor: 0,
+      unallocatedMinor: 5000,
+      allocations: [],
+      fundingPortions: [],
+    };
+    render(<PaymentDetailsDialog payment={payment} evidence={incompleteOwnedCredit} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
     expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();

@@ -365,6 +365,34 @@
       "when": 1790190160145,
       "tag": "0051_square_historical_allocation_correction",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1790975580460,
+      "tag": "0052_weekly_admin_payments_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1790979178740,
+      "tag": "0053_owned_payment_refund_support",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1790986573310,
+      "tag": "0054_weekly_standing_account_funding",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1790992831001,
+      "tag": "0055_owned_account_refunds_v3",
+      "breakpoints": true
     }
   ]
 }

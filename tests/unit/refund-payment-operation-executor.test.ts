@@ -861,17 +861,15 @@ describe("durable refund payment operations", () => {
         return finalizeRefundPaymentOperationSuccess(input);
       },
     });
-    await expect(localExecutor.execute({ organizationId: fixture.organizationId, operationId: local.operation.id, now: clock }))
-      .rejects.toThrow("deterministic local failure");
-    const leased = await getPaymentOperationForOrganization(fixture.organizationId, local.operation.id);
-    if (!leased?.leaseExpiresAt) throw new Error("refund lease was not retained");
-    clock = new Date(storedDate(leased.leaseExpiresAt).getTime() + 1);
+    const localUnknown = await localExecutor.execute({ organizationId: fixture.organizationId, operationId: local.operation.id, now: clock });
+    expect(localUnknown).toMatchObject({ status: "provider_unknown", providerObjectId: expect.any(String) });
+    if (!localUnknown?.providerObjectId || !localUnknown.nextAttemptAt) throw new Error("known refund ID was not scheduled for status recovery");
+    clock = new Date(storedDate(localUnknown.nextAttemptAt).getTime() + 1);
     await expect(localExecutor.execute({ organizationId: fixture.organizationId, operationId: local.operation.id, now: clock }))
       .resolves.toMatchObject({ status: "succeeded" });
-    expect(localProvider.refundCalls.map(call => call.idempotencyKey)).toEqual([
-      local.operation.providerIdempotencyKey,
-      local.operation.providerIdempotencyKey,
-    ]);
+    expect(localProvider.refundCalls).toHaveLength(1);
+    expect(localProvider.refundCalls[0]?.idempotencyKey).toBe(local.operation.providerIdempotencyKey);
+    expect(localProvider.getRefundCalls).toEqual([localUnknown.providerObjectId]);
     expect(localProvider.effectsByKey).toHaveLength(1);
   });
 

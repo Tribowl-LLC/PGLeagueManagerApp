@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 import type { BowlerLeague, BowlerWithAccount, League, Payment, Team } from '@shared/schema';
+import type { FinancialReadAccountProjection } from '@shared/financial-contract';
 import { PastDueBowlersSection } from '@/components/past-due-bowlers-section';
 
 vi.mock('@/hooks/use-mobile', () => ({
@@ -125,6 +126,8 @@ function makeCanonicalRow(input: {
   classification: 'future' | 'due' | 'past_due' | 'settled' | 'voided' | 'review_required';
   outstandingMinor: number;
   reviewRequired: boolean;
+  confirmationStatus?: 'confirmed' | 'forecast';
+  projectedCreditMinor?: number;
 }) {
   const amountMinor = input.outstandingMinor + (input.classification === 'settled' ? 700 : 0);
   return {
@@ -145,10 +148,16 @@ function makeCanonicalRow(input: {
     outstandingMinor: input.outstandingMinor,
     classification: input.classification,
     reviewRequired: input.reviewRequired,
+    ...(input.confirmationStatus ? { accountProjection: {
+      owner: { kind: 'bowler' as const, bowlerId: BOWLER_ID },
+      effectiveDebtorBowlerId: BOWLER_ID,
+      confirmationStatus: input.confirmationStatus,
+      projectedCreditMinor: input.projectedCreditMinor ?? 0,
+    } } : {}),
   };
 }
 
-function makeCanonicalReport(rows: ReturnType<typeof makeCanonicalRow>[]) {
+function makeCanonicalReport(rows: ReturnType<typeof makeCanonicalRow>[], accountProjection?: FinancialReadAccountProjection) {
   return {
     contractVersion: 'canonical-due-past-due/2' as const,
     orderVersion: 'due-at,payer,occurrence,obligation/2' as const,
@@ -157,6 +166,7 @@ function makeCanonicalReport(rows: ReturnType<typeof makeCanonicalRow>[]) {
     authoritativeSource: 'payment_obligations' as const,
     asOf: '2038-01-01T00:00:00.000Z',
     rows,
+    ...(accountProjection ? { accountProjection } : {}),
     totals: {
       amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
       allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
@@ -217,6 +227,29 @@ describe('PastDueBowlersSection', () => {
     expect(screen.getAllByText('Review required').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Jane Doe')).toBeInTheDocument();
     expect(screen.getByText('$2.50')).toBeInTheDocument();
+  });
+
+  it('uses confirmed debt net of owned credit and excludes unconfirmed forecast from past due', () => {
+    const accountProjection: FinancialReadAccountProjection = {
+      contractVersion: 'owned-account-projection/1',
+      accounts: [{
+        bowlerId: BOWLER_ID,
+        amountPaidMinor: 500,
+        availableCreditMinor: 0,
+        confirmedDebtMinor: 500,
+        netBalanceMinor: -500,
+        confirmedPastDueMinor: 200,
+        seasonRemainingMinor: 200,
+        reviewRequired: false,
+      }],
+    };
+    renderSection({ data: { leagues: [{ leagueId: ACTIVE_LEAGUE_ID, report: makeCanonicalReport([
+      makeCanonicalRow({ index: 7, teamId: ACTIVE_TEAM_ID, classification: 'past_due', outstandingMinor: 500, reviewRequired: false, confirmationStatus: 'confirmed', projectedCreditMinor: 300 }),
+      makeCanonicalRow({ index: 8, teamId: ACTIVE_TEAM_ID, classification: 'past_due', outstandingMinor: 700, reviewRequired: false, confirmationStatus: 'forecast' }),
+    ], accountProjection) }] } });
+
+    expect(screen.getByText('$2.00')).toBeInTheDocument();
+    expect(screen.queryByText('$12.00')).not.toBeInTheDocument();
   });
 
   it('uses canonical responsibility team identity for an explicit substitute', () => {
