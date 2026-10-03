@@ -29,6 +29,9 @@ vi.mock("@/components/admin-weekly-payments-account-dialog", () => ({
 
 const firstOccurrenceId = "b8cc77db-79b5-4515-95c6-5482c56c3835";
 const secondOccurrenceId = "451e2b14-2805-4f67-a45d-4b5c0ad8d64e";
+const thirdOccurrenceId = "73e134f6-1247-4635-bb94-801fb4532392";
+const alternateFirstOccurrenceId = "dcc6092d-7066-40e1-8f21-57d0c9550042";
+const alternateSecondOccurrenceId = "e6ed9c6d-9834-455a-9d0a-a5b987e3a650";
 const newReceiptId = "06192a58-13e7-4b2b-a196-0a6a8cb0a449";
 
 function makeSnapshot(
@@ -36,6 +39,12 @@ function makeSnapshot(
   revision = 14,
   amountReceived: number | null = 0,
 ): ManagePaymentsSnapshot {
+  const isThirdWeek = occurrenceId === thirdOccurrenceId;
+  const selectedLocalDate = occurrenceId === firstOccurrenceId
+    ? "2026-09-28"
+    : occurrenceId === secondOccurrenceId
+      ? "2026-10-05"
+      : "2026-10-12";
   return {
     contractVersion: 1,
     league: {
@@ -59,10 +68,17 @@ function makeSnapshot(
         timeZone: "America/Chicago",
         label: "Mon Oct 5, 2026",
       },
+      {
+        occurrenceId: thirdOccurrenceId,
+        localDate: "2026-10-12",
+        localStartTime: "19:00",
+        timeZone: "America/Chicago",
+        label: "Mon Oct 12, 2026",
+      },
     ],
     selectedOccurrence: {
       occurrenceId,
-      localDate: occurrenceId === firstOccurrenceId ? "2026-09-28" : "2026-10-05",
+      localDate: selectedLocalDate,
       localStartTime: "19:00",
       timeZone: "America/Chicago",
     },
@@ -76,7 +92,7 @@ function makeSnapshot(
       rows: [
         {
           bowlerId: 501,
-          displayName: "Avery Lane",
+          displayName: isThirdWeek ? "Drew Shaw" : "Avery Lane",
           rosterRole: "main",
           responsible: true,
           feeComponent: "full",
@@ -88,14 +104,14 @@ function makeSnapshot(
             paymentId: 8102,
             type: "cash",
             amountMinor: amountReceived,
-            businessCollectionLocalDate: occurrenceId === firstOccurrenceId ? "2026-09-28" : "2026-10-05",
+            businessCollectionLocalDate: selectedLocalDate,
           }] : [],
           cardReceipts: [],
           finalTwoWeeksPaid: false,
         },
         {
           bowlerId: 502,
-          displayName: "Blair Quinn",
+          displayName: isThirdWeek ? "Parker Dale" : "Blair Quinn",
           rosterRole: "substitute",
           responsible: false,
           feeComponent: "full",
@@ -107,7 +123,7 @@ function makeSnapshot(
         },
         {
           bowlerId: 503,
-          displayName: "Casey Reese",
+          displayName: isThirdWeek ? "Remy Stone" : "Casey Reese",
           rosterRole: "main",
           responsible: true,
           feeComponent: "lineage",
@@ -118,7 +134,7 @@ function makeSnapshot(
             paymentId: 8103,
             type: "credit_card",
             amountMinor: 3_000,
-            collectionLocalDate: "2026-09-28",
+            collectionLocalDate: selectedLocalDate,
             recordedAt: "2026-09-28T18:30:00.000Z",
             receiptNumber: "CARD-8103",
           }],
@@ -129,6 +145,36 @@ function makeSnapshot(
   };
 }
 
+function makeAlternateLeagueSnapshot(occurrenceId = alternateFirstOccurrenceId): ManagePaymentsSnapshot {
+  const base = makeSnapshot(firstOccurrenceId, 3);
+  const selectedLocalDate = occurrenceId === alternateFirstOccurrenceId ? "2026-10-01" : "2026-10-08";
+  return {
+    ...base,
+    league: { ...base.league, leagueId: 8, name: "Thursday Night League" },
+    weekOptions: [
+      {
+        occurrenceId: alternateFirstOccurrenceId,
+        localDate: "2026-10-01",
+        localStartTime: "19:00",
+        timeZone: "America/Chicago",
+        label: "Thu Oct 1, 2026",
+      },
+      {
+        occurrenceId: alternateSecondOccurrenceId,
+        localDate: "2026-10-08",
+        localStartTime: "19:00",
+        timeZone: "America/Chicago",
+        label: "Thu Oct 8, 2026",
+      },
+    ],
+    selectedOccurrence: {
+      ...base.selectedOccurrence,
+      occurrenceId,
+      localDate: selectedLocalDate,
+    },
+  };
+}
+
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -136,35 +182,80 @@ function jsonResponse(value: unknown, status = 200): Response {
   });
 }
 
-function setupPage(options: { failFirstPost?: number } = {}) {
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+interface PageSetupOptions {
+  failFirstPost?: number;
+  failFirstSnapshot?: number;
+  includeSecondLeague?: boolean;
+  delaySnapshot?: (
+    leagueId: number,
+    occurrenceId: string | null,
+    signal: AbortSignal | undefined,
+  ) => Promise<Response> | undefined;
+}
+
+function setupPage(options: PageSetupOptions = {}) {
+  const activeLeagueEnvelope = options.includeSecondLeague ? leagueEnvelopeWithSecond : leagueEnvelope;
   const client = new QueryClient({
     defaultOptions: {
       queries: {
         retry: false,
         staleTime: Infinity,
         queryFn: async ({ queryKey }) => {
-          if (queryKey[0] === "/api/leagues") return leagueEnvelope;
+          if (queryKey[0] === "/api/leagues") return activeLeagueEnvelope;
           throw new Error(`Unexpected query ${String(queryKey[0])}`);
         },
       },
     },
   });
-  client.setQueryData(["/api/leagues"], leagueEnvelope);
+  client.setQueryData(["/api/leagues"], activeLeagueEnvelope);
 
   const snapshots = new Map([
     [firstOccurrenceId, makeSnapshot(firstOccurrenceId)],
     [secondOccurrenceId, makeSnapshot(secondOccurrenceId, 15)],
+    [thirdOccurrenceId, makeSnapshot(thirdOccurrenceId, 16)],
+  ]);
+  const alternateSnapshots = new Map([
+    [alternateFirstOccurrenceId, makeAlternateLeagueSnapshot(alternateFirstOccurrenceId)],
+    [alternateSecondOccurrenceId, makeAlternateLeagueSnapshot(alternateSecondOccurrenceId)],
+  ]);
+  const snapshotsByLeague = new Map<number, Map<string, ManagePaymentsSnapshot>>([
+    [7, snapshots],
+    ...(options.includeSecondLeague ? [[8, alternateSnapshots] as [number, Map<string, ManagePaymentsSnapshot>]] : []),
+  ]);
+  const defaultOccurrenceByLeague = new Map([
+    [7, firstOccurrenceId],
+    ...(options.includeSecondLeague ? [[8, alternateFirstOccurrenceId] as [number, string]] : []),
   ]);
   const posts: Array<{ url: string; body: string; parsed: Record<string, unknown> }> = [];
   let failedPosts = 0;
+  let failedSnapshots = 0;
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
     if (url.pathname === "/api/csrf-token") {
       return jsonResponse({ success: true, data: { token: "test-csrf-token" } });
     }
-    if (url.pathname === "/api/financials/leagues/7/manage-payments/1" && (init?.method ?? "GET") === "GET") {
-      const occurrenceId = url.searchParams.get("occurrenceId") ?? firstOccurrenceId;
-      const snapshot = snapshots.get(occurrenceId);
+    const snapshotPath = url.pathname.match(/^\/api\/financials\/leagues\/(\d+)\/manage-payments\/1$/);
+    if (snapshotPath && (init?.method ?? "GET") === "GET") {
+      const leagueId = Number(snapshotPath[1]);
+      const requestedOccurrenceId = url.searchParams.get("occurrenceId");
+      const occurrenceId = requestedOccurrenceId ?? defaultOccurrenceByLeague.get(leagueId);
+      const delayedResponse = options.delaySnapshot?.(leagueId, requestedOccurrenceId, init?.signal ?? undefined);
+      if (delayedResponse) return delayedResponse;
+      if (failedSnapshots < (options.failFirstSnapshot ?? 0)) {
+        failedSnapshots += 1;
+        return jsonResponse({ error: { message: "Temporary snapshot failure" } }, 503);
+      }
+      const snapshot = occurrenceId === undefined ? undefined : snapshotsByLeague.get(leagueId)?.get(occurrenceId);
       if (!snapshot) return jsonResponse({ error: { message: "Unknown week" } }, 404);
       return jsonResponse({ success: true, data: snapshot });
     }
@@ -238,6 +329,13 @@ const leagueEnvelope = {
   success: true,
   data: [{ id: 7, name: "Monday Night League", active: true }],
 };
+const leagueEnvelopeWithSecond = {
+  success: true,
+  data: [
+    ...leagueEnvelope.data,
+    { id: 8, name: "Thursday Night League", active: true },
+  ],
+};
 
 afterEach(() => {
   cleanup();
@@ -262,11 +360,125 @@ describe("AdminWeeklyPaymentsPage", () => {
     await waitFor(() => expect(weekSelect).toHaveTextContent("Mon Sep 28, 2026"));
     expect(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" })).toHaveValue(".50");
 
-    const initialGet = fetchMock.mock.calls.find(([input, init]) => {
+    const initialGets = fetchMock.mock.calls.filter(([input, init]) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
       return url.pathname.endsWith("/manage-payments/1") && (init?.method ?? "GET") === "GET" && !url.searchParams.has("occurrenceId");
     });
-    expect(initialGet).toBeDefined();
+    expect(initialGets).toHaveLength(1);
+    await waitFor(() => {
+      const revisitedFirstWeekGets = fetchMock.mock.calls.filter(([input, init]) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
+        return url.searchParams.get("occurrenceId") === firstOccurrenceId && (init?.method ?? "GET") === "GET";
+      });
+      expect(revisitedFirstWeekGets).toHaveLength(1);
+    });
+  });
+
+  it("recovers from the initial snapshot request failure and seeds without a duplicate request", async () => {
+    const user = userEvent.setup();
+    const { fetchMock } = setupPage({ failFirstSnapshot: 1 });
+
+    expect(await screen.findByText("Weekly payments are temporarily unavailable. Try again shortly.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Collection week" })).toHaveTextContent("Mon Sep 28, 2026"));
+
+    const defaultGets = fetchMock.mock.calls.filter(([input, init]) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
+      return url.pathname.endsWith("/manage-payments/1") && (init?.method ?? "GET") === "GET" && !url.searchParams.has("occurrenceId");
+    });
+    const normalizedInitialGets = fetchMock.mock.calls.filter(([input, init]) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
+      return url.searchParams.get("occurrenceId") === firstOccurrenceId && (init?.method ?? "GET") === "GET";
+    });
+    expect(defaultGets).toHaveLength(2);
+    expect(normalizedInitialGets).toHaveLength(0);
+  });
+
+  it("keeps week navigation available while a cold week loads and ignores its cancelled late response", async () => {
+    const user = userEvent.setup();
+    const delayedSecond = createDeferred<Response>();
+    let secondRequestSignal: AbortSignal | undefined;
+    const { fetchMock, snapshots } = setupPage({
+      delaySnapshot: (leagueId, occurrenceId, signal) => {
+        if (leagueId !== 7 || occurrenceId !== secondOccurrenceId) return undefined;
+        secondRequestSignal = signal;
+        return delayedSecond.promise;
+      },
+    });
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const weekSelect = screen.getByRole("combobox", { name: "Collection week" });
+    await user.click(screen.getByRole("button", { name: "Next week" }));
+    await waitFor(() => expect(weekSelect).toHaveTextContent("Mon Oct 5, 2026"));
+    expect(screen.getByRole("button", { name: "Next week" })).toBeEnabled();
+    expect(screen.queryByRole("textbox", { name: "Amount received from Blair Quinn" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Amount received from Drew Shaw" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Next week" }));
+    await waitFor(() => expect(weekSelect).toHaveTextContent("Mon Oct 12, 2026"));
+    await waitFor(() => expect(secondRequestSignal?.aborted).toBe(true));
+    expect(await screen.findByRole("textbox", { name: "Amount received from Drew Shaw" })).toBeVisible();
+    expect(screen.queryByRole("textbox", { name: "Amount received from Avery Lane" })).not.toBeInTheDocument();
+
+    const secondWeek = snapshots.get(secondOccurrenceId);
+    if (!secondWeek) throw new Error("The second week snapshot fixture is missing.");
+    delayedSecond.resolve(jsonResponse({ success: true, data: secondWeek }));
+    await waitFor(() => expect(weekSelect).toHaveTextContent("Mon Oct 12, 2026"));
+    expect(screen.getByRole("textbox", { name: "Amount received from Drew Shaw" })).toBeVisible();
+    expect(screen.queryByRole("textbox", { name: "Amount received from Avery Lane" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Amount received from Blair Quinn" })).not.toBeInTheDocument();
+
+    const secondWeekGets = fetchMock.mock.calls.filter(([input, init]) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
+      return url.searchParams.get("occurrenceId") === secondOccurrenceId && (init?.method ?? "GET") === "GET";
+    });
+    expect(secondWeekGets).toHaveLength(1);
+  });
+
+  it("cancels the pending initial league request and keeps week options scoped to each league", async () => {
+    const user = userEvent.setup();
+    const delayedFirstLeague = createDeferred<Response>();
+    let firstLeagueSignal: AbortSignal | undefined;
+    let shouldDelayFirstLeague = true;
+    const { snapshots } = setupPage({
+      includeSecondLeague: true,
+      delaySnapshot: (leagueId, occurrenceId, signal) => {
+        if (leagueId !== 7 || occurrenceId !== null || !shouldDelayFirstLeague) return undefined;
+        shouldDelayFirstLeague = false;
+        firstLeagueSignal = signal;
+        return delayedFirstLeague.promise;
+      },
+    });
+
+    await screen.findByRole("combobox", { name: "League" });
+    await waitFor(() => expect(firstLeagueSignal).toBeDefined());
+    await user.click(screen.getByRole("combobox", { name: "League" }));
+    await user.click(await screen.findByRole("option", { name: "Thursday Night League" }));
+    const weekSelect = screen.getByRole("combobox", { name: "Collection week" });
+    await waitFor(() => expect(weekSelect).toHaveTextContent("Thu Oct 1, 2026"));
+    await waitFor(() => expect(firstLeagueSignal?.aborted).toBe(true));
+    expect(screen.getByRole("textbox", { name: "Amount received from Avery Lane" })).toBeVisible();
+
+    const firstWeek = snapshots.get(firstOccurrenceId);
+    if (!firstWeek) throw new Error("The first week snapshot fixture is missing.");
+    delayedFirstLeague.resolve(jsonResponse({ success: true, data: firstWeek }));
+    await waitFor(() => expect(weekSelect).toHaveTextContent("Thu Oct 1, 2026"));
+
+    await user.click(weekSelect);
+    expect(await screen.findByRole("option", { name: "Thu Oct 1, 2026" })).toBeVisible();
+    expect(screen.queryByRole("option", { name: "Mon Sep 28, 2026" })).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByRole("combobox", { name: "League" }));
+    await user.click(await screen.findByRole("option", { name: "Monday Night League" }));
+    await waitFor(() => expect(weekSelect).toHaveTextContent("Mon Sep 28, 2026"));
+
+    await user.click(screen.getByRole("combobox", { name: "League" }));
+    await user.click(await screen.findByRole("option", { name: "Thursday Night League" }));
+    await waitFor(() => expect(weekSelect).toHaveTextContent("Thu Oct 1, 2026"));
+    await user.click(weekSelect);
+    expect(await screen.findByRole("option", { name: "Thu Oct 1, 2026" })).toBeVisible();
+    expect(screen.queryByRole("option", { name: "Mon Sep 28, 2026" })).not.toBeInTheDocument();
   });
 
   it("opens and closes the selected bowler account from the worksheet name", async () => {
@@ -281,7 +493,7 @@ describe("AdminWeeklyPaymentsPage", () => {
 
   it("submits a responsibility change without cash and renders the authoritative receipt after save", async () => {
     const user = userEvent.setup();
-    const { posts } = setupPage();
+    const { posts, client } = setupPage();
 
     await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
     await user.click(screen.getByRole("checkbox", { name: "Responsible this week for Blair Quinn" }));
@@ -289,6 +501,11 @@ describe("AdminWeeklyPaymentsPage", () => {
     await user.click(screen.getByRole("button", { name: "Save week" }));
 
     await screen.findByRole("button", { name: /Edit recorded cash payment/ });
+    expect(client.getQueryData<ManagePaymentsSnapshot>([
+      "manage-payments-snapshot",
+      7,
+      firstOccurrenceId,
+    ])).toMatchObject({ revision: 15, selectedOccurrence: { occurrenceId: firstOccurrenceId } });
     expect(posts).toHaveLength(1);
     expect(posts[0]?.url).toBe("/api/financials/leagues/7/manage-payments/1");
     expect(posts[0]?.parsed).toEqual(expect.objectContaining({
