@@ -11,8 +11,9 @@ const PopoverContent = React.forwardRef<
   React.ElementRef<typeof PopoverPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content> & {
     variant?: "default" | "compact" | "sidebar"
+    appearance?: "default" | "managePayments"
   }
->(({ className, align = "center", sideOffset = 4, variant, ...props }, ref) => (
+>(({ className, align = "center", sideOffset = 4, variant, appearance = "default", ...props }, ref) => (
   <PopoverPrimitive.Portal>
     <PopoverPrimitive.Content
       ref={ref}
@@ -23,6 +24,7 @@ const PopoverContent = React.forwardRef<
         variant === "compact" && "p-1",
         variant === "sidebar" &&
           "p-1 bg-navigation-deep border-navigation-800 text-navigation-300",
+        appearance === "managePayments" && "font-familiar",
         className
       )}
       {...props}

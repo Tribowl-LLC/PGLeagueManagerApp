@@ -408,10 +408,8 @@ function NavSubMenu({
           align="start"
           sideOffset={8}
           variant="sidebar"
-          className={cn(
-            "w-56",
-            appearance === "weekly-payments" && "font-familiar",
-          )}
+          appearance={appearance === "weekly-payments" ? "managePayments" : "default"}
+          className="w-56"
         >
           <div className="px-3 py-2 text-xs font-semibold text-navigation-500 uppercase tracking-wider">
             {item.label}
@@ -763,10 +761,8 @@ export function Layout({
         <SheetContent
           side="left"
           variant="sidebar"
-          className={cn(
-            "w-72",
-            appearance === "weekly-payments" && "font-familiar",
-          )}
+          appearance={appearance === "weekly-payments" ? "managePayments" : "default"}
+          className="w-72"
         >
           <SheetTitle className="sr-only">Navigation Menu</SheetTitle>
           <div className="border-b border-navigation-800/60 shrink-0">
