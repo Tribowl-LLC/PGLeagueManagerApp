@@ -363,8 +363,8 @@ export const paymentOperations = pgTable("payment_operations", {
  * can be recovered or failed closed without rewriting its immutable evidence. */
 export const REFUND_PAYMENT_SNAPSHOT_VERSION = 2;
 export const REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION = 1;
-/** Accepted by the schema for adopted-account full-tender refunds. The
- * executable refund codec remains v2 until its separately reviewed stage. */
+/** Adopted-account V3 snapshots include every funding portion and may have no
+ * allocations when the tender is entirely unused account credit. */
 export const REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION = 3;
 
 /** Immutable authorization and exact Square request for one full local-row refund. */
@@ -416,7 +416,7 @@ export const refundPaymentOperationSnapshots = pgTable("refund_payment_operation
   ),
   allocationSnapshotCheck: check(
     "refund_payment_operation_snapshots_allocation_snapshot_check",
-    sql`jsonb_typeof(${table.allocationSnapshot}) = 'array' AND (${table.snapshotVersion} = ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION))} OR jsonb_array_length(${table.allocationSnapshot}) > 0)`,
+    sql`jsonb_typeof(${table.allocationSnapshot}) = 'array' AND (${table.snapshotVersion} IN (${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION))}, ${sql.raw(String(REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION))}) OR jsonb_array_length(${table.allocationSnapshot}) > 0)`,
   ),
   fundingSnapshotCheck: check(
     "refund_payment_operation_snapshots_funding_snapshot_check",

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
 import {
+  REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION,
   accountPaymentOperationSnapshots,
   autopayConsentPartners,
   autopayConsents,
@@ -37,6 +38,7 @@ import {
 } from "@shared/schema";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
+import { reconstructRefundPaymentSnapshot } from "./refund-payment-operation-snapshot.js";
 import { reconstructInteractivePartnerSnapshot, type InteractivePartnerPaymentSnapshot } from "./interactive-partner-payment-snapshot.js";
 import { reconstructRosterOperationSnapshot, type RosterOperationSemanticSnapshot } from "./roster-operation-snapshot.js";
 import { resolvePaymentObligationOwnersInTransaction } from "./roster-obligation-owners.js";
@@ -134,7 +136,39 @@ export interface OwnedPaymentFundingLot {
   bowlerId: number;
   amountMinor: number;
   availableMinor: number;
+  reviewRequired: boolean;
   createdAt: string;
+}
+
+export interface OwnedGenericFundingSourceByPayment {
+  fundingId: string;
+  paymentId: number;
+  creditedBowlerId: number;
+  portionIndex: number;
+  amountMinor: number;
+  availableMinor: number;
+  reviewRequired: boolean;
+}
+
+export interface ReadCompletedOwnedPaymentRefundEvidenceInput extends OwnedLedgerScope {
+  paymentId: number;
+  chargeOperationId: string;
+  providerPaymentId: string;
+  amountMinor: number;
+}
+
+export interface CompletedOwnedPaymentRefundEvidence {
+  refundOperationId: string;
+  providerRefundId: string;
+  snapshotFingerprint: string;
+  disposition: "still_owed" | "waived";
+}
+
+export class OwnedPaymentRefundEvidenceError extends Error {
+  constructor() {
+    super("Completed owned-payment refund evidence is inconsistent");
+    this.name = "OwnedPaymentRefundEvidenceError";
+  }
 }
 
 export interface OwnedPaymentFifoApplicationPlanRow {
@@ -340,6 +374,8 @@ export async function readConfirmedOwnedObligationsInTransaction(
     id: payments.id,
     status: payments.status,
     paymentOperationId: payments.paymentOperationId,
+    providerPaymentId: payments.providerPaymentId,
+    amount: payments.amount,
     disputeId: payments.disputeId,
     disputedAt: payments.disputedAt,
   }).from(payments).where(and(
@@ -349,7 +385,7 @@ export async function readConfirmedOwnedObligationsInTransaction(
   ));
   const paymentById = new Map(sourcePayments.map((payment) => [payment.id, payment]));
   const operationIds = [...new Set(sourcePayments.flatMap((payment) => payment.paymentOperationId === null ? [] : [payment.paymentOperationId]))];
-  const [disputes, operationRows, unresolvedRefundRows] = await Promise.all([
+  const [disputes, operationRows, unresolvedRefundRows, refundEvidenceRows] = await Promise.all([
     operationIds.length === 0 ? Promise.resolve([]) : tx.select({ operationId: paymentDisputes.paymentOperationId, state: paymentDisputes.state }).from(paymentDisputes).where(and(
       eq(paymentDisputes.organizationId, scope.organizationId),
       inArray(paymentDisputes.paymentOperationId, operationIds),
@@ -363,16 +399,50 @@ export async function readConfirmedOwnedObligationsInTransaction(
       .innerJoin(paymentOperations, and(
         eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
         eq(paymentOperations.organizationId, scope.organizationId),
-        eq(paymentOperations.leagueId, scope.leagueId),
       )).where(and(
         eq(refundPaymentOperationSnapshots.leagueId, scope.leagueId),
         inArray(refundPaymentOperationSnapshots.paymentId, paymentIds),
         inArray(paymentOperations.status, REFUND_HOLD_STATUSES),
       )),
+    paymentIds.length === 0 ? Promise.resolve([]) : tx.select({
+      snapshot: refundPaymentOperationSnapshots,
+      operation: paymentOperations,
+    }).from(refundPaymentOperationSnapshots).innerJoin(paymentOperations, and(
+      eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
+      eq(paymentOperations.organizationId, scope.organizationId),
+    )).where(and(
+      eq(refundPaymentOperationSnapshots.leagueId, scope.leagueId),
+      inArray(refundPaymentOperationSnapshots.paymentId, paymentIds),
+    )),
   ]);
   const disputedOperationIds = new Set(disputes.filter((row) => REVIEW_DISPUTE_STATES.has(row.state)).map((row) => row.operationId));
   const operationById = new Map(operationRows.map((row) => [row.id, row]));
   const heldPaymentIds = new Set(unresolvedRefundRows.map((row) => row.paymentId));
+  const validRefundPaymentIds = new Set<number>();
+  const incompatibleRefundPaymentIds = new Set<number>();
+  const refundRowsByPayment = new Map<number, typeof refundEvidenceRows>();
+  for (const row of refundEvidenceRows) refundRowsByPayment.set(row.snapshot.paymentId, [
+    ...(refundRowsByPayment.get(row.snapshot.paymentId) ?? []), row,
+  ]);
+  for (const payment of sourcePayments) {
+    const hasSucceededRefund = (refundRowsByPayment.get(payment.id) ?? []).some(({ operation: refundOperation }) => refundOperation.status === "succeeded");
+    if (payment.status !== "refunded" && !hasSucceededRefund) continue;
+    try {
+      const proof = await readCompletedOwnedPaymentRefundEvidenceInTransaction(tx, {
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        paymentId: payment.id,
+        chargeOperationId: payment.paymentOperationId ?? "",
+        providerPaymentId: payment.providerPaymentId ?? "",
+        amountMinor: payment.amount,
+      });
+      if (proof) validRefundPaymentIds.add(payment.id);
+      else incompatibleRefundPaymentIds.add(payment.id);
+    } catch (error) {
+      if (!(error instanceof OwnedPaymentRefundEvidenceError)) throw error;
+      incompatibleRefundPaymentIds.add(payment.id);
+    }
+  }
   const confirmedRows: OwnedConfirmedObligation[] = [];
   for (const { obligation, occurrenceLocalDate, responsibility } of confirmed) {
     if (occurrenceLocalDate === null) throw new OwnedPaymentLedgerError("CONFIRMED_OCCURRENCE_DATE_MISSING");
@@ -409,7 +479,10 @@ export async function readConfirmedOwnedObligationsInTransaction(
     const reviewRequired = linkedAllocations.some(({ allocation }) => {
       if (allocation.reviewRequired) return true;
       const payment = paymentById.get(allocation.paymentId);
-      if (!payment || payment.status !== "paid" || payment.disputeId !== null || payment.disputedAt !== null) return true;
+      const refundedWithProof = payment?.status === "refunded" && validRefundPaymentIds.has(payment.id);
+      if (!payment || (payment.status !== "paid" && !refundedWithProof)
+        || payment.disputeId !== null || payment.disputedAt !== null
+        || incompatibleRefundPaymentIds.has(payment.id)) return true;
       if (payment.paymentOperationId && disputedOperationIds.has(payment.paymentOperationId)) return true;
       if (payment.paymentOperationId && operationById.get(payment.paymentOperationId)?.status !== "succeeded") return true;
       return heldPaymentIds.has(allocation.paymentId);
@@ -436,11 +509,16 @@ export async function readConfirmedOwnedObligationsInTransaction(
   return confirmedRows;
 }
 
-async function readGenericFundingAvailabilityInTransaction(
+export async function readGenericFundingAvailabilityInTransaction(
   tx: PaymentOperationTransaction,
-  scope: OwnedLedgerScope & { bowlerIds: readonly number[] },
+  scope: OwnedLedgerScope & {
+    bowlerIds?: readonly number[];
+    paymentIds?: readonly number[];
+  },
 ): Promise<OwnedPaymentFundingLot[]> {
-  if (scope.bowlerIds.length === 0) return [];
+  if (scope.bowlerIds?.length === 0 || scope.paymentIds?.length === 0) return [];
+  const selectedBowlerIds = scope.bowlerIds === undefined ? undefined : [...new Set(scope.bowlerIds)];
+  const selectedPaymentIds = scope.paymentIds === undefined ? undefined : [...new Set(scope.paymentIds)];
   const rows = await tx.select({ funding: weeklyPaymentFundings, payment: payments, operation: paymentOperations }).from(weeklyPaymentFundings)
     .innerJoin(payments, and(
       eq(payments.id, weeklyPaymentFundings.paymentId),
@@ -455,7 +533,8 @@ async function readGenericFundingAvailabilityInTransaction(
     .where(and(
       eq(weeklyPaymentFundings.organizationId, scope.organizationId),
       eq(weeklyPaymentFundings.leagueId, scope.leagueId),
-      inArray(weeklyPaymentFundings.creditedBowlerId, [...new Set(scope.bowlerIds)]),
+      ...(selectedBowlerIds ? [inArray(weeklyPaymentFundings.creditedBowlerId, selectedBowlerIds)] : []),
+      ...(selectedPaymentIds ? [inArray(weeklyPaymentFundings.paymentId, selectedPaymentIds)] : []),
     )).orderBy(asc(weeklyPaymentFundings.createdAt), asc(weeklyPaymentFundings.id));
   if (rows.length === 0) return [];
   const paymentIds = [...new Set(rows.map(({ funding }) => funding.paymentId))];
@@ -479,7 +558,6 @@ async function readGenericFundingAvailabilityInTransaction(
       .innerJoin(paymentOperations, and(
         eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
         eq(paymentOperations.organizationId, scope.organizationId),
-        eq(paymentOperations.leagueId, scope.leagueId),
       )).where(and(
         eq(refundPaymentOperationSnapshots.leagueId, scope.leagueId),
         inArray(refundPaymentOperationSnapshots.paymentId, paymentIds),
@@ -551,6 +629,28 @@ async function readGenericFundingAvailabilityInTransaction(
   const disputeOperationIds = new Set(disputes.filter((row) => REVIEW_DISPUTE_STATES.has(row.state)).map((row) => row.operationId));
   const refundsByPayment = new Map<number, typeof refunds>();
   for (const row of refunds) refundsByPayment.set(row.snapshot.paymentId, [...(refundsByPayment.get(row.snapshot.paymentId) ?? []), row]);
+  const validRefundPaymentIds = new Set<number>();
+  const incompatibleRefundPaymentIds = new Set<number>();
+  const uniqueSourcePayments = new Map(rows.map(({ payment }) => [payment.id, payment]));
+  for (const payment of uniqueSourcePayments.values()) {
+    const hasSucceededRefund = (refundsByPayment.get(payment.id) ?? []).some(({ operation: refundOperation }) => refundOperation.status === "succeeded");
+    if (payment.status !== "refunded" && !hasSucceededRefund) continue;
+    try {
+      const proof = await readCompletedOwnedPaymentRefundEvidenceInTransaction(tx, {
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        paymentId: payment.id,
+        chargeOperationId: payment.paymentOperationId ?? "",
+        providerPaymentId: payment.providerPaymentId ?? "",
+        amountMinor: payment.amount,
+      });
+      if (proof) validRefundPaymentIds.add(payment.id);
+      else incompatibleRefundPaymentIds.add(payment.id);
+    } catch (error) {
+      if (!(error instanceof OwnedPaymentRefundEvidenceError)) throw error;
+      incompatibleRefundPaymentIds.add(payment.id);
+    }
+  }
   const result: OwnedPaymentFundingLot[] = [];
   for (const { funding, payment, operation } of rows) {
     const linkedApps = appByFunding.get(funding.id) ?? [];
@@ -577,7 +677,8 @@ async function readGenericFundingAvailabilityInTransaction(
         && !validCorrectionSourceIds.has(allocation.id) && !validReleaseSourceIds.has(allocation.id);
       return sourceMismatch || voidWithoutLineage || !["active", "voided"].includes(allocation.state);
     });
-    const invalidPayment = payment.status !== "paid"
+    const validCompletedRefund = validRefundPaymentIds.has(payment.id);
+    const invalidPayment = (payment.status !== "paid" && !(payment.status === "refunded" && validCompletedRefund))
       || voidPaymentIds.has(payment.id)
       || payment.disputeId !== null
       || payment.disputedAt !== null
@@ -585,18 +686,19 @@ async function readGenericFundingAvailabilityInTransaction(
         ? payment.providerPaymentId !== null
         : operation?.status !== "succeeded" || operation.providerObjectId === null
           || payment.providerPaymentId !== operation.providerObjectId || disputeOperationIds.has(operation.id));
-    const unresolvedRefund = (refundsByPayment.get(payment.id) ?? []).some(({ operation: refundOperation }) => REFUND_HOLD_STATUSES.includes(refundOperation.status as (typeof REFUND_HOLD_STATUSES)[number]));
-    const completedOrAmbiguousRefund = (refundsByPayment.get(payment.id) ?? []).some(({ operation: refundOperation }) => refundOperation.status === "succeeded"
-      || (refundOperation.status !== "failed_terminal" && !isConfirmedNoRefundCreditOutcome(refundOperation)));
+    const refundRequiresReview = (refundsByPayment.get(payment.id) ?? []).some(({ operation: refundOperation }) => refundOperation.status === "succeeded"
+      ? !validCompletedRefund
+      : !isConfirmedNoRefundCreditOutcome(refundOperation))
+      || incompatibleRefundPaymentIds.has(payment.id);
     const paymentTypeValid = operation === null
       ? payment.type === "cash" || payment.type === "check"
       : payment.type !== "cash" && payment.type !== "check";
-    const reviewRequired = invalidPayment || !paymentTypeValid || partitionInvalid || rotatingPaymentIds.has(payment.id)
-      || untrackedAllocations || activeApplications.some(({ allocation }) => allocation.reviewRequired) || unresolvedRefund;
     const appliedMinor = activeApplications.reduce((sum, { allocation }) => sum + allocation.amountMinor, 0);
     const rawAvailable = funding.amountMinor - appliedMinor;
-    if (rawAvailable < 0 || completedOrAmbiguousRefund && rawAvailable > 0) continue;
-    const available = reviewRequired ? 0 : rawAvailable;
+    const reviewRequired = invalidPayment || !paymentTypeValid || partitionInvalid || rotatingPaymentIds.has(payment.id)
+      || untrackedAllocations || activeApplications.some(({ allocation }) => allocation.reviewRequired)
+      || refundRequiresReview || rawAvailable < 0;
+    const available = validCompletedRefund ? 0 : reviewRequired ? 0 : rawAvailable;
     result.push({
       sourceKind: "generic",
       fundingId: funding.id,
@@ -604,10 +706,50 @@ async function readGenericFundingAvailabilityInTransaction(
       bowlerId: funding.creditedBowlerId,
       amountMinor: funding.amountMinor,
       availableMinor: available,
+      reviewRequired,
       createdAt: funding.createdAt,
     });
   }
   return result;
+}
+
+/** Return every generic recipient portion for one exact tender, including
+ * zero-available or held portions. This uses the same validated accounting
+ * path as account reads/FIFO so full-tender refund snapshots cannot omit an
+ * unusable portion or calculate a parallel balance. */
+export async function readOwnedGenericFundingSourcesByPaymentInTransaction(
+  tx: PaymentOperationTransaction,
+  scope: OwnedLedgerScope & { paymentId: number },
+): Promise<OwnedGenericFundingSourceByPayment[]> {
+  const [lots, portions] = await Promise.all([
+    readGenericFundingAvailabilityInTransaction(tx, {
+      organizationId: scope.organizationId,
+      leagueId: scope.leagueId,
+      paymentIds: [scope.paymentId],
+    }),
+    tx.select().from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, scope.organizationId),
+      eq(weeklyPaymentFundings.leagueId, scope.leagueId),
+      eq(weeklyPaymentFundings.paymentId, scope.paymentId),
+    )).orderBy(asc(weeklyPaymentFundings.portionIndex), asc(weeklyPaymentFundings.id)),
+  ]);
+  const lotsById = new Map(lots.map((lot) => [lot.fundingId, lot]));
+  return portions.map((portion) => {
+    const lot = lotsById.get(portion.id);
+    const rowIdentityMatches = lot !== undefined
+      && lot.paymentId === portion.paymentId
+      && lot.bowlerId === portion.creditedBowlerId
+      && lot.amountMinor === portion.amountMinor;
+    return {
+      fundingId: portion.id,
+      paymentId: portion.paymentId,
+      creditedBowlerId: portion.creditedBowlerId,
+      portionIndex: portion.portionIndex,
+      amountMinor: portion.amountMinor,
+      availableMinor: rowIdentityMatches && lot ? lot.availableMinor : 0,
+      reviewRequired: !rowIdentityMatches || (lot?.reviewRequired ?? true),
+    };
+  });
 }
 
 export async function readOwnedAccountBalancesInTransaction(
@@ -657,22 +799,31 @@ export async function readOwnedAccountBalancesInTransaction(
 /** Record one immutable recipient portion of an already-persisted real tender.
  * Rotating-credit tenders are deliberately excluded: their existing funding
  * row remains the sole account source. */
-export async function recordOwnedFundingInTransaction(
+export async function validateOwnedFundingAuthorizationInTransaction(
   tx: PaymentOperationTransaction,
   input: Omit<typeof weeklyPaymentFundings.$inferInsert, "id" | "createdAt" | "provenanceFingerprint"> & {
     authorizationItems?: ReadonlyArray<{ allocationIndex: number; amountMinor: number; snapshotFingerprint: string }>;
     now?: string;
   },
-): Promise<WeeklyPaymentFunding> {
+  options: { payment?: typeof payments.$inferSelect; allowRefunded?: boolean } = {},
+): Promise<{
+  payment: typeof payments.$inferSelect;
+  adoptionId: string | null;
+  authorizationOperationId: string | null;
+  authorizationItems: Array<{ allocationIndex: number; amountMinor: number; snapshotFingerprint: string }>;
+}> {
+
   if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0 || input.currency !== "USD") throw new OwnedPaymentLedgerError("FUNDING_AMOUNT_INVALID");
   const adoptionId = input.adoptionId ?? null;
   const authorizationOperationId = input.authorizationOperationId ?? null;
-  const [payment] = await tx.select().from(payments).where(and(
+  const [selectedPayment] = options.payment === undefined ? await tx.select().from(payments).where(and(
     eq(payments.id, input.paymentId),
     eq(payments.organizationId, input.organizationId),
     eq(payments.leagueId, input.leagueId),
-  )).limit(1).for("update");
-  if (!payment || payment.status !== "paid" || payment.currency !== input.currency) throw new OwnedPaymentLedgerError("FUNDING_PAYMENT_INVALID");
+  )).limit(1) : [options.payment];
+  const payment = selectedPayment;
+  const permittedStatus = payment?.status === "paid" || (options.allowRefunded === true && payment?.status === "refunded");
+  if (!payment || !permittedStatus || payment.currency !== input.currency) throw new OwnedPaymentLedgerError("FUNDING_PAYMENT_INVALID");
   const [rotatingSource] = await tx.select({ id: rotatingCreditFundings.id }).from(rotatingCreditFundings).where(and(
     eq(rotatingCreditFundings.organizationId, input.organizationId),
     eq(rotatingCreditFundings.leagueId, input.leagueId),
@@ -1012,6 +1163,357 @@ export async function recordOwnedFundingInTransaction(
       throw new OwnedPaymentLedgerError("PROVIDER_RECIPIENT_PROOF_INVALID");
     }
   }
+  return { payment, adoptionId, authorizationOperationId, authorizationItems };
+}
+
+export async function validateOwnedFundingPortionsForTenderInTransaction(
+  tx: PaymentOperationTransaction,
+  input: {
+    payment: typeof payments.$inferSelect;
+    fundings: readonly typeof weeklyPaymentFundings.$inferSelect[];
+    allowRefunded?: boolean;
+  },
+): Promise<void> {
+  const { payment } = input;
+  const fundings = [...input.fundings].sort((left, right) => left.portionIndex - right.portionIndex);
+  if (fundings.length === 0
+    || (payment.status !== "paid" && !(input.allowRefunded === true && payment.status === "refunded"))
+    || payment.currency !== "USD"
+    || !Number.isSafeInteger(payment.amount) || payment.amount <= 0
+    || fundings.reduce((sum, funding) => sum + funding.amountMinor, 0) !== payment.amount
+    || new Set(fundings.map((funding) => funding.creditedBowlerId)).size !== fundings.length
+    || fundings.some((funding, index) => funding.paymentId !== payment.id
+      || funding.organizationId !== payment.organizationId
+      || funding.leagueId !== payment.leagueId
+      || funding.currency !== payment.currency
+      || funding.portionIndex !== index
+      || funding.amountMinor <= 0
+      || funding.source !== fundings[0]?.source
+      || funding.authorizationKind !== fundings[0]?.authorizationKind
+      || funding.authorizationOperationId !== fundings[0]?.authorizationOperationId
+      || funding.authorizationFingerprint !== fundings[0]?.authorizationFingerprint
+      || funding.adoptionId !== fundings[0]?.adoptionId)) {
+    throw new OwnedPaymentLedgerError("FUNDING_TENDER_PORTIONS_INVALID");
+  }
+  const fundingIds = fundings.map((funding) => funding.id);
+  const authorizationRows = await tx.select({
+    fundingId: weeklyPaymentFundingAuthorizationItems.fundingId,
+    allocationIndex: weeklyPaymentFundingAuthorizationItems.sourceAllocationIndex,
+    amountMinor: weeklyPaymentFundingAuthorizationItems.authorizedAmountMinor,
+    snapshotFingerprint: weeklyPaymentFundingAuthorizationItems.sourceSnapshotFingerprint,
+  }).from(weeklyPaymentFundingAuthorizationItems).where(and(
+    eq(weeklyPaymentFundingAuthorizationItems.organizationId, payment.organizationId),
+    eq(weeklyPaymentFundingAuthorizationItems.leagueId, payment.leagueId),
+    inArray(weeklyPaymentFundingAuthorizationItems.fundingId, fundingIds),
+  )).orderBy(asc(weeklyPaymentFundingAuthorizationItems.fundingId), asc(weeklyPaymentFundingAuthorizationItems.sourceAllocationIndex));
+  const itemsByFunding = new Map<string, typeof authorizationRows>();
+  for (const row of authorizationRows) itemsByFunding.set(row.fundingId, [...(itemsByFunding.get(row.fundingId) ?? []), row]);
+  for (const funding of fundings) {
+    const authorizationItems = (itemsByFunding.get(funding.id) ?? []).map((row) => ({
+      allocationIndex: row.allocationIndex,
+      amountMinor: row.amountMinor,
+      snapshotFingerprint: row.snapshotFingerprint,
+    }));
+    await validateOwnedFundingAuthorizationInTransaction(tx, {
+      organizationId: funding.organizationId,
+      leagueId: funding.leagueId,
+      paymentId: funding.paymentId,
+      creditedBowlerId: funding.creditedBowlerId,
+      portionIndex: funding.portionIndex,
+      amountMinor: funding.amountMinor,
+      currency: funding.currency,
+      source: funding.source,
+      authorizationKind: funding.authorizationKind,
+      authorizationOperationId: funding.authorizationOperationId,
+      authorizationItemCount: funding.authorizationItemCount,
+      authorizationFingerprint: funding.authorizationFingerprint,
+      adoptionId: funding.adoptionId,
+      recordedByUserId: funding.recordedByUserId,
+      authorizationItems,
+    }, { payment, allowRefunded: input.allowRefunded });
+  }
+}
+
+/** Validate one exact completed owned-account V3 full-tender refund using
+ * immutable source and adjustment evidence. This read helper takes no locks
+ * and deliberately does not call any balance reader. */
+export async function readCompletedOwnedPaymentRefundEvidenceInTransaction(
+  tx: PaymentOperationTransaction,
+  input: ReadCompletedOwnedPaymentRefundEvidenceInput,
+): Promise<CompletedOwnedPaymentRefundEvidence | null> {
+  const [payment] = await tx.select().from(payments).where(and(
+    eq(payments.id, input.paymentId),
+    eq(payments.organizationId, input.organizationId),
+    eq(payments.leagueId, input.leagueId),
+  )).limit(1);
+  if (!payment) return null;
+
+  const refundRows = await tx.select({ snapshot: refundPaymentOperationSnapshots, operation: paymentOperations })
+    .from(refundPaymentOperationSnapshots)
+    .innerJoin(paymentOperations, and(
+      eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
+      eq(paymentOperations.organizationId, input.organizationId),
+    )).where(and(
+      eq(refundPaymentOperationSnapshots.paymentId, input.paymentId),
+      eq(refundPaymentOperationSnapshots.leagueId, input.leagueId),
+    ));
+  if (refundRows.length > 1) throw new OwnedPaymentRefundEvidenceError();
+  const [refundRow] = refundRows;
+
+  if (!refundRow) {
+    if (payment.status === "refunded" || payment.squareRefundId !== null) throw new OwnedPaymentRefundEvidenceError();
+    return null;
+  }
+  const { snapshot: stored, operation } = refundRow;
+  if (operation.status !== "succeeded") {
+    if (payment.status === "refunded" || payment.squareRefundId !== null) throw new OwnedPaymentRefundEvidenceError();
+    return null;
+  }
+  if (stored.snapshotVersion !== REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION
+    || operation.operationType !== "refund"
+    || operation.targetKey !== `payment-refund:${input.paymentId}`
+    || (operation.leagueId !== null && operation.leagueId !== input.leagueId)
+    || operation.amountMinor !== input.amountMinor
+    || operation.amountMinor !== payment.amount
+    || operation.currency !== "USD"
+    || operation.providerName !== "square"
+    || operation.providerObjectId === null
+    || operation.completedAt === null
+    || operation.providerObjectId !== payment.squareRefundId
+    || payment.status !== "refunded"
+    || payment.paymentOperationId !== input.chargeOperationId
+    || payment.providerPaymentId !== input.providerPaymentId
+    || payment.providerPaymentId === null
+    || payment.type === "cash" || payment.type === "check") {
+    throw new OwnedPaymentRefundEvidenceError();
+  }
+
+  let snapshot;
+  try {
+    snapshot = reconstructRefundPaymentSnapshot({
+      organizationId: input.organizationId,
+      amountMinor: operation.amountMinor,
+      currency: operation.currency,
+      providerName: operation.providerName,
+      stored,
+    });
+  } catch {
+    throw new OwnedPaymentRefundEvidenceError();
+  }
+  if (snapshot.snapshotVersion !== REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION
+    || snapshot.organizationId !== input.organizationId
+    || snapshot.leagueId !== input.leagueId
+    || snapshot.paymentId !== input.paymentId
+    || snapshot.amountMinor !== input.amountMinor
+    || snapshot.currency !== "USD"
+    || snapshot.providerName !== "square"
+    || snapshot.providerPaymentId !== input.providerPaymentId
+    || snapshot.providerPaymentId !== payment.providerPaymentId
+    || !snapshot.disposition) {
+    throw new OwnedPaymentRefundEvidenceError();
+  }
+
+  const [fundings, allocations] = await Promise.all([
+    tx.select().from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, input.organizationId),
+      eq(weeklyPaymentFundings.leagueId, input.leagueId),
+      eq(weeklyPaymentFundings.paymentId, input.paymentId),
+    )).orderBy(asc(weeklyPaymentFundings.portionIndex), asc(weeklyPaymentFundings.id)),
+    tx.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, input.organizationId),
+      eq(paymentAllocations.leagueId, input.leagueId),
+      eq(paymentAllocations.paymentId, input.paymentId),
+    )).orderBy(asc(paymentAllocations.id)),
+  ]);
+  const fundingSnapshotById = new Map(snapshot.fundingSnapshot.map((row) => [row.fundingId, row]));
+  if (fundings.length === 0
+    || fundings.length !== snapshot.fundingSnapshot.length
+    || fundings.reduce((sum, row) => sum + row.amountMinor, 0) !== input.amountMinor
+    || new Set(fundings.map((row) => row.creditedBowlerId)).size !== fundings.length
+    || fundings.some((row, index) => {
+      const proof = snapshot.fundingSnapshot[index];
+      return !proof
+        || fundingSnapshotById.get(row.id) !== proof
+        || row.portionIndex !== index
+        || row.paymentId !== input.paymentId
+        || row.creditedBowlerId !== proof.creditedBowlerId
+        || row.amountMinor !== proof.fundingAmountMinor
+        || row.currency !== proof.currency;
+    })) {
+    throw new OwnedPaymentRefundEvidenceError();
+  }
+  try {
+    await validateOwnedFundingPortionsForTenderInTransaction(tx, { payment, fundings, allowRefunded: true });
+  } catch (error) {
+    if (error instanceof OwnedPaymentLedgerError) throw new OwnedPaymentRefundEvidenceError();
+    throw error;
+  }
+
+  const allAllocationIds = allocations.map((allocation) => allocation.id);
+  const [applications, releases, corrections, adjustments] = await Promise.all([
+    allAllocationIds.length === 0 ? Promise.resolve([]) : tx.select().from(paymentAllocationFundingApplications).where(and(
+      eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
+      inArray(paymentAllocationFundingApplications.allocationId, allAllocationIds),
+    )).orderBy(asc(paymentAllocationFundingApplications.createdAt), asc(paymentAllocationFundingApplications.id)),
+    allAllocationIds.length === 0 ? Promise.resolve([]) : tx.select().from(weeklyPaymentAllocationReleases).where(and(
+      eq(weeklyPaymentAllocationReleases.organizationId, input.organizationId),
+      eq(weeklyPaymentAllocationReleases.leagueId, input.leagueId),
+      inArray(weeklyPaymentAllocationReleases.sourceAllocationId, allAllocationIds),
+    )),
+    tx.select().from(paymentAllocationCorrections).where(and(
+      eq(paymentAllocationCorrections.organizationId, input.organizationId),
+      eq(paymentAllocationCorrections.leagueId, input.leagueId),
+      eq(paymentAllocationCorrections.paymentId, input.paymentId),
+    )),
+    tx.select().from(refundAllocationAdjustments).where(and(
+      eq(refundAllocationAdjustments.organizationId, input.organizationId),
+      eq(refundAllocationAdjustments.leagueId, input.leagueId),
+      eq(refundAllocationAdjustments.refundOperationId, operation.id),
+    )),
+  ]);
+
+  const allocationById = new Map(allocations.map((row) => [row.id, row]));
+  const fundingById = new Map(fundings.map((row) => [row.id, row]));
+  const applicationsByAllocation = new Map<string, typeof applications>();
+  for (const application of applications) applicationsByAllocation.set(application.allocationId, [
+    ...(applicationsByAllocation.get(application.allocationId) ?? []), application,
+  ]);
+  const releasesByAllocation = new Map<string, typeof releases>();
+  for (const release of releases) releasesByAllocation.set(release.sourceAllocationId, [
+    ...(releasesByAllocation.get(release.sourceAllocationId) ?? []), release,
+  ]);
+  const validCorrectionSourceIds = new Set(corrections.filter((correction) => {
+    const source = allocationById.get(correction.sourceAllocationId);
+    const replacement = allocationById.get(correction.replacementAllocationId);
+    return source?.state === "voided"
+      && source.paymentId === input.paymentId
+      && source.obligationId === correction.sourceObligationId
+      && source.amountMinor === correction.amountMinor
+      && source.currency === correction.currency
+      && replacement?.paymentId === input.paymentId
+      && replacement.obligationId === correction.targetObligationId
+      && replacement.amountMinor === correction.amountMinor
+      && replacement.currency === correction.currency;
+  }).map((correction) => correction.sourceAllocationId));
+  const validReleaseSourceIds = new Set<string>();
+  for (const release of releases) {
+    const application = applications.find((row) => row.id === release.fundingApplicationId);
+    const allocation = allocationById.get(release.sourceAllocationId);
+    if (application?.allocationId === release.sourceAllocationId
+      && application.paymentId === release.paymentId
+      && application.creditedBowlerId === release.creditedBowlerId
+      && application.obligationId === release.sourceObligationId
+      && application.amountMinor === release.sourceApplicationAmountMinor
+      && allocation?.paymentId === release.paymentId
+      && allocation.state === "voided"
+      && release.retainedAmountMinor === 0
+      && release.releasedAmountMinor === release.sourceApplicationAmountMinor
+      && release.replacementAllocationId === null) {
+      validReleaseSourceIds.add(release.sourceAllocationId);
+    }
+  }
+
+  const allocationSnapshotById = new Map(snapshot.allocations.map((row) => [row.allocationId, row]));
+  if (allocationSnapshotById.size !== snapshot.allocations.length || allocations.some((allocation) => {
+    const expected = allocationSnapshotById.get(allocation.id);
+    if (!expected) {
+      return allocation.state !== "voided"
+        || (!validCorrectionSourceIds.has(allocation.id) && !validReleaseSourceIds.has(allocation.id));
+    }
+    const linked = applicationsByAllocation.get(allocation.id) ?? [];
+    const application = linked[0];
+    const funding = application?.genericFundingId ? fundingById.get(application.genericFundingId) : undefined;
+    const allocationReleases = releasesByAllocation.get(allocation.id) ?? [];
+    return allocation.paymentId !== input.paymentId
+      || allocation.obligationId !== expected.obligationId
+      || allocation.amountMinor !== expected.amountMinor
+      || allocation.currency !== expected.currency
+      || allocation.reviewRequired
+      || (allocation.state !== "active" && allocation.state !== "voided")
+      || linked.length !== 1
+      || !application
+      || !funding
+      || application.genericFundingId === null
+      || application.rotatingFundingId !== null
+      || application.paymentId !== input.paymentId
+      || application.creditedBowlerId !== funding.creditedBowlerId
+      || application.sourceAmountMinor !== funding.amountMinor
+      || application.amountMinor !== allocation.amountMinor
+      || application.obligationId !== allocation.obligationId
+      || application.currency !== allocation.currency
+      || (allocation.state === "active" && allocationReleases.length !== 0)
+      || (allocation.state === "voided" && (allocationReleases.length !== 1 || !validReleaseSourceIds.has(allocation.id)));
+  })) {
+    throw new OwnedPaymentRefundEvidenceError();
+  }
+  if (snapshot.allocations.some((expected) => !allocationById.has(expected.allocationId))) {
+    throw new OwnedPaymentRefundEvidenceError();
+  }
+
+  const allocatedMinorByFundingId = new Map(snapshot.fundingSnapshot.map((funding) => [funding.fundingId, 0]));
+  for (const expected of snapshot.allocations) {
+    const allocation = allocationById.get(expected.allocationId);
+    const linkedApplications = applicationsByAllocation.get(expected.allocationId) ?? [];
+    const [application] = linkedApplications;
+    if (!allocation || linkedApplications.length !== 1 || !application
+      || application.genericFundingId === null || application.rotatingFundingId !== null) {
+      throw new OwnedPaymentRefundEvidenceError();
+    }
+    const funding = fundingById.get(application.genericFundingId);
+    const expectedFunding = fundingSnapshotById.get(application.genericFundingId);
+    if (!funding || !expectedFunding
+      || application.creditedBowlerId !== expectedFunding.creditedBowlerId
+      || application.sourceAmountMinor !== expectedFunding.fundingAmountMinor
+      || application.amountMinor !== allocation.amountMinor
+      || allocation.amountMinor !== expected.amountMinor) {
+      throw new OwnedPaymentRefundEvidenceError();
+    }
+    allocatedMinorByFundingId.set(funding.id, (allocatedMinorByFundingId.get(funding.id) ?? 0) + application.amountMinor);
+  }
+  if (snapshot.fundingSnapshot.some((funding) =>
+    funding.unusedCreditMinor + (allocatedMinorByFundingId.get(funding.fundingId) ?? 0) !== funding.fundingAmountMinor
+  )) {
+    throw new OwnedPaymentRefundEvidenceError();
+  }
+
+  const adjustmentByAllocation = new Map(adjustments.map((row) => [row.sourceAllocationId, row]));
+  if (adjustments.length !== snapshot.allocations.length || snapshot.allocations.some((expected) => {
+    const adjustment = adjustmentByAllocation.get(expected.allocationId);
+    return !adjustment
+      || adjustment.refundOperationId !== operation.id
+      || adjustment.amountMinor !== expected.amountMinor
+      || adjustment.disposition !== snapshot.disposition
+      || adjustment.snapshotFingerprint !== stored.snapshotFingerprint;
+  })) {
+    throw new OwnedPaymentRefundEvidenceError();
+  }
+
+  return {
+    refundOperationId: operation.id,
+    providerRefundId: operation.providerObjectId,
+    snapshotFingerprint: stored.snapshotFingerprint,
+    disposition: snapshot.disposition,
+  };
+}
+
+export async function recordOwnedFundingInTransaction(
+  tx: PaymentOperationTransaction,
+  input: Omit<typeof weeklyPaymentFundings.$inferInsert, "id" | "createdAt" | "provenanceFingerprint"> & {
+    authorizationItems?: ReadonlyArray<{ allocationIndex: number; amountMinor: number; snapshotFingerprint: string }>;
+    now?: string;
+  },
+): Promise<WeeklyPaymentFunding> {
+  const [lockedPayment] = await tx.select().from(payments).where(and(
+    eq(payments.id, input.paymentId),
+    eq(payments.organizationId, input.organizationId),
+    eq(payments.leagueId, input.leagueId),
+  )).limit(1).for("update");
+  const { payment, adoptionId, authorizationOperationId, authorizationItems } = await validateOwnedFundingAuthorizationInTransaction(
+    tx,
+    input,
+    { payment: lockedPayment },
+  );
   const { authorizationItems: _items, now, ...fundingInput } = input;
   const provenanceFingerprint = `lvweeklyfund:v1:${createHash("sha256").update(canonicalizePaymentOperationInput({
     ...fundingInput,
@@ -1102,6 +1604,7 @@ export async function applyOwnedFundingFifoInTransaction(
       bowlerId: lot.bowlerId,
       amountMinor: lot.amountMinor,
       availableMinor: lot.availableMinor,
+      reviewRequired: false,
       createdAt: lot.createdAt,
     })),
   ];
@@ -1235,11 +1738,7 @@ export async function releaseOwnedFundingApplicationInTransaction(
     || row.application.amountMinor > row.application.sourceAmountMinor) {
     throw new OwnedPaymentLedgerError("FUNDING_APPLICATION_NOT_RELEASABLE");
   }
-  const [payment] = await tx.select({
-    paymentOperationId: payments.paymentOperationId,
-    disputeId: payments.disputeId,
-    disputedAt: payments.disputedAt,
-  }).from(payments).where(and(
+  const [payment] = await tx.select().from(payments).where(and(
     eq(payments.id, row.application.paymentId),
     eq(payments.organizationId, input.organizationId),
     eq(payments.leagueId, input.leagueId),
@@ -1260,16 +1759,49 @@ export async function releaseOwnedFundingApplicationInTransaction(
       errorCode: paymentOperations.errorCode,
     }).from(refundPaymentOperationSnapshots)
       .innerJoin(paymentOperations, and(
-        eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
-        eq(paymentOperations.organizationId, input.organizationId),
-        eq(paymentOperations.leagueId, input.leagueId),
+      eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
+      eq(paymentOperations.organizationId, input.organizationId),
       )).where(and(
         eq(refundPaymentOperationSnapshots.paymentId, row.application.paymentId),
         eq(refundPaymentOperationSnapshots.leagueId, input.leagueId),
       )),
   ]);
-  if (disputeRows.some((dispute) => REVIEW_DISPUTE_STATES.has(dispute.state))
-    || refundRows.some((refund) => !isConfirmedNoRefundCreditOutcome(refund))) {
+  let completedOwnedRefund = false;
+  for (const refund of refundRows) {
+    if (refund.status === "succeeded") {
+      const proof = await readCompletedOwnedPaymentRefundEvidenceInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: row.application.paymentId,
+        chargeOperationId: payment.paymentOperationId ?? "",
+        providerPaymentId: payment.providerPaymentId ?? "",
+        amountMinor: payment.amount,
+      }).catch((error: unknown) => {
+        if (error instanceof OwnedPaymentRefundEvidenceError) return null;
+        throw error;
+      });
+      if (!proof) throw new OwnedPaymentLedgerError("FUNDING_SOURCE_REQUIRES_REVIEW");
+      completedOwnedRefund = true;
+    } else if (!isConfirmedNoRefundCreditOutcome(refund)) {
+      throw new OwnedPaymentLedgerError("FUNDING_SOURCE_REQUIRES_REVIEW");
+    }
+  }
+  if (payment.status === "refunded" && !completedOwnedRefund) {
+    const proof = await readCompletedOwnedPaymentRefundEvidenceInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      paymentId: row.application.paymentId,
+      chargeOperationId: payment.paymentOperationId ?? "",
+      providerPaymentId: payment.providerPaymentId ?? "",
+      amountMinor: payment.amount,
+    }).catch((error: unknown) => {
+      if (error instanceof OwnedPaymentRefundEvidenceError) return null;
+      throw error;
+    });
+    if (!proof) throw new OwnedPaymentLedgerError("FUNDING_SOURCE_REQUIRES_REVIEW");
+    completedOwnedRefund = true;
+  }
+  if (disputeRows.some((dispute) => REVIEW_DISPUTE_STATES.has(dispute.state))) {
     throw new OwnedPaymentLedgerError("FUNDING_SOURCE_REQUIRES_REVIEW");
   }
   if (row.application.rotatingFundingId !== null) {

@@ -1,6 +1,12 @@
 import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
-import { PAYMENT_OPERATION_MAX_ATTEMPTS, PAYMENT_OPERATION_MAX_LEASE_MS, type PaymentOperation } from "@shared/schema";
+import {
+  PAYMENT_OPERATION_MAX_ATTEMPTS,
+  PAYMENT_OPERATION_MAX_LEASE_MS,
+  REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION,
+  REFUND_PAYMENT_SNAPSHOT_VERSION,
+  type PaymentOperation,
+} from "@shared/schema";
 import {
   acquirePaymentOperationLease,
   finalizeRefundPaymentOperationSuccess,
@@ -96,6 +102,13 @@ export class RefundPaymentOperationExecutor {
     if (!leaseToken) throw new Error("leased refund operation has no fencing token");
     const snapshot = await getRefundPaymentOperationSnapshotForOrganization(operation.organizationId, operation.id);
     const creditRefund = snapshot !== undefined && "kind" in snapshot && snapshot.kind === "rotating_credit_refund";
+    const normalSnapshot = snapshot && !("kind" in snapshot) ? snapshot : undefined;
+    const invalidNormalSnapshot = !normalSnapshot
+      || (normalSnapshot.snapshotVersion !== REFUND_PAYMENT_SNAPSHOT_VERSION
+        && normalSnapshot.snapshotVersion !== REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION)
+      || !normalSnapshot.disposition
+      || (normalSnapshot.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_VERSION && normalSnapshot.allocations.length === 0)
+      || (normalSnapshot.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION && normalSnapshot.fundingSnapshot.length === 0);
     if (
       !snapshot
       || operation.operationType !== "refund"
@@ -105,17 +118,14 @@ export class RefundPaymentOperationExecutor {
       || snapshot.providerName !== operation.providerName
       || (creditRefund
         ? snapshot.snapshotFingerprint !== fingerprintRotatingCreditRefundSnapshot(snapshot)
-        : snapshot.snapshotVersion !== 2
-          || snapshot.disposition === undefined
-          || snapshot.disposition === null
-          || snapshot.allocations.length === 0)
+        : invalidNormalSnapshot)
     ) {
       // A legacy snapshot does not contain the immutable disposition or
       // allocation map. Even without a provider id, a crashed attempt may
       // have reached Square, so the absence of that id is not proof that the
       // provider was never called. Preserve provider truth and require
       // reconciliation rather than inventing a failed refund outcome.
-      if (snapshot && !creditRefund && snapshot.snapshotVersion === 1) {
+      if (normalSnapshot?.snapshotVersion === 1) {
         return recordPaymentOperationReconciliationRequired({
           organizationId: operation.organizationId,
           operationId: operation.id,
@@ -216,7 +226,20 @@ export class RefundPaymentOperationExecutor {
         operationId: operation.id,
         errorName: error instanceof Error ? error.name : "UnknownError",
       });
-      throw error;
+      try {
+        return await recordPaymentOperationReconciliationRequired({
+          organizationId: operation.organizationId,
+          operationId: operation.id,
+          leaseToken,
+          providerObjectId: result.refundId,
+          errorCode: "REFUND_FINALIZATION_FAILED",
+          now: this.now(),
+        });
+      } catch {
+        const current = await getPaymentOperationForOrganization(operation.organizationId, operation.id);
+        if (current?.status === "succeeded" && current.providerObjectId === result.refundId) return current;
+        throw error;
+      }
     }
   }
 

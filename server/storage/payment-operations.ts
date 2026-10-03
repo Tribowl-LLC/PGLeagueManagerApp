@@ -14,6 +14,9 @@ import {
   paymentOperationStandingAutopayParticipants,
   paymentObligations,
   paymentAllocations,
+  paymentAllocationFundingApplications,
+  weeklyPaymentAllocationReleases,
+  weeklyPaymentFundings,
   refundAllocationAdjustments,
   autopayConsents,
   autopayConsentPartners,
@@ -1254,7 +1257,7 @@ export function getInteractiveCardSaveResponse(operation: PaymentOperation): {
   return { savedCardId: null, cardSaveStatus: "not_requested" };
 }
 
-async function loadRefundPaymentOperationSnapshot(
+export async function loadRefundPaymentOperationSnapshotInTransaction(
   executor: typeof db | PaymentOperationTransaction,
   operation: PaymentOperation,
 ): Promise<RefundPaymentSemanticSnapshot | undefined> {
@@ -1271,6 +1274,8 @@ async function loadRefundPaymentOperationSnapshot(
     stored,
   });
 }
+
+const loadRefundPaymentOperationSnapshot = loadRefundPaymentOperationSnapshotInTransaction;
 
 async function loadRotatingCreditRefundPaymentOperationSnapshot(
   executor: typeof db | PaymentOperationTransaction,
@@ -2269,42 +2274,128 @@ async function applyRefundAllocationAdjustmentsInTransaction(
     allowCreate: boolean;
   },
 ): Promise<void> {
-  if (input.snapshot.snapshotVersion !== 2 || !input.snapshot.disposition || input.snapshot.allocations.length === 0) {
+  if (input.snapshot.snapshotVersion !== 2 && input.snapshot.snapshotVersion !== 3) {
     throw new PaymentOperationImmutableMismatchError();
   }
-  const snapshotFingerprint = fingerprintRefundPaymentSnapshot(input.snapshot);
-  const expected = new Map(input.snapshot.allocations.map((allocation) => [allocation.allocationId, allocation]));
-  if (expected.size !== input.snapshot.allocations.length) {
+  const snapshot = input.snapshot;
+  const isOwnedFundingRefund = snapshot.snapshotVersion === 3;
+  if (!snapshot.disposition
+    || (!isOwnedFundingRefund && snapshot.allocations.length === 0)
+    || (isOwnedFundingRefund && snapshot.fundingSnapshot.length === 0)) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const expectedAllocatedMinor = snapshot.allocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+  if (isOwnedFundingRefund) {
+    const fundingRows = await tx.select().from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, input.operation.organizationId),
+      eq(weeklyPaymentFundings.leagueId, snapshot.leagueId),
+      eq(weeklyPaymentFundings.paymentId, input.payment.id),
+    )).orderBy(asc(weeklyPaymentFundings.portionIndex), asc(weeklyPaymentFundings.id)).for("share");
+    const expectedFunding = new Map(snapshot.fundingSnapshot.map((funding) => [funding.fundingId, funding]));
+    const expectedFundingTotal = snapshot.fundingSnapshot.reduce((sum, funding) => sum + funding.fundingAmountMinor, 0);
+    const expectedUnusedTotal = snapshot.fundingSnapshot.reduce((sum, funding) => sum + funding.unusedCreditMinor, 0);
+    if (expectedFunding.size !== snapshot.fundingSnapshot.length
+      || expectedFundingTotal !== input.operation.amountMinor
+      || expectedAllocatedMinor + expectedUnusedTotal !== input.operation.amountMinor
+      || fundingRows.length !== expectedFunding.size
+      || fundingRows.some((funding) => {
+        const expectedFundingRow = expectedFunding.get(funding.id);
+        return !expectedFundingRow
+          || funding.paymentId !== input.payment.id
+          || funding.creditedBowlerId !== expectedFundingRow.creditedBowlerId
+          || funding.amountMinor !== expectedFundingRow.fundingAmountMinor
+          || funding.currency !== expectedFundingRow.currency;
+      })) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+  } else if (expectedAllocatedMinor !== input.operation.amountMinor) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const snapshotFingerprint = fingerprintRefundPaymentSnapshot(snapshot);
+  const expected = new Map(snapshot.allocations.map((allocation) => [allocation.allocationId, allocation]));
+  if (expected.size !== snapshot.allocations.length) {
     throw new PaymentOperationImmutableMismatchError();
   }
   const sourceAllocations = await tx.select().from(paymentAllocations).where(and(
     eq(paymentAllocations.organizationId, input.operation.organizationId),
-    eq(paymentAllocations.leagueId, input.snapshot.leagueId),
+    eq(paymentAllocations.leagueId, snapshot.leagueId),
     eq(paymentAllocations.paymentId, input.payment.id),
     inArray(paymentAllocations.id, [...expected.keys()]),
   )).orderBy(asc(paymentAllocations.id)).for("update");
   if (sourceAllocations.length !== expected.size || sourceAllocations.some((allocation) => {
-    const snapshot = expected.get(allocation.id);
-    return !snapshot
-      || allocation.state !== "active"
-      || allocation.obligationId !== snapshot.obligationId
-      || allocation.amountMinor !== snapshot.amountMinor
-      || allocation.currency !== snapshot.currency;
-  }) || sourceAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0) !== input.operation.amountMinor) {
+    const expectedAllocation = expected.get(allocation.id);
+    return !expectedAllocation
+      || (allocation.state !== "active" && !(isOwnedFundingRefund && !input.allowCreate && allocation.state === "voided"))
+      || allocation.obligationId !== expectedAllocation.obligationId
+      || allocation.amountMinor !== expectedAllocation.amountMinor
+      || allocation.currency !== expectedAllocation.currency;
+  }) || sourceAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0) !== expectedAllocatedMinor) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  if (isOwnedFundingRefund) {
+    const sourceAllocationIds = sourceAllocations.map((allocation) => allocation.id);
+    const [releases, applications] = sourceAllocationIds.length === 0 ? [[], []] : await Promise.all([
+      tx.select().from(weeklyPaymentAllocationReleases).where(and(
+        eq(weeklyPaymentAllocationReleases.organizationId, input.operation.organizationId),
+        eq(weeklyPaymentAllocationReleases.leagueId, snapshot.leagueId),
+        inArray(weeklyPaymentAllocationReleases.sourceAllocationId, sourceAllocationIds),
+      )),
+      tx.select().from(paymentAllocationFundingApplications).where(and(
+        eq(paymentAllocationFundingApplications.organizationId, input.operation.organizationId),
+        eq(paymentAllocationFundingApplications.leagueId, snapshot.leagueId),
+        inArray(paymentAllocationFundingApplications.allocationId, sourceAllocationIds),
+      )),
+    ]);
+    const releasesByAllocation = new Map<string, typeof releases>();
+    for (const release of releases) releasesByAllocation.set(release.sourceAllocationId, [
+      ...(releasesByAllocation.get(release.sourceAllocationId) ?? []), release,
+    ]);
+    const applicationsByAllocation = new Map<string, typeof applications>();
+    for (const application of applications) applicationsByAllocation.set(application.allocationId, [
+      ...(applicationsByAllocation.get(application.allocationId) ?? []), application,
+    ]);
+    if (sourceAllocations.some((allocation) => {
+      const allocationReleases = releasesByAllocation.get(allocation.id) ?? [];
+      const linkedApplications = applicationsByAllocation.get(allocation.id) ?? [];
+      if (linkedApplications.length !== 1) return true;
+      const [application] = linkedApplications;
+      if (!application
+        || application.paymentId !== input.payment.id
+        || application.genericFundingId === null
+        || application.rotatingFundingId !== null
+        || application.amountMinor !== allocation.amountMinor
+        || application.obligationId !== allocation.obligationId
+        || application.currency !== allocation.currency) return true;
+      if (allocation.state === "active") return allocationReleases.length !== 0;
+      if (input.allowCreate || allocationReleases.length !== 1) return true;
+      const release = allocationReleases[0];
+      return !release
+        || release.fundingApplicationId !== application.id
+        || release.paymentId !== input.payment.id
+        || release.creditedBowlerId !== application.creditedBowlerId
+        || release.sourceObligationId !== allocation.obligationId
+        || release.sourceApplicationAmountMinor !== allocation.amountMinor
+        || release.releasedAmountMinor !== allocation.amountMinor
+        || release.retainedAmountMinor !== 0
+        || release.replacementAllocationId !== null;
+    })) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+  } else if (sourceAllocations.some((allocation) => allocation.state !== "active")) {
     throw new PaymentOperationImmutableMismatchError();
   }
   for (const allocation of sourceAllocations) {
-    const snapshot = expected.get(allocation.id);
-    if (!snapshot) throw new PaymentOperationImmutableMismatchError();
+    const expectedAllocation = expected.get(allocation.id);
+    if (!expectedAllocation) throw new PaymentOperationImmutableMismatchError();
     const [existing] = await tx.select().from(refundAllocationAdjustments).where(and(
       eq(refundAllocationAdjustments.organizationId, input.operation.organizationId),
-      eq(refundAllocationAdjustments.leagueId, input.snapshot.leagueId),
+      eq(refundAllocationAdjustments.leagueId, snapshot.leagueId),
       eq(refundAllocationAdjustments.sourceAllocationId, allocation.id),
     )).limit(1).for("update");
     if (existing) {
       if (existing.refundOperationId !== input.operation.id
         || existing.amountMinor !== allocation.amountMinor
-        || existing.disposition !== input.snapshot.disposition
+        || existing.disposition !== snapshot.disposition
         || existing.snapshotFingerprint !== snapshotFingerprint) {
         throw new PaymentOperationImmutableMismatchError();
       }
@@ -2313,7 +2404,7 @@ async function applyRefundAllocationAdjustmentsInTransaction(
     if (!input.allowCreate) throw new PaymentOperationImmutableMismatchError();
     await tx.insert(refundAllocationAdjustments).values({
       organizationId: input.operation.organizationId,
-      leagueId: input.snapshot.leagueId,
+      leagueId: snapshot.leagueId,
       refundOperationId: input.operation.id,
       sourceAllocationId: allocation.id,
       amountMinor: allocation.amountMinor,
@@ -2325,19 +2416,19 @@ async function applyRefundAllocationAdjustmentsInTransaction(
   const obligationIds = [...new Set(sourceAllocations.map((allocation) => allocation.obligationId))];
   const obligations = await tx.select().from(paymentObligations).where(and(
     eq(paymentObligations.organizationId, input.operation.organizationId),
-    eq(paymentObligations.leagueId, input.snapshot.leagueId),
+    eq(paymentObligations.leagueId, snapshot.leagueId),
     inArray(paymentObligations.id, obligationIds),
   )).orderBy(asc(paymentObligations.id)).for("update");
   if (obligations.length !== obligationIds.length) throw new PaymentOperationImmutableMismatchError();
   const allAllocations = await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
     eq(paymentAllocations.organizationId, input.operation.organizationId),
-    eq(paymentAllocations.leagueId, input.snapshot.leagueId),
+    eq(paymentAllocations.leagueId, snapshot.leagueId),
     eq(paymentAllocations.state, "active"),
     inArray(paymentAllocations.obligationId, obligationIds),
   ));
   const allAdjustments = await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
     eq(refundAllocationAdjustments.organizationId, input.operation.organizationId),
-    eq(refundAllocationAdjustments.leagueId, input.snapshot.leagueId),
+    eq(refundAllocationAdjustments.leagueId, snapshot.leagueId),
     inArray(refundAllocationAdjustments.sourceAllocationId, allAllocations.map((allocation) => allocation.id)),
   ));
   const adjustmentsByAllocationId = new Map(allAdjustments.map((adjustment) => [adjustment.sourceAllocationId, adjustment]));
@@ -2350,7 +2441,7 @@ async function applyRefundAllocationAdjustmentsInTransaction(
       grossAllocatedMinor: linkedAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
       adjustments: linkedAllocations.flatMap((allocation) => {
         const adjustment = adjustmentsByAllocationId.get(allocation.id);
-        return adjustment ? [{ amountMinor: adjustment.amountMinor, disposition: adjustment.disposition }] : [];
+      return adjustment ? [{ amountMinor: adjustment.amountMinor, disposition: adjustment.disposition }] : [];
       }),
     });
     const state = balance.outstandingMinor === 0

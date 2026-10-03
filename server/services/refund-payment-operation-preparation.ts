@@ -1,12 +1,15 @@
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
 import {
   REFUND_PAYMENT_SNAPSHOT_VERSION,
+  REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION,
   bowlers,
   leagues,
   locations,
   paymentAllocationCorrections,
   paymentOperations,
   paymentAllocations,
+  type RefundPaymentFundingSnapshotV3,
+  weeklyPaymentFundings,
   paymentObligations,
   paymentOperationRosterSnapshotItems,
   payments,
@@ -18,10 +21,13 @@ import { db } from "../db.js";
 import { lockLeagueSchedule } from "../storage/league-schedule-lock.js";
 import {
   createOrGetRefundPaymentOperation,
+  loadRefundPaymentOperationSnapshotInTransaction,
+  PaymentOperationImmutableMismatchError,
   persistRefundPaymentOperationSnapshot,
   REFUND_TARGET_PREFIX,
   type PaymentOperationTransaction,
 } from "../storage/payment-operations.js";
+import { readOwnedGenericFundingSourcesByPaymentInTransaction, readOwnedLedgerAdoptionInTransaction, validateOwnedFundingPortionsForTenderInTransaction } from "./owned-payment-ledger.js";
 import type { RefundPaymentSemanticSnapshot } from "./refund-payment-operation-snapshot.js";
 import { REFUND_PAYMENT_DISPOSITIONS } from "@shared/schema";
 
@@ -45,6 +51,14 @@ function normalizeReason(value: unknown): { reason: string; requestedReason: str
   if (!reason) return { reason: DEFAULT_REFUND_REASON, requestedReason: null };
   if (reason.length > 192) throw new RefundPreparationError("Refund reason must be 192 characters or fewer", 400, "VALIDATION_ERROR");
   return { reason, requestedReason: reason };
+}
+
+function refundSourceMismatch(): never {
+  throw new RefundPreparationError(
+    "This payment's owned funding evidence does not match the captured tender",
+    409,
+    "REFUND_FUNDING_EVIDENCE_MISMATCH",
+  );
 }
 
 export interface PrepareRefundPaymentOperationInput {
@@ -138,8 +152,93 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
     if (!owned.payment.providerPaymentId) {
       throw new RefundPreparationError("Payment has no provider charge to refund", 400, "INVALID_PROVIDER_PAYMENT");
     }
-    if (typeof input.disposition !== "string" || !REFUND_PAYMENT_DISPOSITIONS.includes(input.disposition as typeof REFUND_PAYMENT_DISPOSITIONS[number])) {
-      throw new RefundPreparationError("Choose whether the refunded amount is still owed or should be waived", 400, "DISPOSITION_REQUIRED");
+    const hasDisposition = input.disposition !== undefined && input.disposition !== null && input.disposition !== "";
+    if (hasDisposition && (typeof input.disposition !== "string"
+      || !REFUND_PAYMENT_DISPOSITIONS.includes(input.disposition as typeof REFUND_PAYMENT_DISPOSITIONS[number]))) {
+      throw new RefundPreparationError("Choose whether the refunded amount is still owed or should be waived", 400, "VALIDATION_ERROR");
+    }
+    const requestedDisposition = hasDisposition
+      ? input.disposition as typeof REFUND_PAYMENT_DISPOSITIONS[number]
+      : null;
+    const normalizedReason = normalizeReason(input.reason);
+    const [existing] = await tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.organizationId, organizationId),
+      eq(paymentOperations.operationType, "refund"),
+      eq(paymentOperations.targetKey, `${REFUND_TARGET_PREFIX}${input.paymentId}`),
+    )).limit(1);
+    if (existing) {
+      if ((existing.leagueId !== null && existing.leagueId !== owned.payment.leagueId)
+        || existing.amountMinor !== owned.payment.amount
+        || existing.currency !== "USD"
+        || existing.providerName !== "square") {
+        throw new PaymentOperationImmutableMismatchError();
+      }
+      const storedSnapshot = await loadRefundPaymentOperationSnapshotInTransaction(tx, existing);
+      if (!storedSnapshot
+        || storedSnapshot.paymentId !== input.paymentId
+        || storedSnapshot.leagueId !== owned.payment.leagueId
+        || storedSnapshot.providerPaymentId !== owned.payment.providerPaymentId
+        || storedSnapshot.reason !== normalizedReason.reason
+        || storedSnapshot.requestedReason !== normalizedReason.requestedReason
+        || (storedSnapshot.snapshotVersion !== 1
+          && !(storedSnapshot.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION
+            && storedSnapshot.allocations.length === 0)
+          && (requestedDisposition === null || storedSnapshot.disposition !== requestedDisposition))) {
+        throw new PaymentOperationImmutableMismatchError();
+      }
+      return { operation: existing, snapshot: storedSnapshot };
+    }
+
+    const adoption = await readOwnedLedgerAdoptionInTransaction(tx, {
+      organizationId,
+      leagueId: owned.payment.leagueId,
+    });
+    let fundingSnapshot: RefundPaymentFundingSnapshotV3[] | undefined;
+    if (adoption) {
+      const [fundingRows, fundingSources] = await Promise.all([
+        tx.select().from(weeklyPaymentFundings).where(and(
+          eq(weeklyPaymentFundings.organizationId, organizationId),
+          eq(weeklyPaymentFundings.leagueId, owned.payment.leagueId),
+          eq(weeklyPaymentFundings.paymentId, input.paymentId),
+        )).orderBy(asc(weeklyPaymentFundings.portionIndex), asc(weeklyPaymentFundings.id)),
+        readOwnedGenericFundingSourcesByPaymentInTransaction(tx, {
+          organizationId,
+          leagueId: owned.payment.leagueId,
+          paymentId: input.paymentId,
+        }),
+      ]);
+      if (fundingRows.length === 0
+        || fundingRows.length !== fundingSources.length
+        || fundingSources.some((source, index) => {
+          const funding = fundingRows[index];
+          return !funding
+            || source.reviewRequired
+            || source.fundingId !== funding.id
+            || source.paymentId !== input.paymentId
+            || source.creditedBowlerId !== funding.creditedBowlerId
+            || source.portionIndex !== funding.portionIndex
+            || source.amountMinor !== funding.amountMinor
+            || source.availableMinor < 0
+            || source.availableMinor > source.amountMinor;
+        })) {
+        throw new RefundPreparationError("This payment's owned funding evidence requires review before refunding", 409, "REFUND_FUNDING_EVIDENCE_MISMATCH");
+      }
+      try {
+        await validateOwnedFundingPortionsForTenderInTransaction(tx, {
+          payment: owned.payment,
+          fundings: fundingRows,
+        });
+      } catch {
+        refundSourceMismatch();
+      }
+      fundingSnapshot = fundingSources.map((source) => ({
+        fundingId: source.fundingId,
+        paymentId: source.paymentId,
+        creditedBowlerId: source.creditedBowlerId,
+        fundingAmountMinor: source.amountMinor,
+        unusedCreditMinor: source.availableMinor,
+        currency: "USD" as const,
+      }));
     }
     const sourceAllocations = await tx.select({
       id: paymentAllocations.id,
@@ -189,8 +288,19 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
     if (refundSourceAllocations.some((allocation) => allocation.reviewRequired)) {
       throw new RefundPreparationError("This payment has allocation evidence requiring review before refunding", 409, "REFUND_ALLOCATION_REVIEW_REQUIRED");
     }
-    if (refundSourceAllocations.length === 0 || refundSourceAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0) !== owned.payment.amount) {
+    const activeAllocationMinor = refundSourceAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+    if ((!adoption && (refundSourceAllocations.length === 0 || activeAllocationMinor !== owned.payment.amount))
+      || (adoption && (fundingSnapshot === undefined
+        || fundingSnapshot.reduce((sum, funding) => sum + funding.fundingAmountMinor, 0) !== owned.payment.amount
+        || activeAllocationMinor + fundingSnapshot.reduce((sum, funding) => sum + funding.unusedCreditMinor, 0) !== owned.payment.amount))) {
       throw new RefundPreparationError("This payment's canonical allocation evidence does not match the full refund amount", 409, "REFUND_ALLOCATION_EVIDENCE_MISMATCH");
+    }
+    // A funding-only V3 refund has no debt disposition to make. Persist the
+    // same inert default for every such request so retries remain identical.
+    const disposition = requestedDisposition
+      ?? (adoption && refundSourceAllocations.length === 0 ? "still_owed" : null);
+    if (disposition === null) {
+      throw new RefundPreparationError("Choose whether the refunded amount is still owed or should be waived", 400, "DISPOSITION_REQUIRED");
     }
     const sourceObligationIds = [...new Set(refundSourceAllocations.map((allocation) => allocation.obligationId))];
     if (sourceObligationIds.length > 0) {
@@ -231,22 +341,11 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
         throw new RefundPreparationError("A payment operation is already collecting an affected obligation; retry the refund after it completes", 409, "REFUND_ALLOCATION_RESERVED");
       }
     }
-    const [existing] = await tx.select().from(paymentOperations).where(and(
-      eq(paymentOperations.organizationId, organizationId),
-      eq(paymentOperations.operationType, "refund"),
-      eq(paymentOperations.targetKey, `${REFUND_TARGET_PREFIX}${input.paymentId}`),
-    )).limit(1);
-    if (!existing) {
-      if (owned.payment.status === "refunded") {
-        throw new RefundPreparationError("Payment has already been refunded", 400, "ALREADY_REFUNDED");
-      }
-      if (owned.payment.status !== "paid") {
-        throw new RefundPreparationError("Only paid payments can be refunded", 400, "INVALID_STATUS");
-      }
-    } else if (existing.status === "succeeded" && owned.payment.status !== "refunded") {
-      throw new RefundPreparationError("Refund state requires reconciliation", 409, "REFUND_STATE_CONFLICT");
-    } else if (existing.status !== "succeeded" && owned.payment.status !== "paid") {
-      throw new RefundPreparationError("Refund state requires reconciliation", 409, "REFUND_STATE_CONFLICT");
+    if (owned.payment.status === "refunded") {
+      throw new RefundPreparationError("Payment has already been refunded", 400, "ALREADY_REFUNDED");
+    }
+    if (owned.payment.status !== "paid") {
+      throw new RefundPreparationError("Only paid payments can be refunded", 400, "INVALID_STATUS");
     }
     if (locationId === null) {
       throw new RefundPreparationError(
@@ -265,8 +364,30 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
       providerName: "square",
       now: input.now,
     }, tx);
-    const normalizedReason = normalizeReason(input.reason);
-    const snapshot: RefundPaymentSemanticSnapshot = {
+    const snapshot: RefundPaymentSemanticSnapshot = adoption ? {
+      snapshotVersion: REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION,
+      organizationId,
+      amountMinor: owned.payment.amount,
+      currency: "USD",
+      providerName: "square",
+      paymentId: input.paymentId,
+      leagueId: owned.payment.leagueId,
+      locationId,
+      providerPaymentId: owned.payment.providerPaymentId,
+      reason: normalizedReason.reason,
+      requestedReason: normalizedReason.requestedReason,
+      requestedByUserId: input.requestedByUserId,
+      requestedByRole: input.requestedByRole,
+      requestedByOrganizationId: input.requestedByOrganizationId,
+      disposition,
+      allocations: refundSourceAllocations.map((allocation) => ({
+        allocationId: allocation.id,
+        obligationId: allocation.obligationId,
+        amountMinor: allocation.amountMinor,
+        currency: allocation.currency as "USD",
+      })),
+      fundingSnapshot: fundingSnapshot ?? [],
+    } : {
       snapshotVersion: REFUND_PAYMENT_SNAPSHOT_VERSION,
       organizationId,
       amountMinor: owned.payment.amount,
@@ -281,7 +402,7 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
       requestedByUserId: input.requestedByUserId,
       requestedByRole: input.requestedByRole,
       requestedByOrganizationId: input.requestedByOrganizationId,
-      disposition: input.disposition as typeof REFUND_PAYMENT_DISPOSITIONS[number],
+      disposition,
       allocations: refundSourceAllocations.map((allocation) => ({
         allocationId: allocation.id,
         obligationId: allocation.obligationId,

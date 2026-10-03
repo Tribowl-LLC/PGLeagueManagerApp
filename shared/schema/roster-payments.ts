@@ -482,7 +482,7 @@ export const refundAllocationAdjustments = pgTable("refund_allocation_adjustment
   sourceAllocationUnique: uniqueIndex("refund_allocation_adjustments_source_allocation_unique").on(table.organizationId, table.leagueId, table.sourceAllocationId),
   amountCheck: check("refund_allocation_adjustments_amount_check", sql`${table.amountMinor} > 0`),
   dispositionCheck: check("refund_allocation_adjustments_disposition_check", sql`${table.disposition} IN (${refundPaymentDispositions})`),
-  fingerprintCheck: check("refund_allocation_adjustments_fingerprint_check", sql`${table.snapshotFingerprint} ~ '^lvpayexecrf:v2:[0-9a-f]{64}$'`),
+  fingerprintCheck: check("refund_allocation_adjustments_fingerprint_check", sql`${table.snapshotFingerprint} ~ '^lvpayexecrf:v[23]:[0-9a-f]{64}$'`),
 }));
 
 /** Whole-tender correction evidence. A cash/check correction voids the

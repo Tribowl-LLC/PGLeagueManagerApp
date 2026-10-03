@@ -2,15 +2,18 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   REFUND_PAYMENT_DISPOSITIONS,
+  REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION,
   REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION,
   REFUND_PAYMENT_SNAPSHOT_VERSION,
   type RefundPaymentAllocationSnapshot,
+  type RefundPaymentFundingSnapshotV3,
 } from "@shared/schema";
 import { decrypt, encrypt } from "../utils/crypto.js";
 import { canonicalizePaymentOperationInput } from "./payment-operation-idempotency.js";
 
 export const REFUND_PAYMENT_SNAPSHOT_FINGERPRINT_PREFIX = "lvpayexecrf:v1:" as const;
 export const REFUND_PAYMENT_SNAPSHOT_V2_FINGERPRINT_PREFIX = "lvpayexecrf:v2:" as const;
+export const REFUND_PAYMENT_SNAPSHOT_V3_FINGERPRINT_PREFIX = "lvpayexecrf:v3:" as const;
 
 const baseSemanticSnapshotSchema = z.object({
   organizationId: z.number().int().positive(),
@@ -49,9 +52,47 @@ const currentSemanticSnapshotSchema = baseSemanticSnapshotSchema.extend({
   }),
 });
 
+const fundingSnapshotSchema = z.object({
+  fundingId: z.string().uuid(),
+  paymentId: z.number().int().positive(),
+  creditedBowlerId: z.number().int().positive(),
+  fundingAmountMinor: z.number().int().positive(),
+  unusedCreditMinor: z.number().int().nonnegative(),
+  currency: z.literal("USD"),
+}).strict();
+
+const accountFundingSemanticSnapshotSchema = baseSemanticSnapshotSchema.extend({
+  snapshotVersion: z.literal(REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION),
+  disposition: z.enum(REFUND_PAYMENT_DISPOSITIONS),
+  allocations: z.array(allocationSnapshotSchema).superRefine((allocations, context) => {
+    if (new Set(allocations.map((allocation) => allocation.allocationId)).size !== allocations.length) {
+      context.addIssue({ code: "custom", message: "refund allocation snapshot contains duplicate allocation evidence" });
+    }
+  }),
+  fundingSnapshot: z.array(fundingSnapshotSchema).min(1).superRefine((fundings, context) => {
+    if (new Set(fundings.map((funding) => funding.fundingId)).size !== fundings.length) {
+      context.addIssue({ code: "custom", message: "refund funding snapshot contains duplicate funding evidence" });
+    }
+  }),
+}).superRefine((snapshot, context) => {
+  if (snapshot.fundingSnapshot.some((funding) => funding.paymentId !== snapshot.paymentId)) {
+    context.addIssue({ code: "custom", path: ["fundingSnapshot"], message: "refund funding evidence must belong to the refunded payment" });
+  }
+  if (snapshot.fundingSnapshot.some((funding) => funding.unusedCreditMinor > funding.fundingAmountMinor)) {
+    context.addIssue({ code: "custom", path: ["fundingSnapshot"], message: "unused refund credit cannot exceed its original funding portion" });
+  }
+  const originalFundingMinor = snapshot.fundingSnapshot.reduce((sum, funding) => sum + funding.fundingAmountMinor, 0);
+  const unusedCreditMinor = snapshot.fundingSnapshot.reduce((sum, funding) => sum + funding.unusedCreditMinor, 0);
+  const activeAllocationMinor = snapshot.allocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+  if (originalFundingMinor !== snapshot.amountMinor || activeAllocationMinor + unusedCreditMinor !== snapshot.amountMinor) {
+    context.addIssue({ code: "custom", path: ["fundingSnapshot"], message: "funding portions, active allocations, and unused credit must conserve the full tender" });
+  }
+});
+
 const semanticSnapshotSchema = z.discriminatedUnion("snapshotVersion", [
   legacySemanticSnapshotSchema,
   currentSemanticSnapshotSchema,
+  accountFundingSemanticSnapshotSchema,
 ]);
 
 export type RefundPaymentSemanticSnapshot = z.infer<typeof semanticSnapshotSchema>;
@@ -70,6 +111,7 @@ export interface StoredRefundPaymentSnapshot {
   requestedByOrganizationId: number | null;
   disposition: "still_owed" | "waived" | null;
   allocationSnapshot: RefundPaymentAllocationSnapshot[];
+  fundingSnapshot: RefundPaymentFundingSnapshotV3[];
 }
 
 export function validateRefundPaymentSnapshot(value: unknown): RefundPaymentSemanticSnapshot {
@@ -81,7 +123,12 @@ export function fingerprintRefundPaymentSnapshot(snapshot: RefundPaymentSemantic
   const digest = createHash("sha256")
     .update(canonicalizePaymentOperationInput(validated))
     .digest("hex");
-  return `${validated.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION ? REFUND_PAYMENT_SNAPSHOT_FINGERPRINT_PREFIX : REFUND_PAYMENT_SNAPSHOT_V2_FINGERPRINT_PREFIX}${digest}`;
+  const prefix = validated.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION
+    ? REFUND_PAYMENT_SNAPSHOT_FINGERPRINT_PREFIX
+    : validated.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_VERSION
+      ? REFUND_PAYMENT_SNAPSHOT_V2_FINGERPRINT_PREFIX
+      : REFUND_PAYMENT_SNAPSHOT_V3_FINGERPRINT_PREFIX;
+  return `${prefix}${digest}`;
 }
 
 export function encryptRefundPaymentSnapshot(snapshot: RefundPaymentSemanticSnapshot) {
@@ -104,6 +151,14 @@ export function encryptRefundPaymentSnapshot(snapshot: RefundPaymentSemanticSnap
       ...encrypted,
       disposition: validated.disposition,
       allocationSnapshot: validated.allocations,
+    };
+  }
+  if (validated.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION) {
+    return {
+      ...encrypted,
+      disposition: validated.disposition,
+      allocationSnapshot: validated.allocations,
+      fundingSnapshot: validated.fundingSnapshot,
     };
   }
   return encrypted;
@@ -145,6 +200,18 @@ export function reconstructRefundPaymentSnapshot(input: {
     }
     return reconstructed;
   }
+  if (input.stored.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION) {
+    const reconstructed = validateRefundPaymentSnapshot({
+      ...common,
+      disposition: input.stored.disposition,
+      allocations: input.stored.allocationSnapshot,
+      fundingSnapshot: input.stored.fundingSnapshot,
+    });
+    if (fingerprintRefundPaymentSnapshot(reconstructed) !== input.stored.snapshotFingerprint) {
+      throw new Error("refund payment snapshot fingerprint does not match its immutable contents");
+    }
+    return reconstructed;
+  }
   const reconstructed = validateRefundPaymentSnapshot(common);
   if (fingerprintRefundPaymentSnapshot(reconstructed) !== input.stored.snapshotFingerprint) {
     throw new Error("refund payment snapshot fingerprint does not match its immutable contents");
@@ -168,9 +235,12 @@ export function refundReplaySemanticsMatch(
     && left.requestedReason === right.requestedReason
     && left.snapshotVersion === right.snapshotVersion
     && (left.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION
-      || (
-        right.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_VERSION
+      || (right.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_VERSION
+        && left.disposition === right.disposition
+        && JSON.stringify(left.allocations) === JSON.stringify(right.allocations))
+      || (left.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION
+        && right.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION
         && left.disposition === right.disposition
         && JSON.stringify(left.allocations) === JSON.stringify(right.allocations)
-      ));
+        && JSON.stringify(left.fundingSnapshot) === JSON.stringify(right.fundingSnapshot)));
 }

@@ -35,6 +35,7 @@ function lot(overrides: Partial<OwnedPaymentFundingLot> & Pick<OwnedPaymentFundi
     paymentId: 50,
     bowlerId: 5,
     amountMinor: overrides.availableMinor,
+    reviewRequired: false,
     ...overrides,
   };
 }
