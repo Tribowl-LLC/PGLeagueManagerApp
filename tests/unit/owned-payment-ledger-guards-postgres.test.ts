@@ -30,6 +30,7 @@ import {
   teams,
   teamPaymentSlots,
   users,
+  weeklyPaymentAllocationReleases,
   weeklyPaymentFundings,
   weeklyPaymentLedgerAdoptions,
   weeklyPaymentWeekConfirmations,
@@ -323,11 +324,12 @@ async function createV4Tender(amountMinor: number) {
   });
 }
 
-async function createWorksheetDebt(input: { amountMinor: number; name: string }) {
-  const [bowler] = await db.insert(bowlers).values({
+async function createWorksheetDebt(input: { amountMinor: number; name: string; bowlerId?: number }) {
+  const bowlerId = input.bowlerId ?? (await db.insert(bowlers).values({
     name: `${input.name} ${suffix}`,
     organizationId,
-  }).returning({ id: bowlers.id });
+  }).returning({ id: bowlers.id }))[0]?.id;
+  if (!bowlerId) throw new Error("worksheet debt payer was not created");
   const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
     organizationId,
     leagueId,
@@ -337,7 +339,7 @@ async function createWorksheetDebt(input: { amountMinor: number; name: string })
     slotIndex: null,
     positionIndex: null,
     responsibilityKind: "worksheet",
-    payerBowlerId: bowler.id,
+    payerBowlerId: bowlerId,
     mainBowlerId: null,
     substituteBowlerId: null,
     policy: null,
@@ -354,7 +356,7 @@ async function createWorksheetDebt(input: { amountMinor: number; name: string })
     occurrenceId,
     responsibilityId: responsibility.id,
     component: "full",
-    payerBowlerId: bowler.id,
+    payerBowlerId: bowlerId,
     amountMinor: input.amountMinor,
     currency: "USD",
     dueAt: "2038-02-01T19:00:00.000Z",
@@ -362,7 +364,7 @@ async function createWorksheetDebt(input: { amountMinor: number; name: string })
     state: "open",
     createdByUserId: actorUserId,
   }).returning({ id: paymentObligations.id });
-  return { bowlerId: bowler.id, responsibilityId: responsibility.id, responsibilityKey: responsibility.responsibilityKey, obligationId: obligation.id };
+  return { bowlerId, responsibilityId: responsibility.id, responsibilityKey: responsibility.responsibilityKey, obligationId: obligation.id };
 }
 
 async function createRotatingProviderFunding(input: { bowlerId: number; amountMinor: number }) {
@@ -971,6 +973,150 @@ describe("owned payment SQL guards on PostgreSQL", () => {
       eq(weeklyPaymentFundings.paymentId, source.paymentId),
     ));
     expect(after[0]?.count).toBe(before[0]?.count);
+  });
+
+  it.each(["ledger_adoption", "worksheet_correction"] as const)(
+    "reopens a fully released owned obligation for %s evidence in the release transaction",
+    async (reason) => {
+      const debt = await createWorksheetDebt({
+        amountMinor: 2_500,
+        name: `Owned Release Reopen ${reason}`,
+        bowlerId: creditedBowlerId,
+      });
+      const source = await createV4Tender(1_000);
+      const application = await db.transaction((tx) => insertApplication(tx, {
+        paymentId: source.paymentId,
+        fundingId: source.fundingId,
+        amountMinor: 1_000,
+        creditedBowlerId: debt.bowlerId,
+        obligationId: debt.obligationId,
+        responsibilityId: debt.responsibilityId,
+      }));
+      await db.update(paymentObligations).set({ state: "partially_settled" }).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        eq(paymentObligations.id, debt.obligationId),
+      ));
+
+      await db.transaction((tx) => releaseOwnedFundingApplicationInTransaction(tx, {
+        organizationId,
+        leagueId,
+        applicationId: application.applicationId,
+        actorUserId,
+        reason,
+        idempotencyKey: `owned-ledger-reopen-${reason}-${randomUUID()}`,
+      }));
+
+      const [obligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(
+        paymentObligations.id,
+        debt.obligationId,
+      ));
+      expect(obligation?.state).toBe("open");
+      const [release] = await db.select().from(weeklyPaymentAllocationReleases).where(eq(
+        weeklyPaymentAllocationReleases.fundingApplicationId,
+        application.applicationId,
+      ));
+      expect(release).toMatchObject({
+        paymentId: source.paymentId,
+        creditedBowlerId: debt.bowlerId,
+        sourceAllocationId: application.allocationId,
+        sourceObligationId: debt.obligationId,
+        sourceApplicationAmountMinor: 1_000,
+        releasedAmountMinor: 1_000,
+        retainedAmountMinor: 0,
+        replacementAllocationId: null,
+        reason,
+      });
+      expect(release?.transactionId).toMatch(/^[0-9]+$/);
+    },
+  );
+
+  it("rejects no-proof, stale, and other-obligation release evidence for partial-to-open updates", async () => {
+    const createDebt = async (name: string) => createWorksheetDebt({ amountMinor: 2_500, name, bowlerId: creditedBowlerId });
+    const createPartiallyCoveredDebt = async (name: string) => {
+      const debt = await createDebt(name);
+      const source = await createV4Tender(1_000);
+      const application = await db.transaction((tx) => insertApplication(tx, {
+        paymentId: source.paymentId,
+        fundingId: source.fundingId,
+        amountMinor: 1_000,
+        creditedBowlerId: debt.bowlerId,
+        obligationId: debt.obligationId,
+        responsibilityId: debt.responsibilityId,
+      }));
+      await db.update(paymentObligations).set({ state: "partially_settled" }).where(eq(
+        paymentObligations.id,
+        debt.obligationId,
+      ));
+      return { debt, application };
+    };
+    const setOpen = (tx: PaymentOperationTransaction, targetObligationId: string) => tx.update(paymentObligations)
+      .set({ state: "open" })
+      .where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        eq(paymentObligations.id, targetObligationId),
+      ));
+
+    const setPartiallySettled = async (obligationId: string) => db.update(paymentObligations)
+      .set({ state: "partially_settled" })
+      .where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        eq(paymentObligations.id, obligationId),
+      ));
+
+    const noProofTarget = await createDebt("No Proof Target");
+    await setPartiallySettled(noProofTarget.obligationId);
+    await expect(db.transaction((tx) => setOpen(tx, noProofTarget.obligationId))).rejects.toThrow();
+
+    const staleSource = await createPartiallyCoveredDebt("Stale Release Source");
+    await db.transaction((tx) => releaseOwnedFundingApplicationInTransaction(tx, {
+      organizationId,
+      leagueId,
+      applicationId: staleSource.application.applicationId,
+      actorUserId,
+      reason: "ledger_adoption",
+      idempotencyKey: `owned-ledger-stale-release-${randomUUID()}`,
+    }));
+    await setPartiallySettled(staleSource.debt.obligationId);
+    await expect(db.transaction((tx) => setOpen(tx, staleSource.debt.obligationId))).rejects.toThrow();
+
+    const wrongScopeSource = await createPartiallyCoveredDebt("Wrong Scope Release Source");
+    const wrongScopeTarget = await createDebt("Wrong Scope Target");
+    await setPartiallySettled(wrongScopeTarget.obligationId);
+    await expect(db.transaction(async (tx) => {
+      await releaseOwnedFundingApplicationInTransaction(tx, {
+        organizationId,
+        leagueId,
+        applicationId: wrongScopeSource.application.applicationId,
+        actorUserId,
+        reason: "worksheet_correction",
+        idempotencyKey: `owned-ledger-wrong-scope-release-${randomUUID()}`,
+      });
+      await setOpen(tx, wrongScopeTarget.obligationId);
+    })).rejects.toThrow();
+
+    const [staleObligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(
+      paymentObligations.id,
+      staleSource.debt.obligationId,
+    ));
+    const [wrongScopeObligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(
+      paymentObligations.id,
+      wrongScopeTarget.obligationId,
+    ));
+    const staleReleaseRows = await db.select({ id: weeklyPaymentAllocationReleases.id }).from(weeklyPaymentAllocationReleases).where(eq(
+      weeklyPaymentAllocationReleases.fundingApplicationId,
+      staleSource.application.applicationId,
+    ));
+    const wrongScopeReleaseRows = await db.select({ id: weeklyPaymentAllocationReleases.id }).from(weeklyPaymentAllocationReleases).where(eq(
+      weeklyPaymentAllocationReleases.fundingApplicationId,
+      wrongScopeSource.application.applicationId,
+    ));
+    expect(staleObligation?.state).toBe("partially_settled");
+    expect(wrongScopeObligation?.state).toBe("partially_settled");
+    expect(staleReleaseRows).toHaveLength(1);
+    expect(wrongScopeReleaseRows).toHaveLength(0);
   });
 
   it("releases completed partially refunded rotating credit and reapplies only remaining value", async () => {
