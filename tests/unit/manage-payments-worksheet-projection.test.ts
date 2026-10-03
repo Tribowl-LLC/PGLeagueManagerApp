@@ -195,7 +195,7 @@ describe("Manage Payments worksheet projection", () => {
     expect(rows.find((row) => row.bowlerId === 502)).toMatchObject({ responsible: true, feeMinor: 1_000 });
   });
 
-  it("allows an adopted historical week without an explicit worksheet save to be confirmed", () => {
+  it("does not default a current main when a cutoff-confirmed week has no historical liability", () => {
     const snapshot = buildManagePaymentsWorksheetSnapshot(projectionInput({
       confirmedOccurrenceIds: new Set(["occ-4"]),
       explicitConfirmationRevisions: new Map(),
@@ -204,7 +204,161 @@ describe("Manage Payments worksheet projection", () => {
     expect(snapshot.weekConfirmed).toBe(true);
     expect(snapshot.needsConfirmation).toBe(true);
     expect(snapshot.revision).toBe(0);
-    expect(snapshot.teams[0]?.rows[0]).toMatchObject({ responsible: true, feeMinor: 1_000 });
+    expect(snapshot.teams[0]?.rows[0]).toMatchObject({ responsible: false, feeMinor: 0 });
+  });
+
+  it("uses retained historical debtor and obligation amount before the first worksheet save", () => {
+    const snapshot = buildManagePaymentsWorksheetSnapshot(projectionInput({
+      members: [
+        { teamId: 31, bowlerId: 501, displayName: "Avery Lane", order: 0, rosterRole: "main" },
+        { teamId: 31, bowlerId: 502, displayName: "Blair Quinn", order: 1, rosterRole: "substitute" },
+      ],
+      displayNamesByBowler: new Map([[501, "Avery Lane"], [502, "Blair Quinn"]]),
+      confirmedOccurrenceIds: new Set(["occ-4"]),
+      responsibilitiesByOccurrence: new Map([["occ-4", [{
+        responsibilityId: "historical-main-responsibility",
+        teamId: 31,
+        slotIndex: 0,
+        kind: "main",
+        payerBowlerId: 501,
+        mainBowlerId: 501,
+        substituteBowlerId: null,
+        lineagePayerBowlerId: null,
+        prizePayerBowlerId: null,
+        worksheetFeeComponent: null,
+        amountMinor: 1_000,
+        lineageAmountMinor: null,
+        prizeAmountMinor: null,
+        version: 1,
+      }]]]),
+      finalObligations: [{
+        obligationId: "historical-owned-obligation",
+        responsibilityId: "historical-main-responsibility",
+        occurrenceId: "occ-4",
+        teamId: 31,
+        component: "full",
+        payerBowlerId: 501,
+        debtorBowlerId: 502,
+        amountMinor: 825,
+        paidMinor: 0,
+        waivedMinor: 0,
+        outstandingMinor: 825,
+        reviewRequired: false,
+      }],
+    }));
+
+    expect(snapshot).toMatchObject({ weekConfirmed: true, needsConfirmation: true });
+    expect(snapshot.teams[0]?.rows.find((row) => row.bowlerId === 501)).toMatchObject({ responsible: false, feeMinor: 0 });
+    expect(snapshot.teams[0]?.rows.find((row) => row.bowlerId === 502)).toMatchObject({ responsible: true, feeComponent: "full", feeMinor: 825 });
+  });
+
+  it("uses retained component evidence for both cutoff-confirmed final weeks", () => {
+    const historicalMain = (occurrenceId: string) => ({
+      responsibilityId: `historical-main-${occurrenceId}`,
+      teamId: 31,
+      slotIndex: 0,
+      kind: "main" as const,
+      payerBowlerId: 501,
+      mainBowlerId: 501,
+      substituteBowlerId: null,
+      lineagePayerBowlerId: null,
+      prizePayerBowlerId: null,
+      worksheetFeeComponent: null,
+      amountMinor: 1_000,
+      lineageAmountMinor: null,
+      prizeAmountMinor: null,
+      version: 1,
+    });
+    const snapshot = buildManagePaymentsWorksheetSnapshot(projectionInput({
+      members: [
+        { teamId: 31, bowlerId: 501, displayName: "Avery Lane", order: 0, rosterRole: "main" },
+        { teamId: 31, bowlerId: 502, displayName: "Blair Quinn", order: 1, rosterRole: "substitute" },
+      ],
+      displayNamesByBowler: new Map([[501, "Avery Lane"], [502, "Blair Quinn"]]),
+      responsibilitiesByOccurrence: new Map([
+        ["occ-3", [historicalMain("occ-3")]],
+        ["occ-4", [historicalMain("occ-4")]],
+      ]),
+      confirmedOccurrenceIds: new Set(["occ-3", "occ-4"]),
+      balances: new Map([[502, { availableCreditMinor: 0, confirmedOwedMinor: 0, netBalanceMinor: 0 }]]),
+      finalObligations: [
+        {
+          obligationId: "week-3-historical-owner",
+          responsibilityId: "historical-main-occ-3",
+          occurrenceId: "occ-3",
+          teamId: 31,
+          component: "full",
+          payerBowlerId: 501,
+          debtorBowlerId: 502,
+          amountMinor: 800,
+          paidMinor: 800,
+          waivedMinor: 0,
+          outstandingMinor: 0,
+          reviewRequired: false,
+        },
+        {
+          obligationId: "week-4-historical-owner",
+          responsibilityId: "historical-main-occ-4",
+          occurrenceId: "occ-4",
+          teamId: 31,
+          component: "full",
+          payerBowlerId: 501,
+          debtorBowlerId: 502,
+          amountMinor: 900,
+          paidMinor: 900,
+          waivedMinor: 0,
+          outstandingMinor: 0,
+          reviewRequired: false,
+        },
+      ],
+    }));
+
+    expect(snapshot.teams[0]?.rows.find((row) => row.bowlerId === 501)).toMatchObject({ responsible: false, finalTwoWeeksPaid: false });
+    expect(snapshot.teams[0]?.rows.find((row) => row.bowlerId === 502)).toMatchObject({ responsible: true, feeMinor: 900, finalTwoWeeksPaid: true });
+  });
+
+  it("retains an exact zero-price legacy split payer when its confirmed side has no obligation", () => {
+    const snapshot = buildManagePaymentsWorksheetSnapshot(projectionInput({
+      members: [
+        { teamId: 31, bowlerId: 501, displayName: "Avery Lane", order: 0, rosterRole: "main" },
+        { teamId: 31, bowlerId: 502, displayName: "Blair Quinn", order: 1, rosterRole: "substitute" },
+      ],
+      displayNamesByBowler: new Map([[501, "Avery Lane"], [502, "Blair Quinn"]]),
+      confirmedOccurrenceIds: new Set(["occ-4"]),
+      responsibilitiesByOccurrence: new Map([["occ-4", [{
+        responsibilityId: "historical-zero-side-split",
+        teamId: 31,
+        slotIndex: 0,
+        kind: "split",
+        payerBowlerId: 501,
+        mainBowlerId: 501,
+        substituteBowlerId: 502,
+        lineagePayerBowlerId: 501,
+        prizePayerBowlerId: 502,
+        worksheetFeeComponent: null,
+        amountMinor: 700,
+        lineageAmountMinor: 700,
+        prizeAmountMinor: 0,
+        version: 1,
+      }]]]),
+      finalObligations: [{
+        obligationId: "historical-lineage-obligation",
+        responsibilityId: "historical-zero-side-split",
+        occurrenceId: "occ-4",
+        teamId: 31,
+        component: "lineage",
+        payerBowlerId: 501,
+        debtorBowlerId: 501,
+        amountMinor: 700,
+        paidMinor: 0,
+        waivedMinor: 0,
+        outstandingMinor: 700,
+        reviewRequired: false,
+      }],
+    }));
+
+    expect(snapshot.teams[0]?.rows.find((row) => row.bowlerId === 501)).toMatchObject({ responsible: true, feeComponent: "lineage", feeMinor: 700 });
+    expect(snapshot.teams[0]?.rows.find((row) => row.bowlerId === 502)).toMatchObject({ responsible: true, feeComponent: "prize", feeMinor: 0 });
   });
 
   it("projects confirmed legacy split payers from retained obligation components and amounts", () => {
@@ -318,6 +472,7 @@ describe("Manage Payments worksheet projection", () => {
 
   it("projects only the retained component after one side of a confirmed same-payer split is retired", () => {
     const input = projectionInput({
+      confirmedOccurrenceIds: new Set(["occ-4"]),
       explicitConfirmationRevisions: new Map([["occ-4", 2]]),
       responsibilitiesByOccurrence: new Map([[
         "occ-4",

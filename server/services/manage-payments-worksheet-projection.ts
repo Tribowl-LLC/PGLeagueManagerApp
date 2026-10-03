@@ -505,6 +505,28 @@ function confirmedResponsibilityRows(
         }
       }
     }
+
+    if (responsibility.kind === "split") {
+      const componentEvidence = new Set(obligations.map((row) => row.component));
+      const zeroComponents = [
+        { component: "lineage" as const, bowlerId: responsibility.lineagePayerBowlerId, amountMinor: responsibility.lineageAmountMinor },
+        { component: "prize" as const, bowlerId: responsibility.prizePayerBowlerId, amountMinor: responsibility.prizeAmountMinor },
+      ];
+      for (const zero of zeroComponents) {
+        if (zero.amountMinor !== 0 || zero.bowlerId === null || componentEvidence.has(zero.component)) continue;
+        const alreadyCoalesced = responsibility.lineagePayerBowlerId === responsibility.prizePayerBowlerId
+          && obligations.some((row) => row.debtorBowlerId === zero.bowlerId);
+        if (alreadyCoalesced) continue;
+        projected.push({
+          teamId: responsibility.teamId,
+          bowlerId: zero.bowlerId,
+          feeComponent: zero.component,
+          feeMinor: 0,
+          responsibilityId: responsibility.responsibilityId,
+          version: versionByResponsibility.get(responsibility.responsibilityId) ?? 0,
+        });
+      }
+    }
   }
   return projected;
 }
@@ -561,7 +583,7 @@ function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<numbe
     const confirmed = input.confirmedOccurrenceIds.has(occurrence.occurrenceId);
     const candidateRows = input.responsibilitiesByOccurrence.get(occurrence.occurrenceId) ?? [];
     const candidateResponsibilities = candidateRows.filter((row) => row.kind !== "worksheet" || explicitRevision !== undefined);
-    const savedRows = explicitRevision !== undefined
+    const savedRows = confirmed
       ? confirmedResponsibilityRows(occurrence.occurrenceId, candidateResponsibilities, input)
       : candidateResponsibilities.flatMap((row) => responsibilityRows(row, input.rotatingAssignmentsByResponsibility));
     const selected = confirmed
@@ -676,10 +698,10 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
     return row.kind !== "worksheet";
   });
   const useSavedResponsibilities = isExplicitlyConfirmed || sourceResponsibilities.length > 0;
-  const actualRows = isExplicitlyConfirmed
+  const actualRows = weekConfirmed
     ? confirmedResponsibilityRows(selectedOccurrence.occurrenceId, sourceResponsibilities, input)
     : sourceResponsibilities.flatMap((row) => responsibilityRows(row, input.rotatingAssignmentsByResponsibility));
-  const defaults = !isExplicitlyConfirmed
+  const defaults = !weekConfirmed
     ? defaultMainResponsibilities(input, selectedOccurrence.occurrenceId, sourceResponsibilities)
     : [];
   const exactByBowler = new Map<number, ProjectedResponsibility>();
@@ -849,7 +871,7 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
           ? true
           : useSavedResponsibilities
           ? false
-          : !isExplicitlyConfirmed && seed.rosterRole === "main";
+          : !weekConfirmed && seed.rosterRole === "main";
     const feeComponent = exact?.teamId === seed.teamId ? exact.feeComponent : "full";
     const defaultResponsibility = defaults.find((row) => row.bowlerId === bowlerId && row.teamId === seed.teamId);
     const feeMinor = exact?.teamId === seed.teamId ? exact.feeMinor : defaultResponsibility?.feeMinor ?? (responsible ? fullFeeMinor : 0);
