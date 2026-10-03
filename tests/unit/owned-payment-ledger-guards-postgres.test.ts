@@ -251,8 +251,20 @@ async function createV4Tender(amountMinor: number) {
       // The payer is explicitly selected for zero dollars while the linked
       // partner owns the only positive tender portion.
       recipientEvidence: [
-        { recipientBowlerId: payerBowlerId, role: "self", paymentLinkId: null, linkFingerprint: null },
-        { recipientBowlerId: creditedBowlerId, role: "partner", paymentLinkId: 77, linkFingerprint: `lvpartnerlink:v1:${"1".repeat(64)}` },
+        {
+          recipientBowlerId: payerBowlerId,
+          role: "self",
+          paymentLinkId: null,
+          linkFingerprint: null,
+          selection: { kind: "explicit_amount", amountMinor: 0 },
+        },
+        {
+          recipientBowlerId: creditedBowlerId,
+          role: "partner",
+          paymentLinkId: 77,
+          linkFingerprint: `lvpartnerlink:v1:${"1".repeat(64)}`,
+          selection: { kind: "explicit_amount", amountMinor },
+        },
       ],
       currency: "USD",
       providerName: "square",
@@ -720,7 +732,7 @@ describe("owned payment SQL guards on PostgreSQL", () => {
     expect(allocations).toHaveLength(0);
   });
 
-  it("accepts legacy standing V2 funding only with the exact payer participant evidence", async () => {
+  it("accepts legacy standing V2 funding with matching payer participant evidence", async () => {
     const funding = await createLegacyStandingFunding();
     const stored = await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(and(
       eq(weeklyPaymentFundings.paymentId, funding.paymentId),
@@ -749,7 +761,15 @@ describe("owned payment SQL guards on PostgreSQL", () => {
     const refund = await recordProviderCreditRefund({ fundingId: source.fundingId, outcome: "COMPLETED" });
     expect(refund).toMatchObject({ status: "succeeded", amountMinor: 1_000 });
 
-    const [replacementResponsibility] = await db.transaction(async (tx) => {
+    const correction = await db.transaction(async (tx) => {
+      await releaseOwnedFundingApplicationInTransaction(tx, {
+        organizationId,
+        leagueId,
+        applicationId: initialApplication.id,
+        actorUserId,
+        reason: "worksheet_correction",
+        idempotencyKey: `owned-ledger-release-${randomUUID()}`,
+      });
       await tx.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(eq(occurrencePaymentResponsibilities.id, debt.responsibilityId));
       await tx.update(paymentObligations).set({ state: "voided" }).where(eq(paymentObligations.id, debt.obligationId));
       const [responsibility] = await tx.insert(occurrencePaymentResponsibilities).values({
@@ -789,18 +809,6 @@ describe("owned payment SQL guards on PostgreSQL", () => {
         state: "open",
         createdByUserId: actorUserId,
       }).returning({ id: paymentObligations.id });
-      return [{ id: responsibility.id, obligationId: obligation.id }];
-    });
-
-    const finalBalance = await db.transaction(async (tx) => {
-      await releaseOwnedFundingApplicationInTransaction(tx, {
-        organizationId,
-        leagueId,
-        applicationId: initialApplication.id,
-        actorUserId,
-        reason: "worksheet_correction",
-        idempotencyKey: `owned-ledger-release-${randomUUID()}`,
-      });
       const reapplied = await applyOwnedFundingFifoInTransaction(tx, {
         organizationId,
         leagueId,
@@ -820,14 +828,19 @@ describe("owned payment SQL guards on PostgreSQL", () => {
         leagueId,
         bowlerId: debt.bowlerId,
       });
-      return { reapplied, applications, balance };
+      return {
+        replacementObligationId: obligation.id,
+        reapplied,
+        applications,
+        balance,
+      };
     });
 
-    expect(replacementResponsibility.obligationId).toBeDefined();
-    expect(finalBalance.reapplied).toHaveLength(1);
-    expect(finalBalance.applications).toHaveLength(2);
-    expect(finalBalance.applications.find((application) => application.obligationId === replacementResponsibility.obligationId)?.amountMinor).toBe(300);
-    expect(finalBalance.balance).toMatchObject({
+    expect(correction.replacementObligationId).toBeDefined();
+    expect(correction.reapplied).toHaveLength(1);
+    expect(correction.applications).toHaveLength(2);
+    expect(correction.applications.find((application) => application.obligationId === correction.replacementObligationId)?.amountMinor).toBe(300);
+    expect(correction.balance).toMatchObject({
       amountMinor: 1_500,
       appliedMinor: 300,
       refundedMinor: 1_000,
