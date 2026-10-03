@@ -21,6 +21,7 @@ const participants: ConfirmedAccountPaymentParticipantsV4 = {
       name: "Avery Lane",
       role: "self",
       confirmedDebtMinor: 0,
+      confirmedPastDueMinor: 0,
       availableCreditMinor: 1_000,
       forecastTargets: { currentCollectionMinor: 0, selectedWeeks: [{ weeks: 1, amountMinor: 0 }], fullSeasonMinor: 0 },
     },
@@ -29,6 +30,7 @@ const participants: ConfirmedAccountPaymentParticipantsV4 = {
       name: "Blair Quinn",
       role: "partner",
       confirmedDebtMinor: 2_500,
+      confirmedPastDueMinor: 500,
       availableCreditMinor: 500,
       forecastTargets: { currentCollectionMinor: 1_500, selectedWeeks: [{ weeks: 1, amountMinor: 2_500 }, { weeks: 2, amountMinor: 5_000 }], fullSeasonMinor: 8_000 },
     },
@@ -54,6 +56,10 @@ describe("account payment V4 client adapter", () => {
     const chooser = accountParticipantsForPaymentChooser(participants);
     expect(chooser[0]).toMatchObject({ bowlerId: 42, eligible: true, remainingMinor: 0 });
     expect(defaultSelectedAccountRecipients(participants)).toEqual({ 42: true, 84: false });
+  });
+
+  it("shows only the server-derived net past-due amount, not all confirmed debt", () => {
+    expect(accountParticipantsForPaymentChooser(participants)[1]?.pastDueMinor).toBe(500);
   });
 
   it("sends explicit payer amounts as exact V4 amounts even when credit exists", () => {

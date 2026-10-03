@@ -143,6 +143,7 @@ describe("automatic FIFO bowler payment flow", () => {
         name: "Bowler",
         role: "self",
         confirmedDebtMinor: 0,
+        confirmedPastDueMinor: 0,
         availableCreditMinor: 10_000,
         forecastTargets: { currentCollectionMinor: 0, selectedWeeks: [], fullSeasonMinor: 0 },
       }],

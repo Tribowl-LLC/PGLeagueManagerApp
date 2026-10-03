@@ -80,7 +80,7 @@ export function accountParticipantsForPaymentChooser(
       name: recipient.name,
       role: recipient.role,
       remainingMinor: fullBalanceMinor,
-      pastDueMinor: recipient.confirmedDebtMinor,
+      pastDueMinor: recipient.confirmedPastDueMinor,
       weeklyOptions,
       eligible,
       reason: eligible ? null : "No balance or forecast is currently available",

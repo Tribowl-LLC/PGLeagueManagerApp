@@ -129,6 +129,7 @@ const mocks = vi.hoisted(() => {
       name: "Bowler",
       role: "self",
       confirmedDebtMinor: 0,
+      confirmedPastDueMinor: 0,
       availableCreditMinor: 5_000,
       forecastTargets: {
         currentCollectionMinor: accountCurrentCollectionMinor,
