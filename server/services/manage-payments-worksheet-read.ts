@@ -146,7 +146,7 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     leagueId: input.leagueId,
   });
   if (!adoption) {
-    throw new ManagePaymentsWorksheetReadError("ledger_not_adopted", "This league's owned payment ledger must be adopted before the worksheet is available");
+    throw new ManagePaymentsWorksheetReadError("ledger_not_adopted", "Payment setup is not complete for this league.");
   }
 
   const nowResult = await tx.execute<{ databaseNow: string }>(sql`SELECT CURRENT_TIMESTAMP::text AS "databaseNow"`);

@@ -901,7 +901,7 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
     const manualReceipts: ManagePaymentsManualReceipt[] = input.manualReceipts
       .filter((receipt) => receipt.bowlerId === bowlerId && receipt.teamId === seed.teamId
         && receipt.occurrenceId === selectedOccurrence.occurrenceId)
-      .map(({ bowlerId: _bowlerId, teamId: _teamId, ...receipt }) => receipt)
+      .map(({ bowlerId: _bowlerId, teamId: _teamId, occurrenceId: _occurrenceId, ...receipt }) => receipt)
       .sort((left, right) => left.receiptId.localeCompare(right.receiptId));
     const cardReceiptsForBowler: ManagePaymentsCardReceipt[] = selectedCardReceipts
       .filter((receipt) => receipt.bowlerId === bowlerId)

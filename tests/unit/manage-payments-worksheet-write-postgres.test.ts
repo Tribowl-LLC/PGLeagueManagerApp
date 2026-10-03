@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   bowlerLeagues,
   bowlers,
@@ -8,6 +8,7 @@ import {
   locations,
   occurrencePaymentResponsibilities,
   organizations,
+  paymentOperations,
   paymentObligationOwnerRevisions,
   paymentAllocationFundingApplications,
   paymentAllocations,
@@ -26,14 +27,17 @@ import {
 import type { ManagePaymentsChangedRow, ManagePaymentsSnapshot } from "@shared/manage-payments-contract";
 import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION } from "@shared/league-setup-integration";
 import { createLeagueWithCanonicalSetup } from "../../server/services/league-setup-integration.js";
+import { prepareAccountPaymentOperation } from "../../server/services/account-payment-operation-preparation.js";
+import { recoverRosterPaymentOperation } from "../../server/services/roster-payment-recovery.js";
 import { readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read.js";
 import { saveManagePaymentsWorksheet, ManagePaymentsWorksheetWriteError } from "../../server/services/manage-payments-worksheet-write.js";
 import { getTestDb } from "../setup/test-db.js";
 
 const db = getTestDb();
-const suffix = `${process.env.VITEST_POOL_ID ?? "0"}-${randomUUID()}`;
+let suffix = "";
 let organizationId = 0;
 let leagueId = 0;
+let locationId = 0;
 let actorUserId = 0;
 let teamId = 0;
 let mainBowlerId = 0;
@@ -51,7 +55,8 @@ async function addBowler(name: string, order: number): Promise<number> {
   return bowler.id;
 }
 
-beforeAll(async () => {
+beforeEach(async () => {
+  suffix = `${process.env.VITEST_POOL_ID ?? "0"}-${randomUUID()}`;
   const [organization] = await db.insert(organizations).values({ name: `Worksheet ${suffix}`, slug: `worksheet-${suffix}` }).returning({ id: organizations.id });
   if (!organization) throw new Error("worksheet organization fixture was not created");
   organizationId = organization.id;
@@ -66,6 +71,7 @@ beforeAll(async () => {
   actorUserId = actor.id;
   const [location] = await db.insert(locations).values({ name: `Worksheet location ${suffix}`, organizationId }).returning({ id: locations.id });
   if (!location) throw new Error("worksheet location fixture was not created");
+  locationId = location.id;
   const created = await createLeagueWithCanonicalSetup({
     scope: { organizationId, actorUserId },
     league: {
@@ -234,64 +240,67 @@ describe("Manage Payments worksheet atomic writer", () => {
       eq(paymentObligations.responsibilityId, mainLegacyResponsibilityId),
     ));
     if (!mainObligation) throw new Error("main worksheet obligation is missing");
-    const [rotatingTender] = await db.insert(payments).values({
-      organizationId,
-      leagueId,
-      bowlerId: mainBowlerId,
-      amount: 10_000,
-      status: "paid",
-      type: "cash",
-      paidByUserId: actorUserId,
-      notes: "rotating lot release fixture",
-    }).returning({ id: payments.id });
-    if (!rotatingTender) throw new Error("rotating source tender fixture was not created");
-    const [rotatingFunding] = await db.insert(rotatingCreditFundings).values({
-      organizationId,
-      leagueId,
-      bowlerId: mainBowlerId,
-      paymentId: rotatingTender.id,
-      amountMinor: 10_000,
-      currency: "USD",
-      fundingKind: "cash",
-      idempotencyKey: "rotating-lot-fixture-0001",
-      requestFingerprint: `lvrotcrreq:v1:${"c".repeat(64)}`,
-      quoteFingerprint: `lvrotcrquote:v1:${"d".repeat(64)}`,
-      actorUserId,
-    }).returning({ id: rotatingCreditFundings.id });
-    if (!rotatingFunding) throw new Error("rotating funding fixture was not created");
-    const [rotationAllocation] = await db.insert(paymentAllocations).values({
-      organizationId,
-      leagueId,
-      paymentId: rotatingTender.id,
-      obligationId: mainObligation.id,
-      amountMinor: 2_500,
-      currency: "USD",
-      state: "active",
-      allocationKind: "rotating_credit",
-      recordedByUserId: actorUserId,
-    }).returning({ id: paymentAllocations.id });
-    if (!rotationAllocation) throw new Error("rotating allocation fixture was not created");
-    await db.insert(paymentAllocationFundingApplications).values({
-      organizationId,
-      leagueId,
-      allocationId: rotationAllocation.id,
-      paymentId: rotatingTender.id,
-      creditedBowlerId: mainBowlerId,
-      genericFundingId: null,
-      rotatingFundingId: rotatingFunding.id,
-      sourceAmountMinor: 10_000,
-      amountMinor: 2_500,
-      currency: "USD",
-      obligationId: mainObligation.id,
-      responsibilityId: mainObligation.responsibilityId,
-      occurrenceId: selectedOccurrenceId,
-      teamId,
-      targetKind: "bowler_responsibility",
-      targetPayerBowlerId: mainBowlerId,
-      assignmentId: null,
-      appliedByUserId: actorUserId,
+    const { rotatingTender } = await db.transaction(async (tx) => {
+      const [createdTender] = await tx.insert(payments).values({
+        organizationId,
+        leagueId,
+        bowlerId: mainBowlerId,
+        amount: 10_000,
+        status: "paid",
+        type: "cash",
+        paidByUserId: actorUserId,
+        notes: "rotating lot release fixture",
+      }).returning({ id: payments.id });
+      if (!createdTender) throw new Error("rotating source tender fixture was not created");
+      const [createdFunding] = await tx.insert(rotatingCreditFundings).values({
+        organizationId,
+        leagueId,
+        bowlerId: mainBowlerId,
+        paymentId: createdTender.id,
+        amountMinor: 10_000,
+        currency: "USD",
+        fundingKind: "cash",
+        idempotencyKey: "rotating-lot-fixture-0001",
+        requestFingerprint: `lvrotcrreq:v1:${"c".repeat(64)}`,
+        quoteFingerprint: `lvrotcrquote:v1:${"d".repeat(64)}`,
+        actorUserId,
+      }).returning({ id: rotatingCreditFundings.id });
+      if (!createdFunding) throw new Error("rotating funding fixture was not created");
+      const [rotationAllocation] = await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId,
+        paymentId: createdTender.id,
+        obligationId: mainObligation.id,
+        amountMinor: 2_500,
+        currency: "USD",
+        state: "active",
+        allocationKind: "rotating_credit",
+        recordedByUserId: actorUserId,
+      }).returning({ id: paymentAllocations.id });
+      if (!rotationAllocation) throw new Error("rotating allocation fixture was not created");
+      await tx.insert(paymentAllocationFundingApplications).values({
+        organizationId,
+        leagueId,
+        allocationId: rotationAllocation.id,
+        paymentId: createdTender.id,
+        creditedBowlerId: mainBowlerId,
+        genericFundingId: null,
+        rotatingFundingId: createdFunding.id,
+        sourceAmountMinor: 10_000,
+        amountMinor: 2_500,
+        currency: "USD",
+        obligationId: mainObligation.id,
+        responsibilityId: mainObligation.responsibilityId,
+        occurrenceId: selectedOccurrenceId,
+        teamId,
+        targetKind: "bowler_responsibility",
+        targetPayerBowlerId: mainBowlerId,
+        assignmentId: null,
+        appliedByUserId: actorUserId,
+      });
+      await tx.update(paymentObligations).set({ state: "settled" }).where(eq(paymentObligations.id, mainObligation.id));
+      return { rotatingTender: createdTender };
     });
-    await db.update(paymentObligations).set({ state: "settled" }).where(eq(paymentObligations.id, mainObligation.id));
     current = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
     expect(current.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === mainBowlerId)?.balanceMinor).toBe(7_500);
 
@@ -322,49 +331,87 @@ describe("Manage Payments worksheet atomic writer", () => {
       manualReceipts: [expect.objectContaining({ receiptId: originalSubReceipt?.receiptId, amountMinor: 4_000, revision: 2 })],
     });
 
+    current = (await saveManagePaymentsWorksheet(saveInput(current, [rowChange(current, mainBowlerId, {
+      newManualReceiptAmountMinor: 1_000,
+    })], "worksheet-main-cash-0010"))).snapshot;
+
     const mainReceipt = current.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === mainBowlerId)?.manualReceipts[0];
     if (!mainReceipt) throw new Error("main cash receipt is missing");
-    const [cardTender] = await db.insert(payments).values({
+    const captureAt = new Date();
+    const cardOperation = await prepareAccountPaymentOperation({
+      requestKey: `worksheet-card-arrival-${randomUUID()}`,
       organizationId,
       leagueId,
-      bowlerId: thirdBowlerId,
-      amount: 5_000,
-      status: "paid",
-      type: "square",
-      notes: "concurrent readonly card fixture",
-    }).returning({ id: payments.id });
-    if (!cardTender) throw new Error("concurrent card tender fixture was not created");
-    await db.insert(rotatingCreditFundings).values({
-      organizationId,
-      leagueId,
-      bowlerId: thirdBowlerId,
-      paymentId: cardTender.id,
-      amountMinor: 5_000,
-      currency: "USD",
-      fundingKind: "provider",
-      idempotencyKey: "card-arrival-fixture-0001",
-      requestFingerprint: `lvrotcrreq:v1:${"e".repeat(64)}`,
-      quoteFingerprint: `lvrotcrquote:v1:${"f".repeat(64)}`,
-      actorUserId,
-    });
-    const [cardReceipt] = await db.insert(weeklyPaymentWorksheetReceipts).values({
-      organizationId,
-      leagueId,
-      occurrenceId: selectedOccurrenceId,
       payerBowlerId: thirdBowlerId,
-      receiptKind: "card",
-    }).returning({ id: weeklyPaymentWorksheetReceipts.id });
-    if (!cardReceipt) throw new Error("concurrent card receipt fixture was not created");
-    await db.insert(weeklyPaymentWorksheetReceiptRevisions).values({
+      amountMinor: 5_000,
+      fundingPortions: [{ portionIndex: 0, creditedBowlerId: thirdBowlerId, amountMinor: 5_000 }],
+      recipientEvidence: [{
+        recipientBowlerId: thirdBowlerId,
+        role: "self",
+        paymentLinkId: null,
+        linkFingerprint: null,
+        selection: { kind: "explicit_amount", amountMinor: 5_000 },
+      }],
+      currency: "USD",
+      providerName: "square",
+      locationId,
+      providerLocationId: null,
+      authorizingUserId: actorUserId,
+      sourceKind: "new_card",
+      sourceId: `test-source-${randomUUID()}`,
+      customerId: null,
+      buyerEmail: "worksheet-card@example.test",
+      storeCard: false,
+      quoteFingerprint: `lvaccountfundquote:v4:${randomUUID().replaceAll("-", "").repeat(2)}`,
+      now: captureAt,
+    });
+    const providerPaymentId = `worksheet-card-provider-${cardOperation.id}`;
+    await db.update(paymentOperations).set({
+      status: "reconciliation_required",
+      providerObjectId: providerPaymentId,
+      errorClassification: "provider_unknown",
+      errorCode: "CAPTURE_FINALIZATION_PENDING",
+      attemptCount: 1,
+      nextAttemptAt: null,
+      dispatchClaimedAt: captureAt.toISOString(),
+      startedAt: captureAt.toISOString(),
+      completedAt: captureAt.toISOString(),
+      updatedAt: captureAt.toISOString(),
+    }).where(eq(paymentOperations.id, cardOperation.id));
+    const recoveredCard = await recoverRosterPaymentOperation({
       organizationId,
       leagueId,
-      receiptId: cardReceipt.id,
-      receiptRevision: 1,
-      paymentId: cardTender.id,
-      revisionKind: "card_association",
-      amountMinor: 5_000,
-      businessCollectionLocalDate: current.selectedOccurrence.localDate,
-      recordedByUserId: null,
+      operationId: cardOperation.id,
+      actorUserId,
+      now: captureAt,
+    });
+    expect(recoveredCard.status).toBe("succeeded");
+    const [cardTender] = await db.select({ id: payments.id }).from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+      eq(payments.paymentOperationId, cardOperation.id),
+    )).limit(1);
+    if (!cardTender) throw new Error("concurrent card tender fixture was not created");
+    await db.transaction(async (tx) => {
+      const [cardReceipt] = await tx.insert(weeklyPaymentWorksheetReceipts).values({
+        organizationId,
+        leagueId,
+        occurrenceId: selectedOccurrenceId,
+        payerBowlerId: thirdBowlerId,
+        receiptKind: "card",
+      }).returning({ id: weeklyPaymentWorksheetReceipts.id });
+      if (!cardReceipt) throw new Error("concurrent card receipt fixture was not created");
+      await tx.insert(weeklyPaymentWorksheetReceiptRevisions).values({
+        organizationId,
+        leagueId,
+        receiptId: cardReceipt.id,
+        receiptRevision: 1,
+        paymentId: cardTender.id,
+        revisionKind: "card_association",
+        amountMinor: 5_000,
+        businessCollectionLocalDate: current.selectedOccurrence.localDate,
+        recordedByUserId: null,
+      });
     });
     const combinedCorrection = saveInput(current, [
       rowChange(current, mainBowlerId, { manualReceiptEdits: [{ receiptId: mainReceipt.receiptId, expectedRevision: mainReceipt.revision, amountMinor: 0 }] }),
@@ -373,7 +420,7 @@ describe("Manage Payments worksheet atomic writer", () => {
     const finalSave = await saveManagePaymentsWorksheet(combinedCorrection);
     current = finalSave.snapshot;
     const finalRows = current.teams.flatMap((team) => team.rows);
-    expect(finalRows.find((row) => row.bowlerId === mainBowlerId)).toMatchObject({ manualReceipts: [], balanceMinor: 0 });
+    expect(finalRows.find((row) => row.bowlerId === mainBowlerId)).toMatchObject({ manualReceipts: [], balanceMinor: 10_000 });
     expect(finalRows.find((row) => row.bowlerId === thirdBowlerId)).toMatchObject({ balanceMinor: 6_000 });
     expect(finalRows.find((row) => row.bowlerId === thirdBowlerId)?.cardReceipts).toHaveLength(1);
     expect(finalRows.find((row) => row.bowlerId === thirdBowlerId)?.manualReceipts).toHaveLength(1);
@@ -382,7 +429,7 @@ describe("Manage Payments worksheet atomic writer", () => {
       eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, mainReceipt.receiptId),
     )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision));
     expect(sourceRevision.map((revision) => [revision.revisionKind, revision.amountMinor, revision.paymentId])).toEqual([
-      ["manual_record", 10_000, expect.any(Number)],
+      ["manual_record", 1_000, expect.any(Number)],
       ["manual_clear", 0, null],
     ]);
     current = (await saveManagePaymentsWorksheet(saveInput(current, [rowChange(current, thirdBowlerId, {

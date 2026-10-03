@@ -101,7 +101,7 @@ function replayResponse(result: unknown): ManagePaymentsSaveResponse {
 function throwWriteError(caught: unknown): never {
   if (caught instanceof ManagePaymentsWorksheetWriteError) throw caught;
   if (caught instanceof ManagePaymentsWorksheetReadError) {
-    if (caught.code === "ledger_not_adopted") throw new ManagePaymentsWorksheetWriteError("ledger_not_adopted", "This league's payment ledger must be prepared before saving weekly payments");
+    if (caught.code === "ledger_not_adopted") throw new ManagePaymentsWorksheetWriteError("ledger_not_adopted", "Payment setup is not complete for this league.");
     if (caught.code === "league_not_found") throw new ManagePaymentsWorksheetWriteError("league_not_found", "League was not found in the authorized organization");
     if (caught.code === "invalid_occurrence") throw new ManagePaymentsWorksheetWriteError("state_conflict", "The selected week changed; reload this week before saving");
     throw new ManagePaymentsWorksheetWriteError("incompatible_evidence", "Payment evidence needs review before this week can be saved");
@@ -820,7 +820,7 @@ export async function saveManagePaymentsWorksheet(input: SaveManagePaymentsWorks
         eq(weeklyPaymentLedgerAdoptions.organizationId, input.organizationId),
         eq(weeklyPaymentLedgerAdoptions.leagueId, input.leagueId),
       )).limit(1).for("share");
-      if (!adoption) throw new ManagePaymentsWorksheetWriteError("ledger_not_adopted", "This league's payment ledger must be prepared before saving weekly payments");
+      if (!adoption) throw new ManagePaymentsWorksheetWriteError("ledger_not_adopted", "Payment setup is not complete for this league.");
 
       const weekConfirmations = await tx.select({ id: weeklyPaymentWeekConfirmations.id, revision: weeklyPaymentWeekConfirmations.revision })
         .from(weeklyPaymentWeekConfirmations).where(and(
