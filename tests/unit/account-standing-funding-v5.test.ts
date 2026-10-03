@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { FifoPaymentCandidate } from "../../server/services/automatic-fifo-allocation";
-import { projectStandingAccountFundingTarget } from "../../server/services/account-payment-funding-targets";
+import { confirmedPastDueMinor, projectStandingAccountFundingTarget } from "../../server/services/account-payment-funding-targets";
 import {
   ACCOUNT_STANDING_FUNDING_SNAPSHOT_FINGERPRINT_PREFIX,
   buildAccountStandingFundingSnapshot,
@@ -256,5 +256,44 @@ describe("scoped standing account funding target", () => {
     expect(result.olderDebtReviewRequired).toBe(true);
     expect(result.forecastCollectionTargetMinor).toBe(0);
     expect(result.newChargeMinor).toBe(0);
+  });
+});
+
+describe("confirmed account past-due projection", () => {
+  it("applies credit in occurrence FIFO order before selecting past-due debt", () => {
+    const result = confirmedPastDueMinor({
+      debts: [
+        { obligationId: "earlier-occurrence", occurrenceLocalDate: "2026-01-01", dueAt: "2026-01-20T00:00:00.000Z", pastDueAt: "2026-01-20T00:00:00.000Z", outstandingMinor: 100, reviewRequired: false },
+        { obligationId: "later-occurrence", occurrenceLocalDate: "2026-01-08", dueAt: "2026-01-10T00:00:00.000Z", pastDueAt: "2026-01-12T00:00:00.000Z", outstandingMinor: 100, reviewRequired: false },
+      ],
+      availableCreditMinor: 100,
+      asOf: "2026-01-15T12:00:00.000Z",
+    });
+
+    // Credit first covers the older occurrence even though its deadline is
+    // later, leaving the newer confirmed debt overdue and uncovered.
+    expect(result).toBe(100);
+  });
+
+  it("stops credit at a review hold and excludes the held row from the past-due display", () => {
+    const result = confirmedPastDueMinor({
+      debts: [
+        { obligationId: "old", occurrenceLocalDate: "2026-01-01", dueAt: "2026-01-01T00:00:00.000Z", pastDueAt: "2026-01-02T00:00:00.000Z", outstandingMinor: 100, reviewRequired: false },
+        { obligationId: "review-held", occurrenceLocalDate: "2026-01-08", dueAt: "2026-01-08T00:00:00.000Z", pastDueAt: "2026-01-09T00:00:00.000Z", outstandingMinor: 300, reviewRequired: true },
+        { obligationId: "after-hold", occurrenceLocalDate: "2026-01-15", dueAt: "2026-01-15T00:00:00.000Z", pastDueAt: "2026-01-16T00:00:00.000Z", outstandingMinor: 400, reviewRequired: false },
+      ],
+      availableCreditMinor: 500,
+      asOf: "2026-01-20T00:00:00.000Z",
+    });
+
+    expect(result).toBe(400);
+  });
+
+  it("excludes confirmed debt whose canonical past-due instant has not arrived", () => {
+    expect(confirmedPastDueMinor({
+      debts: [{ obligationId: "not-due", occurrenceLocalDate: "2026-01-15", dueAt: "2026-01-15T00:00:00.000Z", pastDueAt: "2026-01-16T00:00:00.000Z", outstandingMinor: 250, reviewRequired: false }],
+      availableCreditMinor: 0,
+      asOf: "2026-01-15T23:59:59.999Z",
+    })).toBe(0);
   });
 });

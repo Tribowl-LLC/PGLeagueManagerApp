@@ -1,4 +1,66 @@
 import { comparePublishedCollectionOrder, type FifoPaymentCandidate } from "./automatic-fifo-allocation.js";
+import type { OwnedConfirmedObligation } from "./owned-payment-ledger.js";
+
+type ConfirmedPastDueDebt = Pick<OwnedConfirmedObligation,
+  "obligationId" | "occurrenceLocalDate" | "dueAt" | "pastDueAt" | "outstandingMinor" | "reviewRequired">;
+
+/** Project overdue confirmed debt after consuming this owner's available
+ * credit through the same oldest-debt order used by the owned FIFO writer.
+ * A review-held positive debt stops spending; only non-held residual debt
+ * whose stored past-due instant has arrived is included in the result. */
+export function confirmedPastDueMinor(input: {
+  debts: readonly ConfirmedPastDueDebt[];
+  availableCreditMinor: number;
+  asOf: string;
+}): number {
+  if (!Number.isSafeInteger(input.availableCreditMinor) || input.availableCreditMinor < 0) {
+    throw new Error("account past-due credit must be nonnegative integer cents");
+  }
+  const asOfMs = Date.parse(input.asOf);
+  if (!Number.isFinite(asOfMs)) throw new Error("account past-due timestamp is invalid");
+  const seenIds = new Set<string>();
+  const parsed = input.debts.map((debt) => {
+    if (!debt.obligationId || seenIds.has(debt.obligationId)) throw new Error("confirmed account obligations must be unique");
+    seenIds.add(debt.obligationId);
+    if (!Number.isSafeInteger(debt.outstandingMinor) || debt.outstandingMinor < 0) {
+      throw new Error("confirmed account debt must be nonnegative integer cents");
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(debt.occurrenceLocalDate)
+      || !Number.isFinite(Date.parse(debt.dueAt)) || !Number.isFinite(Date.parse(debt.pastDueAt))) {
+      throw new Error("confirmed account debt dates are invalid");
+    }
+    return {
+      debt,
+      dueAtMs: Date.parse(debt.dueAt),
+      pastDueAtMs: Date.parse(debt.pastDueAt),
+      remainingMinor: debt.outstandingMinor,
+    };
+  }).sort((left, right) => left.debt.occurrenceLocalDate.localeCompare(right.debt.occurrenceLocalDate)
+    || left.dueAtMs - right.dueAtMs
+    || left.debt.obligationId.localeCompare(right.debt.obligationId));
+
+  let availableMinor = input.availableCreditMinor;
+  let reviewHoldReached = false;
+  for (const row of parsed) {
+    if (row.remainingMinor <= 0) continue;
+    if (row.debt.reviewRequired) {
+      reviewHoldReached = true;
+      continue;
+    }
+    if (reviewHoldReached || availableMinor <= 0) continue;
+    const appliedMinor = Math.min(availableMinor, row.remainingMinor);
+    row.remainingMinor -= appliedMinor;
+    availableMinor -= appliedMinor;
+  }
+
+  let totalMinor = 0;
+  for (const row of parsed) {
+    if (row.debt.reviewRequired || row.pastDueAtMs > asOfMs) continue;
+    totalMinor += row.remainingMinor;
+    if (!Number.isSafeInteger(totalMinor)) throw new Error("account past-due balance exceeds safe integer cents");
+  }
+  return totalMinor;
+}
 
 export type ConfirmedAccountFundingDebt = {
   obligationId: string;

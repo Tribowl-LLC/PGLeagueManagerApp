@@ -22,6 +22,9 @@ const accountPaymentFundingParticipantV4Schema = z.object({
   name: z.string().trim().min(1).max(255),
   role: z.enum(["self", "partner"]),
   confirmedDebtMinor: amountMinorSchema,
+  /** Confirmed overdue debt remaining after this owner's available credit is
+   * applied through the canonical FIFO order. Forecast fees are excluded. */
+  confirmedPastDueMinor: amountMinorSchema,
   availableCreditMinor: amountMinorSchema,
   /** Preset collection targets. Forecast portions remain distinct from debt. */
   forecastTargets: z.object({

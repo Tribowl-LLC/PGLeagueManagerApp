@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
+import { accountPaymentParticipantsResponseV4Schema } from "@shared/account-payment-v4-contract";
 import {
   accountPaymentOperationSnapshots,
   autopayConsents,
@@ -29,6 +30,7 @@ import { deleteOrganization } from "../../server/storage/organizations";
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
 import { RosterStandingAutopayOperationExecutor } from "../../server/services/roster-standing-autopay-executor";
 import { prepareStandingAutopayCutoff } from "../../server/services/roster-standing-autopay";
+import { readInteractivePaymentParticipantsV4 } from "../../server/services/account-payment-funding";
 import { encrypt } from "../../server/utils/crypto";
 
 process.env.SCHEDULED_PAYMENT_EXECUTION_MODE = "ledger_execute";
@@ -200,6 +202,12 @@ describe("V5 standing account funding finalization", () => {
       eq(autopayConsents.state, "active"),
     ));
     if (!consent) throw new Error("V5 standing consent fixture is missing");
+    const participants = await readInteractivePaymentParticipantsV4({ organizationId, leagueId, payerBowlerId });
+    expect(accountPaymentParticipantsResponseV4Schema.safeParse(participants).success).toBe(true);
+    expect(participants).toMatchObject({
+      accountingMode: "confirmed_account_v4",
+      recipients: [{ bowlerId: payerBowlerId, confirmedDebtMinor: 0, confirmedPastDueMinor: 0 }],
+    });
     const now = new Date();
     const operation = await prepareStandingAutopayCutoff({
       organizationId,

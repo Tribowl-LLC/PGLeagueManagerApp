@@ -154,6 +154,7 @@ describe("account payment funding V4 contract and operation snapshots", () => {
         name: "Partner",
         role: "partner",
         confirmedDebtMinor: 900,
+        confirmedPastDueMinor: 400,
         availableCreditMinor: 1_200,
         forecastTargets: {
           currentCollectionMinor: 1_500,
@@ -163,6 +164,10 @@ describe("account payment funding V4 contract and operation snapshots", () => {
       }],
     };
     expect(accountPaymentParticipantsResponseV4Schema.safeParse(response).success).toBe(true);
+    expect(accountPaymentParticipantsResponseV4Schema.safeParse({
+      ...response,
+      recipients: [{ ...response.recipients[0], confirmedPastDueMinor: undefined }],
+    }).success).toBe(false);
     expect(accountPaymentParticipantsResponseV4Schema.safeParse({
       ...response,
       recipients: [{ ...response.recipients[0], role: "self" }],

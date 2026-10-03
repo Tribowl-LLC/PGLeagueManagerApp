@@ -40,7 +40,7 @@ import {
   resolveParticipantsInTransaction,
 } from "./interactive-partner-payment.js";
 import { buildOneTimePaymentOptions } from "@shared/one-time-payment-options";
-import { effectiveCollectionPrefixMinor, projectStandingAccountFundingTarget, type StandingAccountFundingTarget } from "./account-payment-funding-targets.js";
+import { confirmedPastDueMinor as projectConfirmedPastDueMinor, effectiveCollectionPrefixMinor, projectStandingAccountFundingTarget, type StandingAccountFundingTarget } from "./account-payment-funding-targets.js";
 import {
   readOwnedAccountBalancesInTransaction,
   readOwnedLedgerAdoptionInTransaction,
@@ -65,6 +65,7 @@ type ForecastParticipant = {
   name: string;
   role: "self" | "partner";
   confirmedDebtMinor: number;
+  confirmedPastDueMinor: number;
   availableCreditMinor: number;
   forecastTargets: {
     currentCollectionMinor: number;
@@ -341,11 +342,17 @@ async function accountContextInTransaction(
       now,
     });
     const balance = balances.get(participant.bowlerId);
+    const ownerDebts = debts.filter((debt) => debt.debtorBowlerId === participant.bowlerId);
     const response: ForecastParticipant = {
       bowlerId: participant.bowlerId,
       name: participant.name,
       role: participant.role,
       confirmedDebtMinor: debtByOwner.get(participant.bowlerId) ?? 0,
+      confirmedPastDueMinor: projectConfirmedPastDueMinor({
+        debts: ownerDebts,
+        availableCreditMinor: balance?.availableCreditMinor ?? 0,
+        asOf: now,
+      }),
       availableCreditMinor: balance?.availableCreditMinor ?? 0,
       forecastTargets: {
         currentCollectionMinor: projected.currentCollectionMinor,
