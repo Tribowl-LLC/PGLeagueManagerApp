@@ -22,6 +22,7 @@ import {
   refundAllocationAdjustments,
   refundPaymentOperationSnapshots,
   rotatingCreditFundings,
+  rotatingCreditRefunds,
   rotatingOccurrenceAssignments,
   weeklyPaymentAllocationReleases,
   weeklyPaymentLedgerAdoptionAllocationProofs,
@@ -36,7 +37,11 @@ import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 import { reconstructInteractivePartnerSnapshot, type InteractivePartnerPaymentSnapshot } from "./interactive-partner-payment-snapshot.js";
 import { reconstructRosterOperationSnapshot, type RosterOperationSemanticSnapshot } from "./roster-operation-snapshot.js";
 import { resolvePaymentObligationOwnersInTransaction } from "./roster-obligation-owners.js";
-import { isConfirmedNoRefundCreditOutcome, readRotatingCreditFundingBalancesInTransaction } from "./rotating-credit-applications.js";
+import {
+  isConfirmedNoRefundCreditOutcome,
+  isRotatingCreditRefundUnresolvedForReversal,
+  readRotatingCreditFundingBalancesInTransaction,
+} from "./rotating-credit-applications.js";
 
 export class OwnedPaymentLedgerError extends Error {
   constructor(public readonly code: string) {
@@ -1154,6 +1159,33 @@ export async function releaseOwnedFundingApplicationInTransaction(
   if (disputeRows.some((dispute) => REVIEW_DISPUTE_STATES.has(dispute.state))
     || refundRows.some((refund) => !isConfirmedNoRefundCreditOutcome(refund))) {
     throw new OwnedPaymentLedgerError("FUNDING_SOURCE_REQUIRES_REVIEW");
+  }
+  if (row.application.rotatingFundingId !== null) {
+    const rotatingRefundRows = await tx.select({
+      refundOperationId: rotatingCreditRefunds.refundOperationId,
+      status: paymentOperations.status,
+      providerObjectId: paymentOperations.providerObjectId,
+      errorClassification: paymentOperations.errorClassification,
+      errorCode: paymentOperations.errorCode,
+    }).from(rotatingCreditRefunds)
+      .leftJoin(paymentOperations, and(
+        eq(paymentOperations.id, rotatingCreditRefunds.refundOperationId),
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.leagueId, input.leagueId),
+      )).where(and(
+        eq(rotatingCreditRefunds.organizationId, input.organizationId),
+        eq(rotatingCreditRefunds.leagueId, input.leagueId),
+        eq(rotatingCreditRefunds.fundingId, row.application.rotatingFundingId),
+      ));
+    if (rotatingRefundRows.some((refund) => refund.refundOperationId !== null
+      && (refund.status === null || isRotatingCreditRefundUnresolvedForReversal({
+        status: refund.status,
+        providerObjectId: refund.providerObjectId,
+        errorClassification: refund.errorClassification,
+        errorCode: refund.errorCode,
+      })))) {
+      throw new OwnedPaymentLedgerError("FUNDING_SOURCE_REQUIRES_REVIEW");
+    }
   }
   const retainedAmountMinor = 0;
   const releasedAmountMinor = row.application.amountMinor - retainedAmountMinor;

@@ -377,6 +377,7 @@ export const rotatingOccurrenceAssignments = pgTable("rotating_occurrence_assign
   bowlerFk: foreignKey({ name: "rotating_occurrence_assignments_bowler_fk", columns: [table.actualBowlerId, table.organizationId], foreignColumns: [bowlers.id, bowlers.organizationId] }).onDelete("restrict"),
   identityUnique: uniqueIndex("rotating_occurrence_assignments_identity_unique").on(table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.slotIndex, table.version),
   paymentApplicationTargetIdentity: uniqueIndex("rot_occ_assign_app_target_uq").on(table.id, table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.responsibilityId, table.actualBowlerId),
+  paymentApplicationIdentity: uniqueIndex("rot_occ_assign_app_identity_uq").on(table.id, table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.responsibilityId),
   versionCheck: check("rotating_occurrence_assignments_version_check", sql`${table.version} > 0 AND (${table.correctionReason} IS NULL OR length(btrim(${table.correctionReason})) BETWEEN 1 AND 500)`),
   occurrenceTeamIdx: index("rotating_occurrence_assignments_occurrence_team_idx").on(table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.slotIndex, table.version),
 }));

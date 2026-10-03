@@ -44,9 +44,10 @@ export {
   PAYMENT_OPERATION_MAX_RETRY_DELAY_MS,
   REFUND_PAYMENT_SNAPSHOT_VERSION,
   REFUND_PAYMENT_SNAPSHOT_LEGACY_VERSION,
+  REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION,
   REFUND_PAYMENT_DISPOSITIONS,
 } from "./payment-operations";
-export type { RefundPaymentDisposition, RefundPaymentAllocationSnapshot } from "./payment-operations";
+export type { RefundPaymentDisposition, RefundPaymentAllocationSnapshot, RefundPaymentFundingSnapshotV3 } from "./payment-operations";
 export {
   ROSTER_OPERATION_SNAPSHOT_VERSION,
   ROSTER_OPERATION_REQUEST_KINDS,
