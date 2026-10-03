@@ -957,15 +957,26 @@ async function readLegacyProviderSnapshotEvidenceInTransaction(
       eq(autopayConsents.leagueId, input.leagueId),
       eq(autopayConsents.consentVersion, binding.consentVersion),
     )).limit(1) : [];
+    const consentPartnerRows = binding ? await tx.select({
+      partnerBowlerId: autopayConsentPartners.partnerBowlerId,
+      paymentLinkId: autopayConsentPartners.paymentLinkId,
+      linkFingerprint: autopayConsentPartners.linkFingerprint,
+    }).from(autopayConsentPartners).where(and(
+      eq(autopayConsentPartners.organizationId, input.organizationId),
+      eq(autopayConsentPartners.leagueId, input.leagueId),
+      eq(autopayConsentPartners.consentVersion, binding.consentVersion),
+      eq(autopayConsentPartners.consentId, binding.consentId),
+    )) : [];
     const participantByIndex = new Map(participantRows.map((row) => [row.allocationIndex, row]));
-    const payerParticipants = participantRows.filter((row) => row.role === "payer" && row.bowlerId === input.payment.bowlerId);
+    const consentPartnersByBowler = new Map(consentPartnerRows.map((row) => [row.partnerBowlerId, row]));
     if (!binding || binding.evidenceFingerprint !== snapshot.snapshotFingerprint || participantRows.length !== items.length
       || !consent || consent.id !== binding.consentId || consent.consentVersion !== binding.consentVersion
-      || consent.payerBowlerId !== input.payment.bowlerId || consent.providerName !== operation.providerName
-      || consent.providerLocationId !== binding.providerLocationId || binding.providerName !== operation.providerName
+      || consent.payerBowlerId !== input.payment.bowlerId || (consent.providerName ?? "square") !== operation.providerName
+      || (consent.providerLocationId ?? "") !== binding.providerLocationId
+      || binding.providerName !== operation.providerName
       || operation.triggerOccurrenceId !== binding.triggerOccurrenceId
       || Date.parse(snapshot.cutoffAt ?? "") !== Date.parse(binding.cutoffAt)
-      || snapshot.collectionMode !== binding.collectionMode || payerParticipants.length !== 1
+      || snapshot.collectionMode !== binding.collectionMode
       || participantRows.some((row) => row.consentVersion !== binding.consentVersion)) {
       throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
     }
@@ -974,7 +985,13 @@ async function readLegacyProviderSnapshotEvidenceInTransaction(
       const participant = participantByIndex.get(item.allocationIndex);
       if (!record || record.obligationId !== item.obligationId || record.amountMinor !== item.amountMinor
         || !Number.isSafeInteger(record.payerBowlerId) || !participant || participant.obligationId !== item.obligationId
-        || participant.bowlerId !== record.payerBowlerId) {
+        || participant.bowlerId !== record.payerBowlerId
+        || (participant.role === "payer"
+          ? participant.bowlerId !== consent.payerBowlerId || participant.paymentLinkId !== null || participant.linkFingerprint !== null
+          : participant.role !== "partner"
+            || participant.bowlerId === consent.payerBowlerId
+            || consentPartnersByBowler.get(participant.bowlerId)?.paymentLinkId !== participant.paymentLinkId
+            || consentPartnersByBowler.get(participant.bowlerId)?.linkFingerprint !== participant.linkFingerprint)) {
         throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
       }
       allocations.push({
