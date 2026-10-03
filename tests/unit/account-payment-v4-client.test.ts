@@ -37,6 +37,16 @@ const participants: ConfirmedAccountPaymentParticipantsV4 = {
   ],
 };
 
+const noWeeklyPresetParticipants: ConfirmedAccountPaymentParticipantsV4 = {
+  ...participants,
+  recipients: participants.recipients.map((recipient) => recipient.bowlerId === participants.payerBowlerId
+    ? {
+      ...recipient,
+      forecastTargets: { ...recipient.forecastTargets, selectedWeeks: [] },
+    }
+    : recipient),
+};
+
 describe("account payment V4 client adapter", () => {
   it.each([
     [".50", 50],
@@ -87,6 +97,54 @@ describe("account payment V4 client adapter", () => {
       weeksByBowlerId: {},
       explicitPayerAmountMinor: 0,
     })).toEqual([{ bowlerId: 84, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 1 } }]);
+  });
+
+  it("omits an unpriced weekly payer until a positive explicit amount is entered", () => {
+    expect(buildAccountPaymentSelectionsV4({
+      response: noWeeklyPresetParticipants,
+      selected: { 42: true },
+      weeksByBowlerId: {},
+      explicitPayerAmountMinor: null,
+    })).toEqual([]);
+
+    expect(buildAccountPaymentSelectionsV4({
+      response: noWeeklyPresetParticipants,
+      selected: { 42: true },
+      weeksByBowlerId: {},
+      explicitPayerAmountMinor: 2_500,
+    })).toEqual([{ bowlerId: 42, selection: { kind: "explicit_amount", amountMinor: 2_500 } }]);
+  });
+
+  it("keeps valid partner, current-collection, and upfront selections without weekly presets", () => {
+    expect(buildAccountPaymentSelectionsV4({
+      response: noWeeklyPresetParticipants,
+      selected: { 42: true, 84: true },
+      weeksByBowlerId: { 84: 2 },
+      explicitPayerAmountMinor: null,
+    })).toEqual([{ bowlerId: 84, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 2 } }]);
+
+    expect(buildAccountPaymentSelectionsV4({
+      response: noWeeklyPresetParticipants,
+      selected: { 42: true },
+      weeksByBowlerId: {},
+      currentCollectionOnly: true,
+    })).toEqual([{ bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "current_collection" } }]);
+
+    const upfrontParticipants: ConfirmedAccountPaymentParticipantsV4 = {
+      ...noWeeklyPresetParticipants,
+      paymentMode: "upfront",
+      recipients: noWeeklyPresetParticipants.recipients.map((recipient) => recipient.bowlerId === participants.payerBowlerId
+        ? {
+          ...recipient,
+          forecastTargets: { ...recipient.forecastTargets, fullSeasonMinor: 4_500 },
+        }
+        : recipient),
+    };
+    expect(buildAccountPaymentSelectionsV4({
+      response: upfrontParticipants,
+      selected: { 42: true },
+      weeksByBowlerId: {},
+    })).toEqual([{ bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "full_season" } }]);
   });
 
   it("scopes participant cache identity by both league and payer", () => {

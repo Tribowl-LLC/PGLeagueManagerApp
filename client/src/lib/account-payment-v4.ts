@@ -115,6 +115,7 @@ export function buildAccountPaymentSelectionsV4(input: {
         selection = { kind: "forecast_collection_target", scope: "full_season" };
       } else {
         const availableWeeks = recipient.forecastTargets.selectedWeeks;
+        if (availableWeeks.length === 0) return [];
         const maxWeeks = availableWeeks.at(-1)?.weeks ?? 1;
         const requestedWeeks = input.weeksByBowlerId[recipient.bowlerId] ?? 1;
         const weeks = Math.min(Math.max(1, Math.trunc(requestedWeeks)), maxWeeks);
