@@ -3303,7 +3303,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       { organizationId, leagueId, teamId: overrideTeam.id, slotIndex: 2, lineupSize: 3, occupant: "unassigned", mainBowlerId: null, recordedByUserId: actorUserId },
     ]);
 
-    const fixture = await createOccurrence();
+    const fixture = await createOccurrence({ authoritativeLocalDate: "2038-03-16" });
     const dueAt = "2038-02-02T19:00:00.000Z";
     const responsibilities = [
       {
