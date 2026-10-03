@@ -34,19 +34,23 @@ does not load the database module.
 ## Read-only preflight
 
 Select the configured organization and the exact existing league through the
-approved operator process. `ADMIN_ACTOR_ID` must identify the authorized
-system administrator who is performing the operation. The expected database
-host and name are explicit guards. This snippet reads only the hostname and
-database name from the ambient URL; it never prints the URL, username,
-password, or query parameters:
+approved operator process. `ACTOR_USER_ID` must identify an authorized
+`org_admin` for this organization or a `system_admin` who is performing the
+operation. The expected database host and name are explicit guards. Set them
+from the independently reviewed protected Render runtime configuration and
+the verified Neon production branch endpoint. Confirm the Render host is the
+direct endpoint or its exact pooled alias and confirm the database name
+against both runtime configuration and the workflow's pinned production
+target. Do not derive them from the ambient `DATABASE_URL` in this command and
+compare the value back to itself:
 
 ```bash
-EXPECTED_DB_HOST="$(node --input-type=module -e 'process.stdout.write(new URL(process.env.DATABASE_URL).hostname)')"
-EXPECTED_DB_NAME="$(node --input-type=module -e 'const url = new URL(process.env.DATABASE_URL); process.stdout.write(decodeURIComponent(url.pathname.slice(1)))')"
+EXPECTED_DB_HOST='<independently verified direct or pooled production endpoint hostname>'
+EXPECTED_DB_NAME='<independently verified production database name>'
 CERTIFIED_SHA='<exact certified 40-character main SHA>'
 ORGANIZATION_ID='<configured organization ID>'
 LEAGUE_ID='<selected existing league ID>'
-ADMIN_ACTOR_ID='<authorized system administrator user ID>'
+ACTOR_USER_ID='<authorized org_admin for this organization or system_admin user ID>'
 EVIDENCE_FILE=".local/owned-payment-adoption-${ORGANIZATION_ID}-${LEAGUE_ID}-$(date -u +%Y%m%dT%H%M%SZ)-${BASHPID}.json"
 mkdir -p .local
 node dist/owned-payment-ledger-adoption.js preflight \
@@ -55,7 +59,7 @@ node dist/owned-payment-ledger-adoption.js preflight \
   --expected-render-git-commit "$CERTIFIED_SHA" \
   --organization-id "$ORGANIZATION_ID" \
   --league-id "$LEAGUE_ID" \
-  --actor-user-id "$ADMIN_ACTOR_ID" \
+  --actor-user-id "$ACTOR_USER_ID" \
   --evidence-file "$EVIDENCE_FILE"
 ```
 
@@ -77,11 +81,12 @@ occurrence, or lineup changes after review, discard that review for decision
 purposes, rerun preflight, and review the new fingerprints and counts.
 
 The runtime accepts only the exact expected Neon database host and database.
-For a pooled Render connection it removes only the literal `-pooler` suffix
-from the Neon endpoint label to derive the direct endpoint fingerprint used
-by the protected migration workflow. Confirm the displayed fingerprint maps
-to the protected production branch endpoint. Any other hostname shape or
-mapping is a stop condition.
+It recognizes the optional `c-<digits>` proxy label before the AWS region and
+preserves that label in the direct endpoint fingerprint. For a pooled Render
+connection it removes only the literal `-pooler` suffix from the endpoint
+label. Confirm the displayed fingerprint maps to the independently verified
+protected production branch endpoint. Any other hostname shape or mapping is
+a stop condition.
 
 ## Transcribe the protected backup and migration evidence
 
@@ -162,7 +167,7 @@ node dist/owned-payment-ledger-adoption.js apply \
   --expected-render-git-commit "$CERTIFIED_SHA" \
   --organization-id "$ORGANIZATION_ID" \
   --league-id "$LEAGUE_ID" \
-  --actor-user-id "$ADMIN_ACTOR_ID" \
+  --actor-user-id "$ACTOR_USER_ID" \
   --expected-source-fingerprint "$EXPECTED_SOURCE_FINGERPRINT" \
   --expected-result-fingerprint "$EXPECTED_RESULT_FINGERPRINT" \
   --backup-proof-file "$BACKUP_PROOF_FILE"

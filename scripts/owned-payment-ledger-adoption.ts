@@ -175,7 +175,7 @@ export function requireRuntimeGuards(args: CliArguments, environment: NodeJS.Pro
   const isPoolerEndpoint = endpointLabel.endsWith("-pooler");
   const directEndpointLabel = isPoolerEndpoint ? endpointLabel.slice(0, -"-pooler".length) : endpointLabel;
   if (!/^ep-[a-z0-9][a-z0-9-]*$/.test(directEndpointLabel)
-    || !/^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+\.aws\.neon\.tech$/.test(labels.slice(1).join("."))
+    || !/^(?:c-[0-9]+\.)?[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+\.aws\.neon\.tech$/.test(labels.slice(1).join("."))
     || databaseRole !== "neondb_owner") {
     throw new Error("runtime database endpoint does not match the protected Neon production target");
   }

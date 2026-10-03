@@ -13,8 +13,9 @@ import {
 const sha = "a".repeat(40);
 const sourceFingerprint = `lvweeklyadoptpre:v1:${"b".repeat(64)}`;
 const resultFingerprint = `lvweeklyadopt:v1:${"c".repeat(64)}`;
-const directHost = "ep-cli-adoption-123456.us-east-1.aws.neon.tech";
-const poolerHost = "ep-cli-adoption-123456-pooler.us-east-1.aws.neon.tech";
+const directHost = "ep-cli-adoption-123456.c-8.us-east-1.aws.neon.tech";
+const poolerHost = "ep-cli-adoption-123456-pooler.c-8.us-east-1.aws.neon.tech";
+const directHostWithoutComputeProxy = "ep-cli-adoption-123456.us-east-1.aws.neon.tech";
 const expectedMigrations = "0052_weekly_admin_payments_ledger,0053_owned_payment_refund_support,0054_weekly_standing_account_funding,0055_owned_account_refunds_v3";
 const verification = "checked migration completed and immediate rerun reported no pending migrations";
 
@@ -75,9 +76,21 @@ describe("owned payment adoption CLI", () => {
     assert.equal(direct.directDatabaseHost, directHost);
     assert.equal(pooler.directDatabaseHost, directHost);
     assert.equal(pooler.hostFingerprint, direct.hostFingerprint);
+    assert.equal(
+      requireRuntimeGuards(
+        parsePreflightArguments(directHostWithoutComputeProxy),
+        runtimeEnvironment(directHostWithoutComputeProxy),
+      ).directDatabaseHost,
+      directHostWithoutComputeProxy,
+    );
     assert.throws(() => requireRuntimeGuards(
       parsePreflightArguments("ep-cli-adoption-123456-pooler.other.example"),
       runtimeEnvironment("ep-cli-adoption-123456-pooler.other.example"),
+    ));
+    const arbitraryExtraLabel = "ep-cli-adoption-123456.extra.c-8.us-east-1.aws.neon.tech";
+    assert.throws(() => requireRuntimeGuards(
+      parsePreflightArguments(arbitraryExtraLabel),
+      runtimeEnvironment(arbitraryExtraLabel),
     ));
   });
 
