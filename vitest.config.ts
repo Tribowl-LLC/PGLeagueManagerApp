@@ -262,6 +262,7 @@ const PARALLEL_ISOLATED = [
   'tests/unit/roster-payment-finalizer-postgres.test.ts',
   'tests/unit/owned-payment-ledger-guards-postgres.test.ts',
   'tests/unit/owned-payment-legacy-standing-proof-postgres.test.ts',
+  'tests/unit/owned-payment-ledger-adoption-postgres.test.ts',
   'tests/unit/manage-payments-worksheet-write-postgres.test.ts',
   'tests/unit/standing-account-funding-v5-postgres.test.ts',
   'tests/unit/historical-square-payment-correction-postgres.test.ts',
