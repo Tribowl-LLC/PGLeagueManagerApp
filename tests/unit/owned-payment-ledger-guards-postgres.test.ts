@@ -37,6 +37,7 @@ import {
   isOwnedPaymentLedgerInvariantError,
   recordOwnedFundingInTransaction,
   releaseOwnedFundingApplicationInTransaction,
+  readLegacyFundingAuthorizationInTransaction,
   readOwnedGenericFundingSourcesByPaymentInTransaction,
 } from "../../server/services/owned-payment-ledger";
 import { prepareRotatingCreditPaymentOperation } from "../../server/services/rotating-credit-operation-preparation";
@@ -918,6 +919,55 @@ describe("owned payment SQL guards on PostgreSQL", () => {
       eq(weeklyPaymentFundings.creditedBowlerId, funding.creditedBowlerId),
     ));
     expect(stored).toHaveLength(1);
+  });
+
+  it("reads legacy standing V2 recipient proof without writes and rejects supplied payments outside scope", async () => {
+    const source = await createLegacyStandingFunding();
+    const [payment] = await db.select().from(payments).where(and(
+      eq(payments.id, source.paymentId),
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+    )).limit(1);
+    if (!payment) throw new Error("legacy standing payment fixture was not found");
+    const before = await db.select({ count: sql<number>`count(*)::int` }).from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, organizationId),
+      eq(weeklyPaymentFundings.leagueId, leagueId),
+      eq(weeklyPaymentFundings.paymentId, source.paymentId),
+    ));
+    const proof = await db.transaction((tx) => readLegacyFundingAuthorizationInTransaction(tx, {
+      organizationId,
+      leagueId,
+      paymentId: source.paymentId,
+      payment,
+    }), { isolationLevel: "repeatable read", accessMode: "read only" });
+    expect(proof.portions).toMatchObject([{
+      creditedBowlerId: source.creditedBowlerId,
+      portionIndex: 0,
+      amountMinor: 500,
+      authorizationKind: "legacy_provider_snapshot",
+      authorizationOperationId: source.operationId,
+      authorizationItemCount: 1,
+    }]);
+    expect(proof.portions[0]?.authorizationItems).toHaveLength(1);
+    for (const outOfScopePayment of [
+      { ...payment, organizationId: organizationId + 1 },
+      { ...payment, leagueId: leagueId + 1 },
+      { ...payment, id: source.paymentId + 1 },
+    ]) {
+      await expect(db.transaction((tx) => readLegacyFundingAuthorizationInTransaction(tx, {
+        organizationId,
+        leagueId,
+        paymentId: source.paymentId,
+        payment: outOfScopePayment,
+      }), { isolationLevel: "repeatable read", accessMode: "read only" }))
+        .rejects.toMatchObject({ code: "LEGACY_PAYMENT_SCOPE_INVALID" });
+    }
+    const after = await db.select({ count: sql<number>`count(*)::int` }).from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, organizationId),
+      eq(weeklyPaymentFundings.leagueId, leagueId),
+      eq(weeklyPaymentFundings.paymentId, source.paymentId),
+    ));
+    expect(after[0]?.count).toBe(before[0]?.count);
   });
 
   it("releases completed partially refunded rotating credit and reapplies only remaining value", async () => {

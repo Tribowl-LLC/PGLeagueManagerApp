@@ -836,7 +836,7 @@ async function readLegacyProviderSnapshotEvidenceInTransaction(
     || (snapshot.snapshotKind === "interactive" && operation.operationType !== "interactive_charge")
     || (snapshot.snapshotKind === "standing_autopay" && operation.operationType !== "standing_autopay_charge")
     || snapshot.amountMinor !== input.payment.amount || snapshot.currency !== input.payment.currency
-    || snapshot.payerBowlerId !== input.payment.bowlerId) {
+    || (snapshot.snapshotKind === "interactive" && snapshot.payerBowlerId !== input.payment.bowlerId)) {
     throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
   }
   const items = await tx.select({
@@ -945,8 +945,28 @@ async function readLegacyProviderSnapshotEvidenceInTransaction(
       )),
     ]);
     const [binding] = bindingRows;
+    const [consent] = binding ? await tx.select({
+      id: autopayConsents.id,
+      consentVersion: autopayConsents.consentVersion,
+      payerBowlerId: autopayConsents.payerBowlerId,
+      providerName: autopayConsents.providerName,
+      providerLocationId: autopayConsents.providerLocationId,
+    }).from(autopayConsents).where(and(
+      eq(autopayConsents.id, binding.consentId),
+      eq(autopayConsents.organizationId, input.organizationId),
+      eq(autopayConsents.leagueId, input.leagueId),
+      eq(autopayConsents.consentVersion, binding.consentVersion),
+    )).limit(1) : [];
     const participantByIndex = new Map(participantRows.map((row) => [row.allocationIndex, row]));
-    if (!binding || binding.evidenceFingerprint !== snapshot.snapshotFingerprint || participantRows.length !== items.length) {
+    const payerParticipants = participantRows.filter((row) => row.role === "payer" && row.bowlerId === input.payment.bowlerId);
+    if (!binding || binding.evidenceFingerprint !== snapshot.snapshotFingerprint || participantRows.length !== items.length
+      || !consent || consent.id !== binding.consentId || consent.consentVersion !== binding.consentVersion
+      || consent.payerBowlerId !== input.payment.bowlerId || consent.providerName !== operation.providerName
+      || consent.providerLocationId !== binding.providerLocationId || binding.providerName !== operation.providerName
+      || operation.triggerOccurrenceId !== binding.triggerOccurrenceId
+      || Date.parse(snapshot.cutoffAt ?? "") !== Date.parse(binding.cutoffAt)
+      || snapshot.collectionMode !== binding.collectionMode || payerParticipants.length !== 1
+      || participantRows.some((row) => row.consentVersion !== binding.consentVersion)) {
       throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
     }
     for (const item of items) {
@@ -998,6 +1018,9 @@ export async function readLegacyFundingAuthorizationInTransaction(
     eq(payments.leagueId, input.leagueId),
   )).limit(1) : [input.payment];
   const payment = selectedPayment;
+  if (payment && (payment.id !== input.paymentId || payment.organizationId !== input.organizationId || payment.leagueId !== input.leagueId)) {
+    throw new OwnedPaymentLedgerError("LEGACY_PAYMENT_SCOPE_INVALID");
+  }
   if (!payment || payment.status !== "paid" || payment.currency !== "USD"
     || !Number.isSafeInteger(payment.amount) || payment.amount <= 0) {
     throw new OwnedPaymentLedgerError(payment?.status === "refunded" ? "LEGACY_REFUNDED_TENDER_UNSUPPORTED" : "LEGACY_PAYMENT_INVALID");
@@ -1123,6 +1146,12 @@ export async function validateOwnedFundingAuthorizationInTransaction(
     throw new OwnedPaymentLedgerError("LEGACY_PAYMENT_AUTH_INVALID");
   }
   if (input.authorizationKind === "legacy_provider_snapshot") {
+    if (input.source !== "legacy_adoption" || !authorizationOperationId
+      || (input.authorizationItemCount ?? 0) <= 0 || authorizationItems.length !== input.authorizationItemCount
+      || payment.paymentOperationId !== authorizationOperationId || payment.type === "cash" || payment.type === "check"
+      || authorizationItems.reduce((sum, item) => sum + item.amountMinor, 0) !== input.amountMinor) {
+      throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_ITEMS_INVALID");
+    }
     const evidence = await readLegacyProviderSnapshotEvidenceInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payment });
     if (evidence.operationId !== authorizationOperationId || evidence.fingerprint !== input.authorizationFingerprint
       || !legacyProviderRecipientItemsMatchSnapshot({
