@@ -23,6 +23,7 @@ import {
   paymentAllocations,
   paymentObligations,
   payments,
+  rotatingCreditFundings,
   paymentOperationRosterSnapshotItems,
   paymentOperationRosterSnapshots,
   paymentOperationStandingAutopayBindings,
@@ -56,7 +57,7 @@ import { fifoCandidatesInTransaction, quoteInteractiveObligations, recordCanonic
 import { quoteInteractivePartnerPayments, readInteractivePaymentParticipants } from "../../server/services/interactive-partner-payment";
 import { prepareInteractivePartnerPaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
 import { finalizeRosterSnapshotInTransaction } from "../../server/services/roster-payment-finalizer";
-import { recordOwnedFundingInTransaction } from "../../server/services/owned-payment-ledger";
+import { applyOwnedFundingFifoInTransaction } from "../../server/services/owned-payment-ledger";
 import { lockLeagueSchedule } from "../../server/storage/league-schedule-lock";
 
 // This suite deliberately enables only the standing runtime in the isolated
@@ -173,6 +174,7 @@ afterEach(async () => {
   await db.transaction(async (tx) => {
     const activePayments = await tx.select({ paymentId: paymentAllocations.paymentId }).from(paymentAllocations).where(and(
       eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, leagueId),
       eq(paymentAllocations.state, "active"),
     ));
     for (const paymentId of [...new Set(activePayments.map((row) => row.paymentId))]) {
@@ -188,10 +190,12 @@ afterEach(async () => {
   });
   await db.update(paymentObligations).set({ state: "voided", voidedAt: "2039-12-31T23:59:59.000Z" }).where(and(
     eq(paymentObligations.organizationId, organizationId),
+    eq(paymentObligations.leagueId, leagueId),
     inArray(paymentObligations.state, ["open", "partially_settled"] as const),
   ));
   await db.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
     eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+    eq(occurrencePaymentResponsibilities.leagueId, leagueId),
     eq(occurrencePaymentResponsibilities.state, "active"),
   ));
 });
@@ -360,13 +364,17 @@ describe("V5 standing account snapshot constraints", () => {
   });
 });
 
-async function publishOccurrence(startAt: string) {
+async function publishOccurrence(startAt: string, scope: { leagueId?: number; teamId?: number; payerBowlerId?: number; amountMinor?: number } = {}) {
+  const targetLeagueId = scope.leagueId ?? leagueId;
+  const targetTeamId = scope.teamId ?? teamId;
+  const targetPayerBowlerId = scope.payerBowlerId ?? payerBowlerId;
+  const amountMinor = scope.amountMinor ?? 2_000;
   occurrenceOrdinal += 1;
   const commandId = randomUUID();
   await db.insert(leagueScheduleCommands).values({
     id: commandId,
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     actorUserId,
     commandType: "publish",
     idempotencyKey: `standing-publish-${suffix}-${randomUUID()}`,
@@ -375,7 +383,7 @@ async function publishOccurrence(startAt: string) {
   const [occurrence] = await db.insert(leagueOccurrences).values({
     id: randomUUID(),
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     locationId,
     generationKey: `standing-occurrence-${suffix}-${occurrenceOrdinal}`,
     kind: "regular",
@@ -398,11 +406,11 @@ async function publishOccurrence(startAt: string) {
   }).returning();
   await db.insert(leagueOccurrenceBillingTerms).values({
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     occurrenceId: occurrence.id,
     purpose: "league_weekly_fee",
     obligationPolicy: "eligible_bowlers",
-    defaultAmountMinor: 2_000,
+    defaultAmountMinor: amountMinor,
     currency: "USD",
     billingOrdinal: 1_000_000 + occurrenceOrdinal,
     version: 1,
@@ -412,14 +420,14 @@ async function publishOccurrence(startAt: string) {
     publicationCommandId: commandId,
   });
   await db.transaction(async (tx) => {
-    await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId, leagueId, occurrenceId: occurrence.id, actorUserId });
+    await materializeRosterPaymentOccurrenceInTransaction(tx, { organizationId, leagueId: targetLeagueId, occurrenceId: occurrence.id, actorUserId });
   });
   const [responsibility] = await db.select().from(occurrencePaymentResponsibilities).where(and(
     eq(occurrencePaymentResponsibilities.organizationId, organizationId),
-    eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+    eq(occurrencePaymentResponsibilities.leagueId, targetLeagueId),
     eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id),
     eq(occurrencePaymentResponsibilities.state, "active"),
-    eq(occurrencePaymentResponsibilities.payerBowlerId, payerBowlerId),
+    eq(occurrencePaymentResponsibilities.payerBowlerId, targetPayerBowlerId),
   ));
   if (!responsibility) throw new Error("standing fixture responsibility was not materialized");
   const [obligation] = await db.select().from(paymentObligations).where(eq(paymentObligations.responsibilityId, responsibility.id));
@@ -427,20 +435,22 @@ async function publishOccurrence(startAt: string) {
   return { occurrence, responsibility, obligation, commandId };
 }
 
-async function insertConsent(input: { version: number; activatedAt: string; state?: "active" | "revoked" }) {
+async function insertConsent(input: { version: number; activatedAt: string; state?: "active" | "revoked"; leagueId?: number; payerBowlerId?: number }) {
+  const targetLeagueId = input.leagueId ?? leagueId;
+  const targetPayerBowlerId = input.payerBowlerId ?? payerBowlerId;
   if (input.state !== "revoked") {
     await db.update(autopayConsents).set({ state: "revoked", revokedAt: "2039-01-01T00:00:00.000Z" }).where(and(
       eq(autopayConsents.organizationId, organizationId),
-      eq(autopayConsents.leagueId, leagueId),
-      eq(autopayConsents.payerBowlerId, payerBowlerId),
+      eq(autopayConsents.leagueId, targetLeagueId),
+      eq(autopayConsents.payerBowlerId, targetPayerBowlerId),
       eq(autopayConsents.state, "active"),
     ));
   }
   const [consent] = await db.insert(autopayConsents).values({
     id: randomUUID(),
     organizationId,
-    leagueId,
-    payerBowlerId,
+    leagueId: targetLeagueId,
+    payerBowlerId: targetPayerBowlerId,
     consentVersion: input.version,
     state: input.state ?? "active",
     paymentMode: "weekly",
@@ -456,13 +466,13 @@ async function insertConsent(input: { version: number; activatedAt: string; stat
   return consent;
 }
 
-async function createDoublePayGroup(trigger: Awaited<ReturnType<typeof publishOccurrence>>, paired: Awaited<ReturnType<typeof publishOccurrence>>) {
+async function createDoublePayGroup(trigger: Awaited<ReturnType<typeof publishOccurrence>>, paired: Awaited<ReturnType<typeof publishOccurrence>>, targetLeagueId = leagueId) {
   const generationCommandId = randomUUID();
   const generationRunId = randomUUID();
   await db.insert(leagueScheduleCommands).values({
     id: generationCommandId,
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     actorUserId,
     commandType: "publish",
     idempotencyKey: `standing-group-publish-${suffix}-${randomUUID()}`,
@@ -471,7 +481,7 @@ async function createDoublePayGroup(trigger: Awaited<ReturnType<typeof publishOc
   await db.insert(leagueOccurrenceGenerationRuns).values({
     id: generationRunId,
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     originatingCommandId: generationCommandId,
     generatorVersion: "standing-autopay-test",
     inputFingerprint: `standing-group-input-${suffix}-${randomUUID()}`,
@@ -491,13 +501,13 @@ async function createDoublePayGroup(trigger: Awaited<ReturnType<typeof publishOc
   const termOrdinal = 100_000_000 + occurrenceOrdinal * 2;
   const [triggerTerm] = await db.select({ id: leagueOccurrenceBillingTerms.id, defaultAmountMinor: leagueOccurrenceBillingTerms.defaultAmountMinor }).from(leagueOccurrenceBillingTerms).where(and(
     eq(leagueOccurrenceBillingTerms.organizationId, organizationId),
-    eq(leagueOccurrenceBillingTerms.leagueId, leagueId),
+    eq(leagueOccurrenceBillingTerms.leagueId, targetLeagueId),
     eq(leagueOccurrenceBillingTerms.occurrenceId, trigger.occurrence.id),
     eq(leagueOccurrenceBillingTerms.state, "published"),
   ));
   const [pairedTerm] = await db.select({ id: leagueOccurrenceBillingTerms.id, defaultAmountMinor: leagueOccurrenceBillingTerms.defaultAmountMinor }).from(leagueOccurrenceBillingTerms).where(and(
     eq(leagueOccurrenceBillingTerms.organizationId, organizationId),
-    eq(leagueOccurrenceBillingTerms.leagueId, leagueId),
+    eq(leagueOccurrenceBillingTerms.leagueId, targetLeagueId),
     eq(leagueOccurrenceBillingTerms.occurrenceId, paired.occurrence.id),
     eq(leagueOccurrenceBillingTerms.state, "published"),
   ));
@@ -509,7 +519,7 @@ async function createDoublePayGroup(trigger: Awaited<ReturnType<typeof publishOc
   await db.insert(canonicalCollectionGroups).values({
     id: groupId,
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     generationRunId,
     sourceScheduleRevision: 1,
     kind: "double_pay",
@@ -526,11 +536,137 @@ async function createDoublePayGroup(trigger: Awaited<ReturnType<typeof publishOc
     publicationCommandId: generationCommandId,
   });
   await db.insert(canonicalCollectionGroupMembers).values([
-    { id: randomUUID(), organizationId, leagueId, groupId, generationRunId, occurrenceId: trigger.occurrence.id, billingTermId: triggerTerm.id, role: "trigger", memberOrdinal: 1, localDate: trigger.occurrence.authoritativeLocalDate, billingOrdinal: termOrdinal, amountMinor: triggerTerm.defaultAmountMinor, currency: "USD", active: true, currentRevision: 1 },
-    { id: randomUUID(), organizationId, leagueId, groupId, generationRunId, occurrenceId: paired.occurrence.id, billingTermId: pairedTerm.id, role: "paired", memberOrdinal: 2, localDate: paired.occurrence.authoritativeLocalDate, billingOrdinal: termOrdinal + 1, amountMinor: pairedTerm.defaultAmountMinor, currency: "USD", active: true, currentRevision: 1 },
+    { id: randomUUID(), organizationId, leagueId: targetLeagueId, groupId, generationRunId, occurrenceId: trigger.occurrence.id, billingTermId: triggerTerm.id, role: "trigger", memberOrdinal: 1, localDate: trigger.occurrence.authoritativeLocalDate, billingOrdinal: termOrdinal, amountMinor: triggerTerm.defaultAmountMinor, currency: "USD", active: true, currentRevision: 1 },
+    { id: randomUUID(), organizationId, leagueId: targetLeagueId, groupId, generationRunId, occurrenceId: paired.occurrence.id, billingTermId: pairedTerm.id, role: "paired", memberOrdinal: 2, localDate: paired.occurrence.authoritativeLocalDate, billingOrdinal: termOrdinal + 1, amountMinor: pairedTerm.defaultAmountMinor, currency: "USD", active: true, currentRevision: 1 },
   ]);
   return groupId;
 }
+
+it("retains a prior-consent paired final after adoption and excludes a canceled pair", async () => {
+  const [adoptedLeague] = await db.insert(leagues).values({
+    name: `Standing Retained Final ${randomUUID()}`,
+    organizationId,
+    locationId,
+    payingLineupSize: 3,
+    substituteAccess: "team_only",
+    substitutePaymentRegime: "team_choice",
+    weeklyFee: 2_500,
+    lineageFee: null,
+    prizeFundFee: null,
+    paymentMode: "weekly",
+    seasonStart: "2039-01-01T00:00:00.000Z",
+    seasonEnd: "2039-12-31T23:59:59.000Z",
+    weekDay: "Monday",
+    timezone: "UTC",
+  }).returning({ id: leagues.id });
+  const [adoptedTeam] = await db.insert(teams).values({
+    name: `Standing Retained Final Team ${randomUUID()}`,
+    number: 1,
+    leagueId: adoptedLeague.id,
+  }).returning({ id: teams.id });
+  await db.insert(bowlerLeagues).values({ bowlerId: payerBowlerId, leagueId: adoptedLeague.id, teamId: adoptedTeam.id, active: true });
+  await db.insert(teamPaymentSlots).values([
+    { organizationId, leagueId: adoptedLeague.id, teamId: adoptedTeam.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: payerBowlerId, recordedByUserId: actorUserId },
+    { organizationId, leagueId: adoptedLeague.id, teamId: adoptedTeam.id, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    { organizationId, leagueId: adoptedLeague.id, teamId: adoptedTeam.id, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+  ]);
+
+  const occurrenceScope = { leagueId: adoptedLeague.id, teamId: adoptedTeam.id, payerBowlerId, amountMinor: 2_500 };
+  const priorTrigger = await publishOccurrence("2039-05-01T19:00:00.000Z", occurrenceScope);
+  const retainedFinal = await publishOccurrence("2039-05-08T19:00:00.000Z", occurrenceScope);
+  await createDoublePayGroup(priorTrigger, retainedFinal, adoptedLeague.id);
+  const priorConsent = await insertConsent({ version: 1, activatedAt: "2039-04-01T00:00:00.000Z", leagueId: adoptedLeague.id });
+
+  const canceledTrigger = await publishOccurrence("2039-05-10T19:00:00.000Z", occurrenceScope);
+  const canceledFinal = await publishOccurrence("2039-05-17T19:00:00.000Z", occurrenceScope);
+  await createDoublePayGroup(canceledTrigger, canceledFinal, adoptedLeague.id);
+  const cancellation = {
+    organizationId,
+    leagueId: adoptedLeague.id,
+    actorUserId,
+    commandType: "cancel" as const,
+    occurrenceId: canceledFinal.occurrence.id,
+    idempotencyKey: `standing-retained-cancel-${randomUUID()}`,
+    requestFingerprint: "",
+    reason: "retained target regression fixture",
+    now: "2039-04-01T00:00:00.000Z",
+  };
+  await cancelOccurrence({ ...cancellation, requestFingerprint: buildCanonicalScheduleCommandFingerprint(cancellation) });
+
+  const current = await publishOccurrence("2039-05-24T19:00:00.000Z", occurrenceScope);
+  await db.transaction(async (tx) => {
+    await lockLeagueSchedule(tx, organizationId, adoptedLeague.id);
+    await tx.insert(weeklyPaymentLedgerAdoptions).values({
+      organizationId,
+      leagueId: adoptedLeague.id,
+      adoptedThroughLocalDate: priorTrigger.occurrence.authoritativeLocalDate,
+      preflightFingerprint: uniqueFp("lvweeklyadoptpre:v1:"),
+      resultFingerprint: uniqueFp("lvweeklyadopt:v1:"),
+      grandfatheredAllocationCount: 0,
+      recordedByUserId: actorUserId,
+    });
+    const [creditPayment] = await tx.insert(payments).values({
+      organizationId,
+      bowlerId: payerBowlerId,
+      leagueId: adoptedLeague.id,
+      amount: 5_000,
+      currency: "USD",
+      status: "paid",
+      type: "cash",
+      idempotencyKey: `standing-retained-credit-${randomUUID()}`,
+    }).returning({ id: payments.id });
+    await tx.insert(rotatingCreditFundings).values({
+      organizationId,
+      leagueId: adoptedLeague.id,
+      bowlerId: payerBowlerId,
+      paymentId: creditPayment.id,
+      amountMinor: 5_000,
+      currency: "USD",
+      fundingKind: "cash",
+      idempotencyKey: `standing-retained-rotating-${randomUUID()}`,
+      requestFingerprint: uniqueFp("lvrotcrreq:v1:"),
+      quoteFingerprint: uniqueFp("lvrotcrquote:v1:"),
+      actorUserId,
+    });
+    const applications = await applyOwnedFundingFifoInTransaction(tx, {
+      organizationId,
+      leagueId: adoptedLeague.id,
+      bowlerId: payerBowlerId,
+      actorUserId,
+      now: "2039-05-24T19:00:00.000Z",
+    });
+    expect(applications).toHaveLength(1);
+  });
+
+  // The replacement consent is a new version created after the trigger and
+  // adoption cutoff. Retention must follow the canonical published pair.
+  const currentConsent = await insertConsent({ version: 2, activatedAt: "2039-05-20T00:00:00.000Z", leagueId: adoptedLeague.id });
+  expect(currentConsent.id).not.toBe(priorConsent.id);
+  const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
+  const operation = await prepareStandingAutopayCutoff({
+    organizationId,
+    leagueId: adoptedLeague.id,
+    consentId: currentConsent.id,
+    cutoffAt: current.occurrence.startAt,
+  });
+  expect(operation).toMatchObject({ operationType: "standing_autopay_charge", amountMinor: 2_500 });
+  const [snapshot] = await db.select().from(accountPaymentOperationSnapshots).where(eq(accountPaymentOperationSnapshots.operationId, operation!.id));
+  if (snapshot.snapshotKind !== "standing_funding") throw new Error("retained final produced a non-standing funding snapshot");
+  const recipientEvidence = snapshot.recipientEvidence[0];
+  if (!recipientEvidence || !("target" in recipientEvidence)) throw new Error("retained final recipient target is missing");
+  expect(recipientEvidence.target).toMatchObject({
+    confirmedDebtMinor: 0,
+    availableCreditMinor: 2_500,
+    currentCollectionTargetMinor: 5_000,
+    forecastCollectionTargetMinor: 5_000,
+    newChargeMinor: 2_500,
+  });
+  expect(snapshot.standingEvidence?.collectionRequirementOccurrenceIds).toEqual(expect.arrayContaining([
+    retainedFinal.occurrence.id,
+    current.occurrence.id,
+  ]));
+  expect(snapshot.standingEvidence?.collectionRequirementOccurrenceIds).not.toContain(canceledFinal.occurrence.id);
+});
 
 type PartnerOperationFixtureInput = Omit<Parameters<typeof prepareInteractivePartnerPaymentOperation>[0], "transaction"> & {
   snapshotItemFinalState?: "released";

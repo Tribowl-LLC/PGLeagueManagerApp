@@ -19,6 +19,10 @@ import {
   payments,
   rotatingCreditApplications,
   rotatingCreditFundings,
+  weeklyPaymentFundings,
+  weeklyPaymentLedgerAdoptions,
+  paymentAllocationFundingApplications,
+  weeklyPaymentWeekConfirmations,
   rotatingOccurrenceAssignments,
   teamPaymentSlots,
   teams,
@@ -36,6 +40,10 @@ import {
 import { materializeRosterPaymentOccurrenceInTransaction } from "../../server/services/roster-payment-materializer";
 import { readCanonicalPaymentReport } from "../../server/services/canonical-payment-report";
 import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
+import { quoteRotatingCreditManualFunding, recordRotatingCreditManualFunding } from "../../server/services/rotating-credit";
+import { prepareRotatingCreditPaymentOperation } from "../../server/services/rotating-credit-operation-preparation";
+import { finalizeRosterSnapshotInTransaction } from "../../server/services/roster-payment-finalizer";
+import { lockLeagueSchedule } from "../../server/storage/league-schedule-lock";
 import {
   acquirePaymentOperationLease,
   finalizeRefundPaymentOperationSuccess,
@@ -54,13 +62,19 @@ let bowlerId: number;
 let replacementMainId: number;
 let correctionBowlerId: number;
 
-async function createOccurrence(ordinal: number, amountMinor = 1_000) {
+async function createOccurrence(
+  ordinal: number,
+  amountMinor = 1_000,
+  scope: { leagueId?: number; teamId?: number } = {},
+) {
+  const targetLeagueId = scope.leagueId ?? leagueId;
+  const targetTeamId = scope.teamId ?? teamId;
   const commandId = randomUUID();
   const startAt = new Date(Date.UTC(2038, 1, ordinal * 7 + 1, 19, 0, 0)).toISOString();
   await db.insert(leagueScheduleCommands).values({
     id: commandId,
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     actorUserId,
     commandType: "publish",
     idempotencyKey: `credit-reapply-publish-${suffix}-${ordinal}-${randomUUID()}`,
@@ -68,7 +82,7 @@ async function createOccurrence(ordinal: number, amountMinor = 1_000) {
   });
   const [occurrence] = await db.insert(leagueOccurrences).values({
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     locationId,
     generationKey: `credit-reapply-occurrence-${suffix}-${ordinal}-${randomUUID()}`,
     kind: "regular",
@@ -88,10 +102,10 @@ async function createOccurrence(ordinal: number, amountMinor = 1_000) {
     publishedAt: startAt,
     publishedByUserId: actorUserId,
     publicationCommandId: commandId,
-  }).returning({ id: leagueOccurrences.id });
+  }).returning({ id: leagueOccurrences.id, authoritativeLocalDate: leagueOccurrences.authoritativeLocalDate });
   await db.insert(leagueOccurrenceBillingTerms).values({
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     occurrenceId: occurrence.id,
     purpose: "league_weekly_fee",
     obligationPolicy: "eligible_bowlers",
@@ -106,22 +120,22 @@ async function createOccurrence(ordinal: number, amountMinor = 1_000) {
   });
   await db.transaction((tx) => materializeRosterPaymentOccurrenceInTransaction(tx, {
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     occurrenceId: occurrence.id,
     actorUserId,
   }));
   const [responsibility] = await db.select().from(occurrencePaymentResponsibilities).where(and(
     eq(occurrencePaymentResponsibilities.organizationId, organizationId),
-    eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+    eq(occurrencePaymentResponsibilities.leagueId, targetLeagueId),
     eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id),
-    eq(occurrencePaymentResponsibilities.teamId, teamId),
+    eq(occurrencePaymentResponsibilities.teamId, targetTeamId),
     eq(occurrencePaymentResponsibilities.slotIndex, 0),
     eq(occurrencePaymentResponsibilities.state, "active"),
   ));
   if (!responsibility) throw new Error("credit reapplication responsibility was not materialized");
   const [obligation] = await db.select().from(paymentObligations).where(and(
     eq(paymentObligations.organizationId, organizationId),
-    eq(paymentObligations.leagueId, leagueId),
+    eq(paymentObligations.leagueId, targetLeagueId),
     eq(paymentObligations.responsibilityId, responsibility.id),
   ));
   if (!obligation) throw new Error("credit reapplication obligation was not materialized");
@@ -659,5 +673,214 @@ describe("rotating credit allocation reapplication on PostgreSQL", () => {
     const [reversedAllocation] = await db.select({ state: paymentAllocations.state }).from(paymentAllocations)
       .where(eq(paymentAllocations.id, initialCreditAllocation.id));
     expect(reversedAllocation?.state).toBe("voided");
+  });
+
+  it("applies an adopted manual rotating top-up through owned FIFO without duplicating its source lot", async () => {
+    const [adoptedLeague] = await db.insert(leagues).values({
+      organizationId,
+      locationId,
+      name: `Credit Adoption FIFO League ${randomUUID()}`,
+      seasonStart: "2038-01-01T00:00:00.000Z",
+      seasonEnd: "2038-12-31T23:59:59.000Z",
+      weekDay: "Monday",
+      weeklyFee: 1_000,
+      payingLineupSize: 3,
+      paymentMode: "weekly",
+      substitutePaymentRegime: "team_choice",
+      timezone: "UTC",
+    }).returning({ id: leagues.id });
+    const [adoptedTeam] = await db.insert(teams).values({
+      name: "Credit Adoption FIFO Team",
+      number: 1,
+      leagueId: adoptedLeague.id,
+    }).returning({ id: teams.id });
+    const [member] = await db.insert(bowlers).values({
+      name: "Credit Adoption FIFO Member",
+      organizationId,
+    }).returning({ id: bowlers.id });
+    await db.insert(bowlerLeagues).values({ bowlerId: member.id, leagueId: adoptedLeague.id, teamId: adoptedTeam.id });
+    await db.insert(teamPaymentSlots).values([
+      { organizationId, leagueId: adoptedLeague.id, teamId: adoptedTeam.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: member.id, recordedByUserId: actorUserId },
+      { organizationId, leagueId: adoptedLeague.id, teamId: adoptedTeam.id, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+      { organizationId, leagueId: adoptedLeague.id, teamId: adoptedTeam.id, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    ]);
+    const rosterRequest = {
+      commandKey: `credit-adoption-rotation-${randomUUID()}`,
+      requestFingerprint: "",
+      lineupSize: 3 as const,
+      slots: [
+        { slotIndex: 0, occupant: "rotating" as const, mainBowlerId: null },
+        { slotIndex: 1, occupant: "vacant" as const, mainBowlerId: null },
+        { slotIndex: 2, occupant: "vacant" as const, mainBowlerId: null },
+      ],
+      eligibleRotatingBowlerIds: [member.id],
+    };
+    rosterRequest.requestFingerprint = canonicalRotatingRosterFingerprint(rosterRequest);
+    await saveTeamRoster({ organizationId, leagueId: adoptedLeague.id, teamId: adoptedTeam.id, actorUserId, request: rosterRequest });
+
+    const confirmed = await createOccurrence(1, 1_000, { leagueId: adoptedLeague.id, teamId: adoptedTeam.id });
+    const forecast = await createOccurrence(30, 1_000, { leagueId: adoptedLeague.id, teamId: adoptedTeam.id });
+    const assignmentRequest = {
+      commandKey: `credit-adoption-assignment-${randomUUID()}`,
+      requestFingerprint: "",
+      assignments: [confirmed, forecast].map(({ occurrence }) => ({
+        occurrenceId: occurrence.id,
+        teamId: adoptedTeam.id,
+        slotIndex: 0,
+        expectedRevision: null,
+        actualBowlerId: member.id,
+      })),
+    };
+    assignmentRequest.requestFingerprint = canonicalRotatingAssignmentFingerprint(assignmentRequest);
+    await saveRotatingOccurrenceAssignments({ organizationId, leagueId: adoptedLeague.id, actorUserId, request: assignmentRequest });
+
+    const preflight = randomUUID().replaceAll("-", "").repeat(2);
+    const resultFingerprint = randomUUID().replaceAll("-", "").repeat(2);
+    await db.transaction(async (tx) => {
+      await lockLeagueSchedule(tx, organizationId, adoptedLeague.id);
+      await tx.insert(weeklyPaymentLedgerAdoptions).values({
+        organizationId,
+        leagueId: adoptedLeague.id,
+        adoptedThroughLocalDate: confirmed.occurrence.authoritativeLocalDate,
+        preflightFingerprint: `lvweeklyadoptpre:v1:${preflight}`,
+        resultFingerprint: `lvweeklyadopt:v1:${resultFingerprint}`,
+        grandfatheredAllocationCount: 0,
+        recordedByUserId: actorUserId,
+      });
+    });
+
+    const quote = await quoteRotatingCreditManualFunding({
+      organizationId,
+      leagueId: adoptedLeague.id,
+      bowlerId: member.id,
+      amountMinor: 1_000,
+    });
+    const result = await recordRotatingCreditManualFunding({
+      organizationId,
+      leagueId: adoptedLeague.id,
+      actorUserId,
+      request: {
+        bowlerId: member.id,
+        amountMinor: 1_000,
+        tenderType: "cash",
+        quoteFingerprint: quote.fingerprint,
+        idempotencyKey: `credit-adoption-topup-${randomUUID()}`,
+      },
+    });
+    if (!result.paymentId || !result.fundingId) throw new Error("adopted rotating top-up was not recorded");
+
+    const ownedApps = await db.select().from(paymentAllocationFundingApplications).where(and(
+      eq(paymentAllocationFundingApplications.organizationId, organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, adoptedLeague.id),
+      eq(paymentAllocationFundingApplications.paymentId, result.paymentId),
+    ));
+    const allocations = await db.select({ obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor })
+      .from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, organizationId),
+        eq(paymentAllocations.leagueId, adoptedLeague.id),
+        eq(paymentAllocations.paymentId, result.paymentId),
+      ));
+    expect(result.balance).toMatchObject({ fundedMinor: 1_000, availableMinor: 0, appliedMinor: 1_000 });
+    expect(ownedApps).toHaveLength(1);
+    expect(ownedApps[0]).toMatchObject({
+      paymentId: result.paymentId,
+      creditedBowlerId: member.id,
+      genericFundingId: null,
+      rotatingFundingId: result.fundingId,
+      obligationId: confirmed.obligation.id,
+      amountMinor: 1_000,
+    });
+    expect(allocations).toEqual([{ obligationId: confirmed.obligation.id, amountMinor: 1_000 }]);
+    expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.paymentId, result.paymentId))).toHaveLength(0);
+    expect(await db.select({ id: rotatingCreditApplications.id }).from(rotatingCreditApplications).where(eq(rotatingCreditApplications.paymentId, result.paymentId))).toHaveLength(0);
+
+    // Explicit confirmation makes the later occurrence owned debt. A new
+    // provider top-up after adoption must use the same owner FIFO as manual
+    // cash and replay its single source without creating another receipt.
+    await db.insert(weeklyPaymentWeekConfirmations).values({
+      organizationId,
+      leagueId: adoptedLeague.id,
+      occurrenceId: forecast.occurrence.id,
+      revision: 1,
+      stateFingerprint: `lvmanagepayments:v1:${"a".repeat(64)}`,
+      requestFingerprint: `lvmanagepaymentsrequest:v1:${"b".repeat(64)}`,
+      responsibilitySetFingerprint: `lvmanagepaymentsrows:v1:${"c".repeat(64)}`,
+      idempotencyKey: `adopted-provider-confirm-${randomUUID()}`,
+      requestSnapshot: { occurrenceId: forecast.occurrence.id, fixture: "adopted rotating provider top-up" },
+      recordedByUserId: actorUserId,
+    });
+    const providerIdempotencyKey = `adopted-provider-topup-${randomUUID()}`;
+    const providerOperation = await prepareRotatingCreditPaymentOperation({
+      organizationId,
+      leagueId: adoptedLeague.id,
+      authorizingUserId: actorUserId,
+      bowlerId: member.id,
+      amountMinor: 1_000,
+      currency: "USD",
+      shareCount: 1,
+      providerName: "square",
+      locationId,
+      providerLocationId: null,
+      sourceKind: "new_card",
+      sourceId: "test-provider-source",
+      customerId: "test-provider-customer",
+      buyerEmail: null,
+      quoteFingerprint: `lvrotcrquote:v1:${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`,
+      idempotencyKey: providerIdempotencyKey,
+    });
+    const providerPaymentId = `provider-rotating-${randomUUID()}`;
+    await db.update(paymentOperations).set({
+      status: "succeeded",
+      providerObjectId: providerPaymentId,
+      nextAttemptAt: null,
+      completedAt: "2038-02-01T20:01:00.000Z",
+      updatedAt: "2038-02-01T20:01:00.000Z",
+    }).where(eq(paymentOperations.id, providerOperation.id));
+    const finalized = await db.transaction((tx) => finalizeRosterSnapshotInTransaction(tx, {
+      organizationId,
+      leagueId: adoptedLeague.id,
+      operationId: providerOperation.id,
+      now: "2038-02-01T20:02:00.000Z",
+      actorUserId,
+    }));
+    const replayed = await db.transaction((tx) => finalizeRosterSnapshotInTransaction(tx, {
+      organizationId,
+      leagueId: adoptedLeague.id,
+      operationId: providerOperation.id,
+      now: "2038-02-01T20:03:00.000Z",
+      actorUserId,
+    }));
+    expect(finalized.finalized).toBe(true);
+    expect(finalized.allocationIds).toHaveLength(1);
+    expect(replayed).toEqual(finalized);
+    const providerPayments = await db.select({ id: payments.id }).from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, adoptedLeague.id),
+      eq(payments.paymentOperationId, providerOperation.id),
+    ));
+    expect(providerPayments).toHaveLength(1);
+    const providerPayment = providerPayments[0];
+    if (!providerPayment) throw new Error("adopted provider top-up receipt is missing");
+    const providerFundings = await db.select({ id: rotatingCreditFundings.id }).from(rotatingCreditFundings).where(and(
+      eq(rotatingCreditFundings.organizationId, organizationId),
+      eq(rotatingCreditFundings.leagueId, adoptedLeague.id),
+      eq(rotatingCreditFundings.paymentId, providerPayment.id),
+    ));
+    expect(providerFundings).toHaveLength(1);
+    const providerFunding = providerFundings[0];
+    if (!providerFunding) throw new Error("adopted provider top-up funding is missing");
+    expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.paymentId, providerPayment.id))).toHaveLength(0);
+    expect(await db.select().from(paymentAllocationFundingApplications).where(and(
+      eq(paymentAllocationFundingApplications.organizationId, organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, adoptedLeague.id),
+      eq(paymentAllocationFundingApplications.paymentId, providerPayment.id),
+    ))).toMatchObject([{
+      creditedBowlerId: member.id,
+      genericFundingId: null,
+      rotatingFundingId: providerFunding.id,
+      obligationId: forecast.obligation.id,
+      amountMinor: 1_000,
+    }]);
+    expect(await db.select({ id: rotatingCreditApplications.id }).from(rotatingCreditApplications).where(eq(rotatingCreditApplications.paymentId, providerPayment.id))).toHaveLength(0);
   });
 });

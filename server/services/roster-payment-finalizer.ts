@@ -641,6 +641,7 @@ export async function finalizeRosterSnapshotInTransaction(
     }
     const actorUserId = input.actorUserId ?? operation.authorizingUserId ?? providerPayment.paidByUserId ?? null;
     if (actorUserId === null) throw new RosterSnapshotFinalizationError("ACTOR_EVIDENCE_MISSING", "The rotating credit purchase has no immutable authorizing actor");
+    const adoption = await readOwnedLedgerAdoptionInTransaction(tx, input);
     const [existingFunding] = await tx.select().from(rotatingCreditFundings).where(and(
       eq(rotatingCreditFundings.organizationId, input.organizationId),
       eq(rotatingCreditFundings.leagueId, input.leagueId),
@@ -651,12 +652,19 @@ export async function finalizeRosterSnapshotInTransaction(
         || existingFunding.idempotencyKey !== snapshot.idempotencyKey || existingFunding.fundingKind !== "provider") {
         throw new RosterSnapshotFinalizationError("FUNDING_EVIDENCE_MISMATCH", "Existing rotating credit funding does not match the provider operation");
       }
-      const allocations = await tx.select({ allocationId: rotatingCreditApplications.allocationId }).from(rotatingCreditApplications).where(and(
-        eq(rotatingCreditApplications.organizationId, input.organizationId),
-        eq(rotatingCreditApplications.leagueId, input.leagueId),
-        eq(rotatingCreditApplications.fundingId, existingFunding.id),
-      ));
-      return { finalized: true, allocationIds: allocations.map((row) => row.allocationId) };
+      const [typedApplications, legacyApplications] = await Promise.all([
+        tx.select({ allocationId: paymentAllocationFundingApplications.allocationId }).from(paymentAllocationFundingApplications).where(and(
+          eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
+          eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
+          eq(paymentAllocationFundingApplications.rotatingFundingId, existingFunding.id),
+        )),
+        tx.select({ allocationId: rotatingCreditApplications.allocationId }).from(rotatingCreditApplications).where(and(
+          eq(rotatingCreditApplications.organizationId, input.organizationId),
+          eq(rotatingCreditApplications.leagueId, input.leagueId),
+          eq(rotatingCreditApplications.fundingId, existingFunding.id),
+        )),
+      ]);
+      return { finalized: true, allocationIds: [...new Set([...typedApplications, ...legacyApplications].map((row) => row.allocationId))].sort() };
     }
     const requestFingerprint = `lvrotcrreq:v1:${createHash("sha256").update(canonicalizePaymentOperationInput({
       contract: "rotating-credit-funding-request/1",
@@ -681,24 +689,40 @@ export async function finalizeRosterSnapshotInTransaction(
     if (!funding) throw new RosterSnapshotFinalizationError("FUNDING_CREATE_FAILED", "Rotating credit funding was not recorded");
     let newApplicationIds: string[];
     try {
-      newApplicationIds = await applyRotatingCreditToConfirmedObligationsInTransaction(tx, {
-        organizationId: input.organizationId,
-        leagueId: input.leagueId,
-        bowlerId: snapshot.bowlerId,
-        actorUserId,
-        now: input.now,
-      });
+      newApplicationIds = adoption
+        ? await applyOwnedFundingFifoInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          bowlerId: snapshot.bowlerId,
+          actorUserId,
+          now: input.now,
+        })
+        : await applyRotatingCreditToConfirmedObligationsInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          bowlerId: snapshot.bowlerId,
+          actorUserId,
+          now: input.now,
+        });
     } catch (error) {
       if (error instanceof RotatingCreditLedgerError) throw new RosterSnapshotFinalizationError(error.code, "Rotating credit applications could not be finalized");
+      if (error instanceof OwnedPaymentLedgerError) throw new RosterSnapshotFinalizationError(error.code, "Rotating credit applications could not be finalized");
       throw error;
     }
     if (newApplicationIds.length === 0) return { finalized: true, allocationIds: [] };
-    const allocations = await tx.select({ allocationId: rotatingCreditApplications.allocationId }).from(rotatingCreditApplications).where(and(
-      eq(rotatingCreditApplications.organizationId, input.organizationId),
-      eq(rotatingCreditApplications.leagueId, input.leagueId),
-      inArray(rotatingCreditApplications.id, newApplicationIds),
-    ));
-    return { finalized: true, allocationIds: allocations.map((row) => row.allocationId) };
+    const [typedApplications, legacyApplications] = await Promise.all([
+      tx.select({ allocationId: paymentAllocationFundingApplications.allocationId }).from(paymentAllocationFundingApplications).where(and(
+        eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
+        eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
+        inArray(paymentAllocationFundingApplications.id, newApplicationIds),
+      )),
+      tx.select({ allocationId: rotatingCreditApplications.allocationId }).from(rotatingCreditApplications).where(and(
+        eq(rotatingCreditApplications.organizationId, input.organizationId),
+        eq(rotatingCreditApplications.leagueId, input.leagueId),
+        eq(rotatingCreditApplications.fundingId, funding.id),
+      )),
+    ]);
+    return { finalized: true, allocationIds: [...new Set([...typedApplications, ...legacyApplications].map((row) => row.allocationId))].sort() };
   }
 
   const [accountSnapshot] = await tx.select().from(accountPaymentOperationSnapshots).where(and(
