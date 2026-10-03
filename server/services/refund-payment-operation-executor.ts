@@ -227,14 +227,7 @@ export class RefundPaymentOperationExecutor {
         errorName: error instanceof Error ? error.name : "UnknownError",
       });
       try {
-        return await recordPaymentOperationReconciliationRequired({
-          organizationId: operation.organizationId,
-          operationId: operation.id,
-          leaseToken,
-          providerObjectId: result.refundId,
-          errorCode: "REFUND_FINALIZATION_FAILED",
-          now: this.now(),
-        });
+        return await this.recordFailure(operation, error, true, result.refundId);
       } catch {
         const current = await getPaymentOperationForOrganization(operation.organizationId, operation.id);
         if (current?.status === "succeeded" && current.providerObjectId === result.refundId) return current;

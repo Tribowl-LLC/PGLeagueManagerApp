@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0055_owned_account_refunds_v3",
+    "hash": "37b36ce0c401190c6c215090f5670e99fda10fefdd883fb9a4ac69e433af9607",
+    "createdAt": 1790992831001
+  },
+  "digest": "c2a9821c7c7e1f2392f44bf37985696b2c08e4c9244736c9473c40d3e6066f77",
+  "counts": {
+    "tables": 97,
+    "columns": 1364,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 32,
+    "constraints": 776,
+    "indexes": 428,
+    "types": 1,
+    "functions": 38,
+    "triggers": 76,
+    "policies": 0
+  }
+}

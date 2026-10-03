@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   autopayConsents,
   accountPaymentOperationSnapshots,
@@ -19,6 +19,7 @@ import {
   paymentOperationRosterSnapshots,
   paymentOperationStandingAutopayBindings,
   paymentOperationStandingAutopayParticipants,
+  paymentVoids,
   payments,
   rotatingCreditFundings,
   rotatingCreditRefundOperationSnapshots,
@@ -36,10 +37,13 @@ import {
   isOwnedPaymentLedgerInvariantError,
   recordOwnedFundingInTransaction,
   releaseOwnedFundingApplicationInTransaction,
+  readOwnedGenericFundingSourcesByPaymentInTransaction,
 } from "../../server/services/owned-payment-ledger";
 import { prepareRotatingCreditPaymentOperation } from "../../server/services/rotating-credit-operation-preparation";
 import { quoteRotatingCreditRefund, recordRotatingCreditRefund } from "../../server/services/rotating-credit-refund";
 import { RefundPaymentOperationExecutor } from "../../server/services/refund-payment-operation-executor";
+import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
+import { acquirePaymentOperationLease, finalizeRefundPaymentOperationSuccess } from "../../server/storage/payment-operations";
 import { PaymentProviderError } from "../../server/services/payment-errors";
 import type { PaymentProvider } from "../../server/services/payment-provider";
 import { readRotatingCreditFundingBalancesInTransaction } from "../../server/services/rotating-credit-applications";
@@ -59,6 +63,7 @@ let occurrenceId: string;
 let responsibilityId: string;
 let obligationId: string;
 let adoptionId: string;
+let legacyStandingConsentVersion = 0;
 
 beforeAll(async () => {
   const [organization] = await db.insert(organizations).values({
@@ -468,21 +473,25 @@ async function recordProviderCreditRefund(input: { fundingId: string; outcome: "
   });
 }
 
-async function createLegacyStandingFunding(): Promise<{ paymentId: number; fundingId: string; operationId: string }> {
+async function createLegacyStandingFunding(): Promise<{ paymentId: number; fundingId: string; operationId: string; creditedBowlerId: number }> {
   const now = new Date().toISOString();
   const cutoffAt = "2038-02-01T19:00:00.000Z";
   const operationId = randomUUID();
+  const consentVersion = ++legacyStandingConsentVersion;
+  const debt = await createWorksheetDebt({ amountMinor: 500, name: `Legacy Standing ${consentVersion}` });
+  const sourceBowlerId = debt.bowlerId;
   const providerPaymentId = `owned-ledger-standing-payment-${operationId}`;
-  const snapshotFingerprint = `lvstandingcutoff:v1:${"5".repeat(64)}`;
+  const evidenceHex = consentVersion.toString(16).padStart(64, "0");
+  const snapshotFingerprint = `lvstandingcutoff:v1:${evidenceHex}`;
   return db.transaction(async (tx) => {
   const [consent] = await tx.insert(autopayConsents).values({
     organizationId,
     leagueId,
-    payerBowlerId: creditedBowlerId,
-    consentVersion: 1,
+    payerBowlerId: sourceBowlerId,
+    consentVersion,
     state: "active",
     paymentMode: "weekly",
-    consentFingerprint: `lvstandingconsent:v1:${"6".repeat(64)}`,
+    consentFingerprint: `lvstandingconsent:v1:${evidenceHex}`,
     providerName: "square",
     providerLocationId: "square-fixture-location",
     encryptedSourceId: "fixture-encrypted-standing-source",
@@ -526,7 +535,7 @@ async function createLegacyStandingFunding(): Promise<{ paymentId: number; fundi
     cutoffAt,
     amountMinor: 500,
     currency: "USD",
-    obligations: [{ allocationIndex: 0, obligationId, payerBowlerId: creditedBowlerId, amountMinor: 500 }],
+    obligations: [{ allocationIndex: 0, obligationId: debt.obligationId, payerBowlerId: sourceBowlerId, amountMinor: 500 }],
     locationId: null,
     providerLocationId: null,
     payerBowlerId: null,
@@ -547,7 +556,7 @@ async function createLegacyStandingFunding(): Promise<{ paymentId: number; fundi
     organizationId,
     leagueId,
     consentId: consent.id,
-    consentVersion: 1,
+    consentVersion,
     providerName: "square",
     providerLocationId: "square-fixture-location",
     triggerOccurrenceId: occurrenceId,
@@ -567,19 +576,19 @@ async function createLegacyStandingFunding(): Promise<{ paymentId: number; fundi
     organizationId,
     leagueId,
     allocationIndex: 0,
-    obligationId,
-    bowlerId: creditedBowlerId,
+    obligationId: debt.obligationId,
+    bowlerId: sourceBowlerId,
     role: "payer",
     paymentLinkId: null,
     linkFingerprint: null,
-    consentVersion: 1,
+    consentVersion,
     createdAt: now,
   });
   await tx.insert(paymentOperationRosterSnapshotItems).values({
     operationId,
     organizationId,
     leagueId,
-    obligationId,
+    obligationId: debt.obligationId,
     allocationIndex: 0,
     amountMinor: 500,
     state: "finalized",
@@ -588,7 +597,7 @@ async function createLegacyStandingFunding(): Promise<{ paymentId: number; fundi
   const [payment] = await tx.insert(payments).values({
     organizationId,
     leagueId,
-    bowlerId: creditedBowlerId,
+    bowlerId: sourceBowlerId,
     amount: 500,
     currency: "USD",
     status: "paid",
@@ -602,7 +611,7 @@ async function createLegacyStandingFunding(): Promise<{ paymentId: number; fundi
     organizationId,
     leagueId,
     paymentId: payment.id,
-    creditedBowlerId,
+    creditedBowlerId: sourceBowlerId,
     portionIndex: 0,
     amountMinor: 500,
     currency: "USD",
@@ -616,14 +625,21 @@ async function createLegacyStandingFunding(): Promise<{ paymentId: number; fundi
     recordedByUserId: actorUserId,
     now,
   });
-  await insertApplication(tx, { paymentId: payment.id, fundingId: funding.id, amountMinor: 500 });
-  return { paymentId: payment.id, fundingId: funding.id, operationId };
+  await insertApplication(tx, {
+    paymentId: payment.id,
+    fundingId: funding.id,
+    amountMinor: 500,
+    creditedBowlerId: sourceBowlerId,
+    obligationId: debt.obligationId,
+    responsibilityId: debt.responsibilityId,
+  });
+  return { paymentId: payment.id, fundingId: funding.id, operationId, creditedBowlerId: sourceBowlerId };
   });
 }
 
 async function insertApplication(
   tx: PaymentOperationTransaction,
-  input: { paymentId: number; fundingId: string; amountMinor: number; creditedBowlerId?: number; obligationId?: string; responsibilityId?: string },
+  input: { paymentId: number; fundingId: string; amountMinor: number; sourceAmountMinor?: number; creditedBowlerId?: number; obligationId?: string; responsibilityId?: string },
 ) {
   const payerBowlerId = input.creditedBowlerId ?? creditedBowlerId;
   const targetObligationId = input.obligationId ?? obligationId;
@@ -645,7 +661,7 @@ async function insertApplication(
     creditedBowlerId: payerBowlerId,
     genericFundingId: input.fundingId,
     rotatingFundingId: null,
-    sourceAmountMinor: input.amountMinor,
+    sourceAmountMinor: input.sourceAmountMinor ?? input.amountMinor,
     amountMinor: input.amountMinor,
     currency: "USD",
     obligationId: targetObligationId,
@@ -661,6 +677,169 @@ async function insertApplication(
 }
 
 describe("owned payment SQL guards on PostgreSQL", () => {
+  it("allows a non-adopted legacy cash payment to be deleted without an owned-funding row", async () => {
+    const [legacyLeague] = await db.insert(leagues).values({
+      name: `Legacy Cash Delete League ${suffix}`,
+      organizationId,
+      locationId,
+      payingLineupSize: 3,
+      weeklyFee: 500,
+      seasonStart: "2039-01-01T00:00:00.000Z",
+      seasonEnd: "2039-12-31T23:59:59.000Z",
+      weekDay: "Monday",
+      timezone: "UTC",
+    }).returning({ id: leagues.id });
+    const [legacyTeam] = await db.insert(teams).values({
+      name: `Legacy Cash Delete Team ${suffix}`,
+      number: 1,
+      leagueId: legacyLeague.id,
+    }).returning({ id: teams.id });
+    const commandId = randomUUID();
+    const instant = "2039-02-01T19:00:00.000Z";
+    await db.insert(leagueScheduleCommands).values({
+      id: commandId,
+      organizationId,
+      leagueId: legacyLeague.id,
+      actorUserId,
+      commandType: "publish",
+      idempotencyKey: `legacy-cash-publish-${suffix}`,
+      requestFingerprint: `legacy-cash-publish-fingerprint-${suffix}`,
+    });
+    const [legacyOccurrence] = await db.insert(leagueOccurrences).values({
+      organizationId,
+      leagueId: legacyLeague.id,
+      locationId,
+      generationKey: `legacy-cash-occurrence-${suffix}`,
+      kind: "regular",
+      status: "scheduled",
+      lifecycle: "published",
+      authoritativeLocalDate: "2039-02-01",
+      authoritativeLocalStartTime: "19:00:00",
+      timezone: "UTC",
+      startAt: instant,
+      selectedUtcOffsetMinutes: 0,
+      foldResolution: "unambiguous",
+      resolverVersion: "owned-ledger-cash-delete-test",
+      plannedOrdinal: 1,
+      competitionNumber: 1,
+      competitive: true,
+      countsInStandings: true,
+      publishedAt: instant,
+      publishedByUserId: actorUserId,
+      publicationCommandId: commandId,
+    }).returning({ id: leagueOccurrences.id });
+    const [legacyResponsibility] = await db.insert(occurrencePaymentResponsibilities).values({
+      organizationId,
+      leagueId: legacyLeague.id,
+      occurrenceId: legacyOccurrence.id,
+      teamId: legacyTeam.id,
+      slotId: null,
+      slotIndex: null,
+      positionIndex: null,
+      responsibilityKind: "worksheet",
+      payerBowlerId: payerBowlerId,
+      mainBowlerId: null,
+      substituteBowlerId: null,
+      policy: null,
+      worksheetFeeComponent: "full",
+      amountMinor: 500,
+      currency: "USD",
+      dueAt: instant,
+      pastDueAt: "2039-02-08T19:00:00.000Z",
+      recordedByUserId: actorUserId,
+    }).returning({ id: occurrencePaymentResponsibilities.id });
+    const [legacyObligation] = await db.insert(paymentObligations).values({
+      organizationId,
+      leagueId: legacyLeague.id,
+      occurrenceId: legacyOccurrence.id,
+      responsibilityId: legacyResponsibility.id,
+      component: "full",
+      payerBowlerId,
+      amountMinor: 500,
+      currency: "USD",
+      dueAt: instant,
+      pastDueAt: "2039-02-08T19:00:00.000Z",
+      state: "settled",
+      createdByUserId: actorUserId,
+    }).returning({ id: paymentObligations.id });
+    const [cashPayment] = await db.transaction(async (tx) => {
+      const [payment] = await tx.insert(payments).values({
+        organizationId,
+        leagueId: legacyLeague.id,
+        bowlerId: payerBowlerId,
+        amount: 500,
+        currency: "USD",
+        status: "paid",
+        type: "cash",
+        paidByUserId: actorUserId,
+        createdAt: new Date().toISOString(),
+      }).returning({ id: payments.id });
+      await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId: legacyLeague.id,
+        paymentId: payment.id,
+        obligationId: legacyObligation.id,
+        amountMinor: 500,
+        currency: "USD",
+        allocationKind: "ordinary",
+        recordedByUserId: actorUserId,
+      });
+      return [payment];
+    });
+
+    await db.transaction(async (tx) => {
+      await tx.insert(paymentVoids).values({
+        organizationId,
+        leagueId: legacyLeague.id,
+        paymentId: cashPayment.id,
+        reason: "duplicate cash entry",
+        recordedByUserId: actorUserId,
+      });
+      await tx.update(payments).set({ status: "voided" }).where(eq(payments.id, cashPayment.id));
+      await tx.update(paymentAllocations).set({ state: "voided" }).where(eq(paymentAllocations.paymentId, cashPayment.id));
+      await tx.update(paymentObligations).set({ state: "open" }).where(eq(paymentObligations.id, legacyObligation.id));
+      await tx.execute(sql`SET CONSTRAINTS payment_allocations_conservation, payments_allocation_conservation, payment_voids_allocation_conservation IMMEDIATE`);
+      await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'on', true)`);
+      await tx.delete(paymentVoids).where(eq(paymentVoids.paymentId, cashPayment.id));
+      await tx.delete(paymentAllocations).where(eq(paymentAllocations.paymentId, cashPayment.id));
+      await tx.delete(payments).where(and(
+        eq(payments.id, cashPayment.id),
+        eq(payments.organizationId, organizationId),
+        eq(payments.leagueId, legacyLeague.id),
+      ));
+      await tx.execute(sql`SELECT set_config('leaguevault.organization_teardown', 'off', true)`);
+    });
+
+    const remaining = await db.select({ id: payments.id }).from(payments).where(eq(payments.id, cashPayment.id));
+    expect(remaining).toHaveLength(0);
+  });
+
+  it("continues to reject an invalid owned-funding source after the no-funding early return", async () => {
+    const tender = await createV4Tender(250);
+    let failure: unknown;
+    try {
+      await db.transaction(async (tx) => {
+        await tx.update(payments).set({ amount: 251 }).where(and(
+          eq(payments.id, tender.paymentId),
+          eq(payments.organizationId, organizationId),
+          eq(payments.leagueId, leagueId),
+        ));
+        await tx.execute(sql`SELECT assert_owned_payment_source_applications(${organizationId}, ${leagueId}, ${tender.paymentId})`);
+      });
+    } catch (error) {
+      failure = error;
+    }
+    const postgresCause = typeof failure === "object" && failure !== null && "cause" in failure
+      ? (failure as { cause?: unknown }).cause
+      : failure;
+    expect(postgresCause).toMatchObject({
+      code: "PWL01",
+      constraint: "owned_payment_funding_ledger_guard",
+    });
+    expect(postgresCause instanceof Error ? postgresCause.message : String(postgresCause))
+      .toContain("funding_conservation");
+  });
+
   it("accepts a charged partner portion with additional zero-charge self evidence", async () => {
     const tender = await createV4Tender(250);
     await db.transaction(async (tx) => {
@@ -736,7 +915,7 @@ describe("owned payment SQL guards on PostgreSQL", () => {
     const funding = await createLegacyStandingFunding();
     const stored = await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(and(
       eq(weeklyPaymentFundings.paymentId, funding.paymentId),
-      eq(weeklyPaymentFundings.creditedBowlerId, creditedBowlerId),
+      eq(weeklyPaymentFundings.creditedBowlerId, funding.creditedBowlerId),
     ));
     expect(stored).toHaveLength(1);
   });
@@ -848,6 +1027,262 @@ describe("owned payment SQL guards on PostgreSQL", () => {
       availableMinor: 200,
       reviewRequired: false,
     });
+  });
+
+  it("accepts a V3 refund of an adopted legacy standing tender without a V4 account snapshot", async () => {
+    const source = await createLegacyStandingFunding();
+    const prepared = await prepareRefundPaymentOperation({
+      paymentId: source.paymentId,
+      disposition: "still_owed",
+      reason: "refund adopted legacy standing tender",
+      requestedByUserId: actorUserId,
+      requestedByRole: "org_admin",
+      requestedByOrganizationId: organizationId,
+    });
+    expect(prepared.snapshot.snapshotVersion).toBe(3);
+
+    const lease = await acquirePaymentOperationLease({
+      organizationId,
+      operationId: prepared.operation.id,
+      leaseOwner: `legacy-v3-refund-${suffix}`,
+      leaseDurationMs: 60_000,
+    });
+    const leaseToken = lease?.leaseToken;
+    if (!leaseToken) throw new Error("legacy V3 refund did not acquire an operation lease");
+    const finalized = await finalizeRefundPaymentOperationSuccess({
+      organizationId,
+      operationId: prepared.operation.id,
+      leaseToken,
+      providerObjectId: `square-legacy-v3-refund-${randomUUID()}`,
+    });
+    expect(finalized.operation.status).toBe("succeeded");
+    expect(finalized.payment).toMatchObject({ status: "refunded", squareRefundId: finalized.operation.providerObjectId });
+
+    await db.transaction(async (tx) => {
+      await assertOwnedPaymentTenderInTransaction(tx, {
+        organizationId,
+        leagueId,
+        paymentId: source.paymentId,
+      });
+      const sources = await readOwnedGenericFundingSourcesByPaymentInTransaction(tx, {
+        organizationId,
+        leagueId,
+        paymentId: source.paymentId,
+      });
+      expect(sources).toHaveLength(1);
+      expect(sources[0]).toMatchObject({
+        fundingId: source.fundingId,
+        creditedBowlerId: source.creditedBowlerId,
+        amountMinor: 500,
+        availableMinor: 0,
+        reviewRequired: false,
+      });
+    });
+  });
+
+  it("refunds a pure unallocated owned tender as credit without inventing allocations", async () => {
+    const source = await createV4Tender(250);
+    const prepared = await prepareRefundPaymentOperation({
+      paymentId: source.paymentId,
+      disposition: "waived",
+      reason: "refund unused owned credit",
+      requestedByUserId: actorUserId,
+      requestedByRole: "org_admin",
+      requestedByOrganizationId: organizationId,
+    });
+    if (prepared.snapshot.snapshotVersion !== 3) throw new Error("credit-only refund did not use V3");
+    expect(prepared.snapshot.disposition).toBe("still_owed");
+    expect(prepared.snapshot.allocations).toHaveLength(0);
+    expect(prepared.snapshot.fundingSnapshot).toMatchObject([{ fundingId: source.fundingId, unusedCreditMinor: 250 }]);
+    const replay = await prepareRefundPaymentOperation({
+      paymentId: source.paymentId,
+      disposition: "waived",
+      reason: "refund unused owned credit",
+      requestedByUserId: actorUserId,
+      requestedByRole: "org_admin",
+      requestedByOrganizationId: organizationId,
+    });
+    expect(replay.operation.id).toBe(prepared.operation.id);
+    if (replay.snapshot.snapshotVersion !== 3) throw new Error("credit-only replay did not retain V3");
+    expect(replay.snapshot.disposition).toBe("still_owed");
+
+    const lease = await acquirePaymentOperationLease({
+      organizationId,
+      operationId: prepared.operation.id,
+      leaseOwner: `unused-credit-refund-${suffix}`,
+      leaseDurationMs: 60_000,
+    });
+    const leaseToken = lease?.leaseToken;
+    if (!leaseToken) throw new Error("unused-credit refund did not acquire an operation lease");
+    const finalized = await finalizeRefundPaymentOperationSuccess({
+      organizationId,
+      operationId: prepared.operation.id,
+      leaseToken,
+      providerObjectId: `square-unused-credit-refund-${randomUUID()}`,
+    });
+    expect(finalized.operation.status).toBe("succeeded");
+    const sources = await db.transaction((tx) => readOwnedGenericFundingSourcesByPaymentInTransaction(tx, {
+      organizationId,
+      leagueId,
+      paymentId: source.paymentId,
+    }));
+    expect(sources).toMatchObject([{ fundingId: source.fundingId, availableMinor: 0, reviewRequired: false }]);
+  });
+
+  it("keeps V4 source assertions valid while a V3 refund is pending or definitively no-effect", async () => {
+    const source = await createV4Tender(500);
+    const prepared = await prepareRefundPaymentOperation({
+      paymentId: source.paymentId,
+      disposition: "still_owed",
+      reason: "refund retry boundary",
+      requestedByUserId: actorUserId,
+      requestedByRole: "org_admin",
+      requestedByOrganizationId: organizationId,
+    });
+    await db.transaction((tx) => assertOwnedPaymentTenderInTransaction(tx, {
+      organizationId,
+      leagueId,
+      paymentId: source.paymentId,
+    }));
+
+    const completedAt = new Date().toISOString();
+    await db.update(paymentOperations).set({
+      status: "failed_terminal",
+      providerObjectId: null,
+      errorClassification: "invalid_request",
+      errorCode: "REFUND_FAILED",
+      nextAttemptAt: null,
+      completedAt,
+      updatedAt: completedAt,
+    }).where(and(
+      eq(paymentOperations.id, prepared.operation.id),
+      eq(paymentOperations.organizationId, organizationId),
+      eq(paymentOperations.leagueId, leagueId),
+    ));
+    await db.transaction((tx) => assertOwnedPaymentTenderInTransaction(tx, {
+      organizationId,
+      leagueId,
+      paymentId: source.paymentId,
+    }));
+    const [funding] = await db.transaction((tx) => readOwnedGenericFundingSourcesByPaymentInTransaction(tx, {
+      organizationId,
+      leagueId,
+      paymentId: source.paymentId,
+    }));
+    expect(funding).toMatchObject({ availableMinor: 500, reviewRequired: false });
+  });
+
+  it("refunds a mixed spent and unused funding portion without returning refunded value to credit", async () => {
+    const source = await createV4Tender(500);
+    await db.transaction((tx) => insertApplication(tx, {
+      paymentId: source.paymentId,
+      fundingId: source.fundingId,
+      amountMinor: 300,
+      sourceAmountMinor: 500,
+    }));
+    const [application] = await db.select({ id: paymentAllocationFundingApplications.id })
+      .from(paymentAllocationFundingApplications).where(and(
+        eq(paymentAllocationFundingApplications.organizationId, organizationId),
+        eq(paymentAllocationFundingApplications.leagueId, leagueId),
+        eq(paymentAllocationFundingApplications.paymentId, source.paymentId),
+        eq(paymentAllocationFundingApplications.genericFundingId, source.fundingId),
+      ));
+    expect(application).toBeDefined();
+    const prepared = await prepareRefundPaymentOperation({
+      paymentId: source.paymentId,
+      disposition: "still_owed",
+      reason: "refund mixed owned tender",
+      requestedByUserId: actorUserId,
+      requestedByRole: "org_admin",
+      requestedByOrganizationId: organizationId,
+    });
+    if (prepared.snapshot.snapshotVersion !== 3) throw new Error("mixed account refund did not use V3");
+    expect(prepared.snapshot.allocations).toHaveLength(1);
+    expect(prepared.snapshot.fundingSnapshot).toMatchObject([{ fundingId: source.fundingId, unusedCreditMinor: 200 }]);
+
+    const lease = await acquirePaymentOperationLease({
+      organizationId,
+      operationId: prepared.operation.id,
+      leaseOwner: `mixed-owned-refund-${suffix}`,
+      leaseDurationMs: 60_000,
+    });
+    const leaseToken = lease?.leaseToken;
+    if (!leaseToken) throw new Error("mixed refund did not acquire an operation lease");
+    const finalized = await finalizeRefundPaymentOperationSuccess({
+      organizationId,
+      operationId: prepared.operation.id,
+      leaseToken,
+      providerObjectId: `square-mixed-owned-refund-${randomUUID()}`,
+    });
+    expect(finalized.operation.status).toBe("succeeded");
+    await db.transaction((tx) => releaseOwnedFundingApplicationInTransaction(tx, {
+      organizationId,
+      leagueId,
+      applicationId: application.id,
+      actorUserId,
+      reason: "worksheet_correction",
+      idempotencyKey: `owned-ledger-refunded-release-${randomUUID()}`,
+    }));
+    const sources = await db.transaction(async (tx) => {
+      await assertOwnedPaymentTenderInTransaction(tx, {
+        organizationId,
+        leagueId,
+        paymentId: source.paymentId,
+      });
+      return readOwnedGenericFundingSourcesByPaymentInTransaction(tx, {
+        organizationId,
+        leagueId,
+        paymentId: source.paymentId,
+      });
+    });
+    expect(sources).toMatchObject([{ fundingId: source.fundingId, availableMinor: 0, reviewRequired: false }]);
+  });
+
+  it("holds an owned tender when a terminal refund still has an ambiguous provider ID", async () => {
+    const source = await createV4Tender(500);
+    const application = await db.transaction((tx) => insertApplication(tx, {
+      paymentId: source.paymentId,
+      fundingId: source.fundingId,
+      amountMinor: 300,
+      sourceAmountMinor: 500,
+    }));
+    const prepared = await prepareRefundPaymentOperation({
+      paymentId: source.paymentId,
+      disposition: "still_owed",
+      reason: "refund outcome remains ambiguous",
+      requestedByUserId: actorUserId,
+      requestedByRole: "org_admin",
+      requestedByOrganizationId: organizationId,
+    });
+    const completedAt = new Date().toISOString();
+    await db.update(paymentOperations).set({
+      status: "failed_terminal",
+      providerObjectId: `square-ambiguous-refund-${randomUUID()}`,
+      errorClassification: "invalid_request",
+      errorCode: null,
+      nextAttemptAt: null,
+      completedAt,
+      updatedAt: completedAt,
+    }).where(and(
+      eq(paymentOperations.id, prepared.operation.id),
+      eq(paymentOperations.organizationId, organizationId),
+      eq(paymentOperations.leagueId, leagueId),
+    ));
+
+    const [funding] = await db.transaction((tx) => readOwnedGenericFundingSourcesByPaymentInTransaction(tx, {
+      organizationId,
+      leagueId,
+      paymentId: source.paymentId,
+    }));
+    expect(funding).toMatchObject({ availableMinor: 0, reviewRequired: true });
+    await expect(db.transaction((tx) => releaseOwnedFundingApplicationInTransaction(tx, {
+      organizationId,
+      leagueId,
+      applicationId: application.applicationId,
+      actorUserId,
+      reason: "worksheet_correction",
+      idempotencyKey: `owned-ledger-ambiguous-release-${randomUUID()}`,
+    }))).rejects.toMatchObject({ code: "FUNDING_SOURCE_REQUIRES_REVIEW" });
   });
 
   it.each(["PENDING", "UNKNOWN"] as const)("holds rotating source credit while a provider refund is %s", async (outcome) => {

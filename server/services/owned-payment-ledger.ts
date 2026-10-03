@@ -256,15 +256,6 @@ const REVIEW_DISPUTE_STATES = new Set([
   "ACCEPTED",
 ]);
 
-const REFUND_HOLD_STATUSES = [
-  "pending",
-  "leased",
-  "provider_unknown",
-  "retry_scheduled",
-  "action_required",
-  "reconciliation_required",
-] as const;
-
 export async function readOwnedLedgerAdoptionInTransaction(
   tx: PaymentOperationTransaction,
   scope: OwnedLedgerScope,
@@ -385,7 +376,7 @@ export async function readConfirmedOwnedObligationsInTransaction(
   ));
   const paymentById = new Map(sourcePayments.map((payment) => [payment.id, payment]));
   const operationIds = [...new Set(sourcePayments.flatMap((payment) => payment.paymentOperationId === null ? [] : [payment.paymentOperationId]))];
-  const [disputes, operationRows, unresolvedRefundRows, refundEvidenceRows] = await Promise.all([
+  const [disputes, operationRows, refundEvidenceRows] = await Promise.all([
     operationIds.length === 0 ? Promise.resolve([]) : tx.select({ operationId: paymentDisputes.paymentOperationId, state: paymentDisputes.state }).from(paymentDisputes).where(and(
       eq(paymentDisputes.organizationId, scope.organizationId),
       inArray(paymentDisputes.paymentOperationId, operationIds),
@@ -395,15 +386,6 @@ export async function readConfirmedOwnedObligationsInTransaction(
       eq(paymentOperations.leagueId, scope.leagueId),
       inArray(paymentOperations.id, operationIds),
     )),
-    paymentIds.length === 0 ? Promise.resolve([]) : tx.select({ paymentId: refundPaymentOperationSnapshots.paymentId }).from(refundPaymentOperationSnapshots)
-      .innerJoin(paymentOperations, and(
-        eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
-        eq(paymentOperations.organizationId, scope.organizationId),
-      )).where(and(
-        eq(refundPaymentOperationSnapshots.leagueId, scope.leagueId),
-        inArray(refundPaymentOperationSnapshots.paymentId, paymentIds),
-        inArray(paymentOperations.status, REFUND_HOLD_STATUSES),
-      )),
     paymentIds.length === 0 ? Promise.resolve([]) : tx.select({
       snapshot: refundPaymentOperationSnapshots,
       operation: paymentOperations,
@@ -417,7 +399,6 @@ export async function readConfirmedOwnedObligationsInTransaction(
   ]);
   const disputedOperationIds = new Set(disputes.filter((row) => REVIEW_DISPUTE_STATES.has(row.state)).map((row) => row.operationId));
   const operationById = new Map(operationRows.map((row) => [row.id, row]));
-  const heldPaymentIds = new Set(unresolvedRefundRows.map((row) => row.paymentId));
   const validRefundPaymentIds = new Set<number>();
   const incompatibleRefundPaymentIds = new Set<number>();
   const refundRowsByPayment = new Map<number, typeof refundEvidenceRows>();
@@ -443,6 +424,11 @@ export async function readConfirmedOwnedObligationsInTransaction(
       incompatibleRefundPaymentIds.add(payment.id);
     }
   }
+  const heldPaymentIds = new Set(refundEvidenceRows.filter(({ snapshot, operation: refundOperation }) =>
+    refundOperation.status === "succeeded"
+      ? !validRefundPaymentIds.has(snapshot.paymentId)
+      : !isConfirmedNoRefundCreditOutcome(refundOperation)
+  ).map(({ snapshot }) => snapshot.paymentId));
   const confirmedRows: OwnedConfirmedObligation[] = [];
   for (const { obligation, occurrenceLocalDate, responsibility } of confirmed) {
     if (occurrenceLocalDate === null) throw new OwnedPaymentLedgerError("CONFIRMED_OCCURRENCE_DATE_MISSING");

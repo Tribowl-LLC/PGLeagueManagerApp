@@ -6,6 +6,7 @@ import {
   leagues,
   locations,
   paymentAllocationCorrections,
+  paymentAllocationFundingApplications,
   paymentOperations,
   paymentAllocations,
   type RefundPaymentFundingSnapshotV3,
@@ -14,6 +15,7 @@ import {
   paymentOperationRosterSnapshotItems,
   payments,
   rotatingCreditFundings,
+  weeklyPaymentAllocationReleases,
   users,
 } from "@shared/schema";
 import { isCardPaymentType } from "@shared/schema/constants";
@@ -27,7 +29,13 @@ import {
   REFUND_TARGET_PREFIX,
   type PaymentOperationTransaction,
 } from "../storage/payment-operations.js";
-import { readOwnedGenericFundingSourcesByPaymentInTransaction, readOwnedLedgerAdoptionInTransaction, validateOwnedFundingPortionsForTenderInTransaction } from "./owned-payment-ledger.js";
+import {
+  OwnedPaymentRefundEvidenceError,
+  readCompletedOwnedPaymentRefundEvidenceInTransaction,
+  readOwnedGenericFundingSourcesByPaymentInTransaction,
+  readOwnedLedgerAdoptionInTransaction,
+  validateOwnedFundingPortionsForTenderInTransaction,
+} from "./owned-payment-ledger.js";
 import type { RefundPaymentSemanticSnapshot } from "./refund-payment-operation-snapshot.js";
 import { REFUND_PAYMENT_DISPOSITIONS } from "@shared/schema";
 
@@ -174,6 +182,10 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
         throw new PaymentOperationImmutableMismatchError();
       }
       const storedSnapshot = await loadRefundPaymentOperationSnapshotInTransaction(tx, existing);
+      const replayDisposition = storedSnapshot?.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION
+        && storedSnapshot.allocations.length === 0
+        ? "still_owed"
+        : requestedDisposition;
       if (!storedSnapshot
         || storedSnapshot.paymentId !== input.paymentId
         || storedSnapshot.leagueId !== owned.payment.leagueId
@@ -181,10 +193,29 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
         || storedSnapshot.reason !== normalizedReason.reason
         || storedSnapshot.requestedReason !== normalizedReason.requestedReason
         || (storedSnapshot.snapshotVersion !== 1
-          && !(storedSnapshot.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION
-            && storedSnapshot.allocations.length === 0)
-          && (requestedDisposition === null || storedSnapshot.disposition !== requestedDisposition))) {
+          && (replayDisposition === null || storedSnapshot.disposition !== replayDisposition))) {
         throw new PaymentOperationImmutableMismatchError();
+      }
+      if (existing.status === "succeeded") {
+        if (storedSnapshot.snapshotVersion === REFUND_PAYMENT_SNAPSHOT_ACCOUNT_FUNDING_VERSION) {
+          try {
+            const proof = await readCompletedOwnedPaymentRefundEvidenceInTransaction(tx, {
+              organizationId,
+              leagueId: owned.payment.leagueId,
+              paymentId: input.paymentId,
+              chargeOperationId: owned.payment.paymentOperationId ?? "",
+              providerPaymentId: owned.payment.providerPaymentId ?? "",
+              amountMinor: owned.payment.amount,
+            });
+            if (!proof || proof.refundOperationId !== existing.id) throw new OwnedPaymentRefundEvidenceError();
+          } catch {
+            throw new PaymentOperationImmutableMismatchError();
+          }
+        } else if (owned.payment.status !== "refunded"
+          || !owned.payment.squareRefundId
+          || existing.providerObjectId !== owned.payment.squareRefundId) {
+          throw new PaymentOperationImmutableMismatchError();
+        }
       }
       return { operation: existing, snapshot: storedSnapshot };
     }
@@ -262,10 +293,33 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
     const allocationById = new Map(sourceAllocations.map((allocation) => [allocation.id, allocation]));
     const voidedAllocations = sourceAllocations.filter((allocation) => allocation.state === "voided");
     const correctionBySourceId = new Map(correctionRows.map((correction) => [correction.sourceAllocationId, correction]));
+    const voidedAllocationIds = voidedAllocations.map((allocation) => allocation.id);
+    const [voidedApplications, voidedReleases] = voidedAllocationIds.length === 0 ? [[], []] : await Promise.all([
+      tx.select().from(paymentAllocationFundingApplications).where(and(
+        eq(paymentAllocationFundingApplications.organizationId, organizationId),
+        eq(paymentAllocationFundingApplications.leagueId, owned.payment.leagueId),
+        inArray(paymentAllocationFundingApplications.allocationId, voidedAllocationIds),
+      )),
+      tx.select().from(weeklyPaymentAllocationReleases).where(and(
+        eq(weeklyPaymentAllocationReleases.organizationId, organizationId),
+        eq(weeklyPaymentAllocationReleases.leagueId, owned.payment.leagueId),
+        inArray(weeklyPaymentAllocationReleases.sourceAllocationId, voidedAllocationIds),
+      )),
+    ]);
+    const applicationsByVoidedAllocation = new Map<string, typeof voidedApplications>();
+    for (const application of voidedApplications) applicationsByVoidedAllocation.set(application.allocationId, [
+      ...(applicationsByVoidedAllocation.get(application.allocationId) ?? []), application,
+    ]);
+    const releasesByVoidedAllocation = new Map<string, typeof voidedReleases>();
+    for (const release of voidedReleases) releasesByVoidedAllocation.set(release.sourceAllocationId, [
+      ...(releasesByVoidedAllocation.get(release.sourceAllocationId) ?? []), release,
+    ]);
+    const correctionProvenIds = new Set<string>();
+    const releaseProvenIds = new Set<string>();
     const provenVoids = voidedAllocations.every((source) => {
       const correction = correctionBySourceId.get(source.id);
       const replacement = correction ? allocationById.get(correction.replacementAllocationId) : undefined;
-      return correction !== undefined
+      const correctionIsValid = correction !== undefined
         && correction.organizationId === organizationId
         && correction.leagueId === owned.payment.leagueId
         && correction.paymentId === input.paymentId
@@ -280,8 +334,36 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
         && replacement.obligationId === correction.targetObligationId
         && replacement.amountMinor === correction.amountMinor
         && replacement.currency === correction.currency;
+      const [application] = applicationsByVoidedAllocation.get(source.id) ?? [];
+      const allocationReleases = releasesByVoidedAllocation.get(source.id) ?? [];
+      const [release] = allocationReleases;
+      const releaseIsValid = (applicationsByVoidedAllocation.get(source.id) ?? []).length === 1
+        && application !== undefined
+        && application.paymentId === input.paymentId
+        && application.allocationId === source.id
+        && application.genericFundingId !== null
+        && application.rotatingFundingId === null
+        && application.obligationId === source.obligationId
+        && application.amountMinor === source.amountMinor
+        && application.currency === source.currency
+        && allocationReleases.length === 1
+        && release !== undefined
+        && release.fundingApplicationId === application.id
+        && release.paymentId === input.paymentId
+        && release.creditedBowlerId === application.creditedBowlerId
+        && release.sourceObligationId === source.obligationId
+        && release.sourceApplicationAmountMinor === source.amountMinor
+        && release.releasedAmountMinor === source.amountMinor
+        && release.retainedAmountMinor === 0
+        && release.replacementAllocationId === null;
+      if (correctionIsValid === releaseIsValid) return false;
+      if (correctionIsValid) correctionProvenIds.add(source.id);
+      if (releaseIsValid) releaseProvenIds.add(source.id);
+      return true;
     });
-    if (!provenVoids || correctionRows.length !== voidedAllocations.length) {
+    if (!provenVoids
+      || correctionRows.length !== correctionProvenIds.size
+      || voidedReleases.length !== releaseProvenIds.size) {
       throw new RefundPreparationError("This payment has voided allocation evidence and requires reconciliation before refunding", 409, "REFUND_ALLOCATION_STATE_CONFLICT");
     }
     const refundSourceAllocations = sourceAllocations.filter((allocation) => allocation.state === "active");
@@ -297,8 +379,9 @@ export async function prepareRefundPaymentOperation(input: PrepareRefundPaymentO
     }
     // A funding-only V3 refund has no debt disposition to make. Persist the
     // same inert default for every such request so retries remain identical.
-    const disposition = requestedDisposition
-      ?? (adoption && refundSourceAllocations.length === 0 ? "still_owed" : null);
+    const disposition = adoption && refundSourceAllocations.length === 0
+      ? "still_owed"
+      : requestedDisposition;
     if (disposition === null) {
       throw new RefundPreparationError("Choose whether the refunded amount is still owed or should be waived", 400, "DISPOSITION_REQUIRED");
     }
