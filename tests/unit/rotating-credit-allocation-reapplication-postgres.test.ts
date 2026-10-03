@@ -482,7 +482,7 @@ describe("rotating credit allocation reapplication on PostgreSQL", () => {
     }));
     await expect(unpairedCreditAllocation).rejects.toMatchObject({
       cause: expect.objectContaining({
-        message: expect.stringContaining("rotating credit allocation must use its discriminator and have one exact immutable application"),
+        message: expect.stringContaining("rotating credit allocation must use exactly one matching immutable application"),
       }),
     });
     const laterCreditAllocation = initialCreditRows.find((row) => row.obligationId === later.obligation.id);
@@ -490,7 +490,7 @@ describe("rotating credit allocation reapplication on PostgreSQL", () => {
     await expect(db.transaction(async (tx) => tx.update(paymentAllocations).set({ allocationKind: "ordinary" }).where(eq(paymentAllocations.id, laterCreditAllocation.allocationId))))
       .rejects.toMatchObject({
         cause: expect.objectContaining({
-          message: expect.stringContaining("rotating credit allocation must use its discriminator and have one exact immutable application"),
+          message: expect.stringContaining("rotating credit allocation must use exactly one matching immutable application"),
         }),
       });
 

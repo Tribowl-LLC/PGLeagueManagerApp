@@ -60,6 +60,17 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
   const ownFundingRefunded = ownFundingPortions.reduce((sum, portion) => sum + portion.refundedCreditMinor, 0);
   const ownFundingTotalRefunded = ownFundingPortions.reduce((sum, portion) => sum + portion.totalRefundedMinor, 0);
   const ownFundingHeld = ownFundingPortions.reduce((sum, portion) => sum + portion.heldCreditMinor, 0);
+  // Pending snapshot rows carry only the recipient's planned share; do not
+  // treat the operation's parent tender amount as recipient-owned value.
+  const ownPendingOperationAmount = !isInitiatingPayer
+    && !isFundingOwner
+    && row.paymentId === null
+    && row.paymentOperationId !== null
+    && row.unresolved
+    ? visibleAllocations
+      .filter((allocation) => allocation.allocationId === null && allocation.state === null && allocation.bowlerId === viewerBowlerId)
+      .reduce((sum, allocation) => sum + allocation.amountMinor, 0)
+    : 0;
   const safeAmount = isInitiatingPayer ? row.amountMinor : isFundingOwner ? ownFundingAmount : visibleTenderAmount;
   const safeRefundAmount = isInitiatingPayer ? row.refund.amountMinor : isFundingOwner ? ownFundingTotalRefunded : authorizedRefundedAmount;
   const safeRefundPresent = isInitiatingPayer
@@ -137,7 +148,7 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     refundedAllocationMinor: authorizedRefundedAmount,
     waivedMinor: authorizedWaivedAmount,
     effectiveAllocatedMinor: authorizedEffectiveAmount,
-    unallocatedMinor: isInitiatingPayer ? row.unallocatedMinor : isFundingOwner ? ownFundingAvailable : 0,
+    unallocatedMinor: isInitiatingPayer ? row.unallocatedMinor : isFundingOwner ? ownFundingAvailable : ownPendingOperationAmount,
     providerPaymentId: null,
     paymentOperationId: null,
     operationType: null,
