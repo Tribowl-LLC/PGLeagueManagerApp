@@ -127,7 +127,7 @@ describe("Layout unclaimed-users navigation badge", () => {
     for (const link of sheetLinks) {
       expect(link).toHaveClass("bg-familiar-surface", "text-familiar-navy");
     }
-    expect(screen.getByRole("dialog")).toHaveClass("manage-payments-navigation-font");
+    expect(screen.getByRole("dialog")).toHaveClass("font-familiar");
 
     view.unmount();
     renderLayout({ path: "/manage-payments" });

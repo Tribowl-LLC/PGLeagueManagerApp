@@ -6,8 +6,12 @@
   -webkit-font-smoothing: antialiased;
 }
 
-.manage-payments-navigation-font {
-  font-family: var(--familiar-font);
+@font-face {
+  font-family: "Instrument Sans";
+  src: url("/fonts/instrument-sans-variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
 }
 
 .manage-payments-dialog {
@@ -295,10 +299,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.manage-payments-team-action {
-  flex: 1 1 0;
 }
 
 [data-awpw="team-list"] {
@@ -635,10 +635,6 @@
     width: 100%;
   }
 
-  .manage-payments-team-action {
-    flex: 1 1 0;
-  }
-
   [data-awpw="team-list"] {
     gap: 12px;
   }
@@ -788,6 +784,8 @@
 
   .manage-payments-select-trigger {
     font-size: var(--manage-payments-editable-font-size);
+    padding-right: 9px;
+    padding-left: 9px;
   }
 
   [data-awpw-edit-input] {

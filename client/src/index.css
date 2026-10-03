@@ -513,7 +513,6 @@
 @utility familiar-payment-overview__actions { --lv-familiar-pay-component: 1; }
 @utility manage-payments-layout-content { --lv-manage-payments-layout: 1; }
 @utility manage-payments-layout-inner { --lv-manage-payments-layout: 1; }
-@utility manage-payments-navigation-font { --lv-manage-payments-layout: 1; }
 @utility manage-payments-sidebar-expanded { --lv-manage-payments-layout: 1; }
 @utility manage-payments-main-expanded { --lv-manage-payments-layout: 1; }
 @utility manage-payments-table { --lv-manage-payments-component: 1; }
@@ -534,7 +533,6 @@
 @utility manage-payments-cell-fee { --lv-manage-payments-component: 1; }
 @utility manage-payments-received-cell { --lv-manage-payments-component: 1; }
 @utility manage-payments-cell-final { --lv-manage-payments-component: 1; }
-@utility manage-payments-team-action { --lv-manage-payments-component: 1; }
 @utility manage-payments-received-mobile-label { --lv-manage-payments-component: 1; }
 @utility manage-payments-team-name { --lv-manage-payments-component: 1; }
 @utility manage-payments-dialog { --lv-manage-payments-component: 1; }

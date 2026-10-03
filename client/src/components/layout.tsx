@@ -410,7 +410,7 @@ function NavSubMenu({
           variant="sidebar"
           className={cn(
             "w-56",
-            appearance === "weekly-payments" && "manage-payments-navigation-font",
+            appearance === "weekly-payments" && "font-familiar",
           )}
         >
           <div className="px-3 py-2 text-xs font-semibold text-navigation-500 uppercase tracking-wider">
@@ -702,7 +702,7 @@ export function Layout({
       <aside
         className={cn(
           "transition-all duration-300 ease-in-out bg-navigation-deep text-navigation-300 flex-col border-r border-navigation-800 shadow-xl z-50 shrink-0 fixed top-0 bottom-0 left-0 hidden md:flex",
-          appearance === "weekly-payments" && "manage-payments-navigation-font",
+          appearance === "weekly-payments" && "font-familiar",
           isCollapsed
             ? "w-20"
             : appearance === "weekly-payments"
@@ -765,7 +765,7 @@ export function Layout({
           variant="sidebar"
           className={cn(
             "w-72",
-            appearance === "weekly-payments" && "manage-payments-navigation-font",
+            appearance === "weekly-payments" && "font-familiar",
           )}
         >
           <SheetTitle className="sr-only">Navigation Menu</SheetTitle>

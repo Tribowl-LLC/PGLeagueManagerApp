@@ -242,7 +242,7 @@ function TeamWorksheet({
             <span className="manage-payments-team-name truncate">{team.teamName}</span>
             <ChevronDown
               aria-hidden="true"
-              className={expanded ? "size-[19px] shrink-0 rotate-180 text-familiar-muted" : "size-[19px] shrink-0 text-familiar-muted"}
+              className={expanded ? "size-4.75 shrink-0 rotate-180 text-familiar-muted" : "size-4.75 shrink-0 text-familiar-muted"}
             />
           </Button>
         </div>
@@ -757,7 +757,7 @@ export function AdminWeeklyPaymentsWorksheet({
             type="button"
             variant="paymentsSecondary"
             size="paymentsControl"
-            className="manage-payments-team-action"
+            className="flex-1 md:flex-none"
             disabled={saving || teams.length === 0}
             onClick={() => setExpandedTeams(Object.fromEntries(teams.map((team) => [team.teamId, true])))}
           >
@@ -767,7 +767,7 @@ export function AdminWeeklyPaymentsWorksheet({
             type="button"
             variant="paymentsSecondary"
             size="paymentsControl"
-            className="manage-payments-team-action"
+            className="flex-1 md:flex-none"
             disabled={saving || teams.length === 0}
             onClick={() => setExpandedTeams(Object.fromEntries(teams.map((team) => [team.teamId, false])))}
           >

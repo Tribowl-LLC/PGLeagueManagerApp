@@ -421,7 +421,7 @@ export default function AdminWeeklyPaymentsPage() {
                     onValueChange={chooseOccurrence}
                     disabled={weekOptions.length === 0 || saving || activeReloadState?.status === "loading"}
                   >
-                    <SelectTrigger appearance="managePayments" id="manage-payments-week" aria-label="Collection week" className="min-w-0 flex-1 px-2.5">
+                    <SelectTrigger appearance="managePayments" id="manage-payments-week" aria-label="Collection week" className="min-w-0 flex-1">
                       <SelectValue placeholder="Choose a collection week" />
                     </SelectTrigger>
                     <SelectContent>
