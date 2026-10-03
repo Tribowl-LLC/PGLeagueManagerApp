@@ -762,6 +762,7 @@ describe("owned payment SQL guards on PostgreSQL", () => {
     expect(refund).toMatchObject({ status: "succeeded", amountMinor: 1_000 });
 
     const correction = await db.transaction(async (tx) => {
+      const retiredAt = fixedNow.toISOString();
       await releaseOwnedFundingApplicationInTransaction(tx, {
         organizationId,
         leagueId,
@@ -771,7 +772,7 @@ describe("owned payment SQL guards on PostgreSQL", () => {
         idempotencyKey: `owned-ledger-release-${randomUUID()}`,
       });
       await tx.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(eq(occurrencePaymentResponsibilities.id, debt.responsibilityId));
-      await tx.update(paymentObligations).set({ state: "voided" }).where(eq(paymentObligations.id, debt.obligationId));
+      await tx.update(paymentObligations).set({ state: "voided", voidedAt: retiredAt }).where(eq(paymentObligations.id, debt.obligationId));
       const [responsibility] = await tx.insert(occurrencePaymentResponsibilities).values({
         organizationId,
         leagueId,
