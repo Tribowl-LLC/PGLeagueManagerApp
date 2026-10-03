@@ -124,7 +124,9 @@ beforeAll(async () => {
     }).returning({ id: leagueOccurrences.id });
     occurrenceIds.push(occurrence.id);
   }
-  occurrenceId = occurrenceIds[0]!;
+  const firstOccurrenceId = occurrenceIds[0];
+  if (!firstOccurrenceId) throw new Error("legacy proof schedule did not create its first occurrence");
+  occurrenceId = firstOccurrenceId;
   const instant = "2038-02-01T19:00:00.000Z";
 
   const [consent] = await db.insert(autopayConsents).values({
@@ -185,28 +187,32 @@ async function createStandingTender(input: {
   const snapshotFingerprint = `lvstandingcutoff:v1:${createHash("sha256").update(input.suffix).digest("hex")}`;
   const rows = [] as Array<{ allocationIndex: number; obligationId: string; payerBowlerId: number; amountMinor: number }>;
   return db.transaction(async (tx) => {
-
-  for (const [allocationIndex, recipient] of input.recipients.entries()) {
-    const [responsibility] = await tx.insert(occurrencePaymentResponsibilities).values({
+    for (const [allocationIndex, recipient] of input.recipients.entries()) {
+      const occurrenceIdForRecipient = occurrenceIds[allocationIndex];
+      const teamIdForRecipient = teamIds[allocationIndex];
+      if (!occurrenceIdForRecipient || teamIdForRecipient === undefined) {
+        throw new Error("standing-proof recipient does not have a matching schedule occurrence and team");
+      }
+      const [responsibility] = await tx.insert(occurrencePaymentResponsibilities).values({
+        organizationId,
+        leagueId,
+        occurrenceId: occurrenceIdForRecipient,
+        teamId: teamIdForRecipient,
+        responsibilityKind: "worksheet",
+        worksheetFeeComponent: "full",
+        payerBowlerId: recipient.bowlerId,
+        amountMinor: 500,
+        currency: "USD",
+        dueAt: `${["2038-02-01", "2038-02-08", "2038-02-15"][allocationIndex]}T19:00:00.000Z`,
+        pastDueAt: `${["2038-02-08", "2038-02-15", "2038-02-22"][allocationIndex]}T19:00:00.000Z`,
+        recordedByUserId: actorUserId,
+      }).returning({ id: occurrencePaymentResponsibilities.id });
+      const dueAt = `${["2038-02-01", "2038-02-08", "2038-02-15"][allocationIndex]}T19:00:00.000Z`;
+      const pastDueAt = `${["2038-02-08", "2038-02-15", "2038-02-22"][allocationIndex]}T19:00:00.000Z`;
+      const [obligation] = await tx.insert(paymentObligations).values({
       organizationId,
       leagueId,
-      occurrenceId: occurrenceIds[allocationIndex]!,
-      teamId: teamIds[allocationIndex]!,
-      responsibilityKind: "worksheet",
-      worksheetFeeComponent: "full",
-      payerBowlerId: recipient.bowlerId,
-      amountMinor: 500,
-      currency: "USD",
-      dueAt: `${["2038-02-01", "2038-02-08", "2038-02-15"][allocationIndex]}T19:00:00.000Z`,
-      pastDueAt: `${["2038-02-08", "2038-02-15", "2038-02-22"][allocationIndex]}T19:00:00.000Z`,
-      recordedByUserId: actorUserId,
-    }).returning({ id: occurrencePaymentResponsibilities.id });
-    const dueAt = `${["2038-02-01", "2038-02-08", "2038-02-15"][allocationIndex]}T19:00:00.000Z`;
-    const pastDueAt = `${["2038-02-08", "2038-02-15", "2038-02-22"][allocationIndex]}T19:00:00.000Z`;
-    const [obligation] = await tx.insert(paymentObligations).values({
-      organizationId,
-      leagueId,
-      occurrenceId: occurrenceIds[allocationIndex]!,
+      occurrenceId: occurrenceIdForRecipient,
       responsibilityId: responsibility.id,
       component: "full",
       payerBowlerId: recipient.bowlerId,
@@ -217,9 +223,9 @@ async function createStandingTender(input: {
       state: "open",
       createdByUserId: actorUserId,
     }).returning({ id: paymentObligations.id });
-    rows.push({ allocationIndex, obligationId: obligation.id, payerBowlerId: recipient.bowlerId, amountMinor: 500 });
-  }
-  const amountMinor = rows.reduce((sum, row) => sum + row.amountMinor, 0);
+      rows.push({ allocationIndex, obligationId: obligation.id, payerBowlerId: recipient.bowlerId, amountMinor: 500 });
+    }
+    const amountMinor = rows.reduce((sum, row) => sum + row.amountMinor, 0);
 
   await tx.insert(paymentOperations).values({
     id: operationId,
@@ -300,19 +306,24 @@ async function createStandingTender(input: {
     state: "finalized" as const,
     createdAt: now,
   })));
-  await tx.insert(paymentOperationStandingAutopayParticipants).values(input.recipients.map((recipient, allocationIndex) => ({
-    operationId,
-    organizationId,
-    leagueId,
-    allocationIndex,
-    obligationId: rows[allocationIndex]!.obligationId,
-    bowlerId: recipient.bowlerId,
-    role: recipient.role,
-    paymentLinkId: recipient.paymentLinkId,
-    linkFingerprint: recipient.linkFingerprint,
-    consentVersion,
-    createdAt: now,
-  })));
+    const participants = input.recipients.map((recipient, allocationIndex) => {
+      const row = rows[allocationIndex];
+      if (!row) throw new Error("standing-proof recipient has no matching immutable snapshot row");
+      return {
+        operationId,
+        organizationId,
+        leagueId,
+        allocationIndex,
+        obligationId: row.obligationId,
+        bowlerId: recipient.bowlerId,
+        role: recipient.role,
+        paymentLinkId: recipient.paymentLinkId,
+        linkFingerprint: recipient.linkFingerprint,
+        consentVersion,
+        createdAt: now,
+      };
+    });
+    await tx.insert(paymentOperationStandingAutopayParticipants).values(participants);
   const [payment] = await tx.insert(payments).values({
     organizationId,
     leagueId,
@@ -336,7 +347,7 @@ async function createStandingTender(input: {
     recordedByUserId: actorUserId,
     createdAt: now,
   })));
-  return { operationId, paymentId: payment.id, rows };
+    return { operationId, paymentId: payment.id, rows };
   });
 }
 
