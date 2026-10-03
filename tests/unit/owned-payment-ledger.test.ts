@@ -15,6 +15,7 @@ function debt(overrides: Partial<OwnedConfirmedObligation> & Pick<OwnedConfirmed
     responsibilityId: `responsibility-${overrides.obligationId}`,
     occurrenceId: `occurrence-${overrides.obligationId}`,
     occurrenceLocalDate: overrides.dueAt.slice(0, 10),
+    pastDueAt: overrides.pastDueAt ?? overrides.dueAt,
     teamId: 10,
     amountMinor: overrides.outstandingMinor,
     paidMinor: 0,
@@ -103,6 +104,44 @@ describe("owned payment account FIFO planning", () => {
       lot: expect.objectContaining({ fundingId: "released-receipt" }),
       amountMinor: 200,
     })]);
+  });
+
+  it("orders confirmed debts by occurrence week before an early final-week collection date", () => {
+    const plan = planOwnedFundingFifo(5, [
+      debt({
+        obligationId: "week-three",
+        occurrenceLocalDate: "2026-03-15",
+        dueAt: "2026-03-22T00:00:00Z",
+        outstandingMinor: 500,
+      }),
+      debt({
+        obligationId: "final-week-early-collection",
+        occurrenceLocalDate: "2026-04-05",
+        dueAt: "2026-03-15T00:00:00Z",
+        outstandingMinor: 500,
+      }),
+    ], [lot({ fundingId: "credit", createdAt: "2026-03-10T00:00:00Z", availableMinor: 500 })]);
+
+    expect(plan.map((row) => row.obligation.obligationId)).toEqual(["week-three"]);
+  });
+
+  it("ignores another bowler's held debt before applying this bowler's FIFO", () => {
+    const plan = planOwnedFundingFifo(5, [
+      debt({
+        obligationId: "other-bowler-held",
+        dueAt: "2026-02-01T00:00:00Z",
+        outstandingMinor: 500,
+        debtorBowlerId: 6,
+        reviewRequired: true,
+      }),
+      debt({
+        obligationId: "this-bowler-debt",
+        dueAt: "2026-03-01T00:00:00Z",
+        outstandingMinor: 500,
+      }),
+    ], [lot({ fundingId: "credit", createdAt: "2026-02-01T00:00:00Z", availableMinor: 500 })]);
+
+    expect(plan.map((row) => row.obligation.obligationId)).toEqual(["this-bowler-debt"]);
   });
 });
 

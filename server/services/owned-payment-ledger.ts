@@ -114,6 +114,7 @@ export interface OwnedConfirmedObligation {
   occurrenceId: string;
   occurrenceLocalDate: string;
   dueAt: string;
+  pastDueAt: string;
   teamId: number;
   amountMinor: number;
   paidMinor: number;
@@ -181,8 +182,9 @@ export function planOwnedFundingFifo(
   debts: readonly OwnedConfirmedObligation[],
   lots: readonly OwnedPaymentFundingLot[],
 ): OwnedPaymentFifoApplicationPlanRow[] {
-  const orderedDebts = [...debts].sort((left, right) => Date.parse(left.dueAt) - Date.parse(right.dueAt)
-    || left.occurrenceLocalDate.localeCompare(right.occurrenceLocalDate)
+  const orderedDebts = debts.filter((debt) => debt.debtorBowlerId === bowlerId && debt.outstandingMinor > 0)
+    .sort((left, right) => left.occurrenceLocalDate.localeCompare(right.occurrenceLocalDate)
+    || Date.parse(left.dueAt) - Date.parse(right.dueAt)
     || left.obligationId.localeCompare(right.obligationId));
   const orderedLots = lots.filter((lot) => lot.bowlerId === bowlerId && lot.availableMinor > 0)
     .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt)
@@ -193,7 +195,6 @@ export function planOwnedFundingFifo(
   let lotRemaining = orderedLots[0]?.availableMinor ?? 0;
   for (const debt of orderedDebts) {
     if (debt.reviewRequired) break;
-    if (debt.debtorBowlerId !== bowlerId || debt.outstandingMinor <= 0) continue;
     let dueMinor = debt.outstandingMinor;
     while (dueMinor > 0 && lotIndex < orderedLots.length) {
       const lot = orderedLots[lotIndex];
@@ -419,6 +420,7 @@ export async function readConfirmedOwnedObligationsInTransaction(
       occurrenceId: obligation.occurrenceId,
       occurrenceLocalDate,
       dueAt: obligation.dueAt,
+      pastDueAt: obligation.pastDueAt,
       teamId: responsibility.teamId,
       amountMinor: obligation.amountMinor,
       paidMinor: balance.effectiveAllocatedMinor,
