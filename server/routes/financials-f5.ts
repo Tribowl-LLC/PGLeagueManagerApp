@@ -10,7 +10,7 @@ import {
   CanonicalPaymentReportIncompatibilityError,
   readCanonicalPaymentReport,
 } from "../services/roster-payment-archive-report.js";
-import { canonicalCreditFundingSource, canonicalPaymentReportFingerprint, type CanonicalPaymentAppliedToRow } from "@shared/canonical-payment-report";
+import { canonicalPaymentReportFingerprint, type CanonicalPaymentAppliedToRow } from "@shared/canonical-payment-report";
 
 const router = Router();
 

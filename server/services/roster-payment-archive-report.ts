@@ -1,6 +1,6 @@
 import { aliasedTable, and, asc, desc, eq, exists, inArray, sql, or } from "drizzle-orm";
 import { db } from "../db.js";
-import { bowlers, canonicalCollectionGroupMembers, canonicalCollectionGroups, leagueOccurrenceBillingTerms, leagueOccurrenceGenerationRuns, leagueOccurrences, leagues, paymentAllocationCorrections, paymentAllocationFundingApplications, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments, refundAllocationAdjustments, refundPaymentOperationSnapshots, rotatingCreditApplications, rotatingCreditApplicationReversals, rotatingCreditFundings, rotatingCreditPaymentOperationSnapshots, rotatingCreditRefundOperationSnapshots, rotatingCreditRefunds, weeklyPaymentFundings, weeklyPaymentWorksheetReceiptRevisions, weeklyPaymentWorksheetReceipts, type PaymentAllocationCorrection } from "@shared/schema";
+import { bowlers, canonicalCollectionGroupMembers, canonicalCollectionGroups, leagueOccurrenceBillingTerms, leagueOccurrenceGenerationRuns, leagueOccurrences, leagues, paymentAllocationCorrections, paymentAllocationFundingApplications, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments, refundAllocationAdjustments, refundPaymentOperationSnapshots, rotatingCreditApplications, rotatingCreditApplicationReversals, rotatingCreditFundings, rotatingCreditPaymentOperationSnapshots, rotatingCreditRefundOperationSnapshots, rotatingCreditRefunds, rotatingOccurrenceAssignments, weeklyPaymentFundings, weeklyPaymentWorksheetReceiptRevisions, weeklyPaymentWorksheetReceipts, type PaymentAllocationCorrection } from "@shared/schema";
 import type { CanonicalPaymentReport, CanonicalPaymentRow, CanonicalPaymentReportTotals, CanonicalPaymentFundingPortionRow } from "@shared/canonical-payment-report";
 import { canonicalCreditFundingSource, canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
 import { paymentVisibilityCondition } from "../storage/payments.js";
@@ -8,6 +8,7 @@ import type { PaymentOperationTransaction } from "../storage/payment-operations.
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 import { isCurrentBowlerOwnedObligationSql } from "./roster-obligation-owners.js";
 import { OwnedPaymentLedgerError, OwnedPaymentRefundEvidenceError, readCompletedOwnedPaymentRefundEvidenceInTransaction, readGenericFundingAvailabilityInTransaction, validateOwnedFundingPortionsForTenderInTransaction } from "./owned-payment-ledger.js";
+import { readRotatingCreditFundingBalancesInTransaction } from "./rotating-credit-applications.js";
 
 type ReportExecutor = Pick<typeof db, "execute" | "select">;
 
@@ -438,6 +439,33 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           eq(paymentObligations.payerBowlerId, input.bowlerId),
         )),
         ),
+        exists(tx.select({ id: paymentAllocationFundingApplications.id }).from(paymentAllocationFundingApplications)
+          .innerJoin(paymentAllocations, and(
+            eq(paymentAllocations.id, paymentAllocationFundingApplications.allocationId),
+            eq(paymentAllocations.organizationId, input.organizationId),
+            eq(paymentAllocations.leagueId, input.leagueId),
+            eq(paymentAllocations.state, "active"),
+          ))
+          .leftJoin(rotatingOccurrenceAssignments, and(
+            eq(rotatingOccurrenceAssignments.id, paymentAllocationFundingApplications.assignmentId),
+            eq(rotatingOccurrenceAssignments.organizationId, input.organizationId),
+            eq(rotatingOccurrenceAssignments.leagueId, input.leagueId),
+          )).where(and(
+            eq(paymentAllocationFundingApplications.paymentId, payments.id),
+            eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
+            eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
+            or(
+              and(
+                eq(paymentAllocationFundingApplications.targetKind, "bowler_responsibility"),
+                eq(paymentAllocationFundingApplications.targetPayerBowlerId, input.bowlerId),
+              ),
+              and(
+                eq(paymentAllocationFundingApplications.targetKind, "legacy_team_assignment"),
+                eq(rotatingOccurrenceAssignments.actualBowlerId, input.bowlerId),
+              ),
+            ),
+          )),
+        ),
         exists(tx.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(and(
           eq(weeklyPaymentFundings.paymentId, payments.id),
           eq(weeklyPaymentFundings.organizationId, input.organizationId),
@@ -535,6 +563,8 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       occurrence: leagueOccurrences,
       recipient: { id: bowlers.id, name: bowlers.name },
       creditApplication: rotatingCreditApplications,
+      fundingApplication: paymentAllocationFundingApplications,
+      assignment: rotatingOccurrenceAssignments,
     }).from(paymentAllocations)
       .innerJoin(paymentObligations, and(
         eq(paymentObligations.id, paymentAllocations.obligationId),
@@ -546,13 +576,30 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         eq(rotatingCreditApplications.organizationId, input.organizationId),
         eq(rotatingCreditApplications.leagueId, input.leagueId),
       ))
+      .leftJoin(paymentAllocationFundingApplications, and(
+        eq(paymentAllocationFundingApplications.allocationId, paymentAllocations.id),
+        eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
+        eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
+      ))
+      .leftJoin(rotatingOccurrenceAssignments, and(
+        eq(rotatingOccurrenceAssignments.id, paymentAllocationFundingApplications.assignmentId),
+        eq(rotatingOccurrenceAssignments.organizationId, input.organizationId),
+        eq(rotatingOccurrenceAssignments.leagueId, input.leagueId),
+      ))
       .innerJoin(leagueOccurrences, and(
         eq(leagueOccurrences.id, paymentObligations.occurrenceId),
         eq(leagueOccurrences.organizationId, input.organizationId),
         eq(leagueOccurrences.leagueId, input.leagueId),
       ))
       .leftJoin(bowlers, and(
-        eq(bowlers.id, sql<number>`COALESCE(${rotatingCreditApplications.actualBowlerId}, ${paymentObligations.payerBowlerId})`),
+        eq(bowlers.id, sql<number>`COALESCE(
+          ${rotatingCreditApplications.actualBowlerId},
+          CASE WHEN ${paymentAllocationFundingApplications.targetKind} = 'legacy_team_assignment'
+            THEN ${rotatingOccurrenceAssignments.actualBowlerId}
+            ELSE ${paymentAllocationFundingApplications.targetPayerBowlerId}
+          END,
+          ${paymentObligations.payerBowlerId}
+        )`),
         eq(bowlers.organizationId, input.organizationId),
       ))
       .where(and(
@@ -581,6 +628,12 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       paymentIds: ownedFundingPaymentIds,
     });
     const ownedFundingLotById = new Map(ownedFundingLots.map((lot) => [lot.fundingId, lot]));
+    const rotatingFundingBalances = fundingRows.length === 0 ? [] : await readRotatingCreditFundingBalancesInTransaction(ownedLedgerTx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      bowlerIds: [...new Set(fundingRows.map((funding) => funding.bowlerId))],
+    });
+    const rotatingFundingBalanceById = new Map(rotatingFundingBalances.map((balance) => [balance.fundingId, balance]));
     const ownedFundingEvidenceByPaymentId = new Map<number, { portions: CanonicalPaymentFundingPortionRow[]; reviewRequired: boolean; completedRefundProviderId: string | null }>();
     for (const payment of allPayments) {
       const rawFundingRows = ownedFundingByPaymentId.get(payment.id) ?? [];
@@ -927,8 +980,15 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         corrections: correctionsByPaymentId.get(payment.id) ?? [],
         expectedSnapshots,
       });
+      const isProvenRotatingRelease = (candidate: typeof allocations[number]) => {
+        const rotatingFunding = fundingByPaymentId.get(payment.id);
+        const rotatingBalance = rotatingFunding ? rotatingFundingBalanceById.get(rotatingFunding.id) : undefined;
+        if (!rotatingFunding || !rotatingBalance || rotatingBalance.reviewRequired) return false;
+        if (candidate.creditApplication) return creditReversalByApplicationId.has(candidate.creditApplication.id);
+        return candidate.fundingApplication?.rotatingFundingId === rotatingFunding.id;
+      };
       const ordinaryVoidedAllocation = linked.some((candidate) => candidate.allocation.state === "voided"
-        && !(isCreditFunding && candidate.creditApplication && creditReversalByApplicationId.has(candidate.creditApplication.id))
+        && !(isCreditFunding && isProvenRotatingRelease(candidate))
         && !(isOwnedFunding && !ownedFundingEvidence?.reviewRequired)
         && !historicalCorrection.sourceAllocationIds.has(candidate.allocation.id));
       const corrected = Boolean(voidEvidence) || (ordinaryVoidedAllocation && !historicalCorrection.valid);
@@ -946,28 +1006,73 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           || (funding.fundingKind === "cash" && payment.type === "cash")
           || (funding.fundingKind === "check" && payment.type === "check"));
       const validCreditChildren = isCreditFunding && linked.every((candidate) => {
-        const application = candidate.creditApplication;
-        if (!funding || !application
-          || application.fundingId !== funding.id
-          || application.paymentId !== payment.id
-          || application.organizationId !== input.organizationId
-          || application.leagueId !== input.leagueId
-          || application.actualBowlerId !== candidate.recipient?.id
-          || application.obligationId !== candidate.obligation.id
-          || application.occurrenceId !== candidate.obligation.occurrenceId
-          || application.amountMinor !== candidate.allocation.amountMinor
-          || application.currency !== candidate.allocation.currency) return false;
-        const reversal = creditReversalByApplicationId.get(application.id);
-        if (candidate.allocation.state === "active") return reversal === undefined;
-        return reversal !== undefined
-          && reversal.organizationId === input.organizationId
-          && reversal.leagueId === input.leagueId
-          && reversal.fundingPaymentId === payment.id
-          && reversal.allocationId === candidate.allocation.id
-          && reversal.obligationId === candidate.obligation.id
-          && reversal.assignmentId === application.assignmentId
-          && reversal.bowlerId === application.actualBowlerId
-          && reversal.amountMinor === candidate.allocation.amountMinor;
+        if (!funding) return false;
+        const legacyApplication = candidate.creditApplication;
+        const typedApplication = candidate.fundingApplication;
+        const sourceBalance = rotatingFundingBalanceById.get(funding.id);
+        if (!sourceBalance
+          || sourceBalance.paymentId !== payment.id
+          || sourceBalance.bowlerId !== funding.bowlerId
+          || sourceBalance.amountMinor !== funding.amountMinor
+          || sourceBalance.reviewRequired
+          || (legacyApplication && typedApplication)) return false;
+        if (legacyApplication) {
+          if (legacyApplication.fundingId !== funding.id
+            || legacyApplication.paymentId !== payment.id
+            || legacyApplication.organizationId !== input.organizationId
+            || legacyApplication.leagueId !== input.leagueId
+            || legacyApplication.actualBowlerId !== candidate.recipient?.id
+            || legacyApplication.obligationId !== candidate.obligation.id
+            || legacyApplication.occurrenceId !== candidate.obligation.occurrenceId
+            || legacyApplication.amountMinor !== candidate.allocation.amountMinor
+            || legacyApplication.currency !== candidate.allocation.currency) return false;
+          const reversal = creditReversalByApplicationId.get(legacyApplication.id);
+          if (candidate.allocation.state === "active") return reversal === undefined;
+          return reversal !== undefined
+            && reversal.organizationId === input.organizationId
+            && reversal.leagueId === input.leagueId
+            && reversal.fundingPaymentId === payment.id
+            && reversal.allocationId === candidate.allocation.id
+            && reversal.obligationId === candidate.obligation.id
+            && reversal.assignmentId === legacyApplication.assignmentId
+            && reversal.bowlerId === legacyApplication.actualBowlerId
+            && reversal.amountMinor === candidate.allocation.amountMinor;
+        }
+        if (!typedApplication
+          || typedApplication.genericFundingId !== null
+          || typedApplication.rotatingFundingId !== funding.id
+          || typedApplication.paymentId !== payment.id
+          || typedApplication.organizationId !== input.organizationId
+          || typedApplication.leagueId !== input.leagueId
+          || typedApplication.creditedBowlerId !== funding.bowlerId
+          || typedApplication.sourceAmountMinor !== funding.amountMinor
+          || typedApplication.allocationId !== candidate.allocation.id
+          || typedApplication.obligationId !== candidate.obligation.id
+          || typedApplication.responsibilityId !== candidate.obligation.responsibilityId
+          || typedApplication.occurrenceId !== candidate.obligation.occurrenceId
+          || typedApplication.amountMinor !== candidate.allocation.amountMinor
+          || typedApplication.currency !== candidate.allocation.currency
+          || candidate.allocation.reviewRequired
+          || !["active", "voided"].includes(candidate.allocation.state)) return false;
+        if (typedApplication.targetKind === "bowler_responsibility") {
+          return typedApplication.targetPayerBowlerId !== null
+            && typedApplication.targetPayerBowlerId === candidate.obligation.payerBowlerId
+            && typedApplication.assignmentId === null
+            && candidate.recipient?.id === typedApplication.targetPayerBowlerId;
+        }
+        const assignment = candidate.assignment;
+        return typedApplication.targetKind === "legacy_team_assignment"
+          && typedApplication.targetPayerBowlerId === null
+          && typedApplication.assignmentId !== null
+          && assignment !== null
+          && assignment.id === typedApplication.assignmentId
+          && assignment.organizationId === input.organizationId
+          && assignment.leagueId === input.leagueId
+          && assignment.occurrenceId === typedApplication.occurrenceId
+          && assignment.teamId === typedApplication.teamId
+          && assignment.responsibilityId === typedApplication.responsibilityId
+          && assignment.actualBowlerId !== null
+          && candidate.recipient?.id === assignment.actualBowlerId;
       });
       const validProviderCreditOperation = payment.paymentOperationId === null
         ? funding?.fundingKind !== "provider"

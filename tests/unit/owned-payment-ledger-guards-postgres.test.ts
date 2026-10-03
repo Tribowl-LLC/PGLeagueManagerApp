@@ -19,12 +19,15 @@ import {
   paymentOperationRosterSnapshots,
   paymentOperationStandingAutopayBindings,
   paymentOperationStandingAutopayParticipants,
+  paymentObligationOwnerRevisions,
   paymentVoids,
   payments,
+  rotatingOccurrenceAssignments,
   rotatingCreditFundings,
   rotatingCreditRefundOperationSnapshots,
   rotatingCreditRefunds,
   teams,
+  teamPaymentSlots,
   users,
   weeklyPaymentFundings,
   weeklyPaymentLedgerAdoptions,
@@ -49,6 +52,8 @@ import { PaymentProviderError } from "../../server/services/payment-errors";
 import type { PaymentProvider } from "../../server/services/payment-provider";
 import { readRotatingCreditFundingBalancesInTransaction } from "../../server/services/rotating-credit-applications";
 import { readCanonicalPaymentReport } from "../../server/services/canonical-payment-report";
+import { finalizeRosterSnapshotInTransaction } from "../../server/services/roster-payment-finalizer";
+import { prepareAccountPaymentOperation } from "../../server/services/account-payment-operation-preparation";
 import { getTestDb } from "../setup/test-db";
 
 const db = getTestDb();
@@ -219,51 +224,24 @@ beforeAll(async () => {
 });
 
 async function createV4Tender(amountMinor: number) {
-  const operationId = randomUUID();
-  const fingerprint = `lvaccountfunding:v4:${randomUUID().replaceAll("-", "").repeat(2)}`;
-  const providerPaymentId = `owned-ledger-provider-${operationId}`;
   const now = new Date().toISOString();
   return db.transaction(async (tx) => {
-    await tx.insert(paymentOperations).values({
-      id: operationId,
+    const operation = await prepareAccountPaymentOperation({
+      requestKey: `owned-ledger-v4-${randomUUID()}`,
       organizationId,
       leagueId,
-      authorizingUserId: actorUserId,
-      operationType: "interactive_charge",
-      targetKey: `interactive-charge:owned-ledger-${operationId}`,
-      amountMinor,
-      currency: "USD",
-      requestFingerprint: `lvpayreq:v1:${"f".repeat(64)}`,
-      providerIdempotencyKey: `owned-ledger-${randomUUID()}`.slice(0, 45),
-      providerName: "square",
-      providerObjectId: providerPaymentId,
-      status: "succeeded",
-      attemptCount: 1,
-      nextAttemptAt: null,
-      dispatchClaimedAt: now,
-      startedAt: now,
-      completedAt: now,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await tx.insert(accountPaymentOperationSnapshots).values({
-      operationId,
-      organizationId,
-      leagueId,
-      snapshotVersion: 4,
-      snapshotKind: "interactive_funding",
       payerBowlerId,
       amountMinor,
       fundingPortions: [{ portionIndex: 0, creditedBowlerId, amountMinor }],
-      // The payer is explicitly selected for zero dollars while the linked
-      // partner owns the only positive tender portion.
+      // The payer's selected debt target can resolve to no charge while the
+      // linked partner owns the only positive tender portion.
       recipientEvidence: [
         {
           recipientBowlerId: payerBowlerId,
           role: "self",
           paymentLinkId: null,
           linkFingerprint: null,
-          selection: { kind: "explicit_amount", amountMinor: 0 },
+          selection: { kind: "confirmed_debt_balance" },
         },
         {
           recipientBowlerId: creditedBowlerId,
@@ -278,16 +256,35 @@ async function createV4Tender(amountMinor: number) {
       locationId,
       providerLocationId: null,
       authorizingUserId: actorUserId,
-      requestKind: "direct",
       sourceKind: "new_card",
-      encryptedSourceId: "fixture-encrypted-source",
-      encryptedCustomerId: null,
-      encryptedBuyerEmail: null,
+      sourceId: `cnon:owned-ledger-${randomUUID()}`,
+      customerId: null,
+      buyerEmail: null,
       storeCard: false,
-      quoteFingerprint: `lvaccountfundquote:v4:${"2".repeat(64)}`,
-      snapshotFingerprint: fingerprint,
-      createdAt: now,
-    });
+      quoteFingerprint: `lvaccountfundquote:v4:${randomUUID().replaceAll("-", "").repeat(2)}`,
+      now: new Date(now),
+    }, tx);
+    const providerPaymentId = `owned-ledger-provider-${operation.id}`;
+    await tx.update(paymentOperations).set({
+      status: "succeeded",
+      providerObjectId: providerPaymentId,
+      attemptCount: 1,
+      nextAttemptAt: null,
+      dispatchClaimedAt: now,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(paymentOperations.id, operation.id),
+      eq(paymentOperations.organizationId, organizationId),
+      eq(paymentOperations.leagueId, leagueId),
+    ));
+    const [snapshot] = await tx.select({ fingerprint: accountPaymentOperationSnapshots.snapshotFingerprint }).from(accountPaymentOperationSnapshots).where(and(
+      eq(accountPaymentOperationSnapshots.operationId, operation.id),
+      eq(accountPaymentOperationSnapshots.organizationId, organizationId),
+      eq(accountPaymentOperationSnapshots.leagueId, leagueId),
+    ));
+    if (!snapshot) throw new Error("V4 tender fixture snapshot was not created");
     const [payment] = await tx.insert(payments).values({
       organizationId,
       leagueId,
@@ -297,7 +294,9 @@ async function createV4Tender(amountMinor: number) {
       status: "paid",
       type: "square",
       providerPaymentId,
-      paymentOperationId: operationId,
+      paymentOperationId: operation.id,
+      idempotencyKey: operation.id,
+      paidByUserId: actorUserId,
       createdAt: now,
     }).returning({ id: payments.id });
     const funding = await recordOwnedFundingInTransaction(tx, {
@@ -310,14 +309,14 @@ async function createV4Tender(amountMinor: number) {
       currency: "USD",
       source: "provider",
       authorizationKind: "provider_snapshot",
-      authorizationOperationId: operationId,
+      authorizationOperationId: operation.id,
       authorizationItemCount: 0,
-      authorizationFingerprint: fingerprint,
+      authorizationFingerprint: snapshot.fingerprint,
       adoptionId: null,
       recordedByUserId: actorUserId,
       now,
     });
-    return { paymentId: payment.id, fundingId: funding.id };
+    return { paymentId: payment.id, fundingId: funding.id, operationId: operation.id };
   });
 }
 
@@ -842,7 +841,7 @@ describe("owned payment SQL guards on PostgreSQL", () => {
       .toContain("funding_conservation");
   });
 
-  it("accepts a charged partner portion with additional zero-charge self evidence", async () => {
+  it("accepts a charged partner portion with a self debt-target selection", async () => {
     const tender = await createV4Tender(250);
     await db.transaction(async (tx) => {
       await assertOwnedPaymentTenderInTransaction(tx, {
@@ -1078,6 +1077,152 @@ describe("owned payment SQL guards on PostgreSQL", () => {
       availableMinor: 200,
       reviewRequired: false,
     });
+
+    const report = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: source.paymentId });
+    const archivedRow = report.rows.find((row) => row.paymentId === source.paymentId);
+    expect(archivedRow).toMatchObject({
+      amountMinor: 1_500,
+      allocatedMinor: 300,
+      unallocatedMinor: 200,
+      reviewRequired: false,
+      unresolved: false,
+      creditRefunds: { completedAmountMinor: 1_000, heldAmountMinor: 0, reviewRequired: false },
+    });
+    expect(archivedRow?.allocations.map((allocation) => ({
+      bowlerId: allocation.bowlerId,
+      amountMinor: allocation.amountMinor,
+      state: allocation.state,
+    })).sort((left, right) => right.amountMinor - left.amountMinor)).toEqual([
+      { bowlerId: debt.bowlerId, amountMinor: 500, state: "voided" },
+      { bowlerId: debt.bowlerId, amountMinor: 300, state: "active" },
+    ]);
+    expect(report.totals).toMatchObject({ grossConfirmedPaidMinor: 1_500, activeAllocatedMinor: 300, refundedMinor: 1_000 });
+  });
+
+  it("projects a typed rotating team-assignment beneficiary without a payer-bowler fallback", async () => {
+    const [beneficiary] = await db.insert(bowlers).values({
+      name: `Typed Assignment Beneficiary ${suffix}`,
+      organizationId,
+    }).returning({ id: bowlers.id });
+    const [slot] = await db.insert(teamPaymentSlots).values({
+      organizationId,
+      leagueId,
+      teamId,
+      slotIndex: 0,
+      lineupSize: 3,
+      occupant: "unassigned",
+      mainBowlerId: null,
+      recordedByUserId: actorUserId,
+    }).returning({ id: teamPaymentSlots.id });
+    const { responsibilityId, obligationId } = await db.transaction(async (tx) => {
+      const [responsibility] = await tx.insert(occurrencePaymentResponsibilities).values({
+        organizationId,
+        leagueId,
+        occurrenceId,
+        teamId,
+        slotId: slot.id,
+        slotIndex: 0,
+        positionIndex: 0,
+        responsibilityKind: "rotating",
+        mainBowlerId: null,
+        substituteBowlerId: null,
+        payerBowlerId: null,
+        policy: "main_pays_full",
+        worksheetFeeComponent: null,
+        amountMinor: 500,
+        currency: "USD",
+        dueAt: "2038-02-01T19:00:00.000Z",
+        pastDueAt: "2038-02-08T19:00:00.000Z",
+        recordedByUserId: actorUserId,
+      }).returning({ id: occurrencePaymentResponsibilities.id });
+      const [obligation] = await tx.insert(paymentObligations).values({
+        organizationId,
+        leagueId,
+        occurrenceId,
+        responsibilityId: responsibility.id,
+        component: "full",
+        payerBowlerId: null,
+        amountMinor: 500,
+        currency: "USD",
+        dueAt: "2038-02-01T19:00:00.000Z",
+        pastDueAt: "2038-02-08T19:00:00.000Z",
+        state: "settled",
+        createdByUserId: actorUserId,
+      }).returning({ id: paymentObligations.id });
+      await tx.insert(paymentObligationOwnerRevisions).values({
+        organizationId,
+        leagueId,
+        obligationId: obligation.id,
+        revisionNumber: 1,
+        ownerKind: "team",
+        ownerBowlerId: null,
+        ownerTeamId: teamId,
+        reason: "rotating_materialization",
+        recordedByUserId: actorUserId,
+      });
+      return { responsibilityId: responsibility.id, obligationId: obligation.id };
+    });
+    const [assignment] = await db.insert(rotatingOccurrenceAssignments).values({
+      organizationId,
+      leagueId,
+      occurrenceId,
+      teamId,
+      slotId: slot.id,
+      slotIndex: 0,
+      responsibilityId,
+      version: 1,
+      actualBowlerId: beneficiary.id,
+      correctionReason: null,
+      recordedByUserId: actorUserId,
+    }).returning({ id: rotatingOccurrenceAssignments.id });
+    const source = await createRotatingProviderFunding({ bowlerId: beneficiary.id, amountMinor: 500 });
+    await db.transaction(async (tx) => {
+      const [allocation] = await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId,
+        paymentId: source.paymentId,
+        obligationId,
+        amountMinor: 500,
+        currency: "USD",
+        state: "active",
+        allocationKind: "rotating_credit",
+        recordedByUserId: actorUserId,
+      }).returning({ id: paymentAllocations.id });
+      await tx.insert(paymentAllocationFundingApplications).values({
+        organizationId,
+        leagueId,
+        allocationId: allocation.id,
+        paymentId: source.paymentId,
+        creditedBowlerId: beneficiary.id,
+        genericFundingId: null,
+        rotatingFundingId: source.fundingId,
+        sourceAmountMinor: 500,
+        amountMinor: 500,
+        currency: "USD",
+        obligationId,
+        responsibilityId,
+        occurrenceId,
+        teamId,
+        targetKind: "legacy_team_assignment",
+        targetPayerBowlerId: null,
+        assignmentId: assignment.id,
+        appliedByUserId: actorUserId,
+      });
+    });
+
+    const recipientReport = await readCanonicalPaymentReport({
+      organizationId,
+      leagueId,
+      bowlerId: beneficiary.id,
+      paymentId: source.paymentId,
+    });
+    expect(recipientReport.rows.find((row) => row.paymentId === source.paymentId)).toMatchObject({
+      source: "canonical_allocation",
+      allocatedMinor: 500,
+      reviewRequired: false,
+      unresolved: false,
+      allocations: [{ bowlerId: beneficiary.id, amountMinor: 500, state: "active" }],
+    });
   });
 
   it("accepts a V3 refund of an adopted legacy standing tender without a V4 account snapshot", async () => {
@@ -1274,6 +1419,22 @@ describe("owned payment SQL guards on PostgreSQL", () => {
       reason: "worksheet_correction",
       idempotencyKey: `owned-ledger-refunded-release-${randomUUID()}`,
     }));
+    const beforeReplay = {
+      tenders: await db.select({ id: payments.id }).from(payments).where(eq(payments.paymentOperationId, source.operationId)),
+      fundings: await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.paymentId, source.paymentId)),
+      applications: await db.select({ id: paymentAllocationFundingApplications.id }).from(paymentAllocationFundingApplications).where(eq(paymentAllocationFundingApplications.paymentId, source.paymentId)),
+    };
+    const replay = await db.transaction((tx) => finalizeRosterSnapshotInTransaction(tx, {
+      organizationId,
+      leagueId,
+      operationId: source.operationId,
+      now: new Date().toISOString(),
+      actorUserId,
+    }));
+    expect(replay).toEqual({ finalized: true, allocationIds: [] });
+    expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.paymentOperationId, source.operationId))).toEqual(beforeReplay.tenders);
+    expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.paymentId, source.paymentId))).toEqual(beforeReplay.fundings);
+    expect(await db.select({ id: paymentAllocationFundingApplications.id }).from(paymentAllocationFundingApplications).where(eq(paymentAllocationFundingApplications.paymentId, source.paymentId))).toEqual(beforeReplay.applications);
     const sources = await db.transaction(async (tx) => {
       await assertOwnedPaymentTenderInTransaction(tx, {
         organizationId,

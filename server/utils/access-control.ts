@@ -2,8 +2,8 @@ import { Request } from 'express';
 import { storage } from '../storage';
 import { createLogger } from '../logger';
 import { db } from '../db.js';
-import { and, eq } from 'drizzle-orm';
-import { leagues, paymentAllocations, paymentObligations, weeklyPaymentFundings } from '@shared/schema';
+import { and, eq, or } from 'drizzle-orm';
+import { leagues, paymentAllocationFundingApplications, paymentAllocations, paymentObligations, rotatingOccurrenceAssignments, weeklyPaymentFundings } from '@shared/schema';
 
 const log = createLogger("AccessControl");
 
@@ -804,9 +804,42 @@ export async function hasReceiptReadAccessToPayment(req: Request, paymentId: num
       eq(paymentAllocations.organizationId, organizationId),
       eq(paymentAllocations.state, "active"),
       eq(paymentObligations.payerBowlerId, req.user.bowlerId ?? -1),
-    )).limit(1);
+  )).limit(1);
   if (allocation) return true;
   if (!req.user.bowlerId) return false;
+  const [typedAllocation] = await db.select({ id: paymentAllocationFundingApplications.id })
+    .from(paymentAllocationFundingApplications)
+    .innerJoin(paymentAllocations, and(
+      eq(paymentAllocations.id, paymentAllocationFundingApplications.allocationId),
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, payment.leagueId),
+      eq(paymentAllocations.state, 'active'),
+    ))
+    .innerJoin(leagues, and(
+      eq(leagues.id, paymentAllocationFundingApplications.leagueId),
+      eq(leagues.organizationId, organizationId),
+    ))
+    .leftJoin(rotatingOccurrenceAssignments, and(
+      eq(rotatingOccurrenceAssignments.id, paymentAllocationFundingApplications.assignmentId),
+      eq(rotatingOccurrenceAssignments.organizationId, organizationId),
+      eq(rotatingOccurrenceAssignments.leagueId, payment.leagueId),
+    ))
+    .where(and(
+      eq(paymentAllocationFundingApplications.paymentId, paymentId),
+      eq(paymentAllocationFundingApplications.organizationId, organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, payment.leagueId),
+      or(
+        and(
+          eq(paymentAllocationFundingApplications.targetKind, 'bowler_responsibility'),
+          eq(paymentAllocationFundingApplications.targetPayerBowlerId, req.user.bowlerId),
+        ),
+        and(
+          eq(paymentAllocationFundingApplications.targetKind, 'legacy_team_assignment'),
+          eq(rotatingOccurrenceAssignments.actualBowlerId, req.user.bowlerId),
+        ),
+      ),
+    )).limit(1);
+  if (typedAllocation) return true;
   const [funding] = await db.select({ id: weeklyPaymentFundings.id })
     .from(weeklyPaymentFundings)
     .innerJoin(leagues, and(
