@@ -128,6 +128,7 @@ export interface AdminWeeklyPaymentsWorksheetProps {
   onSave: (input: AdminWeeklyPaymentsSaveInput) => Promise<void>;
   onDirtyChange?: (isDirty: boolean) => void;
   onDraftStateChange?: (drafts: AdminWeeklyPaymentsWorksheetDraftState) => void;
+  onBowlerAccount: (row: AdminWeeklyPaymentsBowlerRow) => void;
 }
 
 function rowKey(
@@ -202,6 +203,7 @@ function TeamWorksheet({
   onBeginManualReceiptEdit,
   onManualReceiptAmountChange,
   onCancelManualReceiptEdit,
+  onBowlerAccount,
 }: {
   leagueId: number;
   team: AdminWeeklyPaymentsTeam;
@@ -221,36 +223,39 @@ function TeamWorksheet({
   onBeginManualReceiptEdit: (key: string, receipt: AdminWeeklyPaymentsManualReceipt) => void;
   onManualReceiptAmountChange: (key: string, value: string) => void;
   onCancelManualReceiptEdit: (key: string) => void;
+  onBowlerAccount: (row: AdminWeeklyPaymentsBowlerRow) => void;
 }) {
   return (
-    <div className="overflow-hidden rounded-md border bg-card">
+    <div data-awpw="team-card">
       <Collapsible open={expanded} onOpenChange={onExpandedChange}>
-        <div className="bg-muted/30">
+        <div data-awpw="team-heading">
           <Button
             type="button"
-            variant="ghost"
+            variant="paymentsTeam"
+            size="paymentsControl"
             className="w-full justify-between"
             aria-expanded={expanded}
             aria-controls={`admin-weekly-team-panel-${team.teamId}`}
             disabled={saving}
             onClick={() => onExpandedChange(!expanded)}
           >
-            <span className="truncate">{team.teamName}</span>
+            <span className="manage-payments-team-name truncate">{team.teamName}</span>
             <ChevronDown
               aria-hidden="true"
-              className={expanded ? "size-4 shrink-0 rotate-180" : "size-4 shrink-0"}
+              className={expanded ? "size-[19px] shrink-0 rotate-180 text-familiar-muted" : "size-[19px] shrink-0 text-familiar-muted"}
             />
           </Button>
         </div>
         <CollapsibleContent id={`admin-weekly-team-panel-${team.teamId}`}>
         <div
-          className="w-full max-w-full overflow-auto overscroll-x-contain"
+          data-awpw="table-scroll"
+          className="w-full max-w-full overscroll-x-contain"
           role="region"
           aria-label={`${team.teamName} weekly roster`}
           tabIndex={0}
         >
-          <Table data-awpw="table">
-            <colgroup>
+          <Table appearance="managePayments">
+            <colgroup className="manage-payments-column-group">
               <col data-awpw-col="responsible" />
               <col data-awpw-col="bowler" />
               <col data-awpw-col="balance" />
@@ -258,17 +263,17 @@ function TeamWorksheet({
               <col data-awpw-col="received" />
               <col data-awpw-col="final" />
             </colgroup>
-            <TableHeader>
-              <TableRow hover="none">
-                <TableHead>Responsible this week</TableHead>
-                <TableHead>Bowler</TableHead>
-                <TableHead>Account balance</TableHead>
-                <TableHead>This week’s fee</TableHead>
-                <TableHead>Received</TableHead>
-                <TableHead>Final two weeks</TableHead>
+            <TableHeader appearance="managePayments">
+              <TableRow hover="none" appearance="managePayments">
+                <TableHead appearance="managePayments">Responsible this week</TableHead>
+                <TableHead appearance="managePayments">Bowler</TableHead>
+                <TableHead appearance="managePayments">Account balance</TableHead>
+                <TableHead appearance="managePayments">This week’s fee</TableHead>
+                <TableHead appearance="managePayments">Received</TableHead>
+                <TableHead appearance="managePayments">Final two weeks</TableHead>
               </TableRow>
             </TableHeader>
-            <TableBody>
+            <TableBody appearance="managePayments">
               {team.rows.map((row) => {
                 const key = rowKey(leagueId, team.teamId, row.bowlerId);
                 const decision = responsibilityDrafts[key] ?? {
@@ -295,27 +300,38 @@ function TeamWorksheet({
                     : "—";
 
                 return (
-                  <TableRow key={key} data-awpw="row">
-                    <TableCell>
+                  <TableRow key={key} variant="plain" hover="none" appearance="managePayments">
+                    <TableCell appearance="managePaymentsResponsible">
                       <span data-awpw="mobile-label">Responsible this week</span>
-                      <Checkbox
-                        checked={decision.responsible}
-                        disabled={saving}
-                        aria-label={`Responsible this week for ${row.displayName}`}
-                        onCheckedChange={(checked) =>
-                          onResponsibilityChange(row, checked === true)
-                        }
-                      />
+                      <span data-awpw="responsible-control">
+                        <Checkbox
+                          appearance="managePayments"
+                          checked={decision.responsible}
+                          disabled={saving}
+                          aria-label={`Responsible this week for ${row.displayName}`}
+                          onCheckedChange={(checked) =>
+                            onResponsibilityChange(row, checked === true)
+                          }
+                        />
+                      </span>
                     </TableCell>
-                    <TableCell weight="medium">
+                    <TableCell appearance="managePaymentsBowler" weight="medium">
                       <span data-awpw="mobile-label">Bowler</span>
-                      {row.displayName}
+                      <button
+                        type="button"
+                        data-awpw="bowler-name"
+                        onClick={() => onBowlerAccount(row)}
+                      >
+                        {row.displayName}
+                      </button>
                     </TableCell>
-                    <TableCell>
+                    <TableCell appearance="managePaymentsBalance">
                       <span data-awpw="mobile-label">Account balance</span>
-                      {balanceText}
+                      {row.balanceMinor === 0
+                        ? balanceText
+                        : <strong data-awpw="balance-text">{balanceText}</strong>}
                     </TableCell>
-                    <TableCell>
+                    <TableCell appearance="managePaymentsFee">
                       <span data-awpw="mobile-label">This week’s fee</span>
                       {decision.responsible ? (
                         <Select
@@ -326,6 +342,7 @@ function TeamWorksheet({
                           }}
                         >
                           <SelectTrigger
+                            appearance="managePayments"
                             className="w-full min-w-0"
                             aria-label={`This week’s fee for ${row.displayName}`}
                           >
@@ -348,8 +365,10 @@ function TeamWorksheet({
                         <span className="text-muted-foreground">—</span>
                       )}
                     </TableCell>
-                    <TableCell data-awpw="received-cell">
-                      <span data-awpw="mobile-label">Received</span>
+                    <TableCell appearance="managePaymentsReceived">
+                      <span data-awpw="mobile-label" className="manage-payments-received-mobile-label">
+                        Received
+                      </span>
                       <div data-awpw="received-content">
                         {row.cardReceipts.map((receipt) => (
                           <div
@@ -384,9 +403,9 @@ function TeamWorksheet({
                                   </span>
                                   <Button
                                     type="button"
-                                    variant="ghost"
+                                    variant="paymentsGhost"
                                     size="icon"
-                                    className="size-8 shrink-0"
+                                    className="shrink-0"
                                     disabled={saving}
                                     aria-label={`Edit recorded ${receipt.type} payment ${formatMoney(receipt.amountMinor)} received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                     onClick={() => onBeginManualReceiptEdit(manualKey, receipt)}
@@ -402,6 +421,7 @@ function TeamWorksheet({
                                       <Input
                                         type="text"
                                         inputMode="decimal"
+                                        appearance="managePayments"
                                         autoFocus
                                         value={manualDraft}
                                         disabled={saving}
@@ -422,9 +442,9 @@ function TeamWorksheet({
                                     </div>
                                     <Button
                                       type="button"
-                                      variant="ghost"
-                                      size="icon"
-                                      className="size-10 shrink-0"
+                                      variant="paymentsGhost"
+                                      size="paymentsIcon"
+                                      className="shrink-0"
                                       disabled={saving}
                                       aria-label={`Cancel recorded payment edit received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                       onClick={() => onCancelManualReceiptEdit(manualKey)}
@@ -452,6 +472,7 @@ function TeamWorksheet({
                               <Input
                                 type="text"
                                 inputMode="decimal"
+                                appearance="managePayments"
                                 value={newReceiptDraft}
                                 placeholder="0.00"
                                 disabled={saving}
@@ -473,7 +494,7 @@ function TeamWorksheet({
                         )}
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell appearance="managePaymentsFinal">
                       <span data-awpw="mobile-label">Final two weeks</span>
                       <span className={row.finalTwoWeeksPaid ? "font-medium text-positive-700" : "text-muted-foreground"}>
                         {row.finalTwoWeeksPaid ? "Paid" : "Unpaid"}
@@ -504,6 +525,7 @@ export function AdminWeeklyPaymentsWorksheet({
   onSave,
   onDirtyChange,
   onDraftStateChange,
+  onBowlerAccount,
 }: AdminWeeklyPaymentsWorksheetProps) {
   const [expandedTeams, setExpandedTeams] = useState<Readonly<Record<number, boolean>>>(() =>
     Object.fromEntries(teams.map((team, index) => [team.teamId, index === 0])),
@@ -727,14 +749,15 @@ export function AdminWeeklyPaymentsWorksheet({
   }
 
   return (
-    <section className="space-y-3 text-foreground" aria-label="Weekly payments worksheet">
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <p className="text-sm font-medium text-muted-foreground">Team rosters</p>
-        <div className="flex items-center gap-2">
+    <section data-awpw="worksheet" aria-label="Weekly payments worksheet">
+      <div data-awpw="team-controls">
+        <p>Team rosters</p>
+        <div>
           <Button
             type="button"
-            variant="outline"
-            size="sm"
+            variant="paymentsSecondary"
+            size="paymentsControl"
+            className="manage-payments-team-action"
             disabled={saving || teams.length === 0}
             onClick={() => setExpandedTeams(Object.fromEntries(teams.map((team) => [team.teamId, true])))}
           >
@@ -742,8 +765,9 @@ export function AdminWeeklyPaymentsWorksheet({
           </Button>
           <Button
             type="button"
-            variant="outline"
-            size="sm"
+            variant="paymentsSecondary"
+            size="paymentsControl"
+            className="manage-payments-team-action"
             disabled={saving || teams.length === 0}
             onClick={() => setExpandedTeams(Object.fromEntries(teams.map((team) => [team.teamId, false])))}
           >
@@ -753,7 +777,7 @@ export function AdminWeeklyPaymentsWorksheet({
       </div>
 
       {teams.length > 0 ? (
-        <div className="flex flex-col gap-3">
+        <div data-awpw="team-list">
           {teams.map((team, index) => (
             <TeamWorksheet
               key={`${leagueId}:${team.teamId}`}
@@ -782,18 +806,21 @@ export function AdminWeeklyPaymentsWorksheet({
               onBeginManualReceiptEdit={beginManualReceiptEdit}
               onManualReceiptAmountChange={changeManualReceiptAmount}
               onCancelManualReceiptEdit={cancelManualReceiptEdit}
+              onBowlerAccount={onBowlerAccount}
             />
           ))}
         </div>
       ) : (
-        <div className="rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
+        <div data-awpw="empty-state">
           There are no team rosters for this league.
         </div>
       )}
 
-      <div className="flex flex-col gap-3 border-t pt-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0 text-sm">
-          <p className="font-medium text-foreground">
+      <p data-awpw="receipt-note">Receipts stay with the named bowler and cover their oldest confirmed fees first.</p>
+
+      <div data-awpw="save-dock">
+        <div data-awpw="save-status">
+          <p>
             {needsConfirmation
               ? "Week is ready to confirm"
               : hasLocalDrafts
@@ -803,18 +830,18 @@ export function AdminWeeklyPaymentsWorksheet({
                   : "Week not confirmed"}
           </p>
           {invalidRows.length > 0 && (
-            <p className="mt-1 text-destructive" role="alert">
+            <p data-awpw="invalid-notice" role="alert">
               Fix invalid amounts before saving.
             </p>
           )}
           {saveError && (
-            <div className="mt-1 space-y-2 text-destructive" role="alert">
+            <div data-awpw="save-error" role="alert">
               <p>{saveError.message}</p>
               {saveError.recoveryAction && (
                 <Button
                   type="button"
-                  variant="outline"
-                  size="sm"
+                  variant="paymentsSecondary"
+                  size="paymentsControl"
                   disabled={saving || recovering}
                   onClick={() => { void runRecoveryAction(); }}
                 >
@@ -824,13 +851,13 @@ export function AdminWeeklyPaymentsWorksheet({
             </div>
           )}
           {!needsConfirmation && weekConfirmed && !hasLocalDrafts && invalidRows.length === 0 && (
-            <p className="mt-1 text-muted-foreground">No changes to save.</p>
+            <p data-awpw="save-hint">No changes to save.</p>
           )}
         </div>
         <Button
           type="button"
-          variant="default"
-          className="shrink-0"
+          variant="paymentsPrimary"
+          size="paymentsSave"
           disabled={!canSave}
           onClick={saveWeek}
         >

@@ -10,7 +10,8 @@ import {
   type ManagePaymentsSaveRequest,
   type ManagePaymentsSnapshot,
 } from "@shared/manage-payments-contract";
-import { AdminWeeklyPaymentsSaveError, AdminWeeklyPaymentsWorksheet, type AdminWeeklyPaymentsWorksheetDraftState, type AdminWeeklyPaymentsSaveInput } from "@/components/admin-weekly-payments-worksheet";
+import { AdminWeeklyPaymentsSaveError, AdminWeeklyPaymentsWorksheet, type AdminWeeklyPaymentsWorksheetDraftState, type AdminWeeklyPaymentsSaveInput, type AdminWeeklyPaymentsBowlerRow } from "@/components/admin-weekly-payments-worksheet";
+import { AdminWeeklyPaymentsAccountDialog } from "@/components/admin-weekly-payments-account-dialog";
 import { Layout } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -38,6 +39,21 @@ interface SelectionDraftCacheEntry {
 }
 
 type SelectionDraftCache = Readonly<Record<string, SelectionDraftCacheEntry>>;
+
+interface SelectedBowlerAccount {
+  leagueId: number;
+  bowlerId: number;
+  bowlerName: string;
+}
+
+function accountTeamNames(
+  teams: ManagePaymentsSnapshot["teams"],
+): Readonly<Record<number, string>> {
+  return teams.reduce<Record<number, string>>((names, team) => {
+    names[team.teamId] = team.teamName;
+    return names;
+  }, {});
+}
 
 function managePaymentsSnapshotQueryKey(leagueId: number, occurrenceId: string | null) {
   return ["manage-payments-snapshot", leagueId, occurrenceId] as const;
@@ -108,6 +124,8 @@ function invalidatePaymentViews(
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "canonical-due-past-due/2"] });
+  void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/3`] });
+  void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "canonical-due-past-due/3"] });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/due-past-due"] });
   void queryClient.invalidateQueries({ queryKey: ["/api/bowlers"] });
@@ -116,6 +134,9 @@ function invalidatePaymentViews(
     void queryClient.invalidateQueries({
       queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`, row.bowlerId],
     });
+    void queryClient.invalidateQueries({
+      queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/3`, row.bowlerId],
+    });
   }
 }
 
@@ -123,6 +144,7 @@ export default function AdminWeeklyPaymentsPage() {
   const queryClient = useQueryClient();
   const [selectedLeagueId, setSelectedLeagueId] = useState<number | null>(null);
   const [selectedOccurrenceByLeague, setSelectedOccurrenceByLeague] = useState<Readonly<Record<number, string>>>({});
+  const [selectedBowlerAccount, setSelectedBowlerAccount] = useState<SelectedBowlerAccount | null>(null);
   const [selectionDrafts, setSelectionDrafts] = useState<SelectionDraftCache>({});
   const [saving, setSaving] = useState(false);
   const [reloadState, setReloadState] = useState<{ selectionKey: string; status: "loading" | "error" } | null>(null);
@@ -182,6 +204,9 @@ export default function AdminWeeklyPaymentsPage() {
   const snapshot = activeCacheEntry?.dirty && activeCacheEntry.snapshot
     ? activeCacheEntry.snapshot
     : latestSnapshot ?? null;
+  const visibleAccount = selectedBowlerAccount?.leagueId === snapshot?.league.leagueId
+    ? selectedBowlerAccount
+    : null;
 
   const leaguesErrorMessage = leaguesError ? safeReadError(leaguesError) : null;
   const weekOptions = snapshot?.weekOptions ?? latestSnapshot?.weekOptions ?? [];
@@ -331,6 +356,7 @@ export default function AdminWeeklyPaymentsPage() {
   function chooseLeague(value: string) {
     const leagueId = Number(value);
     if (!Number.isSafeInteger(leagueId) || !leagues.some((league) => league.id === leagueId)) return;
+    if (leagueId !== selectedLeagueId) setSelectedBowlerAccount(null);
     setSelectedLeagueId(leagueId);
   }
 
@@ -345,12 +371,12 @@ export default function AdminWeeklyPaymentsPage() {
   }
 
   return (
-    <Layout>
-      <div className="mx-auto w-full max-w-360 space-y-6 px-4 py-6 md:px-8">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Manage Payments</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Review weekly responsibility, balances, fees, and recorded payments.</p>
-        </div>
+    <Layout appearance="weekly-payments">
+      <div data-awpw="page">
+        <header data-awpw="page-heading">
+          <h1>Weekly payments</h1>
+          <p>Set responsibility and enter receipts, then save once.</p>
+        </header>
 
         {leaguesLoading ? (
           <PageLoadingState message="Loading leagues…" fullPage={false} />
@@ -362,11 +388,11 @@ export default function AdminWeeklyPaymentsPage() {
           </div>
         ) : (
           <>
-            <div className="flex flex-col gap-4 rounded-md border bg-card p-4 sm:flex-row sm:items-end">
-              <div className="grid w-full gap-2 sm:max-w-sm">
-                <Label htmlFor="manage-payments-league">League</Label>
+            <div data-awpw="toolbar">
+              <div data-awpw="league-picker">
+                <Label className="sr-only" htmlFor="manage-payments-league">League</Label>
                 <Select value={selectedLeagueId === null ? "" : String(selectedLeagueId)} onValueChange={chooseLeague}>
-                  <SelectTrigger id="manage-payments-league" aria-label="League">
+                  <SelectTrigger appearance="managePayments" id="manage-payments-league" aria-label="League">
                     <SelectValue placeholder="Select a league" />
                   </SelectTrigger>
                   <SelectContent>
@@ -377,13 +403,13 @@ export default function AdminWeeklyPaymentsPage() {
                 </Select>
               </div>
 
-              <div className="grid w-full gap-2 sm:max-w-md">
-                <Label htmlFor="manage-payments-week">Collection week</Label>
-                <div className="flex min-w-0 items-center gap-2">
+              <div data-awpw="week-picker">
+                <Label className="sr-only" htmlFor="manage-payments-week">Collection week</Label>
+                <div data-awpw="week-controls">
                   <Button
                     type="button"
-                    variant="outline"
-                    size="icon"
+                    variant="paymentsSecondary"
+                    size="paymentsIcon"
                     aria-label="Previous week"
                     disabled={selectedWeekIndex <= 0 || saving || activeReloadState?.status === "loading"}
                     onClick={() => moveWeek(-1)}
@@ -395,7 +421,7 @@ export default function AdminWeeklyPaymentsPage() {
                     onValueChange={chooseOccurrence}
                     disabled={weekOptions.length === 0 || saving || activeReloadState?.status === "loading"}
                   >
-                    <SelectTrigger id="manage-payments-week" aria-label="Collection week" className="min-w-0 flex-1">
+                    <SelectTrigger appearance="managePayments" id="manage-payments-week" aria-label="Collection week" className="min-w-0 flex-1 px-2.5">
                       <SelectValue placeholder="Choose a collection week" />
                     </SelectTrigger>
                     <SelectContent>
@@ -406,8 +432,8 @@ export default function AdminWeeklyPaymentsPage() {
                   </Select>
                   <Button
                     type="button"
-                    variant="outline"
-                    size="icon"
+                    variant="paymentsSecondary"
+                    size="paymentsIcon"
                     aria-label="Next week"
                     disabled={selectedWeekIndex < 0 || selectedWeekIndex >= weekOptions.length - 1 || saving || activeReloadState?.status === "loading"}
                     onClick={() => moveWeek(1)}
@@ -452,7 +478,24 @@ export default function AdminWeeklyPaymentsPage() {
                   onSave={handleSave}
                   onDirtyChange={handleDirtyChange}
                   onDraftStateChange={handleDraftStateChange}
+                  onBowlerAccount={(row: AdminWeeklyPaymentsBowlerRow) => setSelectedBowlerAccount({
+                    leagueId: snapshot.league.leagueId,
+                    bowlerId: row.bowlerId,
+                    bowlerName: row.displayName,
+                  })}
                 />
+                {visibleAccount && (
+                  <AdminWeeklyPaymentsAccountDialog
+                    leagueId={visibleAccount.leagueId}
+                    bowlerId={visibleAccount.bowlerId}
+                    bowlerName={visibleAccount.bowlerName}
+                    teamNames={accountTeamNames(snapshot.teams)}
+                    open
+                    onOpenChange={(open) => {
+                      if (!open) setSelectedBowlerAccount(null);
+                    }}
+                  />
+                )}
               </>
             ) : null}
           </>

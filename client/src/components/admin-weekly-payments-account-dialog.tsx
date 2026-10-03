@@ -440,7 +440,7 @@ export function AdminWeeklyPaymentsAccountDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        variant="default"
+        variant="managePayments"
         viewport="dialog"
         data-awpa="dialog"
         onOpenAutoFocus={() => {

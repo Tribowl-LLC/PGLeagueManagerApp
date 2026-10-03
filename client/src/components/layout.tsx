@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { logger } from "@/lib/logger";
-import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPlus, LayoutDashboard, Loader2, MapPin, Mail, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MailWarning, MailX, UserPlus } from "lucide-react";
+import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPlus, DollarSign, LayoutDashboard, Loader2, MapPin, Mail, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MailWarning, MailX, UserPlus } from "lucide-react";
 import { useState, useEffect, Suspense, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
@@ -61,6 +61,8 @@ interface NavItem {
   badgeQueryKey?: readonly unknown[];
 }
 
+type LayoutAppearance = "default" | "weekly-payments";
+
 const EMAIL_DELIVERY_ALERTS_PENDING_COUNT_QUERY_KEY =
   ['/api/system-admin/email-delivery-alerts/pending-count'] as const;
 const UNCLAIMED_USERS_COUNT_QUERY_KEY =
@@ -90,7 +92,7 @@ const navItems: NavItem[] = [
     paymentManagerAllowed: true,
   },
   {
-    icon: ClipboardPlus,
+    icon: DollarSign,
     label: "Manage Payments",
     href: "/manage-payments",
     orgAdminOnly: true,
@@ -270,6 +272,7 @@ function NavLeafRow({
   badgeCount,
   onNavigate,
   variant = 'top',
+  appearance = "default",
 }: {
   item: NavItem;
   isActive: boolean;
@@ -277,6 +280,7 @@ function NavLeafRow({
   badgeCount: number;
   onNavigate?: () => void;
   variant?: 'top' | 'sub' | 'popover';
+  appearance?: LayoutAppearance;
 }) {
   // Sub-rows live in a nested list (slightly indented) or inside a popover
   // (full width, no indent, never "collapsed" styling). The top variant is
@@ -284,6 +288,9 @@ function NavLeafRow({
   const isSub = variant === 'sub';
   const isPopover = variant === 'popover';
   const effectiveCollapsed = isPopover ? false : isCollapsed;
+  const weeklyPaymentsActive = appearance === "weekly-payments"
+    && item.href === "/manage-payments"
+    && isActive;
   return (
     <Link
       href={item.href}
@@ -294,13 +301,16 @@ function NavLeafRow({
       title={effectiveCollapsed ? item.label : undefined}
       className={cn(
         "flex w-full items-center gap-3 rounded-md transition-all duration-200 group no-underline",
-        "focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent-400 focus-visible:ring-offset-2 focus-visible:ring-offset-navigation-deep",
+        "focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-navigation-deep",
+        weeklyPaymentsActive ? "focus-visible:ring-familiar-navy" : "focus-visible:ring-brand-accent-400",
         effectiveCollapsed
           ? "relative justify-center p-2.5"
           : isSub
             ? "pl-9 pr-3 py-2"
             : "px-3 py-2.5",
-        isActive
+        weeklyPaymentsActive
+          ? "bg-familiar-surface text-familiar-navy hover:bg-familiar-surface hover:text-familiar-navy"
+          : isActive
           ? "bg-brand-accent-500/10 text-brand-accent-400"
           : "text-navigation-300 hover:bg-navigation-800 hover:text-white"
       )}
@@ -308,7 +318,11 @@ function NavLeafRow({
       <item.icon
         className={cn(
           "size-5 shrink-0",
-          isActive ? "text-brand-accent-400" : "text-navigation-400 group-hover:text-navigation-300"
+          weeklyPaymentsActive
+            ? "text-familiar-navy"
+            : isActive
+              ? "text-brand-accent-400"
+              : "text-navigation-400 group-hover:text-navigation-300"
         )}
       />
       {!effectiveCollapsed && (
@@ -334,12 +348,14 @@ function NavSubMenu({
   location,
   onNavigate,
   badgeCounts,
+  appearance,
 }: {
   item: NavItem;
   isCollapsed: boolean;
   location: string;
   onNavigate?: () => void;
   badgeCounts: Record<string, number>;
+  appearance: LayoutAppearance;
 }) {
   const subItems = item.subItems ?? [];
   const childActive = subItems.some((s) => isItemActive(s.href, location));
@@ -392,7 +408,10 @@ function NavSubMenu({
           align="start"
           sideOffset={8}
           variant="sidebar"
-          className="w-56"
+          className={cn(
+            "w-56",
+            appearance === "weekly-payments" && "manage-payments-navigation-font",
+          )}
         >
           <div className="px-3 py-2 text-xs font-semibold text-navigation-500 uppercase tracking-wider">
             {item.label}
@@ -410,6 +429,7 @@ function NavSubMenu({
                   onNavigate?.();
                 }}
                 variant="popover"
+                appearance={appearance}
               />
             ))}
           </div>
@@ -464,6 +484,7 @@ function NavSubMenu({
               badgeCount={getBadgeCount(sub, badgeCounts)}
               onNavigate={onNavigate}
               variant="sub"
+              appearance={appearance}
             />
           ))}
         </div>
@@ -481,6 +502,7 @@ function SidebarNav({
   location,
   onNavigate,
   badgeCounts,
+  appearance,
 }: {
   navItems: NavItem[];
   isAdmin: boolean;
@@ -490,6 +512,7 @@ function SidebarNav({
   location: string;
   onNavigate?: () => void;
   badgeCounts: Record<string, number>;
+  appearance: LayoutAppearance;
 }) {
   const renderItem = (item: NavItem) => {
     if (item.adminOnly && !isAdmin) return null;
@@ -511,6 +534,7 @@ function SidebarNav({
           location={location}
           onNavigate={onNavigate}
           badgeCounts={badgeCounts}
+          appearance={appearance}
         />
       );
     }
@@ -527,6 +551,7 @@ function SidebarNav({
         isCollapsed={isCollapsed}
         badgeCount={getBadgeCount(item, badgeCounts)}
         onNavigate={onNavigate}
+        appearance={appearance}
       />
     );
   };
@@ -549,7 +574,13 @@ function SidebarNav({
   );
 }
 
-export function Layout({ children }: { children: React.ReactNode }) {
+export function Layout({
+  children,
+  appearance = "default",
+}: {
+  children: React.ReactNode;
+  appearance?: LayoutAppearance;
+}) {
   const [isCollapsed, setIsCollapsed] = useState(() =>
     getStoredValue("sidebarCollapsed", false)
   );
@@ -671,7 +702,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <aside
         className={cn(
           "transition-all duration-300 ease-in-out bg-navigation-deep text-navigation-300 flex-col border-r border-navigation-800 shadow-xl z-50 shrink-0 fixed top-0 bottom-0 left-0 hidden md:flex",
-          isCollapsed ? "w-20" : "w-64"
+          appearance === "weekly-payments" && "manage-payments-navigation-font",
+          isCollapsed
+            ? "w-20"
+            : appearance === "weekly-payments"
+              ? "manage-payments-sidebar-expanded"
+              : "w-64"
         )}
       >
         <div className="border-b border-navigation-800/60 shrink-0">
@@ -699,6 +735,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               isCollapsed={isCollapsed}
               location={location}
               badgeCounts={badgeCounts}
+              appearance={appearance}
             />
           </Suspense>
         </ErrorBoundary>
@@ -723,7 +760,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </aside>
 
       <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
-        <SheetContent side="left" variant="sidebar" className="w-72">
+        <SheetContent
+          side="left"
+          variant="sidebar"
+          className={cn(
+            "w-72",
+            appearance === "weekly-payments" && "manage-payments-navigation-font",
+          )}
+        >
           <SheetTitle className="sr-only">Navigation Menu</SheetTitle>
           <div className="border-b border-navigation-800/60 shrink-0">
             <div className="flex items-center justify-center p-3">
@@ -742,6 +786,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 location={location}
                 onNavigate={() => setMobileMenuOpen(false)}
                 badgeCounts={badgeCounts}
+                appearance={appearance}
               />
             </Suspense>
           </ErrorBoundary>
@@ -766,7 +811,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
       <main className={cn(
         "flex-1 min-w-0 flex flex-col min-h-screen transition-all duration-300",
-        isCollapsed ? "md:ml-20" : "md:ml-64"
+        isCollapsed
+          ? "md:ml-20"
+          : appearance === "weekly-payments"
+            ? "manage-payments-main-expanded"
+            : "md:ml-64"
       )}>
         <header className="h-16 bg-white border-b border-navigation-200 flex items-center justify-between px-4 md:px-8 shrink-0 app-header-shadow z-10 sticky top-0">
           <div className="flex items-center gap-3 text-navigation-500">
@@ -803,8 +852,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8">
-          <div className="max-w-350 mx-auto">
+        <div className={cn(
+          "flex-1 overflow-y-auto p-4 md:p-6 lg:p-8",
+          appearance === "weekly-payments" && "manage-payments-layout-content",
+        )}>
+          <div className={cn(
+            "max-w-350 mx-auto",
+            appearance === "weekly-payments" && "manage-payments-layout-inner",
+          )}>
             <ErrorBoundary level="section" onReset={() => window.location.reload()}>
               <Suspense fallback={<LoadingFallback />}>
                 {children}

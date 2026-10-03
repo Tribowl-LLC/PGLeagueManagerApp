@@ -11,6 +11,22 @@ vi.mock("@/components/layout", () => ({
   Layout: ({ children }: { children: ReactNode }) => <main>{children}</main>,
 }));
 
+vi.mock("@/components/admin-weekly-payments-account-dialog", () => ({
+  AdminWeeklyPaymentsAccountDialog: ({
+    bowlerName,
+    open,
+    onOpenChange,
+  }: {
+    bowlerName: string;
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+  }) => open ? (
+    <div role="dialog" aria-label={`${bowlerName} account`}>
+      <button type="button" onClick={() => onOpenChange(false)}>Close account</button>
+    </div>
+  ) : null,
+}));
+
 const firstOccurrenceId = "b8cc77db-79b5-4515-95c6-5482c56c3835";
 const secondOccurrenceId = "451e2b14-2805-4f67-a45d-4b5c0ad8d64e";
 const newReceiptId = "06192a58-13e7-4b2b-a196-0a6a8cb0a449";
@@ -236,7 +252,7 @@ describe("AdminWeeklyPaymentsPage", () => {
 
     const weekSelect = await screen.findByRole("combobox", { name: "Collection week" });
     await waitFor(() => expect(weekSelect).toHaveTextContent("Mon Sep 28, 2026"));
-    expect(screen.getByRole("heading", { name: "Manage Payments" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Weekly payments" })).toBeVisible();
 
     const receivedInput = screen.getByRole("textbox", { name: "Amount received from Blair Quinn" });
     await user.type(receivedInput, ".50");
@@ -251,6 +267,16 @@ describe("AdminWeeklyPaymentsPage", () => {
       return url.pathname.endsWith("/manage-payments/1") && (init?.method ?? "GET") === "GET" && !url.searchParams.has("occurrenceId");
     });
     expect(initialGet).toBeDefined();
+  });
+
+  it("opens and closes the selected bowler account from the worksheet name", async () => {
+    const user = userEvent.setup();
+    setupPage();
+
+    await user.click(await screen.findByRole("button", { name: "Avery Lane" }));
+    expect(await screen.findByRole("dialog", { name: "Avery Lane account" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Close account" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Avery Lane account" })).not.toBeInTheDocument());
   });
 
   it("submits a responsibility change without cash and renders the authoritative receipt after save", async () => {

@@ -92,6 +92,7 @@ function props(
     ],
     teams,
     onSave: defaultOnSave,
+    onBowlerAccount: vi.fn(),
     ...overrides,
   };
 }
@@ -169,6 +170,16 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
 
     expect(fee).toHaveTextContent("$10.00");
     expect(fee).not.toHaveTextContent("Lineage");
+  });
+
+  it("opens the selected bowler account from the row name", async () => {
+    const user = userEvent.setup();
+    const onBowlerAccount = vi.fn();
+    renderWorksheet({ onBowlerAccount });
+
+    await user.click(screen.getByRole("button", { name: "Avery Lane" }));
+
+    expect(onBowlerAccount).toHaveBeenCalledWith(baseRows[0]);
   });
 
   it("keeps the server's historical fee amount visible until responsibility changes", () => {

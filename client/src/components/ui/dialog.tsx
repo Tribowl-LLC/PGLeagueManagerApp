@@ -28,7 +28,7 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
-    variant?: "default" | "flush" | "bowlerReceipt"
+    variant?: "default" | "flush" | "bowlerReceipt" | "managePayments"
     viewport?: "dialog" | "tall"
   }
 >(({ className, children, variant, viewport, ...props }, ref) => (
@@ -39,6 +39,7 @@ const DialogContent = React.forwardRef<
       className={cn(
         "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
         variant === "flush" && "gap-0 p-0",
+        variant === "managePayments" && "manage-payments-dialog flex flex-col gap-4 w-[calc(100vw-32px)] max-w-[590px] rounded-[9px] border-familiar-line bg-familiar-surface p-0 font-familiar text-familiar-ink [&>button]:size-11 [&>button]:right-2 [&>button]:top-2 [&>button]:text-familiar-muted",
         viewport === "dialog" && "max-h-dialog-viewport",
         viewport === "tall" && "max-h-tall-dialog-viewport",
         className

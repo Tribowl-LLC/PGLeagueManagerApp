@@ -164,6 +164,15 @@
   --color-google-red: #ea4335;
   --color-app-shell: #f8fafc;
   --color-navigation-deep: #0f172a;
+  --color-familiar-navy: var(--familiar-navy);
+  --color-familiar-ink: var(--familiar-ink);
+  --color-familiar-muted: var(--familiar-muted);
+  --color-familiar-line: var(--familiar-line);
+  --color-familiar-surface: var(--familiar-surface);
+  --color-familiar-canvas: var(--familiar-canvas);
+  --color-familiar-table-header: var(--familiar-table-header);
+  --color-familiar-link-underline: var(--familiar-link-underline);
+  --font-familiar: var(--familiar-font);
   --animate-slide-up: slide-up 0.3s ease-out;
 }
 
@@ -224,6 +233,22 @@
    declarations local so the light/dark shadcn theme and
    0.5rem radius remain unchanged after retiring that build-time dependency. */
 :root {
+  --familiar-navy: #0f172a;
+  --familiar-ink: #0f172a;
+  --familiar-muted: #475569;
+  --familiar-line: rgb(100 116 139 / 0.24);
+  --familiar-surface: #ffffff;
+  --familiar-canvas: #f1f5f9;
+  --familiar-table-header: #f8fafc;
+  --familiar-link-underline: #c2ccda;
+  --familiar-font: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  --manage-payments-table-head-size: 13px;
+  --manage-payments-panel-radius: 11px;
+  --manage-payments-editable-font-size: 16px;
+  --manage-payments-mobile-gutter: 16px;
+  --manage-payments-desktop-gutter: 32px;
+  --manage-payments-sidebar-width: 230px;
+  --manage-payments-sidebar-tablet-width: 210px;
   --background: 0 0% 100%;
   --foreground: 20 14.3% 4.1%;
   --muted: 60 4.8% 95.9%;
@@ -486,6 +511,33 @@
 @utility familiar-bowler-pay-page-upfront { --lv-familiar-pay-component: 1; }
 @utility familiar-partner-one-time-card { --lv-familiar-pay-component: 1; }
 @utility familiar-payment-overview__actions { --lv-familiar-pay-component: 1; }
+@utility manage-payments-layout-content { --lv-manage-payments-layout: 1; }
+@utility manage-payments-layout-inner { --lv-manage-payments-layout: 1; }
+@utility manage-payments-navigation-font { --lv-manage-payments-layout: 1; }
+@utility manage-payments-sidebar-expanded { --lv-manage-payments-layout: 1; }
+@utility manage-payments-main-expanded { --lv-manage-payments-layout: 1; }
+@utility manage-payments-table { --lv-manage-payments-component: 1; }
+@utility manage-payments-column-group { --lv-manage-payments-component: 1; }
+@utility manage-payments-table-scroll { --lv-manage-payments-component: 1; }
+@utility manage-payments-checkbox { --lv-manage-payments-component: 1; }
+@utility manage-payments-checkbox-indicator { --lv-manage-payments-component: 1; }
+@utility manage-payments-input { --lv-manage-payments-component: 1; }
+@utility manage-payments-select-trigger { --lv-manage-payments-component: 1; }
+@utility manage-payments-table-header { --lv-manage-payments-component: 1; }
+@utility manage-payments-table-body { --lv-manage-payments-component: 1; }
+@utility manage-payments-table-row { --lv-manage-payments-component: 1; }
+@utility manage-payments-table-head { --lv-manage-payments-component: 1; }
+@utility manage-payments-table-cell { --lv-manage-payments-component: 1; }
+@utility manage-payments-cell-responsible { --lv-manage-payments-component: 1; }
+@utility manage-payments-cell-bowler { --lv-manage-payments-component: 1; }
+@utility manage-payments-cell-balance { --lv-manage-payments-component: 1; }
+@utility manage-payments-cell-fee { --lv-manage-payments-component: 1; }
+@utility manage-payments-received-cell { --lv-manage-payments-component: 1; }
+@utility manage-payments-cell-final { --lv-manage-payments-component: 1; }
+@utility manage-payments-team-action { --lv-manage-payments-component: 1; }
+@utility manage-payments-received-mobile-label { --lv-manage-payments-component: 1; }
+@utility manage-payments-team-name { --lv-manage-payments-component: 1; }
+@utility manage-payments-dialog { --lv-manage-payments-component: 1; }
 @utility familiar-source-label { --lv-familiar-pay-component: 1; }
 @utility familiar-source-label-current { --lv-familiar-pay-component: 1; }
 @utility familiar-source-label-desktop { --lv-familiar-pay-component: 1; }

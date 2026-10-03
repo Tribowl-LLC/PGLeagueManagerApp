@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Router } from "wouter";
 import { Layout } from "@/components/layout";
 
@@ -10,6 +11,7 @@ vi.mock("@/components/user-profile-menu", () => ({ UserProfileMenu: () => null }
 vi.mock("@/components/global-search", () => ({ GlobalSearch: () => null }));
 
 beforeEach(() => {
+  window.localStorage.removeItem("sidebarCollapsed");
   vi.stubGlobal("matchMedia", vi.fn((media: string) => ({
     matches: false,
     media,
@@ -25,6 +27,8 @@ afterEach(() => {
 function renderLayout({
   role = "org_admin",
   organizationId = 7,
+  path = "/leagues",
+  appearance = "default",
   countResponse = new Response(JSON.stringify({ success: true, data: { count: 7 } }), {
     status: 200,
     headers: { "content-type": "application/json" },
@@ -32,6 +36,8 @@ function renderLayout({
 }: {
   role?: string;
   organizationId?: number | null;
+  path?: string;
+  appearance?: "default" | "weekly-payments";
   countResponse?: Response;
 } = {}) {
   const queryClient = new QueryClient({
@@ -61,15 +67,15 @@ function renderLayout({
   });
   vi.stubGlobal("fetch", fetchMock);
 
-  render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
-      <Router hook={() => ["/leagues", vi.fn()]}>
-        <Layout>Content</Layout>
+      <Router hook={() => [path, vi.fn()]}>
+        <Layout appearance={appearance}>Content</Layout>
       </Router>
     </QueryClientProvider>,
   );
 
-  return { fetchMock };
+  return { ...view, fetchMock };
 }
 
 describe("Layout unclaimed-users navigation badge", () => {
@@ -97,5 +103,36 @@ describe("Layout unclaimed-users navigation badge", () => {
     expect(link).toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(COUNT_ENDPOINT));
     expect(within(link).queryByTestId("nav-badge")).not.toBeInTheDocument();
+  });
+
+  it("scopes the white active Manage Payments treatment to its route", async () => {
+    const user = userEvent.setup();
+    const view = renderLayout({ path: "/manage-payments", appearance: "weekly-payments" });
+
+    const activeLink = screen.getByTestId("nav-link-/manage-payments");
+    expect(activeLink).toHaveAttribute("aria-current", "page");
+    expect(activeLink).toHaveClass("bg-familiar-surface", "text-familiar-navy");
+    expect(activeLink.querySelector("svg")).toHaveClass("text-familiar-navy");
+    expect(screen.getByTestId("nav-link-/reports")).not.toHaveClass("bg-familiar-surface");
+    expect(document.querySelector(".manage-payments-layout-content")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    const collapsedLink = screen.getByTestId("nav-link-/manage-payments");
+    expect(collapsedLink).toHaveAttribute("aria-label", "Manage Payments");
+    expect(collapsedLink).toHaveClass("bg-familiar-surface", "text-familiar-navy");
+
+    await user.click(screen.getByRole("button", { name: "Open navigation menu" }));
+    const sheetLinks = await screen.findAllByTestId("nav-link-/manage-payments");
+    expect(sheetLinks).toHaveLength(2);
+    for (const link of sheetLinks) {
+      expect(link).toHaveClass("bg-familiar-surface", "text-familiar-navy");
+    }
+    expect(screen.getByRole("dialog")).toHaveClass("manage-payments-navigation-font");
+
+    view.unmount();
+    renderLayout({ path: "/manage-payments" });
+    const defaultAppearanceLink = screen.getByTestId("nav-link-/manage-payments");
+    expect(defaultAppearanceLink).toHaveClass("bg-brand-accent-500/10", "text-brand-accent-400");
+    expect(defaultAppearanceLink).not.toHaveClass("bg-familiar-surface");
   });
 });
