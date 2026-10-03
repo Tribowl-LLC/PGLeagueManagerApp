@@ -3,7 +3,7 @@ import { storage } from '../storage';
 import { createLogger } from '../logger';
 import { db } from '../db.js';
 import { and, eq } from 'drizzle-orm';
-import { leagues, paymentAllocations, paymentObligations } from '@shared/schema';
+import { leagues, paymentAllocations, paymentObligations, weeklyPaymentFundings } from '@shared/schema';
 
 const log = createLogger("AccessControl");
 
@@ -805,7 +805,21 @@ export async function hasReceiptReadAccessToPayment(req: Request, paymentId: num
       eq(paymentAllocations.state, "active"),
       eq(paymentObligations.payerBowlerId, req.user.bowlerId ?? -1),
     )).limit(1);
-  return Boolean(allocation);
+  if (allocation) return true;
+  if (!req.user.bowlerId) return false;
+  const [funding] = await db.select({ id: weeklyPaymentFundings.id })
+    .from(weeklyPaymentFundings)
+    .innerJoin(leagues, and(
+      eq(leagues.id, weeklyPaymentFundings.leagueId),
+      eq(leagues.organizationId, organizationId),
+    ))
+    .where(and(
+      eq(weeklyPaymentFundings.paymentId, paymentId),
+      eq(weeklyPaymentFundings.organizationId, organizationId),
+      eq(weeklyPaymentFundings.leagueId, payment.leagueId),
+      eq(weeklyPaymentFundings.creditedBowlerId, req.user.bowlerId),
+    )).limit(1);
+  return Boolean(funding);
 }
 
 /**

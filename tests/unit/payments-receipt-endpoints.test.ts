@@ -286,6 +286,112 @@ describe('GET /payments/:id/receipt (Task #503)', () => {
     expect(mockProvider.getPayment).not.toHaveBeenCalled();
   });
 
+  it('returns only a credited partner’s unused source amount when there are no allocations', async () => {
+    const payment = {
+      id: 152, leagueId: 11, bowlerId: 42, paidByUserId: 100, paymentOperationId: 'owned-credit-operation',
+      amount: 3_000, status: 'paid', providerPaymentId: 'foreign-provider-payment',
+      receiptUrl: 'https://cached/owned-credit', receiptNumber: 'N-owned-credit',
+    };
+    mockStorage.getPaymentByIdForOrganization.mockResolvedValue(payment);
+    mockStorage.getPaymentById.mockResolvedValue(payment);
+    mockReadCanonicalReport.mockResolvedValue({
+      rows: [{
+        paymentId: 152,
+        leagueId: 11,
+        bowlerId: 42,
+        amountMinor: 3_000,
+        currency: 'USD',
+        status: 'confirmed_paid',
+        source: 'prepaid_credit',
+        refund: { present: false, amountMinor: 0, providerRefundId: null },
+        dispute: { present: false, amountMinor: 0, disputeId: null },
+        unresolved: false,
+        paymentOperationId: 'owned-credit-operation',
+        initiatingPayerBowlerId: 42,
+        allocations: [],
+        fundingPortions: [
+          { fundingId: 'partner-own-funding', creditedBowlerId: 43, portionIndex: 0, amountMinor: 2_000, availableMinor: 2_000, appliedMinor: 0, refundedCreditMinor: 0, totalRefundedMinor: 0, heldCreditMinor: 0, reviewRequired: false },
+          { fundingId: 'foreign-funding', creditedBowlerId: 44, portionIndex: 1, amountMinor: 1_000, availableMinor: 1_000, appliedMinor: 0, refundedCreditMinor: 0, totalRefundedMinor: 0, heldCreditMinor: 0, reviewRequired: false },
+      ],
+      }],
+      transactions: [],
+      paymentTiming: { paymentMode: 'weekly', upfrontDueAt: null, timezone: 'UTC', source: 'canonical' },
+    });
+
+    const response = await get('/api/payments-provider/payments/152/receipt', PARTNER);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toMatchObject({
+      amountMinor: 2_000,
+      source: 'prepaid_credit',
+      receiptUrl: null,
+      receiptNumber: null,
+      paymentOperationId: null,
+      allocations: [],
+      sharedTransaction: null,
+    });
+    expect(JSON.stringify(body.data)).not.toContain('foreign-funding');
+    expect(JSON.stringify(body.data)).not.toContain('foreign-provider-payment');
+    expect(mockProvider.getPayment).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'mixed spent and unused source', bowlerId: 43, amountMinor: 2_000,
+      portion: { fundingId: 'mixed-own-source', creditedBowlerId: 43, portionIndex: 0, amountMinor: 2_000, availableMinor: 0, appliedMinor: 1_500, refundedCreditMinor: 500, totalRefundedMinor: 2_000, heldCreditMinor: 0, reviewRequired: false },
+    },
+    {
+      label: 'fully spent source', bowlerId: 44, amountMinor: 1_000,
+      portion: { fundingId: 'fully-spent-own-source', creditedBowlerId: 44, portionIndex: 1, amountMinor: 1_000, availableMinor: 0, appliedMinor: 1_000, refundedCreditMinor: 0, totalRefundedMinor: 1_000, heldCreditMinor: 0, reviewRequired: false },
+    },
+  ])('returns only the $label owner’s whole-card refund share', async ({ bowlerId, amountMinor, portion }) => {
+    const payment = {
+      id: 153, leagueId: 11, bowlerId: 42, paidByUserId: 100, paymentOperationId: 'owned-credit-refund-operation',
+      amount: 3_000, status: 'refunded', providerPaymentId: 'foreign-provider-payment',
+      receiptUrl: 'https://cached/owned-credit-refund', receiptNumber: 'N-owned-credit-refund',
+    };
+    mockStorage.getPaymentByIdForOrganization.mockResolvedValue(payment);
+    mockStorage.getPaymentById.mockResolvedValue(payment);
+    mockReadCanonicalReport.mockResolvedValue({
+      rows: [{
+        paymentId: 153,
+        leagueId: 11,
+        bowlerId: 42,
+        amountMinor: 3_000,
+        currency: 'USD',
+        status: 'refunded',
+        source: 'canonical_allocation',
+        refund: { present: true, amountMinor: 3_000, providerRefundId: 'foreign-provider-refund' },
+        dispute: { present: false, amountMinor: 0, disputeId: null },
+        unresolved: false,
+        paymentOperationId: 'owned-credit-refund-operation',
+        initiatingPayerBowlerId: 42,
+        allocations: [
+          { allocationId: 'foreign-debt-one', obligationId: 'foreign-obligation-one', occurrenceId: 'foreign-occurrence-one', bowlerId: 45, amountMinor: 1_500, currency: 'USD', state: 'active' },
+          { allocationId: 'foreign-debt-two', obligationId: 'foreign-obligation-two', occurrenceId: 'foreign-occurrence-two', bowlerId: 46, amountMinor: 1_000, currency: 'USD', state: 'active' },
+        ],
+        fundingPortions: [
+          { ...portion },
+          { fundingId: 'other-source', creditedBowlerId: bowlerId === 43 ? 44 : 43, portionIndex: bowlerId === 43 ? 1 : 0, amountMinor: bowlerId === 43 ? 1_000 : 2_000, availableMinor: 0, appliedMinor: bowlerId === 43 ? 1_000 : 1_500, refundedCreditMinor: bowlerId === 43 ? 0 : 500, totalRefundedMinor: bowlerId === 43 ? 1_000 : 2_000, heldCreditMinor: 0, reviewRequired: false },
+        ],
+      }],
+      transactions: [],
+      paymentTiming: { paymentMode: 'weekly', upfrontDueAt: null, timezone: 'UTC', source: 'canonical' },
+    });
+
+    const response = await get('/api/payments-provider/payments/153/receipt', { ...PARTNER, bowlerId });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toMatchObject({ amountMinor, receiptUrl: null, receiptNumber: null, paymentOperationId: null, refund: { present: true, amountMinor } });
+    expect(body.data.allocations).toEqual([]);
+    const serialized = JSON.stringify(body.data);
+    expect(serialized).not.toContain('foreign-provider-payment');
+    expect(serialized).not.toContain('foreign-provider-refund');
+    expect(serialized).not.toContain('foreign-obligation-one');
+    expect(serialized).not.toContain('foreign-obligation-two');
+    expect(serialized).not.toContain('other-source');
+  });
+
   it.each([
     { label: 'scheduled nullable league', operationType: 'scheduled', operationLeagueId: null },
     { label: 'interactive exact league', operationType: 'interactive', operationLeagueId: 11 },

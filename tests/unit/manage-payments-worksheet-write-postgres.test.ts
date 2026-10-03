@@ -50,6 +50,8 @@ import { calculateRosterPaymentTiming } from "@shared/roster-payment-contract";
 import { readOwnedAccountBalancesInTransaction } from "../../server/services/owned-payment-ledger.js";
 import { readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read.js";
 import { saveManagePaymentsWorksheet, ManagePaymentsWorksheetWriteError } from "../../server/services/manage-payments-worksheet-write.js";
+import { readCanonicalPaymentReport, readPaymentReceiptProjection } from "../../server/services/canonical-payment-report.js";
+import { getPaymentsPaginated, getVisiblePaymentByIdForOrganization } from "../../server/storage/payments.js";
 import { getTestDb } from "../setup/test-db.js";
 
 const db = getTestDb();
@@ -685,9 +687,41 @@ describe("Manage Payments worksheet atomic writer", () => {
     const originalSubReceipt = subWithReceipt?.manualReceipts[0];
     if (!originalSubReceipt) throw new Error("substitute cash receipt is missing");
     expect(originalSubReceipt).toMatchObject({ amountMinor: 2_500, revision: 1 });
+    const originalSubPaymentId = originalSubReceipt.paymentId;
     current = (await saveManagePaymentsWorksheet(saveInput(current, [rowChange(current, substituteBowlerId, {
       manualReceiptEdits: [{ receiptId: originalSubReceipt.receiptId, expectedRevision: originalSubReceipt.revision, amountMinor: 4_000 }],
     })], "worksheet-sub-cash-edit-0005"))).snapshot;
+    const editedSubReceipt = current.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === substituteBowlerId)?.manualReceipts[0];
+    if (!editedSubReceipt) throw new Error("edited substitute cash receipt is missing");
+    expect(editedSubReceipt).toMatchObject({
+      receiptId: originalSubReceipt.receiptId,
+      amountMinor: 4_000,
+      revision: 2,
+      businessCollectionLocalDate: originalSubReceipt.businessCollectionLocalDate,
+    });
+    const editedReceiptReport = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: editedSubReceipt.paymentId });
+    expect(editedReceiptReport.rows).toHaveLength(1);
+    expect(editedReceiptReport.rows[0]).toMatchObject({
+      paymentId: editedSubReceipt.paymentId,
+      amountMinor: 4_000,
+      businessDate: originalSubReceipt.businessCollectionLocalDate,
+    });
+    expect(await getVisiblePaymentByIdForOrganization(originalSubPaymentId, organizationId)).toBeUndefined();
+    await expect(readPaymentReceiptProjection({ organizationId, paymentId: originalSubPaymentId })).rejects.toThrow("payment not found");
+    const substitutePaymentList = await getPaymentsPaginated({ organizationId, leagueId, bowlerId: substituteBowlerId }, 1, 100);
+    expect(substitutePaymentList.items.map((payment) => payment.id)).toContain(editedSubReceipt.paymentId);
+    expect(substitutePaymentList.items.map((payment) => payment.id)).not.toContain(originalSubPaymentId);
+    const collectionDateList = await getPaymentsPaginated({
+      organizationId,
+      leagueId,
+      bowlerId: substituteBowlerId,
+      createdAt: new Date(`${originalSubReceipt.businessCollectionLocalDate}T12:00:00.000Z`),
+    }, 1, 100);
+    expect(collectionDateList.items.map((payment) => payment.id)).toContain(editedSubReceipt.paymentId);
+    expect(collectionDateList.items.map((payment) => payment.id)).not.toContain(originalSubPaymentId);
+
+    const unchangedRotatingReceipt = await getVisiblePaymentByIdForOrganization(rotatingTender.id, organizationId);
+    expect(unchangedRotatingReceipt?.id).toBe(rotatingTender.id);
     expect(current.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === substituteBowlerId)).toMatchObject({
       balanceMinor: 1_500,
       manualReceipts: [expect.objectContaining({ receiptId: originalSubReceipt?.receiptId, amountMinor: 4_000, revision: 2 })],
@@ -794,6 +828,13 @@ describe("Manage Payments worksheet atomic writer", () => {
       ["manual_record", 1_000, expect.any(Number)],
       ["manual_clear", 0, null],
     ]);
+    const clearedMainPaymentId = sourceRevision[0]?.paymentId;
+    if (clearedMainPaymentId === null || clearedMainPaymentId === undefined) throw new Error("cleared worksheet tender id is missing");
+    expect(await getVisiblePaymentByIdForOrganization(clearedMainPaymentId, organizationId)).toBeUndefined();
+    expect((await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: clearedMainPaymentId })).rows).toEqual([]);
+    await expect(readPaymentReceiptProjection({ organizationId, paymentId: clearedMainPaymentId })).rejects.toThrow("payment not found");
+    const afterClearList = await getPaymentsPaginated({ organizationId, leagueId, bowlerId: mainBowlerId }, 1, 100);
+    expect(afterClearList.items.map((payment) => payment.id)).not.toContain(clearedMainPaymentId);
     current = (await saveManagePaymentsWorksheet(saveInput(current, [rowChange(current, thirdBowlerId, {
       newManualReceiptAmountMinor: 200,
     })], "worksheet-additional-cash-0009"))).snapshot;

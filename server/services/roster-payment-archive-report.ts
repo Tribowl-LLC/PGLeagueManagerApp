@@ -1,11 +1,15 @@
 import { aliasedTable, and, asc, desc, eq, exists, inArray, sql, or } from "drizzle-orm";
 import { db } from "../db.js";
-import { bowlers, canonicalCollectionGroupMembers, canonicalCollectionGroups, leagueOccurrenceBillingTerms, leagueOccurrenceGenerationRuns, leagueOccurrences, leagues, paymentAllocationCorrections, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments, refundAllocationAdjustments, refundPaymentOperationSnapshots, rotatingCreditApplications, rotatingCreditApplicationReversals, rotatingCreditFundings, rotatingCreditPaymentOperationSnapshots, rotatingCreditRefundOperationSnapshots, rotatingCreditRefunds, type PaymentAllocationCorrection } from "@shared/schema";
-import type { CanonicalPaymentReport, CanonicalPaymentRow, CanonicalPaymentReportTotals } from "@shared/canonical-payment-report";
+import { bowlers, canonicalCollectionGroupMembers, canonicalCollectionGroups, leagueOccurrenceBillingTerms, leagueOccurrenceGenerationRuns, leagueOccurrences, leagues, paymentAllocationCorrections, paymentAllocationFundingApplications, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments, refundAllocationAdjustments, refundPaymentOperationSnapshots, rotatingCreditApplications, rotatingCreditApplicationReversals, rotatingCreditFundings, rotatingCreditPaymentOperationSnapshots, rotatingCreditRefundOperationSnapshots, rotatingCreditRefunds, weeklyPaymentFundings, weeklyPaymentWorksheetReceiptRevisions, weeklyPaymentWorksheetReceipts, type PaymentAllocationCorrection } from "@shared/schema";
+import type { CanonicalPaymentReport, CanonicalPaymentRow, CanonicalPaymentReportTotals, CanonicalPaymentFundingPortionRow } from "@shared/canonical-payment-report";
 import { canonicalCreditFundingSource, canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
 import { paymentVisibilityCondition } from "../storage/payments.js";
+import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
 import { canonicalObligationBalance } from "./refund-allocation-adjustments.js";
 import { isCurrentBowlerOwnedObligationSql } from "./roster-obligation-owners.js";
+import { OwnedPaymentLedgerError, OwnedPaymentRefundEvidenceError, readCompletedOwnedPaymentRefundEvidenceInTransaction, readGenericFundingAvailabilityInTransaction, validateOwnedFundingPortionsForTenderInTransaction } from "./owned-payment-ledger.js";
+
+type ReportExecutor = Pick<typeof db, "execute" | "select">;
 
 export class CanonicalPaymentReportIncompatibilityError extends Error {}
 
@@ -267,10 +271,58 @@ function canonicalOperationType(value: string | null | undefined): CanonicalPaym
   throw new CanonicalPaymentReportIncompatibilityError("payment operation uses a retired execution type");
 }
 
+async function readLatestManualReceiptBusinessDates(
+  tx: ReportExecutor,
+  input: { organizationId: number; leagueId: number; paymentIds: readonly number[] },
+): Promise<Map<number, string>> {
+  if (input.paymentIds.length === 0) return new Map();
+  const linkedReceipts = await tx.select({ receiptId: weeklyPaymentWorksheetReceiptRevisions.receiptId })
+    .from(weeklyPaymentWorksheetReceiptRevisions)
+    .innerJoin(weeklyPaymentWorksheetReceipts, and(
+      eq(weeklyPaymentWorksheetReceipts.id, weeklyPaymentWorksheetReceiptRevisions.receiptId),
+      eq(weeklyPaymentWorksheetReceipts.organizationId, input.organizationId),
+      eq(weeklyPaymentWorksheetReceipts.leagueId, input.leagueId),
+      eq(weeklyPaymentWorksheetReceipts.receiptKind, "manual"),
+    )).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, input.organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, input.leagueId),
+      inArray(weeklyPaymentWorksheetReceiptRevisions.paymentId, [...input.paymentIds]),
+    ));
+  const receiptIds = [...new Set(linkedReceipts.map((row) => row.receiptId))];
+  if (receiptIds.length === 0) return new Map();
+  const revisions = await tx.select({
+    receiptId: weeklyPaymentWorksheetReceiptRevisions.receiptId,
+    receiptRevision: weeklyPaymentWorksheetReceiptRevisions.receiptRevision,
+    paymentId: weeklyPaymentWorksheetReceiptRevisions.paymentId,
+    businessDate: weeklyPaymentWorksheetReceiptRevisions.businessCollectionLocalDate,
+    revisionKind: weeklyPaymentWorksheetReceiptRevisions.revisionKind,
+  }).from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+    eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, input.organizationId),
+    eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, input.leagueId),
+    inArray(weeklyPaymentWorksheetReceiptRevisions.receiptId, receiptIds),
+  )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptId), desc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision));
+  const latestByReceipt = new Map<string, (typeof revisions)[number]>();
+  for (const revision of revisions) {
+    const latest = latestByReceipt.get(revision.receiptId);
+    if (latest && latest.receiptRevision === revision.receiptRevision) {
+      throw new CanonicalPaymentReportIncompatibilityError("manual receipt has duplicate latest revisions");
+    }
+    if (!latest) latestByReceipt.set(revision.receiptId, revision);
+  }
+  const result = new Map<number, string>();
+  for (const revision of latestByReceipt.values()) {
+    if (revision.paymentId === null || revision.revisionKind === "manual_clear") continue;
+    if (result.has(revision.paymentId)) {
+      throw new CanonicalPaymentReportIncompatibilityError("payment is linked to multiple active manual receipts");
+    }
+    result.set(revision.paymentId, revision.businessDate);
+  }
+  return result;
+}
+
 export async function readCanonicalPaymentReport(input: CanonicalPaymentReportInput): Promise<CanonicalPaymentReport> {
   const page = Math.max(1, input.page ?? 1);
   const limit = Math.min(200, Math.max(1, input.limit ?? 50));
-  type ReportExecutor = Pick<typeof db, "execute" | "select">;
   const read = async (tx: ReportExecutor): Promise<CanonicalPaymentReport> => {
     let asOf = new Date().toISOString();
     if (typeof tx.execute === "function") {
@@ -386,6 +438,13 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           eq(paymentObligations.payerBowlerId, input.bowlerId),
         )),
         ),
+        exists(tx.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(and(
+          eq(weeklyPaymentFundings.paymentId, payments.id),
+          eq(weeklyPaymentFundings.organizationId, input.organizationId),
+          eq(weeklyPaymentFundings.leagueId, input.leagueId),
+          eq(weeklyPaymentFundings.creditedBowlerId, input.bowlerId),
+        )),
+        ),
       );
       if (bowlerPaymentScope) conditions.push(bowlerPaymentScope);
     }
@@ -395,6 +454,47 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     const paymentIds = allPayments.map((row) => row.id);
     const operationIds = allPayments.flatMap((row) => row.paymentOperationId ? [row.paymentOperationId] : []);
     const payerNameById = new Map(paymentRows.map((row) => [row.payments.bowlerId, row.bowlers.name]));
+    const manualBusinessDateByPaymentId = await readLatestManualReceiptBusinessDates(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      paymentIds,
+    });
+    const ownedFundingRows = paymentIds.length === 0 ? [] : await tx.select({ funding: weeklyPaymentFundings, owner: { id: bowlers.id, name: bowlers.name } })
+      .from(weeklyPaymentFundings)
+      .innerJoin(bowlers, and(
+        eq(bowlers.id, weeklyPaymentFundings.creditedBowlerId),
+        eq(bowlers.organizationId, input.organizationId),
+      ))
+      .where(and(
+        eq(weeklyPaymentFundings.organizationId, input.organizationId),
+        eq(weeklyPaymentFundings.leagueId, input.leagueId),
+        inArray(weeklyPaymentFundings.paymentId, paymentIds),
+      ));
+    const ownedFundingByPaymentId = new Map<number, typeof ownedFundingRows>();
+    for (const row of ownedFundingRows) {
+      ownedFundingByPaymentId.set(row.funding.paymentId, [...(ownedFundingByPaymentId.get(row.funding.paymentId) ?? []), row]);
+    }
+    const ownedRefundRows = paymentIds.length === 0 ? [] : await tx.select({ snapshot: refundPaymentOperationSnapshots, operation: paymentOperations })
+      .from(refundPaymentOperationSnapshots)
+      .innerJoin(paymentOperations, and(
+        eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
+        eq(paymentOperations.organizationId, input.organizationId),
+        eq(paymentOperations.leagueId, input.leagueId),
+      ))
+      .where(and(
+        eq(refundPaymentOperationSnapshots.leagueId, input.leagueId),
+        inArray(refundPaymentOperationSnapshots.paymentId, paymentIds),
+      ));
+    const ownedRefundByPaymentId = new Map(ownedRefundRows.map((row) => [row.snapshot.paymentId, row]));
+    const ownedApplications = paymentIds.length === 0 ? [] : await tx.select().from(paymentAllocationFundingApplications).where(and(
+      eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
+      inArray(paymentAllocationFundingApplications.paymentId, paymentIds),
+    )).orderBy(asc(paymentAllocationFundingApplications.createdAt), asc(paymentAllocationFundingApplications.id));
+    const ownedApplicationsByAllocationId = new Map<string, typeof ownedApplications>();
+    for (const application of ownedApplications) {
+      ownedApplicationsByAllocationId.set(application.allocationId, [...(ownedApplicationsByAllocationId.get(application.allocationId) ?? []), application]);
+    }
     const fundingRows = paymentIds.length === 0 ? [] : await tx.select().from(rotatingCreditFundings).where(and(
       eq(rotatingCreditFundings.organizationId, input.organizationId),
       eq(rotatingCreditFundings.leagueId, input.leagueId),
@@ -470,6 +570,151 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       inArray(rotatingCreditApplicationReversals.applicationId, creditApplicationIds),
     ));
     const creditReversalByApplicationId = new Map(creditReversals.map((row) => [row.applicationId, row]));
+    const allocationById = new Map(allocations.map((row) => [row.allocation.id, row.allocation]));
+    const ownedFundingPaymentIds = [...ownedFundingByPaymentId.entries()]
+      .filter(([, rows]) => rows.length > 0)
+      .map(([paymentId]) => paymentId);
+    const ownedLedgerTx = tx as PaymentOperationTransaction;
+    const ownedFundingLots = ownedFundingPaymentIds.length === 0 ? [] : await readGenericFundingAvailabilityInTransaction(ownedLedgerTx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      paymentIds: ownedFundingPaymentIds,
+    });
+    const ownedFundingLotById = new Map(ownedFundingLots.map((lot) => [lot.fundingId, lot]));
+    const ownedFundingEvidenceByPaymentId = new Map<number, { portions: CanonicalPaymentFundingPortionRow[]; reviewRequired: boolean; completedRefundProviderId: string | null }>();
+    for (const payment of allPayments) {
+      const rawFundingRows = ownedFundingByPaymentId.get(payment.id) ?? [];
+      if (rawFundingRows.length === 0) continue;
+      if (fundingByPaymentId.has(payment.id)) {
+        throw new CanonicalPaymentReportIncompatibilityError("payment has both owned and rotating funding sources");
+      }
+      const orderedFundingRows = [...rawFundingRows].sort((left, right) => left.funding.portionIndex - right.funding.portionIndex);
+      const fundings = orderedFundingRows.map((row) => row.funding);
+      try {
+        await validateOwnedFundingPortionsForTenderInTransaction(ownedLedgerTx, {
+          payment,
+          fundings,
+          allowRefunded: payment.status === "refunded",
+        });
+      } catch (error) {
+        if (error instanceof OwnedPaymentLedgerError) {
+          throw new CanonicalPaymentReportIncompatibilityError("owned funding portions do not validate against their tender");
+        }
+        throw error;
+      }
+      const refundRow = ownedRefundByPaymentId.get(payment.id);
+      const refundClaimedComplete = payment.status === "refunded"
+        || payment.squareRefundId !== null
+        || refundRow?.operation.status === "succeeded";
+      let completedRefund: Awaited<ReturnType<typeof readCompletedOwnedPaymentRefundEvidenceInTransaction>> = null;
+      if (refundClaimedComplete) {
+        try {
+          completedRefund = await readCompletedOwnedPaymentRefundEvidenceInTransaction(ownedLedgerTx, {
+            organizationId: input.organizationId,
+            leagueId: input.leagueId,
+            paymentId: payment.id,
+            chargeOperationId: payment.paymentOperationId ?? "",
+            providerPaymentId: payment.providerPaymentId ?? "",
+            amountMinor: payment.amount,
+          });
+        } catch (error) {
+          if (error instanceof OwnedPaymentRefundEvidenceError) {
+            throw new CanonicalPaymentReportIncompatibilityError("completed owned-payment refund evidence is inconsistent");
+          }
+          throw error;
+        }
+      }
+      const completedRefundSourceById = new Map<string, { creditedBowlerId: number; fundingAmountMinor: number; unusedCreditMinor: number; currency: string }>();
+      if (completedRefund) {
+        if (!refundRow
+          || refundRow.operation.id !== completedRefund.refundOperationId
+          || refundRow.snapshot.snapshotVersion !== 3) {
+          throw new CanonicalPaymentReportIncompatibilityError("completed owned-payment refund is missing its V3 source snapshot");
+        }
+        for (const source of refundRow.snapshot.fundingSnapshot) {
+          if (completedRefundSourceById.has(source.fundingId)) {
+            throw new CanonicalPaymentReportIncompatibilityError("completed owned-payment refund contains duplicate funding portions");
+          }
+          completedRefundSourceById.set(source.fundingId, source);
+        }
+        if (completedRefundSourceById.size !== fundings.length) {
+          throw new CanonicalPaymentReportIncompatibilityError("completed owned-payment refund does not cover every funding portion");
+        }
+      } else if (payment.status === "refunded" || payment.squareRefundId !== null) {
+        // The strict helper normally throws for this case. Keep the report
+        // fail-closed if a future helper contract changes.
+        throw new CanonicalPaymentReportIncompatibilityError("refunded owned payment has no completed refund proof");
+      }
+      const portions: CanonicalPaymentFundingPortionRow[] = orderedFundingRows.map(({ funding, owner }) => {
+        const source = ownedFundingLotById.get(funding.id);
+        if (!source
+          || source.paymentId !== payment.id
+          || source.bowlerId !== funding.creditedBowlerId
+          || source.amountMinor !== funding.amountMinor) {
+          throw new CanonicalPaymentReportIncompatibilityError("owned funding portion identity does not match its availability evidence");
+        }
+        const refundSnapshotAllocationIds = completedRefund && refundRow
+          ? new Set(refundRow.snapshot.allocationSnapshot.map((allocation) => allocation.allocationId))
+          : null;
+        const sourceApplications = ownedApplications.filter((application) => application.genericFundingId === funding.id)
+          .filter((application) => refundSnapshotAllocationIds
+            ? refundSnapshotAllocationIds.has(application.allocationId)
+            : allocationById.get(application.allocationId)?.state === "active");
+        // A completed V3 refund's immutable allocation snapshot records the
+        // source value spent at refund time. Preserve that historical source
+        // attribution if a later responsibility correction releases the
+        // application. `CanonicalPaymentRow.allocatedMinor` still reports
+        // only current active allocations, so released debt is never shown
+        // as currently paid or made spendable again.
+        const appliedMinor = sourceApplications.reduce((sum, application) => sum + application.amountMinor, 0);
+        const completedRefundSource = completedRefundSourceById.get(funding.id);
+        if (completedRefund && (!completedRefundSource
+          || completedRefundSource.creditedBowlerId !== funding.creditedBowlerId
+          || completedRefundSource.fundingAmountMinor !== funding.amountMinor
+          || completedRefundSource.currency !== funding.currency)) {
+          throw new CanonicalPaymentReportIncompatibilityError("completed owned-payment refund portion does not match its source");
+        }
+        const refundedCreditMinor = completedRefundSource?.unusedCreditMinor ?? 0;
+        // The parent whole-card refund returns the complete immutable source
+        // portion, including both unused credit and the amount applied to
+        // debt at refund time. Keep this separate from refundedCreditMinor,
+        // which is only the unused-credit slice and participates in source
+        // conservation below.
+        const totalRefundedMinor = completedRefundSource?.fundingAmountMinor ?? 0;
+        const availableMinor = completedRefund ? 0 : source.availableMinor;
+        const heldCreditMinor = source.reviewRequired && !completedRefund
+          ? funding.amountMinor - appliedMinor - availableMinor
+          : 0;
+        if (!Number.isSafeInteger(appliedMinor)
+          || appliedMinor < 0
+          || availableMinor < 0
+          || refundedCreditMinor < 0
+          || totalRefundedMinor < 0
+          || totalRefundedMinor > funding.amountMinor
+          || heldCreditMinor < 0
+          || appliedMinor + availableMinor + refundedCreditMinor + heldCreditMinor !== funding.amountMinor) {
+          throw new CanonicalPaymentReportIncompatibilityError("owned funding portion does not conserve its immutable amount");
+        }
+        return {
+          fundingId: funding.id,
+          creditedBowlerId: funding.creditedBowlerId,
+          creditedBowlerName: owner.name,
+          portionIndex: funding.portionIndex,
+          amountMinor: funding.amountMinor,
+          availableMinor,
+          appliedMinor,
+          refundedCreditMinor,
+          totalRefundedMinor,
+          heldCreditMinor,
+          reviewRequired: source.reviewRequired,
+        };
+      });
+      ownedFundingEvidenceByPaymentId.set(payment.id, {
+        portions,
+        reviewRequired: portions.some((portion) => portion.reviewRequired),
+        completedRefundProviderId: completedRefund?.providerRefundId ?? null,
+      });
+    }
     const allocationIds = allocations.map((row) => row.allocation.id);
     const refundAdjustments = allocationIds.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
       eq(refundAllocationAdjustments.organizationId, input.organizationId),
@@ -646,13 +891,21 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     const disputes = operationIds.length === 0 ? [] : await tx.select().from(paymentDisputes).where(and(eq(paymentDisputes.organizationId, input.organizationId), inArray(paymentDisputes.paymentOperationId, operationIds))).orderBy(desc(paymentDisputes.updatedAt));
     const visiblePayments = input.bowlerId === undefined
       ? allPayments
-      : allPayments.filter((payment) => payment.bowlerId === input.bowlerId || allocations.some((candidate) => candidate.allocation.paymentId === payment.id && candidate.recipient?.id === input.bowlerId));
+      : allPayments.filter((payment) => payment.bowlerId === input.bowlerId
+        || allocations.some((candidate) => candidate.allocation.paymentId === payment.id && candidate.recipient?.id === input.bowlerId)
+        || (ownedFundingByPaymentId.get(payment.id) ?? []).some((row) => row.funding.creditedBowlerId === input.bowlerId));
     const rows: CanonicalPaymentRow[] = visiblePayments.map((payment) => {
       const linked = allocations.filter((candidate) => candidate.allocation.paymentId === payment.id);
       const funding = fundingByPaymentId.get(payment.id);
       const isCreditFunding = funding !== undefined;
+      const ownedFundingEvidence = ownedFundingEvidenceByPaymentId.get(payment.id);
+      const isOwnedFunding = ownedFundingEvidence !== undefined;
+      const ownedFundingPortions = ownedFundingEvidence?.portions ?? [];
       const refundRowsForFunding = funding ? creditRefundsByFundingId.get(funding.id) ?? [] : [];
-      if (linked.length === 0 && payment.paymentOperationId === null && !isCreditFunding) {
+      if (isOwnedFunding && isCreditFunding) {
+        throw new CanonicalPaymentReportIncompatibilityError("payment has both owned and rotating funding sources");
+      }
+      if (linked.length === 0 && payment.paymentOperationId === null && !isCreditFunding && !isOwnedFunding) {
         throw new CanonicalPaymentReportIncompatibilityError("payment has no canonical allocation evidence");
       }
       const operation = operations.find((candidate) => candidate.id === payment.paymentOperationId);
@@ -676,6 +929,7 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       });
       const ordinaryVoidedAllocation = linked.some((candidate) => candidate.allocation.state === "voided"
         && !(isCreditFunding && candidate.creditApplication && creditReversalByApplicationId.has(candidate.creditApplication.id))
+        && !(isOwnedFunding && !ownedFundingEvidence?.reviewRequired)
         && !historicalCorrection.sourceAllocationIds.has(candidate.allocation.id));
       const corrected = Boolean(voidEvidence) || (ordinaryVoidedAllocation && !historicalCorrection.valid);
       // Every operation-linked parent must reconcile to every immutable
@@ -815,9 +1069,11 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         || !validCreditChildren
         || activeTotal > payment.amount
         || !validProviderCreditOperation);
-      const invalidCanonicalAllocation = isCreditFunding
-        ? invalidCreditFunding
-        : payment.paymentOperationId !== null && (
+      const invalidCanonicalAllocation = isOwnedFunding
+        ? Boolean(ownedFundingEvidence?.reviewRequired)
+        : isCreditFunding
+          ? invalidCreditFunding
+          : payment.paymentOperationId !== null && (
         expectedSnapshots.length === 0
         || (!historicalCorrection.valid && expectedSnapshots.some((expected) => expected.item.state !== "finalized" || !activeLinked.some((candidate) => candidate.allocation.obligationId === expected.item.obligationId && candidate.allocation.amountMinor === expected.item.amountMinor && candidate.allocation.currency === expected.snapshot.currency)))
         || activeLinked.length !== expectedSnapshots.length
@@ -844,6 +1100,21 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
           plannedOrdinal: candidate.occurrence.plannedOrdinal,
           bowlerId: candidate.recipient.id,
           bowlerName: candidate.recipient.name,
+          ...(ownedApplicationsByAllocationId.get(candidate.allocation.id)?.length
+            ? {
+              fundedByBowlerId: ownedApplicationsByAllocationId.get(candidate.allocation.id)?.[0]?.creditedBowlerId ?? null,
+              fundingApplications: ownedApplicationsByAllocationId.get(candidate.allocation.id)?.map((application) => ({
+                applicationId: application.id,
+                fundingId: application.genericFundingId ?? application.rotatingFundingId ?? undefined,
+                creditedBowlerId: application.creditedBowlerId,
+                sourceKind: application.genericFundingId === null ? "rotating" as const : "generic" as const,
+                sourceAmountMinor: application.sourceAmountMinor,
+                amountMinor: application.amountMinor,
+              })),
+            }
+            : candidate.creditApplication
+              ? { fundedByBowlerId: candidate.creditApplication.actualBowlerId }
+              : {}),
           amountMinor: candidate.allocation.amountMinor,
           refundedMinor: adjustment?.amountMinor ?? 0,
           effectiveAmountMinor: candidate.allocation.state === "active" ? Math.max(0, candidate.allocation.amountMinor - (adjustment?.amountMinor ?? 0)) : 0,
@@ -887,17 +1158,35 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
       const refundedAllocationMinor = allocationRowsWithCoverage.filter((candidate) => candidate.state === "active").reduce((sum, candidate) => sum + candidate.refundedMinor, 0);
       const waivedMinor = allocationRowsWithCoverage.filter((candidate) => candidate.state === "active" && candidate.refundDisposition === "waived").reduce((sum, candidate) => sum + candidate.refundedMinor, 0);
       const effectiveAllocatedMinor = allocationRowsWithCoverage.reduce((sum, candidate) => sum + (candidate.effectiveAmountMinor ?? 0), 0);
-      const manualGrossMismatch = !voidEvidence && !isCreditFunding && payment.paymentOperationId === null && allocatedMinor !== payment.amount;
-      const refundAmount = isCreditFunding
-        ? completedCreditRefundMinor
-        : payment.refundedAt || payment.squareRefundId ? payment.amount : 0;
-      const providerRefundId = isCreditFunding
-        ? completedProviderRefundIds.length === 1 ? completedProviderRefundIds[0] : null
-        : payment.squareRefundId;
-      const canonicalDate = leagueLocalDate(payment.createdAt, league.timezone);
-      const evidenceSource: CanonicalPaymentRow["source"] = invalidCanonicalAllocation || manualGrossMismatch
-        ? "unresolved_operation"
+      const ownedAppliedMinor = ownedFundingPortions.reduce((sum, portion) => sum + portion.appliedMinor, 0);
+      const ownedAvailableMinor = ownedFundingPortions.reduce((sum, portion) => sum + portion.availableMinor, 0);
+      const ownedRefundedCreditMinor = ownedFundingPortions.reduce((sum, portion) => sum + portion.refundedCreditMinor, 0);
+      const ownedTotalRefundedMinor = ownedFundingPortions.reduce((sum, portion) => sum + portion.totalRefundedMinor, 0);
+      const ownedHeldCreditMinor = ownedFundingPortions.reduce((sum, portion) => sum + portion.heldCreditMinor, 0);
+      const manualGrossMismatch = !voidEvidence && !isCreditFunding && !isOwnedFunding && payment.paymentOperationId === null && allocatedMinor !== payment.amount;
+      const ownedCompletedRefund = isOwnedFunding && ownedTotalRefundedMinor > 0;
+      const refundAmount = isOwnedFunding
+        ? ownedCompletedRefund ? ownedTotalRefundedMinor : 0
         : isCreditFunding
+          ? completedCreditRefundMinor
+          : payment.refundedAt || payment.squareRefundId ? payment.amount : 0;
+      const providerRefundId = isOwnedFunding
+        ? ownedFundingEvidence?.completedRefundProviderId ?? null
+        : isCreditFunding
+          ? completedProviderRefundIds.length === 1 ? completedProviderRefundIds[0] : null
+          : payment.squareRefundId;
+      const canonicalDate = manualBusinessDateByPaymentId.get(payment.id) ?? leagueLocalDate(payment.createdAt, league.timezone);
+      const ownedFundingSource = isOwnedFunding ? canonicalCreditFundingSource({
+        amountMinor: ownedFundingPortions.reduce((sum, portion) => sum + portion.amountMinor, 0),
+        allocatedMinor: ownedAppliedMinor,
+        completedRefundMinor: ownedRefundedCreditMinor,
+        heldRefundMinor: ownedHeldCreditMinor,
+      }) : undefined;
+      const evidenceSource: CanonicalPaymentRow["source"] = invalidCanonicalAllocation || manualGrossMismatch
+        ? isOwnedFunding && ownedFundingSource === "held_credit" ? "held_credit" : "unresolved_operation"
+        : isOwnedFunding
+          ? ownedFundingSource ?? "unresolved_operation"
+          : isCreditFunding
           ? canonicalCreditFundingSource({
             amountMinor: payment.amount,
             allocatedMinor: activeTotal,
@@ -926,15 +1215,23 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
         refundedAllocationMinor,
         waivedMinor,
         effectiveAllocatedMinor,
-        unallocatedMinor: isCreditFunding ? Math.max(0, remainingCreditMinor) : Math.max(0, payment.amount - allocatedMinor),
+        unallocatedMinor: isOwnedFunding
+          ? Math.max(0, ownedAvailableMinor)
+          : isCreditFunding ? Math.max(0, remainingCreditMinor) : Math.max(0, payment.amount - allocatedMinor),
         reviewRequired: reviewRequired || manualGrossMismatch,
         source: evidenceSource,
-        unresolved: invalidCanonicalAllocation || manualGrossMismatch || creditRefundReviewRequired || operation?.status === "provider_unknown" || operation?.status === "reconciliation_required",
+        unresolved: invalidCanonicalAllocation || manualGrossMismatch || creditRefundReviewRequired || ownedHeldCreditMinor > 0 || operation?.status === "provider_unknown" || operation?.status === "reconciliation_required",
         refund: { present: refundAmount > 0, amountMinor: refundAmount, providerRefundId },
-        creditRefunds: creditRefundSummary,
+        creditRefunds: isOwnedFunding ? {
+          completedAmountMinor: ownedRefundedCreditMinor,
+          heldAmountMinor: ownedHeldCreditMinor,
+          reviewRequired: ownedFundingEvidence?.reviewRequired ?? false,
+          providerRefundIds: [],
+        } : creditRefundSummary,
         dispute: { present: Boolean(dispute || payment.disputeId), amountMinor: dispute?.amountMinor ?? (payment.disputeId ? payment.amount : 0), disputeId: dispute?.providerDisputeId ?? payment.disputeId, scope: "transaction", state: dispute?.state ?? null, reviewRequired },
         receipt: { contractVersion: "payment-receipt/1", availability: payment.receiptUrl ? "available" : "unavailable", receiptUrl: payment.receiptUrl, receiptNumber: payment.receiptNumber, deliveryEvidence: "delivery_not_recorded", source: evidenceSource, refund: { present: refundAmount > 0, amountMinor: refundAmount, providerRefundId }, dispute: { present: Boolean(dispute || payment.disputeId), amountMinor: dispute?.amountMinor ?? 0, disputeId: dispute?.providerDisputeId ?? payment.disputeId, scope: "transaction", state: dispute?.state ?? null, reviewRequired } },
         allocations: allocationRowsWithCoverage,
+        ...(isOwnedFunding ? { fundingPortions: ownedFundingPortions } : {}),
         correctionEvidence: voidEvidence ? { status: "voided", voidId: voidEvidence.id } : undefined,
         sharedTransaction: null,
         // paidByUserId is a users.id actor and must never be interpreted as a
@@ -1064,12 +1361,22 @@ export async function readCanonicalPaymentReport(input: CanonicalPaymentReportIn
     const transactions = [...grouped.entries()].map(([groupKey, groupedRows]) => ({ groupKey, paymentOperationId: groupedRows[0]?.paymentOperationId ?? null, amountMinor: groupedRows.reduce((sum, row) => sum + row.amountMinor, 0), currency: "USD", paymentIds: groupedRows.flatMap((row) => row.paymentId ? [row.paymentId] : []), rows: groupedRows }));
     const scopedTotals = rows.map((row) => {
       const payerOwnsTender = input.bowlerId === undefined || (row.initiatingPayerBowlerId ?? row.bowlerId) === input.bowlerId;
+      const creditedFundingPortion = input.bowlerId === undefined
+        ? undefined
+        : row.fundingPortions?.find((portion) => portion.creditedBowlerId === input.bowlerId);
       const scopedAllocations = payerOwnsTender
         ? row.allocations
         : row.allocations.filter((allocation) => allocation.bowlerId === input.bowlerId && allocation.state !== "voided");
       const activeScopedAllocations = scopedAllocations.filter((allocation) => allocation.state === "active");
-      const scopedAmount = payerOwnsTender ? row.amountMinor : scopedAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
-      const scopedRefund = payerOwnsTender ? row.refund.amountMinor : scopedAllocations.reduce((sum, allocation) => sum + (allocation.refundedMinor ?? 0), 0);
+      // An owned source portion is the recipient's exact tender share. It
+      // replaces, rather than adds to, allocations funded by that same share.
+      // Historical allocation-only recipients retain their existing scope.
+      const scopedAmount = payerOwnsTender
+        ? row.amountMinor
+        : creditedFundingPortion?.amountMinor ?? scopedAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+      const scopedRefund = payerOwnsTender
+        ? row.refund.amountMinor
+        : creditedFundingPortion?.totalRefundedMinor ?? scopedAllocations.reduce((sum, allocation) => sum + (allocation.refundedMinor ?? 0), 0);
       const scopedRefundedAllocation = payerOwnsTender
         ? (row.refundedAllocationMinor ?? 0)
         : activeScopedAllocations.reduce((sum, allocation) => sum + (allocation.refundedMinor ?? 0), 0);

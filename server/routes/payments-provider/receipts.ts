@@ -125,6 +125,7 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
   const transaction = report.transactions.find((candidate) => candidate.rows.some((candidateRow) => candidateRow.paymentId === payment.id));
   const adminPrivilege = viewer.role === 'system_admin' || viewer.role === 'org_admin' || viewer.role === 'payment_manager';
   const initiatingPayer = payment.paidByUserId === viewer.id || (row.initiatingPayerBowlerId !== null && row.initiatingPayerBowlerId !== undefined && row.initiatingPayerBowlerId === viewer.bowlerId);
+  const ownedFundingPortion = row.fundingPortions?.find((portion) => portion.creditedBowlerId === viewer.bowlerId);
   const hasOtherActiveAllocation = row.allocations.some((allocation) => allocation.state === 'active' && allocation.bowlerId !== payment.bowlerId);
   const sharedAllowed = adminPrivilege || initiatingPayer || (row.paymentOperationId === null && !hasOtherActiveAllocation && viewer.bowlerId === payment.bowlerId);
   // Keep payment-receipt/1 an explicit projection. The canonical report may
@@ -140,6 +141,7 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
     source: row.source,
   }));
   const visibleAllocations = sharedAllowed ? evidenceAllocations : evidenceAllocations.filter((allocation) => allocation.bowlerId === viewer.bowlerId);
+  const visibleFundingOwner = !sharedAllowed ? ownedFundingPortion : undefined;
   const transactionDispute = transaction?.dispute ?? row.dispute;
   const visibleDispute = {
     ...transactionDispute,
@@ -148,9 +150,28 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
   };
   const visibleRefund = {
     ...row.refund,
-    amountMinor: sharedAllowed ? row.refund.amountMinor : 0,
+    present: sharedAllowed ? row.refund.present : (visibleFundingOwner?.totalRefundedMinor ?? 0) > 0,
+    amountMinor: sharedAllowed ? row.refund.amountMinor : visibleFundingOwner?.totalRefundedMinor ?? 0,
     providerRefundId: adminPrivilege ? row.refund.providerRefundId : null,
   };
+  const ownActiveAllocationAmount = visibleAllocations.filter((allocation) => allocation.state === 'active')
+    .reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+  const visibleSource = sharedAllowed
+    ? row.source
+    : visibleFundingOwner
+      ? ownActiveAllocationAmount > 0
+        ? 'canonical_allocation'
+        : visibleFundingOwner.availableMinor > 0
+          ? 'prepaid_credit'
+          : visibleFundingOwner.heldCreditMinor > 0
+            ? 'held_credit'
+            : visibleFundingOwner.refundedCreditMinor === visibleFundingOwner.amountMinor && visibleFundingOwner.amountMinor > 0
+              ? 'refunded_credit'
+              : visibleFundingOwner.appliedMinor > 0
+                ? 'canonical_allocation'
+                : 'refunded_credit'
+      : row.source;
+  const visibleUnresolved = sharedAllowed ? row.unresolved : visibleFundingOwner?.reviewRequired ?? false;
   const sharedTransaction = sharedAllowed
     ? (transaction ? { groupKey: transaction.groupKey, childCount: transaction.rows.length } : row.sharedTransaction ?? null)
     : null;
@@ -164,14 +185,14 @@ async function buildReceiptEvidence(paymentId: number, organizationId: number, v
     paymentId: payment.id,
     paymentOperationId: adminPrivilege ? row.paymentOperationId : null,
     operationStatus: adminPrivilege ? row.operationStatus : null,
-    amountMinor: sharedAllowed ? row.amountMinor : visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+    amountMinor: sharedAllowed ? row.amountMinor : visibleFundingOwner?.amountMinor ?? visibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
     currency: row.currency,
     evidenceStatus: row.status,
-    source: row.source,
+    source: visibleSource,
     allocations: visibleAllocations,
     refund: visibleRefund,
     dispute: visibleDispute,
-    unresolved: row.unresolved,
+    unresolved: visibleUnresolved,
     sharedTransaction,
     paymentTiming: report.paymentTiming,
     ...(row.collectionEvidence ? { collectionEvidence: row.collectionEvidence } : {}),

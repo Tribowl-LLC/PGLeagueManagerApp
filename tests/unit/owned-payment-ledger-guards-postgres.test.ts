@@ -48,6 +48,7 @@ import { acquirePaymentOperationLease, finalizeRefundPaymentOperationSuccess } f
 import { PaymentProviderError } from "../../server/services/payment-errors";
 import type { PaymentProvider } from "../../server/services/payment-provider";
 import { readRotatingCreditFundingBalancesInTransaction } from "../../server/services/rotating-credit-applications";
+import { readCanonicalPaymentReport } from "../../server/services/canonical-payment-report";
 import { getTestDb } from "../setup/test-db";
 
 const db = getTestDb();
@@ -1286,6 +1287,37 @@ describe("owned payment SQL guards on PostgreSQL", () => {
       });
     });
     expect(sources).toMatchObject([{ fundingId: source.fundingId, availableMinor: 0, reviewRequired: false }]);
+
+    const adminReport = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: source.paymentId });
+    const archivedRow = adminReport.rows.find((row) => row.paymentId === source.paymentId);
+    expect(archivedRow).toMatchObject({
+      amountMinor: 500,
+      allocatedMinor: 0,
+      refund: { present: true, amountMinor: 500 },
+      fundingPortions: [{
+        fundingId: source.fundingId,
+        creditedBowlerId,
+        amountMinor: 500,
+        availableMinor: 0,
+        appliedMinor: 300,
+        refundedCreditMinor: 200,
+        totalRefundedMinor: 500,
+      }],
+    });
+    expect(adminReport.totals).toMatchObject({ grossConfirmedPaidMinor: 500, refundedMinor: 500, activeAllocatedMinor: 0 });
+
+    const creditedRecipientReport = await readCanonicalPaymentReport({
+      organizationId,
+      leagueId,
+      bowlerId: creditedBowlerId,
+      paymentId: source.paymentId,
+    });
+    expect(creditedRecipientReport.rows.find((row) => row.paymentId === source.paymentId)).toMatchObject({
+      amountMinor: 500,
+      refund: { present: true, amountMinor: 500 },
+      fundingPortions: [{ totalRefundedMinor: 500, refundedCreditMinor: 200, appliedMinor: 300 }],
+    });
+    expect(creditedRecipientReport.totals).toMatchObject({ grossConfirmedPaidMinor: 500, refundedMinor: 500, activeAllocatedMinor: 0 });
   });
 
   it("holds an owned tender when a terminal refund still has an ambiguous provider ID", async () => {
