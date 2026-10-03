@@ -8,6 +8,7 @@ import { configuredOrganizationId } from "../services/single-tenant-context.js";
 import { adminWriteLimiter } from "../middleware/rate-limit.js";
 import {
   ManagePaymentsWorksheetReadError,
+  isManagePaymentsWorksheetReadAborted,
   readManagePaymentsWorksheetSnapshot,
 } from "../services/manage-payments-worksheet-read.js";
 import {
@@ -48,14 +49,27 @@ router.get("/leagues/:leagueId/manage-payments/1", async (req, res) => {
     return sendError(res, "Not found", 404, "NOT_FOUND");
   }
 
+  const abortController = new AbortController();
+  const abortOnRequestAborted = () => abortController.abort();
+  const abortOnPrematureResponseClose = () => {
+    if (!res.writableEnded) abortController.abort();
+  };
+  req.once("aborted", abortOnRequestAborted);
+  res.once("close", abortOnPrematureResponseClose);
+  if (req.aborted || res.destroyed) abortController.abort();
+
   try {
     const snapshot = await readManagePaymentsWorksheetSnapshot({
       organizationId,
       leagueId,
       ...(occurrenceId === undefined ? {} : { occurrenceId }),
+      signal: abortController.signal,
     });
+    if (abortController.signal.aborted || req.aborted || res.destroyed) return;
     return sendSuccess(res, snapshot);
   } catch (caught) {
+    if (isManagePaymentsWorksheetReadAborted(caught)) return;
+    if (req.aborted || res.destroyed) throw caught;
     if (caught instanceof ManagePaymentsWorksheetReadError) {
       if (caught.code === "league_not_found") return sendError(res, "Not found", 404, "NOT_FOUND");
       if (caught.code === "ledger_not_adopted") {
@@ -65,6 +79,9 @@ router.get("/leagues/:leagueId/manage-payments/1", async (req, res) => {
       return sendError(res, "Weekly payment evidence requires review", 409, "WEEKLY_PAYMENT_EVIDENCE_INCOMPATIBLE");
     }
     return sendError(res, "Unable to read the weekly payment worksheet", 500, "INTERNAL_ERROR");
+  } finally {
+    req.off("aborted", abortOnRequestAborted);
+    res.off("close", abortOnPrematureResponseClose);
   }
 });
 

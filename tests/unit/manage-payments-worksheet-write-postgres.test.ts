@@ -471,6 +471,20 @@ describe("Manage Payments worksheet atomic writer", () => {
     const rowsByBowler = new Map(snapshot.teams.flatMap((team) => team.rows).map((row) => [row.bowlerId, row]));
     expect(rowsByBowler.get(mainBowlerId)?.finalTwoWeeksPaid).toBe(true);
     expect(rowsByBowler.get(substituteBowlerId)?.finalTwoWeeksPaid).toBe(true);
+
+    const receiptSave = await saveManagePaymentsWorksheet(saveInput(snapshot, [
+      rowChange(snapshot, thirdBowlerId, { newManualReceiptAmountMinor: 321 }),
+    ], `final-week-fresh-receipt-${suffix}`));
+    const afterReceiptSave = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    const afterRowsByBowler = new Map(afterReceiptSave.teams.flatMap((team) => team.rows).map((row) => [row.bowlerId, row]));
+    expect(afterReceiptSave.revision).toBe(receiptSave.snapshot.revision);
+    expect(afterReceiptSave.stateFingerprint).toBe(receiptSave.snapshot.stateFingerprint);
+    expect(afterRowsByBowler.get(thirdBowlerId)).toMatchObject({
+      balanceMinor: 321,
+      manualReceipts: [expect.objectContaining({ amountMinor: 321, revision: 1 })],
+    });
+    expect(afterRowsByBowler.get(mainBowlerId)?.finalTwoWeeksPaid).toBe(true);
+    expect(afterRowsByBowler.get(substituteBowlerId)?.finalTwoWeeksPaid).toBe(true);
   });
 
   it("rejects adopted manual tenders for cross-organization and other-league payers at write time", async () => {

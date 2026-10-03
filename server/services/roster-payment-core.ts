@@ -106,6 +106,8 @@ import {
   OwnedPaymentLedgerError,
   readOwnedAccountBalancesInTransaction,
   readOwnedLedgerAdoptionInTransaction,
+  assertOwnedPaymentLedgerReadSnapshot,
+  type OwnedPaymentLedgerReadSnapshot,
 } from "./owned-payment-ledger.js";
 import {
   appendManualReceiptRevisionInTransaction,
@@ -1659,36 +1661,53 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
 }
 
 /** Shared V3 canonical-row read for callers already inside a repeatable-read snapshot. */
+async function readCanonicalV3Stage<T>(checkpoint: (() => void) | undefined, read: () => Promise<T>): Promise<T> {
+  checkpoint?.();
+  const result = await read();
+  checkpoint?.();
+  return result;
+}
+
 export async function readCanonicalDuePastDueV3InTransaction(
   tx: RosterPaymentTransaction,
-  input: { organizationId: number; leagueId: number; bowlerId?: number; forecastTargets?: readonly ManagePaymentsForecastTarget[] },
+  input: {
+    organizationId: number;
+    leagueId: number;
+    bowlerId?: number;
+    forecastTargets?: readonly ManagePaymentsForecastTarget[];
+    ledgerReadSnapshot?: OwnedPaymentLedgerReadSnapshot;
+    checkpoint?: () => void;
+  },
 ): Promise<CanonicalV3ProjectionReadResult> {
-    if (input.bowlerId !== undefined) {
-      const [member] = await tx.select({ id: bowlers.id }).from(bowlers).innerJoin(bowlerLeagues, and(
+    input.checkpoint?.();
+    if (input.ledgerReadSnapshot) assertOwnedPaymentLedgerReadSnapshot(tx, input, input.ledgerReadSnapshot);
+    const selectedBowlerId = input.bowlerId;
+    if (selectedBowlerId !== undefined) {
+      const [member] = await readCanonicalV3Stage(input.checkpoint, () => tx.select({ id: bowlers.id }).from(bowlers).innerJoin(bowlerLeagues, and(
         eq(bowlerLeagues.bowlerId, bowlers.id),
         eq(bowlerLeagues.leagueId, input.leagueId),
         eq(bowlerLeagues.active, true),
         isNotNull(bowlerLeagues.teamId),
       )).where(and(
         eq(bowlers.organizationId, input.organizationId),
-        eq(bowlers.id, input.bowlerId),
+        eq(bowlers.id, selectedBowlerId),
         eq(bowlers.active, true),
-      )).limit(1);
+      )).limit(1));
       if (!member) throw new RosterPaymentError("NOT_FOUND", "Bowler is not an active team member in this league", 404);
     }
-    const asOfResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS as_of`);
+    const asOfResult = await readCanonicalV3Stage(input.checkpoint, () => tx.execute(sql`SELECT transaction_timestamp()::text AS as_of`));
     const asOf = (asOfResult.rows[0] as { as_of?: string } | undefined)?.as_of ?? new Date().toISOString();
     const now = new Date(asOf).getTime();
-    const accountAdoption = await readOwnedLedgerAdoptionInTransaction(tx, {
+    const accountAdoption = input.ledgerReadSnapshot?.adoption ?? await readCanonicalV3Stage(input.checkpoint, () => readOwnedLedgerAdoptionInTransaction(tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
-    });
-    const obligations = await tx.select().from(paymentObligations).where(and(
+    }));
+    const obligations = await readCanonicalV3Stage(input.checkpoint, () => tx.select().from(paymentObligations).where(and(
       eq(paymentObligations.organizationId, input.organizationId),
       eq(paymentObligations.leagueId, input.leagueId),
-    )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentObligations.id));
+    )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentObligations.id)));
     const responsibilityIds = [...new Set(obligations.map((row) => row.responsibilityId))];
-    const responsibilities = responsibilityIds.length === 0 ? [] : await tx.select({
+    const responsibilities = responsibilityIds.length === 0 ? [] : await readCanonicalV3Stage(input.checkpoint, () => tx.select({
       id: occurrencePaymentResponsibilities.id,
       teamId: occurrencePaymentResponsibilities.teamId,
       slotIndex: occurrencePaymentResponsibilities.slotIndex,
@@ -1699,23 +1718,23 @@ export async function readCanonicalDuePastDueV3InTransaction(
       eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
       eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
       inArray(occurrencePaymentResponsibilities.id, responsibilityIds),
-    ));
+    )));
     const responsibilityById = new Map(responsibilities.map((row) => [row.id, row]));
     if (responsibilityById.size !== responsibilityIds.length) {
       throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its canonical responsibility", 503);
     }
-    const owners = await resolvePaymentObligationOwnersInTransaction(tx, {
+    const owners = await readCanonicalV3Stage(input.checkpoint, () => resolvePaymentObligationOwnersInTransaction(tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
       obligations,
-    });
+    }));
     const forecastTargets = input.forecastTargets ?? [];
     if (!accountAdoption && forecastTargets.length > 0) {
       throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Worksheet forecasts require owned-account adoption", 503);
     }
     const forecastTargetOccurrenceIds = [...new Set(forecastTargets.map((row) => row.occurrenceId))];
     const occurrenceIds = [...new Set([...obligations.map((row) => row.occurrenceId), ...forecastTargetOccurrenceIds])];
-    const occurrenceRows = occurrenceIds.length === 0 ? [] : await tx.select({
+    const occurrenceRows = occurrenceIds.length === 0 ? [] : await readCanonicalV3Stage(input.checkpoint, () => tx.select({
       id: leagueOccurrences.id,
       occurrenceLocalDate: leagueOccurrences.authoritativeLocalDate,
       plannedOrdinal: leagueOccurrences.plannedOrdinal,
@@ -1725,9 +1744,9 @@ export async function readCanonicalDuePastDueV3InTransaction(
       eq(leagueOccurrences.organizationId, input.organizationId),
       eq(leagueOccurrences.leagueId, input.leagueId),
       inArray(leagueOccurrences.id, occurrenceIds),
-    ));
+    )));
     const occurrenceById = new Map(occurrenceRows.map((row) => [row.id, row]));
-    const billingTerms = occurrenceIds.length === 0 ? [] : await tx.select({
+    const billingTerms = occurrenceIds.length === 0 ? [] : await readCanonicalV3Stage(input.checkpoint, () => tx.select({
       occurrenceId: leagueOccurrenceBillingTerms.occurrenceId,
       billingOrdinal: leagueOccurrenceBillingTerms.billingOrdinal,
     }).from(leagueOccurrenceBillingTerms).where(and(
@@ -1735,7 +1754,7 @@ export async function readCanonicalDuePastDueV3InTransaction(
       eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
       eq(leagueOccurrenceBillingTerms.state, "published"),
       inArray(leagueOccurrenceBillingTerms.occurrenceId, occurrenceIds),
-    ));
+    )));
     const billingByOccurrence = new Map<string, number>();
     for (const row of billingTerms) {
       if (row.billingOrdinal !== null && !billingByOccurrence.has(row.occurrenceId)) billingByOccurrence.set(row.occurrenceId, row.billingOrdinal);
@@ -1778,18 +1797,19 @@ export async function readCanonicalDuePastDueV3InTransaction(
         billingOrdinal: target.billingOrdinal,
       });
     }
-    const collectionOrderByOccurrence = accountAdoption ? await readPublishedCollectionOrderInTransaction(tx, {
+    const collectionOrderByOccurrence = accountAdoption ? await readCanonicalV3Stage(input.checkpoint, () => readPublishedCollectionOrderInTransaction(tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
       occurrences: [...orderSeedByOccurrence.values()],
-    }) : new Map();
+      checkpoint: input.checkpoint,
+    })) : new Map();
     const teamIds = [...new Set(responsibilities.map((row) => row.teamId))];
-    const assignmentRows = occurrenceIds.length === 0 || teamIds.length === 0 ? [] : await tx.select().from(rotatingOccurrenceAssignments).where(and(
+    const assignmentRows = occurrenceIds.length === 0 || teamIds.length === 0 ? [] : await readCanonicalV3Stage(input.checkpoint, () => tx.select().from(rotatingOccurrenceAssignments).where(and(
       eq(rotatingOccurrenceAssignments.organizationId, input.organizationId),
       eq(rotatingOccurrenceAssignments.leagueId, input.leagueId),
       inArray(rotatingOccurrenceAssignments.occurrenceId, occurrenceIds),
       inArray(rotatingOccurrenceAssignments.teamId, teamIds),
-    )).orderBy(asc(rotatingOccurrenceAssignments.occurrenceId), asc(rotatingOccurrenceAssignments.teamId), asc(rotatingOccurrenceAssignments.slotIndex), desc(rotatingOccurrenceAssignments.version));
+    )).orderBy(asc(rotatingOccurrenceAssignments.occurrenceId), asc(rotatingOccurrenceAssignments.teamId), asc(rotatingOccurrenceAssignments.slotIndex), desc(rotatingOccurrenceAssignments.version)));
     const latestAssignmentByKey = new Map<string, typeof assignmentRows[number]>();
     for (const assignment of assignmentRows) {
       const key = `${assignment.occurrenceId}:${assignment.teamId}:${assignment.slotIndex}`;
@@ -1800,7 +1820,7 @@ export async function readCanonicalDuePastDueV3InTransaction(
       const assignment = latestAssignmentByKey.get(`${responsibility.occurrenceId}:${responsibility.teamId}:${responsibility.slotIndex}`);
       if (!assignment) continue;
       if (assignment.responsibilityId !== responsibility.id) {
-        const hasCurrentTeamLiability = responsibility.state === "active" && obligations.some((obligation) =>
+      const hasCurrentTeamLiability = responsibility.state === "active" && obligations.some((obligation) =>
           obligation.responsibilityId === responsibility.id
           && (obligation.state === "open" || obligation.state === "partially_settled")
           && owners.get(obligation.id)?.kind === "team");
@@ -1811,7 +1831,7 @@ export async function readCanonicalDuePastDueV3InTransaction(
       }
       assignmentByResponsibility.set(responsibility.id, assignment);
     }
-    const allocations = obligations.length === 0 ? [] : await tx.select({
+    const allocations = obligations.length === 0 ? [] : await readCanonicalV3Stage(input.checkpoint, () => tx.select({
       id: paymentAllocations.id,
       paymentId: paymentAllocations.paymentId,
       obligationId: paymentAllocations.obligationId,
@@ -1822,8 +1842,8 @@ export async function readCanonicalDuePastDueV3InTransaction(
       eq(paymentAllocations.leagueId, input.leagueId),
       eq(paymentAllocations.state, "active"),
       inArray(paymentAllocations.obligationId, obligations.map((row) => row.id)),
-    ));
-    const adjustments = allocations.length === 0 ? [] : await tx.select({
+    )));
+    const adjustments = allocations.length === 0 ? [] : await readCanonicalV3Stage(input.checkpoint, () => tx.select({
       sourceAllocationId: refundAllocationAdjustments.sourceAllocationId,
       amountMinor: refundAllocationAdjustments.amountMinor,
       disposition: refundAllocationAdjustments.disposition,
@@ -1831,12 +1851,12 @@ export async function readCanonicalDuePastDueV3InTransaction(
       eq(refundAllocationAdjustments.organizationId, input.organizationId),
       eq(refundAllocationAdjustments.leagueId, input.leagueId),
       inArray(refundAllocationAdjustments.sourceAllocationId, allocations.map((row) => row.id)),
-    ));
+    )));
     const adjustmentsByAllocation = new Map(adjustments.map((row) => [row.sourceAllocationId, row]));
     const allocationsByObligation = new Map<string, typeof allocations>();
     for (const allocation of allocations) allocationsByObligation.set(allocation.obligationId, [...(allocationsByObligation.get(allocation.obligationId) ?? []), allocation]);
     const paymentIds = [...new Set(allocations.map((row) => row.paymentId))];
-    const paymentRows = paymentIds.length === 0 ? [] : await tx.select({
+    const paymentRows = paymentIds.length === 0 ? [] : await readCanonicalV3Stage(input.checkpoint, () => tx.select({
       id: payments.id,
       status: payments.status,
       disputeId: payments.disputeId,
@@ -1846,22 +1866,22 @@ export async function readCanonicalDuePastDueV3InTransaction(
       eq(payments.organizationId, input.organizationId),
       eq(payments.leagueId, input.leagueId),
       inArray(payments.id, paymentIds),
-    ));
+    )));
     const paymentById = new Map(paymentRows.map((row) => [row.id, row]));
     const paymentOperationIds = [...new Set(paymentRows.flatMap((row) => row.paymentOperationId ? [row.paymentOperationId] : []))];
-    const disputeRows = paymentOperationIds.length === 0 ? [] : await tx.select({ operationId: paymentDisputes.paymentOperationId }).from(paymentDisputes).where(and(
+    const disputeRows = paymentOperationIds.length === 0 ? [] : await readCanonicalV3Stage(input.checkpoint, () => tx.select({ operationId: paymentDisputes.paymentOperationId }).from(paymentDisputes).where(and(
       eq(paymentDisputes.organizationId, input.organizationId),
       inArray(paymentDisputes.paymentOperationId, paymentOperationIds),
       sql`${paymentDisputes.state} NOT IN ('WON', 'INQUIRY_CLOSED')`,
-    ));
+    )));
     const disputedOperations = new Set(disputeRows.map((row) => row.operationId));
-    const operationRows = paymentOperationIds.length === 0 ? [] : await tx.select({ id: paymentOperations.id, status: paymentOperations.status }).from(paymentOperations).where(and(
+    const operationRows = paymentOperationIds.length === 0 ? [] : await readCanonicalV3Stage(input.checkpoint, () => tx.select({ id: paymentOperations.id, status: paymentOperations.status }).from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.leagueId, input.leagueId),
       inArray(paymentOperations.id, paymentOperationIds),
-    ));
+    )));
     const operationById = new Map(operationRows.map((row) => [row.id, row]));
-    const unresolvedRefundRows = paymentIds.length === 0 ? [] : await tx.select({ paymentId: refundPaymentOperationSnapshots.paymentId }).from(refundPaymentOperationSnapshots)
+    const unresolvedRefundRows = paymentIds.length === 0 ? [] : await readCanonicalV3Stage(input.checkpoint, () => tx.select({ paymentId: refundPaymentOperationSnapshots.paymentId }).from(refundPaymentOperationSnapshots)
       .innerJoin(paymentOperations, and(
         eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
         eq(paymentOperations.organizationId, input.organizationId),
@@ -1870,7 +1890,7 @@ export async function readCanonicalDuePastDueV3InTransaction(
         eq(refundPaymentOperationSnapshots.leagueId, input.leagueId),
         inArray(refundPaymentOperationSnapshots.paymentId, paymentIds),
         inArray(paymentOperations.status, ["pending", "leased", "provider_unknown", "retry_scheduled", "reconciliation_required"] as const),
-      ));
+      )));
     const unresolvedRefundPaymentIds = new Set(unresolvedRefundRows.map((row) => row.paymentId));
     const allRows: FinancialReadRowContractV3[] = [];
     const projectionRows = [] as Array<{
@@ -1997,12 +2017,23 @@ export async function readCanonicalDuePastDueV3InTransaction(
     }
     const forecastCoverageByTargetId = new Map<string, ManagePaymentsForecastCoverage>();
     const projectionRowById = new Map(projectionRows.map((row) => [row.obligationId, row]));
+    const canonicalRowsByForecastResponsibility = new Map<string, typeof allRows>();
+    for (const row of allRows) {
+      if (row.state === "voided") continue;
+      const effectiveDebtorBowlerId = projectionRowById.get(row.id)?.effectiveDebtorBowlerId;
+      if (effectiveDebtorBowlerId === undefined || effectiveDebtorBowlerId === null) continue;
+      const key = JSON.stringify([row.occurrenceId, row.responsibilityId, row.teamId, effectiveDebtorBowlerId]);
+      const groupedRows = canonicalRowsByForecastResponsibility.get(key);
+      if (groupedRows) groupedRows.push(row);
+      else canonicalRowsByForecastResponsibility.set(key, [row]);
+    }
     for (const target of forecastTargets) {
-      const sameOwnerResponsibilityRows = allRows.filter((row) => row.occurrenceId === target.occurrenceId
-        && row.responsibilityId === target.responsibilityId
-        && row.teamId === target.teamId
-        && row.state !== "voided"
-        && projectionRowById.get(row.id)?.effectiveDebtorBowlerId === target.bowlerId);
+      const sameOwnerResponsibilityRows = canonicalRowsByForecastResponsibility.get(JSON.stringify([
+        target.occurrenceId,
+        target.responsibilityId,
+        target.teamId,
+        target.bowlerId,
+      ])) ?? [];
       const fullRows = sameOwnerResponsibilityRows.filter((row) => row.component === "full");
       const splitRows = sameOwnerResponsibilityRows.filter((row) => row.component === "lineage" || row.component === "prize");
       if (target.feeComponent === "full" && fullRows.length > 0 && splitRows.length > 0) {
@@ -2052,13 +2083,14 @@ export async function readCanonicalDuePastDueV3InTransaction(
         reviewRequired: false,
       });
     }
-    const accountProjectionResult = accountAdoption ? await readOwnedAccountFinancialProjectionInTransaction(tx, {
+    const accountProjectionResult = accountAdoption ? await readCanonicalV3Stage(input.checkpoint, () => readOwnedAccountFinancialProjectionInTransaction(tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
       asOf,
       rows: projectionRows,
       ...(input.bowlerId === undefined ? {} : { bowlerId: input.bowlerId }),
-    }) : null;
+      ...(input.ledgerReadSnapshot === undefined ? {} : { ledgerReadSnapshot: input.ledgerReadSnapshot }),
+    })) : null;
     if (accountAdoption && !accountProjectionResult) {
       throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Owned account adoption evidence changed during the financial read", 503);
     }
