@@ -299,6 +299,7 @@ function NavLeafRow({
       aria-label={effectiveCollapsed ? item.label : undefined}
       aria-current={isActive ? "page" : undefined}
       title={effectiveCollapsed ? item.label : undefined}
+      data-manage-payments-active-nav={weeklyPaymentsActive ? "" : undefined}
       className={cn(
         "flex w-full items-center gap-3 rounded-md transition-all duration-200 group no-underline",
         "focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-navigation-deep",
@@ -326,7 +327,10 @@ function NavLeafRow({
         )}
       />
       {!effectiveCollapsed && (
-        <span className={cn("font-medium", isSub ? "navigation-subitem" : "text-sm")}>
+        <span
+          data-manage-payments-nav-label={appearance === "weekly-payments" ? "" : undefined}
+          className={cn("font-medium", isSub ? "navigation-subitem" : "text-sm")}
+        >
           {item.label}
         </span>
       )}
@@ -458,7 +462,12 @@ function NavSubMenu({
               childActive ? "text-brand-accent-400" : "text-navigation-400 group-hover:text-navigation-300"
             )}
           />
-          <span className="font-medium text-sm">{item.label}</span>
+          <span
+            data-manage-payments-nav-label={appearance === "weekly-payments" ? "" : undefined}
+            className="font-medium text-sm"
+          >
+            {item.label}
+          </span>
           {!userOpen && aggregatedBadge > 0 && (
             <NavBadge count={aggregatedBadge} isCollapsed={false} />
           )}
@@ -813,7 +822,10 @@ export function Layout({
             ? "manage-payments-main-expanded"
             : "md:ml-64"
       )}>
-        <header className="h-16 bg-white border-b border-navigation-200 flex items-center justify-between px-4 md:px-8 shrink-0 app-header-shadow z-10 sticky top-0">
+        <header className={cn(
+          "h-16 bg-white border-b border-navigation-200 flex items-center justify-between px-4 md:px-8 shrink-0 app-header-shadow z-10 sticky top-0",
+          appearance === "weekly-payments" && "font-familiar manage-payments-global-header",
+        )}>
           <div className="flex items-center gap-3 text-navigation-500">
             <button
               type="button"

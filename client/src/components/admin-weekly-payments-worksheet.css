@@ -3,7 +3,16 @@
   background: var(--familiar-canvas);
   color: var(--familiar-ink);
   font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+}
+
+.manage-payments-global-header {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
 }
 
 @font-face {
@@ -18,7 +27,31 @@
   max-height: min(88dvh, 920px);
   overflow-y: auto;
   color: var(--familiar-ink);
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
   box-shadow: 0 22px 64px rgb(15 23 42 / 0.2);
+}
+
+.manage-payments-select-content-control,
+.manage-payments-select-content-fee {
+  font-family: var(--familiar-font);
+  font-weight: 400;
+}
+
+.manage-payments-select-content-control [role="option"] {
+  font-family: var(--familiar-font);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.manage-payments-select-content-fee [role="option"] {
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: normal;
 }
 
 .manage-payments-dialog :focus-visible {
@@ -204,6 +237,27 @@
   margin-top: 8px;
 }
 
+.manage-payments-dialog [data-awpa="actions"] button {
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.manage-payments-layout-content [data-awpw="received-content"] [data-awpw="receipt-currency-prefix"] {
+  font-family: var(--familiar-font);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.manage-payments-layout-content [data-awpw="received-content"] [data-awpw="cancel-recorded-edit"] {
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
 .manage-payments-layout-inner {
   width: 100%;
   max-width: none;
@@ -231,15 +285,18 @@
   background: var(--familiar-canvas);
   color: var(--familiar-ink);
   font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
 }
 
 [data-awpw="page-heading"] h1 {
   margin: 0;
   color: var(--familiar-navy);
   font-size: 30px;
-  font-weight: 700;
-  letter-spacing: -0.04em;
-  line-height: 1.15;
+  font-weight: 720;
+  letter-spacing: -1.1px;
+  line-height: 1.16;
 }
 
 [data-awpw="page-heading"] p {
@@ -252,7 +309,7 @@
 [data-awpw="toolbar"] {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   margin-top: 18px;
   padding-bottom: 15px;
   border-bottom: 1px solid var(--familiar-line);
@@ -264,16 +321,64 @@
 }
 
 [data-awpw="week-picker"] {
-  width: 360px;
+  width: 362px;
   max-width: 100%;
-  flex: 0 1 360px;
+  flex: 0 1 362px;
 }
 
 [data-awpw="week-controls"] {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
+}
+
+[data-awpw="week-controls"] > button {
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+[data-awpw="week-controls"] > button > svg {
+  width: 19px;
+  height: 19px;
+}
+
+[data-awpw="league-picker"] .manage-payments-select-control-trigger {
+  font-family: var(--familiar-font);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+[data-awpw="worksheet"] .manage-payments-select-fee-trigger {
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: normal;
+}
+
+[data-awpw="week-picker"] .manage-payments-select-trigger {
+  position: relative;
+  width: 260px;
+  min-width: 0;
+  flex: 0 0 260px;
+  border-radius: 6px;
+  font-family: var(--familiar-font);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+[data-awpw="week-picker"] .manage-payments-select-trigger > svg {
+  position: absolute;
+  right: 12px;
+  width: 16px;
+  height: 16px;
+  color: #64748b;
+  opacity: 1;
+  pointer-events: none;
 }
 
 [data-awpw="worksheet"] {
@@ -292,7 +397,15 @@
   margin: 0;
   color: var(--familiar-muted);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+[data-awpw="team-controls"] > div > button {
+  font-family: var(--familiar-font);
+  font-size: 12px;
+  font-weight: 610;
+  line-height: 1.45;
 }
 
 [data-awpw="team-controls"] > div {
@@ -322,6 +435,7 @@
   font-size: 16px;
   font-weight: 680;
   letter-spacing: -0.2px;
+  line-height: 1.45;
 }
 
 [data-awpw="table-scroll"] {
@@ -358,6 +472,7 @@
   background: var(--familiar-table-header);
   font-size: var(--manage-payments-table-head-size);
   font-weight: 650;
+  line-height: 1.3;
   white-space: nowrap;
 }
 
@@ -368,7 +483,7 @@
 .manage-payments-table-cell {
   padding: 4px 8px;
   border-color: var(--familiar-line);
-  line-height: 1.35;
+  line-height: 1.45;
 }
 
 .manage-payments-cell-responsible {
@@ -376,6 +491,8 @@
 }
 
 .manage-payments-cell-balance {
+  font-size: 14px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
@@ -398,10 +515,38 @@
   gap: 4px 8px;
 }
 
+[data-awpw="received-content"] .text-sm,
+[data-awpw="edit-recorded-button"] {
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.3;
+}
+
+[data-awpw="received-content"] small {
+  font-family: var(--familiar-font);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
 [data-awpw="amount-input"] {
   position: relative;
   width: 150px;
   max-width: 100%;
+}
+
+.manage-payments-layout-content .manage-payments-input {
+  font-family: var(--familiar-font);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+[data-awpw="received-content"] [data-awpw-edit-input] > span {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
 }
 
 [data-awpw-edit-input] {
@@ -460,8 +605,9 @@
   padding: 0;
   color: var(--familiar-navy);
   cursor: pointer;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
   text-align: left;
   text-decoration-color: var(--familiar-link-underline);
   text-decoration: underline;
@@ -475,7 +621,21 @@
 }
 
 [data-awpw="balance-text"] {
-  font-weight: 700;
+  font-weight: 660;
+}
+
+[data-awpw="final-paid"],
+[data-awpw="final-unpaid"] {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+[data-awpw="final-paid"] {
+  font-weight: 620;
+}
+
+[data-awpw="final-unpaid"] {
+  font-weight: 520;
 }
 
 [data-awpw="mobile-label"] {
@@ -486,7 +646,7 @@
   margin: 12px 0 0;
   color: var(--familiar-muted);
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 1.5;
 }
 
 [data-awpw="save-dock"] {
@@ -506,11 +666,17 @@
 [data-awpw="save-status"] {
   min-width: 0;
   color: var(--familiar-ink);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 [data-awpw="save-status"] p {
   margin: 0;
+}
+
+[data-awpw="save-status"] > p:first-child {
+  font-size: 14px;
+  font-weight: 680;
+  line-height: 1.45;
 }
 
 [data-awpw="save-status"] [data-awpw="invalid-notice"],
@@ -526,6 +692,37 @@
 [data-awpw="save-hint"] {
   margin-top: 3px !important;
   color: var(--familiar-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+[data-awpw="invalid-notice"],
+[data-awpw="save-error"] {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+[data-awpw="save-dock"] > button {
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+[data-manage-payments-nav-label] {
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+[data-manage-payments-active-nav] > [data-manage-payments-nav-label] {
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
 }
 
 [data-awpw="empty-state"] {
@@ -568,8 +765,13 @@
   }
 
   [data-awpw="week-picker"] {
-    width: 330px;
-    flex-basis: 330px;
+    width: 332px;
+    flex-basis: 332px;
+  }
+
+  [data-awpw="week-picker"] .manage-payments-select-trigger {
+    width: 230px;
+    flex-basis: 230px;
   }
 
   .manage-payments-table-head,
@@ -603,12 +805,15 @@
 
   [data-awpw="page-heading"] h1 {
     font-size: 27px;
-    letter-spacing: -0.035em;
+    font-weight: 720;
+    letter-spacing: -0.8px;
+    line-height: 1.16;
   }
 
   [data-awpw="page-heading"] p {
     max-width: 36ch;
-    font-size: 13px;
+    font-size: 12px;
+    line-height: 1.4;
   }
 
   [data-awpw="toolbar"] {
@@ -626,8 +831,41 @@
     max-width: none;
   }
 
+  [data-awpw="league-picker"] .manage-payments-select-control-trigger {
+    font-size: 16px;
+    line-height: 1.45;
+  }
+
   [data-awpw="week-controls"] {
     gap: 5px;
+  }
+
+  [data-awpw="week-picker"] .manage-payments-select-trigger {
+    width: 0;
+    flex: 1 1 0;
+    padding: 9px 38px 9px 9px;
+    font-size: 16px;
+  }
+
+  [data-awpw="worksheet"] .manage-payments-select-fee-trigger {
+    font-size: 16px;
+  }
+
+  .manage-payments-select-content-control [role="option"],
+  .manage-payments-select-content-fee [role="option"] {
+    font-size: 16px;
+  }
+
+  [data-awpw="week-picker"] .manage-payments-select-trigger > svg {
+    right: 8px;
+    flex: 0 0 16px;
+  }
+
+  [data-awpw="week-controls"] > button {
+    width: 42px;
+    min-width: 42px;
+    min-height: 44px;
+    flex: 0 0 42px;
   }
 
   [data-awpw="worksheet"] {
@@ -771,7 +1009,7 @@
     display: inline-flex;
     min-height: 44px;
     align-items: center;
-    font-size: 15px;
+    font-size: 14px;
   }
 
   .manage-payments-received-cell {
@@ -815,4 +1053,91 @@
     font-size: 12px;
   }
 
+  [data-awpw="save-status"] > p:first-child {
+    font-size: 12px;
+  }
+
+  [data-awpw="save-dock"] > button {
+    font-size: 13px;
+  }
+
+  [data-manage-payments-nav-label] {
+    font-size: 12px;
+  }
+
+  [data-manage-payments-active-nav] > [data-manage-payments-nav-label] {
+    font-size: 12px;
+  }
+
+  .manage-payments-dialog [data-awpa="header"] > h2 {
+    font-size: 19px;
+  }
+
+  .manage-payments-dialog [data-awpa="summary-cell"] dd {
+    font-size: 15px;
+  }
+
+  .manage-payments-dialog [data-awpa="actions"] button {
+    font-size: 14px;
+  }
+
+}
+
+@media (pointer: coarse) {
+  [data-awpw="league-picker"] .manage-payments-select-control-trigger,
+  [data-awpw="week-picker"] .manage-payments-select-trigger,
+  [data-awpw="worksheet"] .manage-payments-select-fee-trigger,
+  .manage-payments-select-content-control [role="option"],
+  .manage-payments-select-content-fee [role="option"],
+  .manage-payments-layout-content .manage-payments-input {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 340px) {
+  [data-awpw="week-controls"] {
+    gap: 4px;
+  }
+}
+
+@media (max-width: 380px) {
+  [data-awpw="page"] {
+    --manage-payments-mobile-gutter: 12px;
+  }
+
+  [data-awpw="toolbar"] {
+    gap: 7px;
+    margin-top: 12px;
+  }
+
+  [data-awpw="page-heading"] h1 {
+    font-size: 25px;
+    letter-spacing: -0.8px;
+  }
+
+  [data-awpw="page-heading"] p {
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  [data-awpw="mobile-label"] {
+    font-size: 10px;
+  }
+
+  [data-awpw="team-controls"] > div > button {
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  [data-manage-payments-nav-label] {
+    font-size: 11px;
+  }
+
+  [data-manage-payments-active-nav] > [data-manage-payments-nav-label] {
+    font-size: 11px;
+  }
+
+  .manage-payments-dialog [data-awpa="actions"] button {
+    font-size: 11px;
+  }
 }

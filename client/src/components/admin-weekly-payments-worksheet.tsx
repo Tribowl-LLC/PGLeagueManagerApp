@@ -342,7 +342,7 @@ function TeamWorksheet({
                           }}
                         >
                           <SelectTrigger
-                            appearance="managePayments"
+                            appearance="managePaymentsFee"
                             className="w-full min-w-0"
                             aria-label={`This week’s fee for ${row.displayName}`}
                           >
@@ -350,7 +350,7 @@ function TeamWorksheet({
                               {formatMoney(selectedFeeMinor)}
                             </SelectValue>
                           </SelectTrigger>
-                          <SelectContent>
+                          <SelectContent appearance="managePaymentsFee">
                             {feeOptions.map((option) => (
                               <SelectItem
                                 key={option.feeComponent}
@@ -406,6 +406,7 @@ function TeamWorksheet({
                                     variant="paymentsGhost"
                                     size="icon"
                                     className="shrink-0"
+                                    data-awpw="edit-recorded-button"
                                     disabled={saving}
                                     aria-label={`Edit recorded ${receipt.type} payment ${formatMoney(receipt.amountMinor)} received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                     onClick={() => onBeginManualReceiptEdit(manualKey, receipt)}
@@ -417,7 +418,7 @@ function TeamWorksheet({
                                 <div className="flex min-w-0 flex-col gap-1">
                                   <div className="flex min-w-0 items-center gap-1">
                                     <div data-awpw="amount-input" data-awpw-edit-input>
-                                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+                                      <span data-awpw="receipt-currency-prefix" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
                                       <Input
                                         type="text"
                                         inputMode="decimal"
@@ -445,6 +446,7 @@ function TeamWorksheet({
                                       variant="paymentsGhost"
                                       size="paymentsIcon"
                                       className="shrink-0"
+                                      data-awpw="cancel-recorded-edit"
                                       disabled={saving}
                                       aria-label={`Cancel recorded payment edit received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                       onClick={() => onCancelManualReceiptEdit(manualKey)}
@@ -468,7 +470,7 @@ function TeamWorksheet({
                         {!hasReceiptEvidence && (
                           <div className="flex min-w-0 flex-col gap-1">
                             <div data-awpw="amount-input">
-                              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+                              <span data-awpw="receipt-currency-prefix" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
                               <Input
                                 type="text"
                                 inputMode="decimal"
@@ -496,7 +498,7 @@ function TeamWorksheet({
                     </TableCell>
                     <TableCell appearance="managePaymentsFinal">
                       <span data-awpw="mobile-label">Final two weeks</span>
-                      <span className={row.finalTwoWeeksPaid ? "font-medium text-positive-700" : "text-muted-foreground"}>
+                      <span data-awpw={row.finalTwoWeeksPaid ? "final-paid" : "final-unpaid"} className={row.finalTwoWeeksPaid ? "font-medium text-positive-700" : "text-muted-foreground"}>
                         {row.finalTwoWeeksPaid ? "Paid" : "Unpaid"}
                       </span>
                     </TableCell>
