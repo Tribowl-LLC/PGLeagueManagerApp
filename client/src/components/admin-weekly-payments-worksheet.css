@@ -527,7 +527,7 @@
   font-family: var(--familiar-font);
   font-size: 11px;
   font-weight: 400;
-  line-height: 1.45;
+  line-height: 1.35;
 }
 
 [data-awpw="amount-input"] {
@@ -705,6 +705,14 @@
 }
 
 [data-awpw="save-dock"] > button {
+  font-family: var(--familiar-font);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+[data-manage-payments-nav-item] > span,
+[data-manage-payments-nav-group] > span {
   font-family: var(--familiar-font);
   font-size: 14px;
   font-weight: 400;
@@ -1054,6 +1062,13 @@
     font-size: 13px;
   }
 
+  [data-manage-payments-nav-item] > span,
+  [data-manage-payments-nav-group] > span {
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.45;
+  }
+
   [data-manage-payments-active-nav] > span {
     font-size: 12px;
   }
@@ -1115,6 +1130,13 @@
 
   [data-awpw="team-controls"] > div > button {
     font-size: 11px;
+    line-height: 1.45;
+  }
+
+  [data-manage-payments-nav-item] > span,
+  [data-manage-payments-nav-group] > span {
+    font-size: 11px;
+    font-weight: 400;
     line-height: 1.45;
   }
 
