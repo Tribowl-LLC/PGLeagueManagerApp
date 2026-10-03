@@ -238,6 +238,11 @@ describe("ManagePaymentsPage", () => {
     expect(csrfFetchMock).toHaveBeenCalledTimes(2);
     expect(csrfFetchMock.mock.calls[0]?.[0]).toContain("/canonical/manual-record-batch/quote/1");
     expect(csrfFetchMock.mock.calls[1]?.[0]).toContain("/canonical/manual-record-batch/1");
+    const quoteBody = JSON.parse(String(csrfFetchMock.mock.calls[0]?.[1]?.body)) as { rows: Array<{ payerBowlerId: number; amountMinor: number; type: string; notes: string | null }> };
+    expect(quoteBody.rows.map(({ payerBowlerId, amountMinor, type, notes }) => ({ payerBowlerId, amountMinor, type, notes }))).toEqual([
+      { payerBowlerId: 1, amountMinor: 2_000, type: "cash", notes: null },
+      { payerBowlerId: 2, amountMinor: 2_000, type: "cash", notes: null },
+    ]);
     const recordBody = JSON.parse(String(csrfFetchMock.mock.calls[1]?.[1]?.body)) as { rows: Array<{ payerBowlerId: number; amountMinor: number; type: string }> };
     expect(recordBody.rows.map(({ payerBowlerId, amountMinor, type }) => ({ payerBowlerId, amountMinor, type }))).toEqual([
       { payerBowlerId: 1, amountMinor: 2_000, type: "cash" },

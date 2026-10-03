@@ -316,6 +316,18 @@ describe('Resource authorization boundaries', () => {
       expect(JSON.stringify(data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
 
+    it('org A cannot quote a manual receipt for an org B league', async () => {
+      expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
+      const response = await apiPost(
+        `/api/financials/leagues/${orgBLeagueId}/canonical/manual-record/quote/1`,
+        { amountMinor: 1000, payerBowlerId: 1, type: 'cash', organizationId: sessionB.user.organizationId },
+        sessionA,
+      );
+      expect([403, 404]).toContain(response.status);
+      expect(response.data.success).toBe(false);
+      expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+    });
+
     it('org A GET /api/financials/leagues/:leagueId/team-envelope-slips.pdf?organizationId=<orgB> must fail closed for implicit and spoofed scope', async () => {
       expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
       expect(sessionB.user.organizationId, 'expected an org B organization id').not.toBeNull();

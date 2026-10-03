@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { canonicalJsonStringify } from "@shared/canonical-json";
 import {
   paymentAllocationFundingApplications,
@@ -37,6 +37,16 @@ export interface ManualReceiptPaymentRow {
   paymentOperationId: string | null;
   notes: string | null;
   paidByUserId: number | null;
+}
+
+export interface ActiveManualReceiptForPayment {
+  receiptId: string;
+  occurrenceId: string;
+  payerBowlerId: number;
+  revision: number;
+  paymentId: number;
+  amountMinor: number;
+  businessCollectionLocalDate: string;
 }
 
 export interface ExistingManualPaymentMetadata {
@@ -138,6 +148,50 @@ export async function appendManualReceiptRevisionInTransaction(
     recordedByUserId: input.actorUserId,
     createdAt: input.now,
   });
+}
+
+/** Resolve the exact active worksheet receipt head for a payment. A prior
+ * revision is not enough: the latest receipt revision must still point at
+ * this payment and the receipt must remain in its original collection week. */
+export async function readActiveManualReceiptForPaymentInTransaction(
+  tx: PaymentOperationTransaction,
+  input: { organizationId: number; leagueId: number; paymentId: number },
+): Promise<ActiveManualReceiptForPayment | null> {
+  const linked = await tx.select({
+    receiptId: weeklyPaymentWorksheetReceiptRevisions.receiptId,
+    occurrenceId: weeklyPaymentWorksheetReceipts.occurrenceId,
+    payerBowlerId: weeklyPaymentWorksheetReceipts.payerBowlerId,
+  }).from(weeklyPaymentWorksheetReceiptRevisions).innerJoin(weeklyPaymentWorksheetReceipts, and(
+    eq(weeklyPaymentWorksheetReceipts.id, weeklyPaymentWorksheetReceiptRevisions.receiptId),
+    eq(weeklyPaymentWorksheetReceipts.organizationId, input.organizationId),
+    eq(weeklyPaymentWorksheetReceipts.leagueId, input.leagueId),
+    eq(weeklyPaymentWorksheetReceipts.receiptKind, "manual"),
+  )).where(and(
+    eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, input.organizationId),
+    eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, input.leagueId),
+    eq(weeklyPaymentWorksheetReceiptRevisions.paymentId, input.paymentId),
+  )).limit(2).for("update", { of: [weeklyPaymentWorksheetReceiptRevisions, weeklyPaymentWorksheetReceipts] });
+  if (linked.length === 0) return null;
+  if (linked.length !== 1) throw new ManualPaymentReceiptError("manual_receipt_conflict", "This payment has ambiguous receipt history");
+  const receipt = linked[0];
+  if (!receipt) return null;
+  const [latest] = await tx.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+    eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, receipt.receiptId),
+    eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, input.organizationId),
+    eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, input.leagueId),
+  )).orderBy(desc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision)).limit(1).for("update");
+  if (!latest || latest.paymentId !== input.paymentId || latest.revisionKind === "manual_clear") {
+    throw new ManualPaymentReceiptError("manual_receipt_conflict", "This payment is no longer the active receipt in its collection week");
+  }
+  return {
+    receiptId: receipt.receiptId,
+    occurrenceId: receipt.occurrenceId,
+    payerBowlerId: receipt.payerBowlerId,
+    revision: latest.receiptRevision,
+    paymentId: input.paymentId,
+    amountMinor: latest.amountMinor,
+    businessCollectionLocalDate: latest.businessCollectionLocalDate,
+  };
 }
 
 /** Create a real cash/check tender and the exact credited-owner funding source.

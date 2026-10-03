@@ -151,6 +151,17 @@ export const canonicalManualRecordRequestSchema = z.object({
   if (value.type === "check" && !value.checkNumber) ctx.addIssue({ code: "custom", path: ["checkNumber"], message: "checkNumber is required for check entries" });
 });
 
+export const canonicalManualRecordQuoteRequestSchema = z.object({
+  amountMinor: z.number().int().positive(),
+  payerBowlerId: z.number().int().positive(),
+  type: z.enum(["cash", "check"]).optional().default("cash"),
+  checkNumber: z.string().trim().min(1).max(128).optional(),
+  notes: z.string().max(1000).nullable().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.type === "check" && !value.checkNumber) ctx.addIssue({ code: "custom", path: ["checkNumber"], message: "checkNumber is required for check entries" });
+  if (value.type === "cash" && value.checkNumber !== undefined) ctx.addIssue({ code: "custom", path: ["checkNumber"], message: "checkNumber is only valid for check entries" });
+});
+
 const manualBatchRowKeySchema = z.string().trim().min(16).max(109).regex(/^[A-Za-z0-9_-]+$/);
 const canonicalManualRecordBatchRowSchema = canonicalManualRecordRequestSchema.extend({ rowKey: manualBatchRowKeySchema }).superRefine((value, ctx) => {
   if (value.type === "cash" && value.checkNumber !== undefined) {
@@ -165,7 +176,13 @@ export const canonicalManualRecordBatchQuoteRequestSchema = z.object({
     rowKey: manualBatchRowKeySchema,
     amountMinor: z.number().int().positive(),
     payerBowlerId: z.number().int().positive(),
-  }).strict()).min(1).max(200),
+    type: z.enum(["cash", "check"]).optional().default("cash"),
+    checkNumber: z.string().trim().min(1).max(128).optional(),
+    notes: z.string().max(1000).nullable().optional(),
+  }).strict().superRefine((row, ctx) => {
+    if (row.type === "check" && !row.checkNumber) ctx.addIssue({ code: "custom", path: ["checkNumber"], message: "checkNumber is required for check entries" });
+    if (row.type === "cash" && row.checkNumber !== undefined) ctx.addIssue({ code: "custom", path: ["checkNumber"], message: "checkNumber is only valid for check entries" });
+  })).min(1).max(200),
 }).strict().superRefine((value, ctx) => {
   const payerIds = value.rows.map((row) => row.payerBowlerId);
   if (new Set(payerIds).size !== payerIds.length) ctx.addIssue({ code: "custom", path: ["rows"], message: "Each payer may appear only once per payment batch" });
@@ -390,6 +407,7 @@ export type CanonicalDuePastDueResponseV2 = {
   };
 };
 export type CanonicalManualRecordRequest = z.infer<typeof canonicalManualRecordRequestSchema>;
+export type CanonicalManualRecordQuoteRequest = z.infer<typeof canonicalManualRecordQuoteRequestSchema>;
 export type CanonicalManualRecordBatchQuoteRequest = z.infer<typeof canonicalManualRecordBatchQuoteRequestSchema>;
 export type CanonicalManualRecordBatchRequest = z.infer<typeof canonicalManualRecordBatchRequestSchema>;
 export type CanonicalCorrectionRequest = z.infer<typeof canonicalCorrectionRequestSchema>;

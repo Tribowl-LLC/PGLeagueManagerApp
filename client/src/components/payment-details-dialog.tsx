@@ -120,6 +120,9 @@ function invalidateCashEditViews(leagueId: number, bowlerId: number): Promise<un
   const requests = [
     queryClient.invalidateQueries({ queryKey: ["/api/payments"] }),
     queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] }),
+    queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", leagueId] }),
+    queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-participants/4"] }),
+    queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-quote/4"] }),
     queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "canonical-due-past-due/2"] }),
     queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }),
     queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] }),

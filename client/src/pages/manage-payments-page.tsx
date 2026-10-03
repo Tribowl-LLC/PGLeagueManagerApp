@@ -293,7 +293,14 @@ export default function ManagePaymentsPage() {
       prepared.push({ ...row, values, amountMinor, requestKey, fingerprint: values.fingerprint, intentScope });
     }
 
-    const quotedRows = prepared.filter((row) => !row.fingerprint).map((row) => ({ rowKey: row.requestKey, amountMinor: row.amountMinor, payerBowlerId: row.bowlerId }));
+    const quotedRows = prepared.filter((row) => !row.fingerprint).map((row) => ({
+      rowKey: row.requestKey,
+      amountMinor: row.amountMinor,
+      payerBowlerId: row.bowlerId,
+      type: row.values.type,
+      ...(row.values.type === "check" ? { checkNumber: row.values.checkNumber.trim() } : {}),
+      notes: row.values.notes.trim() || null,
+    }));
     const quoteResults = new Map<string, { fingerprint: string; payerBowlerId: number }>();
     if (quotedRows.length > 0) {
       try {

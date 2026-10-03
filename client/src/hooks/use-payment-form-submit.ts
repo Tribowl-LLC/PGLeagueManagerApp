@@ -110,10 +110,21 @@ export function usePaymentFormSubmit({
         }
       }
       if (!accountQuoteFingerprint) {
-        const quoteResponse = await csrfFetch(`/api/financials/leagues/${data.leagueId}/interactive-obligation-quote/2`, {
+        const isManualPayment = data.type === "cash" || data.type === "check";
+        const quoteResponse = await csrfFetch(isManualPayment
+          ? `/api/financials/leagues/${data.leagueId}/canonical/manual-record/quote/1`
+          : `/api/financials/leagues/${data.leagueId}/interactive-obligation-quote/2`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ amountMinor: data.amount, payerBowlerId: data.bowlerId }),
+          body: JSON.stringify(isManualPayment
+            ? {
+              amountMinor: data.amount,
+              payerBowlerId: data.bowlerId,
+              type: data.type,
+              ...(data.type === "check" && data.checkNumber ? { checkNumber: data.checkNumber } : {}),
+              notes: data.notes ?? null,
+            }
+            : { amountMinor: data.amount, payerBowlerId: data.bowlerId }),
         });
         const quoteBody = await quoteResponse.json().catch(() => ({}));
         if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment quote is unavailable");

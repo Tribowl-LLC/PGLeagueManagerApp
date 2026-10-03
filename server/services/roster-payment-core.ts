@@ -37,6 +37,9 @@ import {
   canonicalCollectionGroups,
   leagueOccurrenceBillingTerms,
   paymentVoids,
+  paymentAllocationFundingApplications,
+  weeklyPaymentWorksheetReceipts,
+  weeklyPaymentWorksheetReceiptRevisions,
   users,
   emailSchema,
   type TeamPaymentPolicy,
@@ -51,6 +54,7 @@ import type {
   CanonicalCorrectionRequest,
   CanonicalCashPaymentDeleteRequest,
   CanonicalManualRecordRequest,
+  CanonicalManualRecordQuoteRequest,
   OccurrenceResponsibilityInput,
   RosterPaymentResponsibilityRequest,
   RosterPaymentResponsibilityRequestV2,
@@ -92,6 +96,29 @@ import { isCurrentBowlerOwnedObligationSql, resolvePaymentObligationOwnerInTrans
 import { reverseRotatingCreditApplicationsForAssignmentChangeInTransaction } from "./rotating-credit-applications.js";
 import { applyRotatingCreditToConfirmedObligationsInTransaction } from "./rotating-credit-applications.js";
 import { readConfirmedRotatingObligationsForCredit } from "./rotating-team-payments.js";
+import {
+  applyOwnedFundingFifoInTransaction,
+  OwnedPaymentLedgerError,
+  readOwnedAccountBalancesInTransaction,
+  readOwnedLedgerAdoptionInTransaction,
+} from "./owned-payment-ledger.js";
+import {
+  appendManualReceiptRevisionInTransaction,
+  canonicalManualReceiptQuoteFingerprint,
+  createManualReceiptHeadInTransaction,
+  createManualReceiptPaymentInTransaction,
+  ManualPaymentReceiptError,
+  readActiveManualReceiptForPaymentInTransaction,
+  voidManualReceiptPaymentInTransaction,
+  type ManualReceiptPaymentRow,
+} from "./manual-payment-receipts.js";
+import { LeagueOccurrenceScheduleError, loadLeagueOccurrenceScheduleSnapshot } from "./league-occurrence-schedule.js";
+import {
+  localDateForInstant,
+  mapCardReceiptCollectionOccurrence,
+  ManagePaymentsWorksheetProjectionError,
+  selectManagePaymentsOccurrence,
+} from "./manage-payments-worksheet-projection.js";
 
 export { calculateRosterPaymentTiming };
 
@@ -191,13 +218,20 @@ async function assertCommandReplayPaymentsExist(
   };
 
   if (input.commandType === "roster_payment.manual_record") {
-    const records = result?.records;
-    if (!Array.isArray(records) || records.length === 0 || records.some((record) => {
-      if (typeof record !== "object" || record === null) return true;
-      const payment = (record as Record<string, unknown>).payment;
-      return typeof payment !== "object" || payment === null || !addPaymentId((payment as Record<string, unknown>).id);
-    })) {
-      throw new RosterPaymentError("COMMAND_RESULT_UNVERIFIABLE", "The earlier payment command cannot be replayed because its stored result is incomplete", 409);
+    const payment = result?.payment;
+    if (typeof payment === "object" && payment !== null) {
+      if (!addPaymentId((payment as Record<string, unknown>).id)) {
+        throw new RosterPaymentError("COMMAND_RESULT_UNVERIFIABLE", "The earlier payment command cannot be replayed because its stored result is incomplete", 409);
+      }
+    } else {
+      const records = result?.records;
+      if (!Array.isArray(records) || records.length === 0 || records.some((record) => {
+        if (typeof record !== "object" || record === null) return true;
+        const recordPayment = (record as Record<string, unknown>).payment;
+        return typeof recordPayment !== "object" || recordPayment === null || !addPaymentId((recordPayment as Record<string, unknown>).id);
+      })) {
+        throw new RosterPaymentError("COMMAND_RESULT_UNVERIFIABLE", "The earlier payment command cannot be replayed because its stored result is incomplete", 409);
+      }
     }
   } else if (input.commandType === "roster_payment.void_payment") {
     const payment = result?.payment;
@@ -223,6 +257,53 @@ async function assertCommandReplayPaymentsExist(
   }
 }
 
+function paymentFromManualRecordResult(result: unknown): Record<string, unknown> | null {
+  if (typeof result !== "object" || result === null) return null;
+  const source = result as Record<string, unknown>;
+  if (typeof source.payment === "object" && source.payment !== null) return source.payment as Record<string, unknown>;
+  const records = source.records;
+  if (!Array.isArray(records)) return null;
+  for (const value of records) {
+    if (typeof value !== "object" || value === null) continue;
+    const payment = (value as Record<string, unknown>).payment;
+    if (typeof payment === "object" && payment !== null) return payment as Record<string, unknown>;
+  }
+  return null;
+}
+
+async function replayManualRecordCommandBeforeRequote(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; actorUserId: number; request: CanonicalManualRecordRequest },
+): Promise<void> {
+  const [existing] = await tx.select().from(financialCommands).where(and(
+    eq(financialCommands.organizationId, input.organizationId),
+    eq(financialCommands.leagueId, input.leagueId),
+    eq(financialCommands.commandType, "roster_payment.manual_record"),
+    eq(financialCommands.idempotencyKey, input.request.idempotencyKey),
+  )).limit(1).for("update");
+  if (!existing) return;
+  if (existing.actorUserId !== input.actorUserId) throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key belongs to another actor", 409);
+  if (existing.state === "failed") throw new RosterPaymentError(existing.errorCode ?? "COMMAND_FAILED", "The command previously failed", 409);
+  if (existing.state !== "applied" || existing.result === null) {
+    throw new RosterPaymentError("COMMAND_IN_PROGRESS", "This payment command is still being resolved; retry the same request", 409);
+  }
+  await assertCommandReplayPaymentsExist(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    commandType: "roster_payment.manual_record",
+    result: existing.result,
+  });
+  const payment = paymentFromManualRecordResult(existing.result);
+  const exactPayload = payment
+    && payment.bowlerId === input.request.payerBowlerId
+    && payment.amount === input.request.amountMinor
+    && payment.type === input.request.type
+    && (payment.checkNumber ?? null) === (input.request.checkNumber ?? null)
+    && (payment.notes ?? null) === (input.request.notes ?? null);
+  if (!exactPayload) throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different manual payment", 409);
+  throw new RosterPaymentReplay(existing.result);
+}
+
 async function completeFinancialCommand(tx: RosterPaymentTransaction, input: { organizationId: number; leagueId: number; commandType: string; idempotencyKey: string; result: unknown }): Promise<void> {
   await tx.update(financialCommands).set({ state: "applied", result: input.result }).where(and(
     eq(financialCommands.organizationId, input.organizationId),
@@ -235,6 +316,22 @@ async function completeFinancialCommand(tx: RosterPaymentTransaction, input: { o
 function quoteFingerprint(obligations: Array<{ id: string; amountMinor: number; dueAt: string; effectiveCollectionAt: string; payerBowlerId: number; pairedCollectionReady?: boolean }>): string {
   const value = obligations.map((row) => [row.id, row.amountMinor, row.dueAt, row.effectiveCollectionAt, row.payerBowlerId, row.pairedCollectionReady === true]).join("|");
   return `lvrosterquote:v1:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+async function assertManualPaymentPayerInTransaction(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; payerBowlerId: number },
+): Promise<void> {
+  const [payer] = await tx.select({ id: bowlers.id }).from(bowlers).innerJoin(bowlerLeagues, and(
+    eq(bowlerLeagues.bowlerId, bowlers.id),
+    eq(bowlerLeagues.leagueId, input.leagueId),
+    eq(bowlerLeagues.active, true),
+  )).where(and(
+    eq(bowlers.id, input.payerBowlerId),
+    eq(bowlers.organizationId, input.organizationId),
+    eq(bowlers.active, true),
+  )).limit(1);
+  if (!payer) throw new RosterPaymentError("PAYER_SCOPE_MISMATCH", "The payment payer is not an active member of this league", 403);
 }
 
 function commandFingerprint(prefix: string, value: unknown): string {
@@ -2101,6 +2198,77 @@ export async function quoteInteractiveObligations(input: FifoQuoteInput & { orga
   return input.transaction ? run(input.transaction) : db.transaction(run);
 }
 
+/** Quote manual tender without requiring adopted account receipts to consume
+ * only today's confirmed debt. In adopted mode the incoming amount is always
+ * the exact cash/check amount; balances are context for staff and owned FIFO
+ * remains authoritative when the real receipt is committed. */
+export async function quoteCanonicalManualPayment(input: {
+  organizationId: number;
+  leagueId: number;
+  request: CanonicalManualRecordQuoteRequest;
+}) {
+  return db.transaction(async (tx) => {
+    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+    const adoption = await readOwnedLedgerAdoptionInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+    });
+    const normalized = {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      payerBowlerId: input.request.payerBowlerId,
+      amountMinor: input.request.amountMinor,
+      type: input.request.type,
+      checkNumber: input.request.type === "check" ? input.request.checkNumber ?? null : null,
+      notes: input.request.notes ?? null,
+    };
+    if (!adoption) {
+      const quote = await quoteInteractiveObligations({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        payerBowlerId: input.request.payerBowlerId,
+        amountMinor: input.request.amountMinor,
+        transaction: tx,
+      });
+      return {
+        ...quote,
+        type: normalized.type,
+        checkNumber: normalized.checkNumber,
+        notes: normalized.notes,
+        fingerprint: canonicalManualReceiptQuoteFingerprint(normalized, quote.fingerprint),
+      };
+    }
+    await assertManualPaymentPayerInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      payerBowlerId: input.request.payerBowlerId,
+    });
+    const balance = (await readOwnedAccountBalancesInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      bowlerIds: [input.request.payerBowlerId],
+    })).get(input.request.payerBowlerId);
+    if (!balance) throw new RosterPaymentError("ACCOUNT_BALANCE_UNAVAILABLE", "The payer account could not be read", 503);
+    return {
+      contractVersion: "canonical-manual-record-quote/1" as const,
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      currency: "USD" as const,
+      payerBowlerId: normalized.payerBowlerId,
+      amountMinor: normalized.amountMinor,
+      type: normalized.type,
+      checkNumber: normalized.checkNumber,
+      notes: normalized.notes,
+      fingerprint: canonicalManualReceiptQuoteFingerprint(normalized),
+      account: {
+        availableCreditMinor: balance.availableCreditMinor,
+        confirmedOwedMinor: balance.confirmedOwedMinor,
+        netBalanceMinor: balance.netBalanceMinor,
+      },
+    };
+  });
+}
+
 /** Prepare and dispatch one automatically allocated interactive charge. Provider
  * calls happen only after the operation snapshot commits; allocation writes
  * happen in a second locked transaction after a durable provider result. */
@@ -2324,51 +2492,483 @@ export async function chargeInteractiveObligations(input: {
   });
 }
 
-export async function recordCanonicalManualPayment(input: { organizationId: number; leagueId: number; actorUserId: number; request: CanonicalManualRecordRequest }) {
-  return db.transaction(async (tx) => {
-    await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
-    await beginFinancialCommand(tx, {
+async function resolveCanonicalManualReceiptCollectionInTransaction(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; businessCollectionLocalDate?: string },
+): Promise<{ occurrenceId: string; businessCollectionLocalDate: string; now: string }> {
+  const [league] = await tx.select({ timezone: leagues.timezone }).from(leagues).where(and(
+    eq(leagues.id, input.leagueId),
+    eq(leagues.organizationId, input.organizationId),
+  )).limit(1).for("share");
+  if (!league) throw new RosterPaymentError("NOT_FOUND", "League not found", 404);
+  const nowResult = await tx.execute<{ now: string }>(sql`SELECT transaction_timestamp()::text AS now`);
+  const databaseNow = nowResult.rows[0]?.now;
+  if (!databaseNow) throw new RosterPaymentError("COLLECTION_PERIOD_UNAVAILABLE", "The current collection period could not be resolved", 409);
+  const now = new Date(databaseNow).toISOString();
+  try {
+    const schedule = await loadLeagueOccurrenceScheduleSnapshot({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      includeAdministratorEvidence: false,
+    }, tx);
+    const timeZone = league.timezone ?? schedule.occurrences[0]?.timezone;
+    if (!timeZone) throw new RosterPaymentError("COLLECTION_PERIOD_UNAVAILABLE", "The league time zone is unavailable", 409);
+    const occurrenceId = input.businessCollectionLocalDate === undefined
+      ? selectManagePaymentsOccurrence(schedule, timeZone, now).occurrenceId
+      : mapCardReceiptCollectionOccurrence({
+        explicitCollectionOccurrenceId: null,
+        triggerOccurrenceId: null,
+        collectionLocalDate: input.businessCollectionLocalDate,
+      }, schedule);
+    if (occurrenceId === null) throw new RosterPaymentError("COLLECTION_PERIOD_UNAVAILABLE", "The requested payment date is outside the canonical collection schedule", 409);
+    return {
+      occurrenceId,
+      businessCollectionLocalDate: input.businessCollectionLocalDate ?? localDateForInstant(now, timeZone),
+      now,
+    };
+  } catch (error) {
+    if (error instanceof RosterPaymentError) throw error;
+    if (error instanceof LeagueOccurrenceScheduleError || error instanceof ManagePaymentsWorksheetProjectionError) {
+      throw new RosterPaymentError("COLLECTION_PERIOD_UNAVAILABLE", "The current canonical collection period is unavailable", 409);
+    }
+    throw error;
+  }
+}
+
+function mapManualReceiptMutationError(error: unknown): never {
+  if (error instanceof ManualPaymentReceiptError) {
+    throw new RosterPaymentError(
+      error.code === "manual_receipt_conflict" ? "MANUAL_RECEIPT_CONFLICT" : "PAYMENT_WRITE_FAILED",
+      error.message,
+      error.code === "manual_receipt_conflict" ? 409 : 503,
+    );
+  }
+  if (error instanceof OwnedPaymentLedgerError) {
+    throw new RosterPaymentError("FINANCIAL_EVIDENCE_REQUIRES_REVIEW", "Payment evidence needs review before this cash or check change", 409);
+  }
+  throw error;
+}
+
+async function requireActiveManualReceiptForPayment(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; paymentId: number },
+) {
+  let receipt;
+  try {
+    receipt = await readActiveManualReceiptForPaymentInTransaction(tx, input);
+  } catch (error) {
+    mapManualReceiptMutationError(error);
+  }
+  if (!receipt) throw new RosterPaymentError("MANUAL_RECEIPT_NOT_FOUND", "This cash or check payment has no active worksheet receipt history", 409);
+  return receipt;
+}
+
+async function clearAdoptedManualReceiptInTransaction(input: {
+  tx: RosterPaymentTransaction;
+  organizationId: number;
+  leagueId: number;
+  actorUserId: number;
+  idempotencyKey: string;
+  now: string;
+  reason: string;
+  payment: ManualReceiptPaymentRow;
+  receipt: NonNullable<Awaited<ReturnType<typeof readActiveManualReceiptForPaymentInTransaction>>>;
+}): Promise<{ affectedOwners: Set<number>; receiptId: string }> {
+  if (input.payment.bowlerId !== input.receipt.payerBowlerId || input.payment.amount !== input.receipt.amountMinor) {
+    throw new RosterPaymentError("MANUAL_RECEIPT_CONFLICT", "The saved receipt no longer matches its cash or check payment", 409);
+  }
+  let affectedOwners: Set<number>;
+  try {
+    affectedOwners = await voidManualReceiptPaymentInTransaction(input.tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
       actorUserId: input.actorUserId,
-      commandType: "roster_payment.manual_record",
-      idempotencyKey: input.request.idempotencyKey,
-      requestFingerprint: input.request.requestFingerprint,
-    });
-    const quote = await quoteInteractiveObligations({
+      occurrenceId: input.receipt.occurrenceId,
+      idempotencyKey: input.idempotencyKey,
+      reason: input.reason,
+    }, input.payment, input.receipt.receiptId, input.now);
+    await appendManualReceiptRevisionInTransaction(input.tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
-      amountMinor: input.request.amountMinor,
-      payerBowlerId: input.request.payerBowlerId,
-      transaction: tx,
+      actorUserId: input.actorUserId,
+      receiptId: input.receipt.receiptId,
+      revision: input.receipt.revision + 1,
+      paymentId: null,
+      amountMinor: 0,
+      businessCollectionLocalDate: input.receipt.businessCollectionLocalDate,
+      revisionKind: "manual_clear",
+      now: input.now,
     });
-    if (input.request.requestFingerprint !== quote.fingerprint) throw new RosterPaymentError("STALE_QUOTE", "The obligation quote is stale; request a new quote", 409);
-    const payerBowlerId = quote.payerBowlerId;
-    const [payment] = await tx.insert(payments).values({ organizationId: input.organizationId, bowlerId: payerBowlerId, leagueId: input.leagueId, amount: quote.amountMinor, status: "paid", type: input.request.type, checkNumber: input.request.checkNumber, notes: input.request.notes, idempotencyKey: input.request.idempotencyKey, paidByUserId: input.actorUserId }).returning();
-    if (!payment) throw new RosterPaymentError("PAYMENT_WRITE_FAILED", "The payment could not be recorded", 503);
-    const created = [];
-    for (const obligation of quote.obligations) {
-      const [allocation] = await tx.insert(paymentAllocations).values({ organizationId: input.organizationId, leagueId: input.leagueId, paymentId: payment.id, obligationId: obligation.id, amountMinor: obligation.selectedMinor, currency: obligation.currency, recordedByUserId: input.actorUserId }).returning();
-      if (!allocation) throw new RosterPaymentError("ALLOCATION_WRITE_FAILED", "The payment allocation could not be recorded", 503);
-      const activeRows = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, obligation.id), eq(paymentAllocations.state, "active"))).for("update");
-      const adjustmentRows = activeRows.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
-        eq(refundAllocationAdjustments.organizationId, input.organizationId),
-        eq(refundAllocationAdjustments.leagueId, input.leagueId),
-        inArray(refundAllocationAdjustments.sourceAllocationId, activeRows.map((row) => row.id)),
-      ));
-      const balance = canonicalObligationBalance({
-        amountMinor: obligation.amountMinor,
-        state: obligation.state,
-        grossAllocatedMinor: activeRows.reduce((sum, row) => sum + row.amountMinor, 0),
-        adjustments: adjustmentRows,
+  } catch (error) {
+    mapManualReceiptMutationError(error);
+  }
+  affectedOwners.add(input.payment.bowlerId);
+  for (const bowlerId of [...affectedOwners].sort((left, right) => left - right)) {
+    try {
+      await applyOwnedFundingFifoInTransaction(input.tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        bowlerId,
+        actorUserId: input.actorUserId,
+        now: input.now,
       });
-      await tx.update(paymentObligations).set({ state: balance.outstandingMinor === 0 ? "settled" : "partially_settled" }).where(and(eq(paymentObligations.id, obligation.id), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)));
-      created.push({ payment, allocation });
+    } catch (error) {
+      mapManualReceiptMutationError(error);
     }
-    const result = { contractVersion: "canonical-manual-record/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, records: created };
-    await completeFinancialCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: "roster_payment.manual_record", idempotencyKey: input.request.idempotencyKey, result });
-    return result;
+  }
+  return { affectedOwners, receiptId: input.receipt.receiptId };
+}
+
+async function editAdoptedManualReceiptInTransaction(input: {
+  tx: RosterPaymentTransaction;
+  organizationId: number;
+  leagueId: number;
+  actorUserId: number;
+  request: CanonicalCorrectionInput;
+  payment: ManualReceiptPaymentRow;
+  receipt: NonNullable<Awaited<ReturnType<typeof readActiveManualReceiptForPaymentInTransaction>>>;
+}) {
+  const amountMinor = input.request.amountMinor;
+  const paymentDate = input.request.paymentDate;
+  if (amountMinor === undefined || paymentDate === undefined) throw new RosterPaymentError("INVALID_REQUEST", "A cash edit requires an amount and payment date", 422);
+  if (input.payment.type !== "cash") throw new RosterPaymentError("CASH_EDIT_UNAVAILABLE", "Only an active cash payment can be edited", 409);
+  if (input.payment.bowlerId !== input.receipt.payerBowlerId || input.payment.amount !== input.receipt.amountMinor) {
+    throw new RosterPaymentError("MANUAL_RECEIPT_CONFLICT", "The saved receipt no longer matches its cash payment", 409);
+  }
+  if (amountMinor === input.receipt.amountMinor && paymentDate === input.receipt.businessCollectionLocalDate) {
+    throw new RosterPaymentError("UNCHANGED_PAYMENT", "Change the amount or payment date before saving", 422);
+  }
+  const collection = await resolveCanonicalManualReceiptCollectionInTransaction(input.tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    businessCollectionLocalDate: paymentDate,
   });
+  const oldScope = {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    actorUserId: input.actorUserId,
+    occurrenceId: input.receipt.occurrenceId,
+    idempotencyKey: input.request.idempotencyKey,
+  };
+  let affectedOwners: Set<number>;
+  try {
+    affectedOwners = await voidManualReceiptPaymentInTransaction(input.tx, {
+      ...oldScope,
+      reason: input.request.reason,
+    }, input.payment, input.receipt.receiptId, collection.now);
+  } catch (error) {
+    mapManualReceiptMutationError(error);
+  }
+
+  const sameCollectionOccurrence = collection.occurrenceId === input.receipt.occurrenceId;
+  let replacementReceiptId = input.receipt.receiptId;
+  if (!sameCollectionOccurrence) {
+    try {
+      await appendManualReceiptRevisionInTransaction(input.tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        actorUserId: input.actorUserId,
+        receiptId: input.receipt.receiptId,
+        revision: input.receipt.revision + 1,
+        paymentId: null,
+        amountMinor: 0,
+        businessCollectionLocalDate: input.receipt.businessCollectionLocalDate,
+        revisionKind: "manual_clear",
+        now: collection.now,
+      });
+      replacementReceiptId = await createManualReceiptHeadInTransaction(input.tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        occurrenceId: collection.occurrenceId,
+        bowlerId: input.payment.bowlerId,
+        now: collection.now,
+      });
+    } catch (error) {
+      mapManualReceiptMutationError(error);
+    }
+  }
+  const replacementScope = {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    actorUserId: input.actorUserId,
+    occurrenceId: collection.occurrenceId,
+    idempotencyKey: input.request.idempotencyKey,
+  };
+  let replacementPaymentId: number;
+  try {
+    replacementPaymentId = await createManualReceiptPaymentInTransaction(input.tx, replacementScope, {
+      receiptId: replacementReceiptId,
+      bowlerId: input.payment.bowlerId,
+      amountMinor,
+      businessDate: paymentDate,
+      existingPayment: {
+        type: "cash",
+        checkNumber: null,
+        notes: input.payment.notes,
+        paidByUserId: input.payment.paidByUserId,
+      },
+    }, collection.now);
+    await appendManualReceiptRevisionInTransaction(input.tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      actorUserId: input.actorUserId,
+      receiptId: replacementReceiptId,
+      revision: sameCollectionOccurrence ? input.receipt.revision + 1 : 1,
+      paymentId: replacementPaymentId,
+      amountMinor,
+      businessCollectionLocalDate: paymentDate,
+        revisionKind: sameCollectionOccurrence ? "manual_edit" : "manual_record",
+      now: collection.now,
+    });
+  } catch (error) {
+    mapManualReceiptMutationError(error);
+  }
+
+  affectedOwners.add(input.payment.bowlerId);
+  for (const bowlerId of [...affectedOwners].sort((left, right) => left - right)) {
+    try {
+      await applyOwnedFundingFifoInTransaction(input.tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        bowlerId,
+        actorUserId: input.actorUserId,
+        now: collection.now,
+      });
+    } catch (error) {
+      mapManualReceiptMutationError(error);
+    }
+  }
+  const [replacementPayment] = await input.tx.select().from(payments).where(and(
+    eq(payments.id, replacementPaymentId),
+    eq(payments.organizationId, input.organizationId),
+    eq(payments.leagueId, input.leagueId),
+  )).limit(1).for("share");
+  if (!replacementPayment) throw new RosterPaymentError("PAYMENT_EVIDENCE_INCOMPLETE", "The replacement cash payment could not be read", 503);
+  const allocations = await input.tx.select().from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, input.organizationId),
+    eq(paymentAllocations.leagueId, input.leagueId),
+    eq(paymentAllocations.paymentId, replacementPaymentId),
+    eq(paymentAllocations.state, "active"),
+  )).orderBy(asc(paymentAllocations.id));
+  const [voidEvidence] = await input.tx.select().from(paymentVoids).where(and(
+    eq(paymentVoids.organizationId, input.organizationId),
+    eq(paymentVoids.leagueId, input.leagueId),
+    eq(paymentVoids.paymentId, input.payment.id),
+  )).limit(1).for("share");
+  return {
+    contractVersion: "canonical-cash-payment-edit/2" as const,
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    mode: "edit_cash" as const,
+    originalPaymentId: input.payment.id,
+    replacementPaymentId,
+    oldAmountMinor: input.payment.amount,
+    newAmountMinor: amountMinor,
+    oldPaymentDate: input.receipt.businessCollectionLocalDate,
+    newPaymentDate: paymentDate,
+    allocationMode: "owned_fifo_reapplied" as const,
+    allocationCount: allocations.length,
+    originalReceiptId: input.receipt.receiptId,
+    replacementReceiptId,
+    receiptRevision: sameCollectionOccurrence ? input.receipt.revision + 1 : 1,
+    payment: replacementPayment,
+    voidEvidence: voidEvidence ?? null,
+    allocations,
+  };
+}
+
+export async function recordCanonicalManualPayment(input: {
+  organizationId: number;
+  leagueId: number;
+  actorUserId: number;
+  request: CanonicalManualRecordRequest;
+}) {
+  try {
+    return await db.transaction(async (tx) => {
+      await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+      await replayManualRecordCommandBeforeRequote(tx, input);
+      const adoption = await readOwnedLedgerAdoptionInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+      });
+      const quoteIdentity = {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        payerBowlerId: input.request.payerBowlerId,
+        amountMinor: input.request.amountMinor,
+        type: input.request.type,
+        checkNumber: input.request.type === "check" ? input.request.checkNumber ?? null : null,
+        notes: input.request.notes ?? null,
+      };
+
+      if (adoption) {
+        await assertManualPaymentPayerInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          payerBowlerId: input.request.payerBowlerId,
+        });
+        const requestFingerprint = canonicalManualReceiptQuoteFingerprint(quoteIdentity);
+        if (input.request.requestFingerprint !== requestFingerprint) {
+          throw new RosterPaymentError("STALE_QUOTE", "The manual payment details changed; request a new quote", 409);
+        }
+        await beginFinancialCommand(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          actorUserId: input.actorUserId,
+          commandType: "roster_payment.manual_record",
+          idempotencyKey: input.request.idempotencyKey,
+          requestFingerprint,
+        });
+        const collection = await resolveCanonicalManualReceiptCollectionInTransaction(tx, input);
+        const receiptScope = {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          actorUserId: input.actorUserId,
+          occurrenceId: collection.occurrenceId,
+          idempotencyKey: input.request.idempotencyKey,
+        };
+        const receiptId = await createManualReceiptHeadInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          occurrenceId: collection.occurrenceId,
+          bowlerId: input.request.payerBowlerId,
+          now: collection.now,
+        });
+        const paymentId = await createManualReceiptPaymentInTransaction(tx, receiptScope, {
+          receiptId,
+          bowlerId: input.request.payerBowlerId,
+          amountMinor: input.request.amountMinor,
+          businessDate: collection.businessCollectionLocalDate,
+          paymentIdempotencyKey: input.request.idempotencyKey,
+          existingPayment: {
+            type: input.request.type,
+            checkNumber: input.request.checkNumber ?? null,
+            notes: input.request.notes ?? null,
+            paidByUserId: input.actorUserId,
+          },
+        }, collection.now);
+        await appendManualReceiptRevisionInTransaction(tx, {
+          ...receiptScope,
+          receiptId,
+          revision: 1,
+          paymentId,
+          amountMinor: input.request.amountMinor,
+          businessCollectionLocalDate: collection.businessCollectionLocalDate,
+          revisionKind: "manual_record",
+          now: collection.now,
+        });
+        await applyOwnedFundingFifoInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          bowlerId: input.request.payerBowlerId,
+          actorUserId: input.actorUserId,
+          now: collection.now,
+        });
+        const [payment] = await tx.select().from(payments).where(and(
+          eq(payments.id, paymentId),
+          eq(payments.organizationId, input.organizationId),
+          eq(payments.leagueId, input.leagueId),
+        )).limit(1).for("share");
+        if (!payment) throw new RosterPaymentError("PAYMENT_EVIDENCE_INCOMPLETE", "The cash or check receipt could not be read after recording", 503);
+        const allocations = await tx.select().from(paymentAllocations).where(and(
+          eq(paymentAllocations.organizationId, input.organizationId),
+          eq(paymentAllocations.leagueId, input.leagueId),
+          eq(paymentAllocations.paymentId, paymentId),
+          eq(paymentAllocations.state, "active"),
+        )).orderBy(asc(paymentAllocations.id));
+        const balance = (await readOwnedAccountBalancesInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          bowlerIds: [input.request.payerBowlerId],
+        })).get(input.request.payerBowlerId);
+        if (!balance) throw new RosterPaymentError("ACCOUNT_BALANCE_UNAVAILABLE", "The payer account could not be read after recording", 503);
+        const result = {
+          contractVersion: "canonical-manual-record/2" as const,
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          payerBowlerId: input.request.payerBowlerId,
+          amountMinor: input.request.amountMinor,
+          payment,
+          receipt: {
+            receiptId,
+            revision: 1,
+            occurrenceId: collection.occurrenceId,
+            businessCollectionLocalDate: collection.businessCollectionLocalDate,
+          },
+          allocations,
+          records: allocations.map((allocation) => ({ payment, allocation })),
+          appliedAmountMinor: allocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+          account: {
+            availableCreditMinor: balance.availableCreditMinor,
+            confirmedOwedMinor: balance.confirmedOwedMinor,
+            netBalanceMinor: balance.netBalanceMinor,
+          },
+        };
+        await completeFinancialCommand(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          commandType: "roster_payment.manual_record",
+          idempotencyKey: input.request.idempotencyKey,
+          result,
+        });
+        return result;
+      }
+
+      const quote = await quoteInteractiveObligations({
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        amountMinor: input.request.amountMinor,
+        payerBowlerId: input.request.payerBowlerId,
+        transaction: tx,
+      });
+      const requestFingerprint = canonicalManualReceiptQuoteFingerprint(quoteIdentity, quote.fingerprint);
+      if (input.request.requestFingerprint !== requestFingerprint && input.request.requestFingerprint !== quote.fingerprint) {
+        throw new RosterPaymentError("STALE_QUOTE", "The obligation quote is stale; request a new quote", 409);
+      }
+      await beginFinancialCommand(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        actorUserId: input.actorUserId,
+        commandType: "roster_payment.manual_record",
+        idempotencyKey: input.request.idempotencyKey,
+        requestFingerprint,
+      });
+      const payerBowlerId = quote.payerBowlerId;
+      const [payment] = await tx.insert(payments).values({ organizationId: input.organizationId, bowlerId: payerBowlerId, leagueId: input.leagueId, amount: quote.amountMinor, status: "paid", type: input.request.type, checkNumber: input.request.checkNumber ?? null, notes: input.request.notes ?? null, idempotencyKey: input.request.idempotencyKey, paidByUserId: input.actorUserId }).returning();
+      if (!payment) throw new RosterPaymentError("PAYMENT_WRITE_FAILED", "The payment could not be recorded", 503);
+      const created = [];
+      for (const obligation of quote.obligations) {
+        const [allocation] = await tx.insert(paymentAllocations).values({ organizationId: input.organizationId, leagueId: input.leagueId, paymentId: payment.id, obligationId: obligation.id, amountMinor: obligation.selectedMinor, currency: obligation.currency, recordedByUserId: input.actorUserId }).returning();
+        if (!allocation) throw new RosterPaymentError("ALLOCATION_WRITE_FAILED", "The payment allocation could not be recorded", 503);
+        const activeRows = await tx.select({ id: paymentAllocations.id, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId), eq(paymentAllocations.obligationId, obligation.id), eq(paymentAllocations.state, "active"))).for("update");
+        const adjustmentRows = activeRows.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
+          eq(refundAllocationAdjustments.organizationId, input.organizationId),
+          eq(refundAllocationAdjustments.leagueId, input.leagueId),
+          inArray(refundAllocationAdjustments.sourceAllocationId, activeRows.map((row) => row.id)),
+        ));
+        const balance = canonicalObligationBalance({
+          amountMinor: obligation.amountMinor,
+          state: obligation.state,
+          grossAllocatedMinor: activeRows.reduce((sum, row) => sum + row.amountMinor, 0),
+          adjustments: adjustmentRows,
+        });
+        await tx.update(paymentObligations).set({ state: balance.outstandingMinor === 0 ? "settled" : "partially_settled" }).where(and(eq(paymentObligations.id, obligation.id), eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)));
+        created.push({ payment, allocation });
+      }
+      const result = { contractVersion: "canonical-manual-record/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId, amountMinor: quote.amountMinor, payment, records: created };
+      await completeFinancialCommand(tx, { organizationId: input.organizationId, leagueId: input.leagueId, commandType: "roster_payment.manual_record", idempotencyKey: input.request.idempotencyKey, result });
+      return result;
+    });
+  } catch (error) {
+    if (error instanceof ManualPaymentReceiptError) {
+      throw new RosterPaymentError(
+        error.code === "manual_receipt_conflict" ? "MANUAL_RECEIPT_CONFLICT" : "PAYMENT_WRITE_FAILED",
+        error.message,
+        error.code === "manual_receipt_conflict" ? 409 : 503,
+      );
+    }
+    throw error;
+  }
 }
 
 export async function correctCanonicalAllocation(input: { organizationId: number; leagueId: number; actorUserId: number; request: CanonicalCorrectionInput }) {
@@ -2382,7 +2982,58 @@ export async function correctCanonicalAllocation(input: { organizationId: number
       idempotencyKey: input.request.idempotencyKey,
       requestFingerprint: input.request.requestFingerprint,
     });
-    const [payment] = await tx.select().from(payments).where(and(eq(payments.id, input.request.paymentId), eq(payments.organizationId, input.organizationId), eq(payments.leagueId, input.leagueId))).limit(1).for("share");
+    const [payment] = await tx.select().from(payments).where(and(eq(payments.id, input.request.paymentId), eq(payments.organizationId, input.organizationId), eq(payments.leagueId, input.leagueId))).limit(1).for("update");
+    const adoption = await readOwnedLedgerAdoptionInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId });
+    if (adoption) {
+      if (!payment || (payment.type !== "cash" && payment.type !== "check") || payment.status !== "paid"
+        || payment.paymentOperationId !== null || payment.providerPaymentId !== null || payment.refundedAt !== null
+        || payment.squareRefundId !== null || payment.disputeId !== null || payment.disputedAt !== null) {
+        throw new RosterPaymentError("PROVIDER_ALLOCATION_IMMUTABLE", "Provider payment evidence requires refund or reconciliation; it cannot be directly corrected", 409);
+      }
+      if (input.request.correctionMode !== "void_only") {
+        throw new RosterPaymentError("INVALID_CORRECTION_MODE", "The cash edit command requires correctionMode=edit_cash", 422);
+      }
+      if (input.request.requestFingerprint !== canonicalCorrectionFingerprint(input.request)) {
+        throw new RosterPaymentError("INVALID_FINGERPRINT", "The correction request fingerprint is invalid", 422);
+      }
+      const receipt = await requireActiveManualReceiptForPayment(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: payment.id,
+      });
+      const nowResult = await tx.execute<{ now: string }>(sql`SELECT transaction_timestamp()::text AS now`);
+      const nowText = nowResult.rows[0]?.now;
+      if (!nowText) throw new RosterPaymentError("PAYMENT_WRITE_FAILED", "The correction timestamp could not be recorded", 503);
+      const now = new Date(nowText).toISOString();
+      const cleared = await clearAdoptedManualReceiptInTransaction({
+        tx,
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        actorUserId: input.actorUserId,
+        idempotencyKey: input.request.idempotencyKey,
+        now,
+        reason: input.request.reason,
+        payment,
+        receipt,
+      });
+      const result = {
+        contractVersion: "canonical-correction/4" as const,
+        mode: "void_only" as const,
+        payment: { ...payment, status: "voided" as const },
+        receipt: { receiptId: receipt.receiptId, revision: receipt.revision + 1, occurrenceId: receipt.occurrenceId, cleared: true as const },
+        voidEvidence: { paymentId: payment.id, reason: input.request.reason, recordedAt: now },
+        cleared: true as const,
+        affectedBowlerIds: [...cleared.affectedOwners],
+      };
+      await completeFinancialCommand(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        commandType: "roster_payment.void_payment",
+        idempotencyKey: input.request.idempotencyKey,
+        result,
+      });
+      return result;
+    }
     if (payment) await assertPaymentIsNotRotatingCreditFundingInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, paymentId: payment.id });
     if (!payment || (payment.type !== "cash" && payment.type !== "check") || payment.status !== "paid" || payment.paymentOperationId !== null || payment.providerPaymentId !== null || payment.refundedAt !== null || payment.squareRefundId !== null || payment.disputeId !== null || payment.disputedAt !== null) {
       throw new RosterPaymentError("PROVIDER_ALLOCATION_IMMUTABLE", "Provider payment evidence requires refund or reconciliation; it cannot be directly corrected", 409);
@@ -2456,6 +3107,56 @@ export async function deleteCanonicalCashPayment(input: {
       eq(payments.leagueId, input.leagueId),
     )).limit(1).for("update");
     if (!payment) throw new RosterPaymentError("NOT_FOUND", "Payment not found", 404);
+    const adoption = await readOwnedLedgerAdoptionInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId });
+    if (adoption) {
+      if (payment.type !== "cash" || payment.status !== "paid" || payment.paymentOperationId !== null
+        || payment.providerPaymentId !== null || payment.refundedAt !== null || payment.squareRefundId !== null
+        || payment.refundReason !== null || payment.disputeId !== null || payment.disputedAt !== null) {
+        throw new RosterPaymentError("CASH_PAYMENT_DELETE_UNAVAILABLE", "Only an active manual cash receipt can be cleared here", 409);
+      }
+      const receipt = await requireActiveManualReceiptForPayment(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: payment.id,
+      });
+      const nowResult = await tx.execute<{ now: string }>(sql`SELECT transaction_timestamp()::text AS now`);
+      const nowText = nowResult.rows[0]?.now;
+      if (!nowText) throw new RosterPaymentError("PAYMENT_WRITE_FAILED", "The correction timestamp could not be recorded", 503);
+      const now = new Date(nowText).toISOString();
+      await clearAdoptedManualReceiptInTransaction({
+        tx,
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        actorUserId: input.actorUserId,
+        idempotencyKey: input.request.idempotencyKey,
+        now,
+        reason: input.request.reason,
+        payment,
+        receipt,
+      });
+      const result = {
+        contractVersion: "canonical-cash-payment-delete/2" as const,
+        deleted: false as const,
+        cleared: true as const,
+        paymentId: payment.id,
+        paymentType: payment.type,
+        previousStatus: payment.status,
+        amountMinor: payment.amount,
+        currency: payment.currency,
+        reason: input.request.reason,
+        receiptId: receipt.receiptId,
+        receiptRevision: receipt.revision + 1,
+        payment: { ...payment, status: "voided" as const },
+      };
+      await completeFinancialCommand(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        commandType: "roster_payment.delete_cash_payment",
+        idempotencyKey: input.request.idempotencyKey,
+        result,
+      });
+      return result;
+    }
     if (payment.type !== "cash" || (payment.status !== "paid" && payment.status !== "voided")
       || payment.paymentOperationId !== null || payment.providerPaymentId !== null
       || payment.refundedAt !== null || payment.squareRefundId !== null || payment.refundReason !== null
@@ -2696,7 +3397,6 @@ export async function editCanonicalCashPayment(input: { organizationId: number; 
       eq(payments.leagueId, input.leagueId),
     )).limit(1).for("update");
     if (!league || !payment) throw new RosterPaymentError("NOT_FOUND", "Payment not found", 404);
-    await assertPaymentIsNotRotatingCreditFundingInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, paymentId: payment.id });
     if (input.request.correctionMode !== "edit_cash") {
       throw new RosterPaymentError("INVALID_CORRECTION_MODE", "The cash edit command requires correctionMode=edit_cash", 422);
     }
@@ -2714,6 +3414,33 @@ export async function editCanonicalCashPayment(input: { organizationId: number; 
       || payment.disputeId !== null || payment.disputedAt !== null) {
       throw new RosterPaymentError("CASH_EDIT_UNAVAILABLE", "Only an active cash payment can be edited", 409);
     }
+
+    const adoption = await readOwnedLedgerAdoptionInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId });
+    if (adoption) {
+      const receipt = await requireActiveManualReceiptForPayment(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: payment.id,
+      });
+      const result = await editAdoptedManualReceiptInTransaction({
+        tx,
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        actorUserId: input.actorUserId,
+        request: input.request,
+        payment,
+        receipt,
+      });
+      await completeFinancialCommand(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        commandType: "roster_payment.edit_cash_payment",
+        idempotencyKey: input.request.idempotencyKey,
+        result,
+      });
+      return result;
+    }
+    await assertPaymentIsNotRotatingCreditFundingInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, paymentId: payment.id });
 
     const timezone = league.timezone ?? "UTC";
     const oldPaymentDate = paymentLocalDate(payment.createdAt, timezone);

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   bowlerLeagues,
@@ -13,6 +13,7 @@ import {
   paymentAllocationFundingApplications,
   paymentAllocations,
   paymentObligations,
+  paymentVoids,
   payments,
   rotatingCreditFundings,
   teams,
@@ -29,6 +30,16 @@ import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION } from "@shared/league-setup-i
 import { createLeagueWithCanonicalSetup } from "../../server/services/league-setup-integration.js";
 import { prepareAccountPaymentOperation } from "../../server/services/account-payment-operation-preparation.js";
 import { recoverRosterPaymentOperation } from "../../server/services/roster-payment-recovery.js";
+import {
+  canonicalCashPaymentDeleteFingerprint,
+  canonicalCashPaymentEditFingerprint,
+  deleteCanonicalCashPayment,
+  editCanonicalCashPayment,
+  quoteCanonicalManualPayment,
+  recordCanonicalManualPayment,
+} from "../../server/services/roster-payment-core.js";
+import { canonicalManualReceiptQuoteFingerprint } from "../../server/services/manual-payment-receipts.js";
+import { readOwnedAccountBalancesInTransaction } from "../../server/services/owned-payment-ledger.js";
 import { readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read.js";
 import { saveManagePaymentsWorksheet, ManagePaymentsWorksheetWriteError } from "../../server/services/manage-payments-worksheet-write.js";
 import { getTestDb } from "../setup/test-db.js";
@@ -206,6 +217,270 @@ function rowChange(snapshot: ManagePaymentsSnapshot, bowlerId: number, overrides
 }
 
 describe("Manage Payments worksheet atomic writer", () => {
+  it("records an exact no-debt cash advance, leaves it as owned credit, and replays without duplicating income", async () => {
+    const amountMinor = 1_234;
+    const quote = await quoteCanonicalManualPayment({
+      organizationId,
+      leagueId,
+      request: { payerBowlerId: thirdBowlerId, amountMinor, type: "cash", notes: null },
+    });
+    expect(quote).toMatchObject({ amountMinor, payerBowlerId: thirdBowlerId, type: "cash" });
+    const request = {
+      payerBowlerId: thirdBowlerId,
+      amountMinor,
+      type: "cash" as const,
+      notes: null,
+      idempotencyKey: `manual-advance-${suffix}`,
+      requestFingerprint: canonicalManualReceiptQuoteFingerprint({
+        organizationId,
+        leagueId,
+        payerBowlerId: thirdBowlerId,
+        amountMinor,
+        type: "cash",
+        checkNumber: null,
+        notes: null,
+      }),
+    };
+    const result = await recordCanonicalManualPayment({ organizationId, leagueId, actorUserId, request });
+    if (result.contractVersion !== "canonical-manual-record/2") throw new Error("manual advance used the legacy payment path");
+    expect(result).toMatchObject({
+      contractVersion: "canonical-manual-record/2",
+      amountMinor,
+      payerBowlerId: thirdBowlerId,
+      appliedAmountMinor: 0,
+      account: { availableCreditMinor: amountMinor, confirmedOwedMinor: 0, netBalanceMinor: amountMinor },
+      receipt: { revision: 1, occurrenceId: selectedOccurrenceId },
+    });
+    expect(result.payment).toMatchObject({ bowlerId: thirdBowlerId, amount: amountMinor, type: "cash", status: "paid" });
+    expect(result.allocations).toEqual([]);
+    expect(await db.select().from(weeklyPaymentWeekConfirmations).where(and(
+      eq(weeklyPaymentWeekConfirmations.organizationId, organizationId),
+      eq(weeklyPaymentWeekConfirmations.leagueId, leagueId),
+    ))).toHaveLength(0);
+
+    await expect(recordCanonicalManualPayment({ organizationId, leagueId, actorUserId, request })).rejects.toMatchObject({ code: "IDEMPOTENCY_REPLAY" });
+    const storedPayments = await db.select().from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+      eq(payments.idempotencyKey, request.idempotencyKey),
+    ));
+    expect(storedPayments).toHaveLength(1);
+    await db.transaction(async (tx) => {
+      const balance = (await readOwnedAccountBalancesInTransaction(tx, {
+        organizationId,
+        leagueId,
+        bowlerIds: [thirdBowlerId],
+      })).get(thirdBowlerId);
+      expect(balance?.availableCreditMinor).toBe(amountMinor);
+    });
+  });
+
+  it("rejects adopted manual tenders for cross-organization and other-league payers at write time", async () => {
+    const siblingLeague = await createLeagueWithCanonicalSetup({
+      scope: { organizationId, actorUserId },
+      league: {
+        name: `Worksheet sibling league ${suffix}`,
+        description: "Manual payer membership isolation fixture",
+        organizationId,
+        locationId,
+        active: true,
+        seasonStart: "2033-09-05",
+        seasonEnd: "2033-09-26",
+        weekDay: "Monday",
+        totalBowlingWeeks: 4,
+        skipDates: [],
+        cancelledDates: [],
+        doublePayDates: [],
+        competitionStartTime: "19:00",
+        timezone: "America/New_York",
+        weeklyFee: 2_500,
+        paymentMode: "weekly",
+        payingLineupSize: 3,
+        seasonNumber: 1,
+      },
+      setup: { contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION, idempotencyKey: `sibling-setup-${suffix}` },
+    });
+    const [siblingTeam] = await db.insert(teams).values({ name: `Worksheet sibling team ${suffix}`, number: 1, leagueId: siblingLeague.id }).returning({ id: teams.id });
+    const [siblingMember] = await db.insert(bowlers).values({ name: "Sibling League Bowler", organizationId }).returning({ id: bowlers.id });
+    if (!siblingTeam || !siblingMember) throw new Error("sibling league payer fixture was not created");
+    await db.insert(bowlerLeagues).values({ bowlerId: siblingMember.id, leagueId: siblingLeague.id, teamId: siblingTeam.id, active: true, order: 0 });
+
+    const [foreignOrganization] = await db.insert(organizations).values({ name: `Foreign ${suffix}`, slug: `foreign-${suffix}` }).returning({ id: organizations.id });
+    if (!foreignOrganization) throw new Error("foreign organization fixture was not created");
+    const [foreignBowler] = await db.insert(bowlers).values({ name: "Foreign Bowler", organizationId: foreignOrganization.id }).returning({ id: bowlers.id });
+    if (!foreignBowler) throw new Error("foreign bowler fixture was not created");
+
+    for (const [index, payerBowlerId] of [siblingMember.id, foreignBowler.id].entries()) {
+      const amountMinor = 1_000 + index;
+      const request = {
+        payerBowlerId,
+        amountMinor,
+        type: "cash" as const,
+        notes: null,
+        idempotencyKey: `manual-invalid-scope-${index}-${suffix}`,
+        requestFingerprint: canonicalManualReceiptQuoteFingerprint({
+          organizationId,
+          leagueId,
+          payerBowlerId,
+          amountMinor,
+          type: "cash",
+          checkNumber: null,
+          notes: null,
+        }),
+      };
+      await expect(recordCanonicalManualPayment({ organizationId, leagueId, actorUserId, request }))
+        .rejects.toMatchObject({ code: "PAYER_SCOPE_MISMATCH" });
+    }
+    expect(await db.select().from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+    ))).toHaveLength(0);
+    expect(await db.select().from(weeklyPaymentWorksheetReceipts).where(and(
+      eq(weeklyPaymentWorksheetReceipts.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceipts.leagueId, leagueId),
+    ))).toHaveLength(0);
+  });
+
+  it("replaces adopted cash totals and moves collection periods through append-only receipt heads", async () => {
+    const amountMinor = 2_500;
+    const quote = await quoteCanonicalManualPayment({
+      organizationId,
+      leagueId,
+      request: { payerBowlerId: thirdBowlerId, amountMinor, type: "cash", notes: "receipt memo" },
+    });
+    const initial = await recordCanonicalManualPayment({
+      organizationId,
+      leagueId,
+      actorUserId,
+      request: {
+        payerBowlerId: thirdBowlerId,
+        amountMinor,
+        type: "cash",
+        notes: "receipt memo",
+        idempotencyKey: `manual-replace-${suffix}`,
+        requestFingerprint: quote.fingerprint,
+      },
+    });
+    if (initial.contractVersion !== "canonical-manual-record/2") throw new Error("manual payment used the legacy record path");
+    const originalReceiptId = initial.receipt.receiptId;
+    const businessDate = initial.receipt.businessCollectionLocalDate;
+    const reason = "Correct the recorded cash total";
+    const editRequest = {
+      paymentId: initial.payment.id,
+      correctionMode: "edit_cash" as const,
+      amountMinor: 4_000,
+      paymentDate: businessDate,
+      reason,
+      idempotencyKey: `manual-edit-${suffix}`,
+      requestFingerprint: "",
+    };
+    editRequest.requestFingerprint = canonicalCashPaymentEditFingerprint(editRequest);
+    const edited = await editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: editRequest });
+    if (edited.contractVersion !== "canonical-cash-payment-edit/2") throw new Error("manual payment used the legacy edit path");
+    expect(edited).toMatchObject({
+      contractVersion: "canonical-cash-payment-edit/2",
+      originalPaymentId: initial.payment.id,
+      oldAmountMinor: amountMinor,
+      newAmountMinor: 4_000,
+      oldPaymentDate: businessDate,
+      newPaymentDate: businessDate,
+      originalReceiptId,
+      replacementReceiptId: originalReceiptId,
+      receiptRevision: 2,
+      payment: { bowlerId: thirdBowlerId, amount: 4_000, status: "paid", notes: "receipt memo" },
+    });
+    const originalRows = await db.select().from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+      eq(payments.id, initial.payment.id),
+    ));
+    expect(originalRows[0]?.status).toBe("voided");
+    const [samePeriodHead] = await db.select().from(weeklyPaymentWorksheetReceipts).where(eq(weeklyPaymentWorksheetReceipts.id, originalReceiptId));
+    expect(samePeriodHead?.occurrenceId).toBe(selectedOccurrenceId);
+    const samePeriodRevisions = await db.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, leagueId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, originalReceiptId),
+    )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision));
+    expect(samePeriodRevisions.map((row) => [row.receiptRevision, row.paymentId, row.amountMinor, row.revisionKind])).toEqual([
+      [1, initial.payment.id, amountMinor, "manual_record"],
+      [2, edited.replacementPaymentId, 4_000, "manual_edit"],
+    ]);
+
+    const [nextOccurrence] = await db.select().from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, organizationId),
+      eq(leagueOccurrences.leagueId, leagueId),
+    )).orderBy(asc(leagueOccurrences.plannedOrdinal)).offset(1).limit(1);
+    if (!nextOccurrence?.authoritativeLocalDate) throw new Error("next canonical collection date is missing");
+    const movedRequest = {
+      paymentId: edited.replacementPaymentId,
+      correctionMode: "edit_cash" as const,
+      amountMinor: 4_000,
+      paymentDate: nextOccurrence.authoritativeLocalDate,
+      reason: "Move cash receipt to the correct collection week",
+      idempotencyKey: `manual-date-move-${suffix}`,
+      requestFingerprint: "",
+    };
+    movedRequest.requestFingerprint = canonicalCashPaymentEditFingerprint(movedRequest);
+    const moved = await editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: movedRequest });
+    if (moved.contractVersion !== "canonical-cash-payment-edit/2") throw new Error("manual payment date move used the legacy edit path");
+    expect(moved).toMatchObject({
+      contractVersion: "canonical-cash-payment-edit/2",
+      originalPaymentId: edited.replacementPaymentId,
+      oldPaymentDate: businessDate,
+      newPaymentDate: nextOccurrence.authoritativeLocalDate,
+      originalReceiptId,
+      receiptRevision: 1,
+    });
+    expect(moved.replacementReceiptId).not.toBe(originalReceiptId);
+    const [oldReceiptAfterMove] = await db.select().from(weeklyPaymentWorksheetReceipts).where(eq(weeklyPaymentWorksheetReceipts.id, originalReceiptId));
+    const oldHeadRevisions = await db.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, leagueId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, originalReceiptId),
+    )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision));
+    expect(oldReceiptAfterMove?.occurrenceId).toBe(selectedOccurrenceId);
+    expect(oldHeadRevisions.at(-1)).toMatchObject({ paymentId: null, amountMinor: 0, revisionKind: "manual_clear" });
+    const [newReceipt] = await db.select().from(weeklyPaymentWorksheetReceipts).where(eq(weeklyPaymentWorksheetReceipts.id, moved.replacementReceiptId));
+    expect(newReceipt?.occurrenceId).toBe(nextOccurrence.id);
+    const [newHeadRevision] = await db.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, leagueId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, moved.replacementReceiptId),
+    ));
+    expect(newHeadRevision).toMatchObject({ receiptRevision: 1, paymentId: moved.replacementPaymentId, amountMinor: 4_000, revisionKind: "manual_record" });
+
+    const deleteRequest = {
+      paymentId: moved.replacementPaymentId,
+      reason: "Entered against the wrong bowler",
+      idempotencyKey: `manual-clear-${suffix}`,
+      requestFingerprint: "",
+    };
+    deleteRequest.requestFingerprint = canonicalCashPaymentDeleteFingerprint(deleteRequest);
+    const cleared = await deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: deleteRequest });
+    expect(cleared).toMatchObject({
+      contractVersion: "canonical-cash-payment-delete/2",
+      deleted: false,
+      cleared: true,
+      paymentId: moved.replacementPaymentId,
+      receiptId: moved.replacementReceiptId,
+      receiptRevision: 2,
+    });
+    const [lastRevision] = await db.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, leagueId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, moved.replacementReceiptId),
+    )).orderBy(desc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision)).limit(1);
+    expect(lastRevision).toMatchObject({ paymentId: null, amountMinor: 0, revisionKind: "manual_clear" });
+    const voidEvidence = await db.select().from(paymentVoids).where(and(
+      eq(paymentVoids.organizationId, organizationId),
+      eq(paymentVoids.leagueId, leagueId),
+      eq(paymentVoids.paymentId, moved.replacementPaymentId),
+    ));
+    expect(voidEvidence).toHaveLength(1);
+    await expect(deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: deleteRequest })).rejects.toMatchObject({ code: "IDEMPOTENCY_REPLAY" });
+  });
+
   it("confirms adopted legacy rows, versions payer responsibility, replaces and clears exact receipts atomically", async () => {
     const initial = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
     expect(initial.weekConfirmed).toBe(true);
