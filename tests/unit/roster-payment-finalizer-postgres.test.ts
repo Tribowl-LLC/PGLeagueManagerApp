@@ -1,9 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
   bowlers,
   bowlerLeagues,
+  bowlerPaymentLinks,
   canonicalCollectionGroupMembers,
   canonicalCollectionGroups,
   financialCommands,
@@ -28,6 +29,7 @@ import {
   rotatingCreditFundings,
   weeklyPaymentFundings,
   weeklyPaymentLedgerAdoptions,
+  weeklyPaymentWorksheetReceiptRevisions,
   rotatingCreditRefunds,
   teamPaymentPolicies,
   teamPaymentSlots,
@@ -46,12 +48,12 @@ import {
 } from "../../server/services/roster-payment-finalizer";
 import { recoverRosterPaymentOperation, recoverRosterPaymentOperationByRequestKey } from "../../server/services/roster-payment-recovery";
 import { acquireInteractivePaymentOperationDispatchCutoff } from "../../server/storage/payment-operations";
-import { canonicalCashPaymentDeleteFingerprint, canonicalCashPaymentEditFingerprint, canonicalCorrectionFingerprint, canonicalHistoricalCashAllocationRepairFingerprint, canonicalResponsibilityFingerprint, canonicalRosterFingerprint, chargeInteractiveObligations, correctCanonicalAllocation, deleteCanonicalCashPayment, editCanonicalCashPayment, historicalCashAllocationFingerprint, quoteInteractiveObligations, recordCanonicalManualPayment, recordOccurrenceResponsibilities, repairHistoricalCashPaymentAllocation, saveTeamRoster, type HistoricalCashAllocationRepairRequest } from "../../server/services/roster-payment-core";
+import { canonicalCashPaymentDeleteFingerprint, canonicalCashPaymentEditFingerprint, canonicalCorrectionFingerprint, canonicalHistoricalCashAllocationRepairFingerprint, canonicalResponsibilityFingerprint, canonicalRosterFingerprint, chargeInteractiveObligations, correctCanonicalAllocation, deleteCanonicalCashPayment, editCanonicalCashPayment, historicalCashAllocationFingerprint, quoteCanonicalManualPayment, quoteInteractiveObligations, recordCanonicalManualPayment, recordOccurrenceResponsibilities, repairHistoricalCashPaymentAllocation, saveTeamRoster, type HistoricalCashAllocationRepairRequest } from "../../server/services/roster-payment-core";
 import { interactivePaymentOperationExecutor } from "../../server/services/interactive-payment-operation-executor";
 import { paymentOperationRetryExecutor } from "../../server/services/payment-operation-retry-executor";
 import { prepareInteractivePaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
 import { prepareAccountPaymentOperation } from "../../server/services/account-payment-operation-preparation";
-import { chargeAccountPaymentFundingV4, quoteAccountPaymentFundingV4 } from "../../server/services/account-payment-funding";
+import { chargeAccountPaymentFundingV4, quoteAccountPaymentFundingV4, readInteractivePaymentParticipantsV4 } from "../../server/services/account-payment-funding";
 import { finalizeChargeFromWebhookEvidenceInTransaction } from "../../server/storage/payment-operations";
 import { buildCanonicalScheduleCommandFingerprint, cancelOccurrence, rescheduleOccurrence } from "../../server/services/canonical-occurrence-transactions";
 import { lockLeagueSchedule } from "../../server/storage/league-schedule-lock";
@@ -79,6 +81,7 @@ let occurrenceOrdinal = 0;
 let occurrenceFixtureIdentity = 0;
 let historyProjectionFixtureState: { canonicalScheduleRevision: number } | null = null;
 const activeTestGenerationRunIds: string[] = [];
+const isolatedAccountFundingFixtureLeagueIds: number[] = [];
 
 function requirePayerBowlerId(payerBowlerId: number | null): number {
   if (payerBowlerId === null) throw new Error("Expected a bowler-owned roster obligation");
@@ -236,6 +239,7 @@ afterEach(async () => {
     const activePayments = await tx.select({ paymentId: paymentAllocations.paymentId, leagueId: paymentAllocations.leagueId }).from(paymentAllocations).where(and(
       eq(paymentAllocations.organizationId, organizationId),
       eq(paymentAllocations.state, "active"),
+      ...(isolatedAccountFundingFixtureLeagueIds.length > 0 ? [notInArray(paymentAllocations.leagueId, isolatedAccountFundingFixtureLeagueIds)] : []),
     ));
     const uniquePaymentScopes = new Map(activePayments.map((row) => [`${row.leagueId}:${row.paymentId}`, row]));
     for (const { paymentId, leagueId: paymentLeagueId } of uniquePaymentScopes.values()) {
@@ -252,10 +256,12 @@ afterEach(async () => {
   await db.update(paymentObligations).set({ state: "voided", voidedAt: "2038-12-31T23:59:59.000Z" }).where(and(
     eq(paymentObligations.organizationId, organizationId),
     inArray(paymentObligations.state, ["open", "partially_settled"] as const),
+    ...(isolatedAccountFundingFixtureLeagueIds.length > 0 ? [notInArray(paymentObligations.leagueId, isolatedAccountFundingFixtureLeagueIds)] : []),
   ));
   await db.update(occurrencePaymentResponsibilities).set({ state: "voided" }).where(and(
     eq(occurrencePaymentResponsibilities.organizationId, organizationId),
     eq(occurrencePaymentResponsibilities.state, "active"),
+    ...(isolatedAccountFundingFixtureLeagueIds.length > 0 ? [notInArray(occurrencePaymentResponsibilities.leagueId, isolatedAccountFundingFixtureLeagueIds)] : []),
   ));
   if (historyProjectionFixtureState) {
     await db.update(leagues).set({ canonicalScheduleRevision: historyProjectionFixtureState.canonicalScheduleRevision }).where(and(
@@ -347,7 +353,11 @@ async function createOccurrence(options: {
   return { occurrence, responsibility, obligation };
 }
 
-async function createAppliedGenerationRun(occurrences: Awaited<ReturnType<typeof createOccurrence>>[], sourceScheduleRevision = 1) {
+async function createAppliedGenerationRun(
+  occurrences: Awaited<ReturnType<typeof createOccurrence>>[],
+  sourceScheduleRevision = 1,
+  targetLeagueId = leagueId,
+) {
   const originatingCommandId = randomUUID();
   const approvalCommandId = randomUUID();
   const generationRunId = randomUUID();
@@ -356,7 +366,7 @@ async function createAppliedGenerationRun(occurrences: Awaited<ReturnType<typeof
     {
       id: originatingCommandId,
       organizationId,
-      leagueId,
+      leagueId: targetLeagueId,
       actorUserId,
       commandType: "generate",
       idempotencyKey: `${commandPrefix}:generate`,
@@ -365,7 +375,7 @@ async function createAppliedGenerationRun(occurrences: Awaited<ReturnType<typeof
     {
       id: approvalCommandId,
       organizationId,
-      leagueId,
+      leagueId: targetLeagueId,
       actorUserId,
       commandType: "approve_generation",
       idempotencyKey: `${commandPrefix}:approve`,
@@ -379,7 +389,7 @@ async function createAppliedGenerationRun(occurrences: Awaited<ReturnType<typeof
   await db.insert(leagueOccurrenceGenerationRuns).values({
     id: generationRunId,
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     originatingCommandId,
     generatorVersion: `roster-finalizer-history-paid-weeks-${randomUUID()}`,
     inputFingerprint: `history-paid-weeks-${randomUUID()}`,
@@ -396,11 +406,11 @@ async function createAppliedGenerationRun(occurrences: Awaited<ReturnType<typeof
     approvedByUserId: actorUserId,
     approvalCommandId,
   });
-  activeTestGenerationRunIds.push(generationRunId);
+  if (targetLeagueId === leagueId) activeTestGenerationRunIds.push(generationRunId);
   if (occurrences.length > 0) {
     await db.update(leagueOccurrences).set({ generationRunId }).where(and(
       eq(leagueOccurrences.organizationId, organizationId),
-      eq(leagueOccurrences.leagueId, leagueId),
+      eq(leagueOccurrences.leagueId, targetLeagueId),
       inArray(leagueOccurrences.id, occurrences.map(({ occurrence }) => occurrence.id)),
     ));
   }
@@ -731,6 +741,64 @@ async function ensureOwnedLedgerAdoption(targetLeagueId = leagueId, adoptedThrou
   }).returning({ id: weeklyPaymentLedgerAdoptions.id });
   if (!adoption) throw new Error("account funding adoption fixture was not created");
   return adoption.id;
+}
+
+async function createAdoptedAccountFundingFixture(options: {
+  includePartner?: boolean;
+} = {}) {
+  const fixtureKey = randomUUID();
+  const [fixtureLeague] = await db.insert(leagues).values({
+    name: `Review-held account funding ${fixtureKey}`,
+    organizationId,
+    locationId,
+    payingLineupSize: 3,
+    substituteAccess: "team_only",
+    substitutePaymentRegime: "team_choice",
+    weeklyFee: 2_000,
+    lineageFee: null,
+    prizeFundFee: null,
+    paymentMode: "weekly",
+    seasonStart: "2037-01-01T00:00:00.000Z",
+    seasonEnd: "2038-12-31T23:59:59.000Z",
+    weekDay: "Monday",
+    timezone: "UTC",
+  }).returning({ id: leagues.id });
+  const [fixtureTeam] = await db.insert(teams).values({
+    name: `Review-held account team ${fixtureKey}`,
+    number: 1,
+    leagueId: fixtureLeague.id,
+  }).returning({ id: teams.id });
+  let partnerBowlerId: number | null = null;
+  if (options.includePartner) {
+    const [partner] = await db.insert(bowlers).values({
+      name: `Review fixture partner ${fixtureKey}`,
+      email: `review-partner-${fixtureKey}@example.test`,
+      organizationId,
+    }).returning({ id: bowlers.id });
+    partnerBowlerId = partner.id;
+  }
+  const memberRows = [
+    { bowlerId, leagueId: fixtureLeague.id, teamId: fixtureTeam.id },
+    ...(partnerBowlerId === null ? [] : [{ bowlerId: partnerBowlerId, leagueId: fixtureLeague.id, teamId: fixtureTeam.id }]),
+  ];
+  await db.insert(bowlerLeagues).values(memberRows);
+  await db.insert(teamPaymentSlots).values([
+    { organizationId, leagueId: fixtureLeague.id, teamId: fixtureTeam.id, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: bowlerId, recordedByUserId: actorUserId },
+    { organizationId, leagueId: fixtureLeague.id, teamId: fixtureTeam.id, slotIndex: 1, lineupSize: 3, occupant: partnerBowlerId === null ? "vacant" : "main", mainBowlerId: partnerBowlerId, recordedByUserId: actorUserId },
+    { organizationId, leagueId: fixtureLeague.id, teamId: fixtureTeam.id, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+  ]);
+  if (partnerBowlerId !== null) {
+    await db.insert(bowlerPaymentLinks).values({
+      bowlerAId: Math.min(bowlerId, partnerBowlerId),
+      bowlerBId: Math.max(bowlerId, partnerBowlerId),
+      organizationId,
+      status: "accepted",
+      createdByUserId: actorUserId,
+      respondedAt: "2037-01-01T00:00:00.000Z",
+    });
+  }
+  isolatedAccountFundingFixtureLeagueIds.push(fixtureLeague.id);
+  return { leagueId: fixtureLeague.id, teamId: fixtureTeam.id, partnerBowlerId };
 }
 
 async function createAccountFailureForecastObligation() {
@@ -2547,6 +2615,240 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     expect(await db.select({ id: paymentAllocationFundingApplications.id }).from(paymentAllocationFundingApplications).where(eq(paymentAllocationFundingApplications.paymentId, receipt.id))).toHaveLength(0);
     expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.paymentOperationId, operation.id))).toHaveLength(1);
     expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.authorizationOperationId, operation.id))).toHaveLength(1);
+  });
+
+  it("holds presets for a recipient with outstanding reviewed confirmed debt", async () => {
+    const fixture = await createAdoptedAccountFundingFixture({ includePartner: true });
+    if (fixture.partnerBowlerId === null) throw new Error("review fixture partner was not created");
+    const occurrence = await createOccurrence({
+      preserveOccurrenceOrdinal: true,
+      targetLeagueId: fixture.leagueId,
+      authoritativeLocalDate: "2037-12-15",
+      plannedOrdinal: 1,
+    });
+    await ensureOwnedLedgerAdoption(fixture.leagueId, "2037-12-31");
+    await createAppliedGenerationRun([occurrence], 1, fixture.leagueId);
+    const [partnerObligation] = await db.select({ id: paymentObligations.id }).from(paymentObligations).where(and(
+      eq(paymentObligations.organizationId, organizationId),
+      eq(paymentObligations.leagueId, fixture.leagueId),
+      eq(paymentObligations.occurrenceId, occurrence.occurrence.id),
+      eq(paymentObligations.payerBowlerId, fixture.partnerBowlerId),
+    )).limit(1);
+    if (!partnerObligation) throw new Error("review fixture partner obligation was not materialized");
+
+    const manualQuote = await quoteCanonicalManualPayment({
+      organizationId,
+      leagueId: fixture.leagueId,
+      request: { amountMinor: 1_000, payerBowlerId: bowlerId, type: "cash" },
+    });
+    const heldPayment = await recordCanonicalManualPayment({
+      organizationId,
+      leagueId: fixture.leagueId,
+      actorUserId,
+      request: {
+        amountMinor: 1_000,
+        payerBowlerId: bowlerId,
+        type: "cash",
+        idempotencyKey: `review-held-partial-${randomUUID()}`,
+        requestFingerprint: manualQuote.fingerprint,
+      },
+    });
+    const heldAllocation = heldPayment.records[0]?.allocation;
+    if (!heldAllocation) throw new Error("review fixture did not partially fund the payer's confirmed debt");
+    await db.update(paymentAllocations).set({ reviewRequired: true, reviewReason: "fixture review" }).where(eq(paymentAllocations.id, heldAllocation.id));
+
+    const participants = await readInteractivePaymentParticipantsV4({ organizationId, leagueId: fixture.leagueId, payerBowlerId: bowlerId });
+    expect(participants.accountingMode).toBe("confirmed_account_v4");
+    if (participants.accountingMode !== "confirmed_account_v4") throw new Error("review fixture did not use adopted account funding");
+    expect(participants.recipients.every((recipient) => !("reviewHeldConfirmedDebt" in recipient))).toBe(true);
+
+    const quote = (recipientBowlerId: number, selection: { kind: "confirmed_debt_balance" } | { kind: "forecast_collection_target"; scope: "current_collection" } | { kind: "explicit_amount"; amountMinor: number }) => quoteAccountPaymentFundingV4({
+      organizationId,
+      leagueId: fixture.leagueId,
+      payerBowlerId: bowlerId,
+      request: { recipients: [{ bowlerId: recipientBowlerId, selection }] },
+    });
+    await expect(quote(bowlerId, { kind: "confirmed_debt_balance" })).rejects.toMatchObject({ code: "FINANCIAL_EVIDENCE_REQUIRES_REVIEW", status: 409 });
+    await expect(quote(bowlerId, { kind: "forecast_collection_target", scope: "current_collection" })).rejects.toMatchObject({ code: "FINANCIAL_EVIDENCE_REQUIRES_REVIEW", status: 409 });
+
+    const explicitQuote = await quote(bowlerId, { kind: "explicit_amount", amountMinor: 500 });
+    expect(explicitQuote.recipients[0]).toMatchObject({ bowlerId, providerChargeAmountMinor: 500 });
+    const cleanPartnerQuote = await quote(fixture.partnerBowlerId, { kind: "confirmed_debt_balance" });
+    expect(cleanPartnerQuote.recipients[0]).toMatchObject({ bowlerId: fixture.partnerBowlerId, confirmedDebtMinor: 2_000, providerChargeAmountMinor: 2_000 });
+
+    const processPayment = vi.fn();
+    const provider: Awaited<ReturnType<typeof paymentProviderFactory.getPaymentProvider>> = {
+      providerName: "square",
+      locationId,
+      processPayment,
+      createOrderWithPayment: vi.fn(),
+      refundPayment: vi.fn(),
+      saveCardOnFile: vi.fn(),
+      listCardsOnFile: vi.fn(),
+      disableCard: vi.fn(),
+      createOrUpdateCustomer: vi.fn(),
+      getPayment: vi.fn(),
+      validateCardId: vi.fn(),
+    };
+    const resolveProvider = vi.spyOn(paymentProviderFactory, "getPaymentProvider").mockResolvedValue(provider);
+    const execute = vi.spyOn(interactivePaymentOperationExecutor, "execute").mockRejectedValue(new Error("blocked preset must not execute"));
+    const idempotencyKey = `review-held-charge-${randomUUID()}`;
+    try {
+      await expect(chargeAccountPaymentFundingV4({
+        organizationId,
+        leagueId: fixture.leagueId,
+        actorUserId,
+        payerBowlerId: bowlerId,
+        request: {
+          recipients: [{ bowlerId, selection: { kind: "confirmed_debt_balance" } }],
+          sourceId: `cnon:review-held-${randomUUID()}`,
+          sourceKind: "new_card",
+          storeCard: false,
+          idempotencyKey,
+          quoteFingerprint: explicitQuote.quoteFingerprint,
+        },
+      })).rejects.toMatchObject({ code: "FINANCIAL_EVIDENCE_REQUIRES_REVIEW", status: 409 });
+      expect(execute).not.toHaveBeenCalled();
+      expect(processPayment).not.toHaveBeenCalled();
+      expect(await db.select({ id: paymentOperations.id }).from(paymentOperations).where(and(
+        eq(paymentOperations.organizationId, organizationId),
+        eq(paymentOperations.leagueId, fixture.leagueId),
+        eq(paymentOperations.targetKey, `interactive-charge:${idempotencyKey}`),
+      ))).toHaveLength(0);
+    } finally {
+      resolveProvider.mockRestore();
+      execute.mockRestore();
+    }
+  });
+
+  it("allows a preset quote when reviewed confirmed debt is already settled", async () => {
+    const fixture = await createAdoptedAccountFundingFixture();
+    const occurrence = await createOccurrence({
+      preserveOccurrenceOrdinal: true,
+      targetLeagueId: fixture.leagueId,
+      authoritativeLocalDate: "2037-12-15",
+      plannedOrdinal: 1,
+    });
+    await ensureOwnedLedgerAdoption(fixture.leagueId, "2037-12-31");
+    await createAppliedGenerationRun([occurrence], 1, fixture.leagueId);
+    const manualQuote = await quoteCanonicalManualPayment({
+      organizationId,
+      leagueId: fixture.leagueId,
+      request: { amountMinor: 2_000, payerBowlerId: bowlerId, type: "cash" },
+    });
+    const settledPayment = await recordCanonicalManualPayment({
+      organizationId,
+      leagueId: fixture.leagueId,
+      actorUserId,
+      request: {
+        amountMinor: 2_000,
+        payerBowlerId: bowlerId,
+        type: "cash",
+        idempotencyKey: `review-held-settled-${randomUUID()}`,
+        requestFingerprint: manualQuote.fingerprint,
+      },
+    });
+    const settledAllocation = settledPayment.records[0]?.allocation;
+    if (!settledAllocation) throw new Error("review fixture did not settle the confirmed debt");
+    expect(settledAllocation.obligationId).toBe(occurrence.obligation.id);
+    await db.update(paymentAllocations).set({ reviewRequired: true, reviewReason: "fixture review" }).where(eq(paymentAllocations.id, settledAllocation.id));
+
+    const presetQuote = await quoteAccountPaymentFundingV4({
+      organizationId,
+      leagueId: fixture.leagueId,
+      payerBowlerId: bowlerId,
+      request: { recipients: [{ bowlerId, selection: { kind: "confirmed_debt_balance" } }] },
+    });
+    expect(presetQuote.recipients[0]).toMatchObject({ confirmedDebtMinor: 0, providerChargeAmountMinor: 0 });
+  });
+
+  it("persists adopted cash without a stale check number and preserves valid check numbers", async () => {
+    const fixture = await createAdoptedAccountFundingFixture();
+    const cashOccurrenceFixture = await createOccurrence({
+      preserveOccurrenceOrdinal: true,
+      targetLeagueId: fixture.leagueId,
+      authoritativeLocalDate: "2037-12-15",
+      plannedOrdinal: 1,
+    });
+    await ensureOwnedLedgerAdoption(fixture.leagueId, "2037-12-31");
+    await createAppliedGenerationRun([cashOccurrenceFixture], 1, fixture.leagueId);
+    const cashQuote = await quoteCanonicalManualPayment({
+      organizationId,
+      leagueId: fixture.leagueId,
+      request: { amountMinor: 500, payerBowlerId: bowlerId, type: "cash" },
+    });
+    const cashIdempotencyKey = `manual-cash-clears-check-${randomUUID()}`;
+    const cashRequest = {
+      amountMinor: 500,
+      payerBowlerId: bowlerId,
+      type: "cash" as const,
+      checkNumber: "stale-hidden-check-number",
+      idempotencyKey: cashIdempotencyKey,
+      requestFingerprint: cashQuote.fingerprint,
+    };
+    const cashResult = await recordCanonicalManualPayment({
+      organizationId,
+      leagueId: fixture.leagueId,
+      actorUserId,
+      request: cashRequest,
+    });
+    expect(cashResult.contractVersion).toBe("canonical-manual-record/2");
+    if (cashResult.contractVersion !== "canonical-manual-record/2") throw new Error("cash fixture did not record an adopted account receipt");
+    expect(cashResult.payment).toMatchObject({ type: "cash", checkNumber: null });
+    expect(cashResult.receipt).toMatchObject({ receiptId: expect.any(String), revision: 1 });
+    await expect(recordCanonicalManualPayment({
+      organizationId,
+      leagueId: fixture.leagueId,
+      actorUserId,
+      request: cashRequest,
+    })).rejects.toMatchObject({ code: "IDEMPOTENCY_REPLAY" });
+    expect(await db.select({ id: payments.id }).from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, fixture.leagueId),
+      eq(payments.idempotencyKey, cashIdempotencyKey),
+    ))).toHaveLength(1);
+    expect(await db.select({ id: weeklyPaymentWorksheetReceiptRevisions.id }).from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, fixture.leagueId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, cashResult.receipt.receiptId),
+    ))).toHaveLength(1);
+    const [cashRevision] = await db.select({ paymentId: weeklyPaymentWorksheetReceiptRevisions.paymentId }).from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, fixture.leagueId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, cashResult.receipt.receiptId),
+    )).limit(1);
+    expect(cashRevision?.paymentId).toBe(cashResult.payment.id);
+
+    const checkQuote = await quoteCanonicalManualPayment({
+      organizationId,
+      leagueId: fixture.leagueId,
+      request: { amountMinor: 500, payerBowlerId: bowlerId, type: "check", checkNumber: "0042" },
+    });
+    const checkIdempotencyKey = `manual-check-preserves-number-${randomUUID()}`;
+    const checkRequest = {
+      amountMinor: 500,
+      payerBowlerId: bowlerId,
+      type: "check" as const,
+      checkNumber: "0042",
+      idempotencyKey: checkIdempotencyKey,
+      requestFingerprint: checkQuote.fingerprint,
+    };
+    const checkResult = await recordCanonicalManualPayment({
+      organizationId,
+      leagueId: fixture.leagueId,
+      actorUserId,
+      request: checkRequest,
+    });
+    expect(checkResult.contractVersion).toBe("canonical-manual-record/2");
+    if (checkResult.contractVersion !== "canonical-manual-record/2") throw new Error("check fixture did not record an adopted account receipt");
+    expect(checkResult.payment).toMatchObject({ type: "check", checkNumber: "0042" });
+    expect(checkResult.receipt).toMatchObject({ receiptId: expect.any(String), revision: 1 });
+    await expect(recordCanonicalManualPayment({
+      organizationId,
+      leagueId: fixture.leagueId,
+      actorUserId,
+      request: { ...checkRequest, checkNumber: "0043" },
+    })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
   });
 
   it("replays a succeeded V4 receipt after the league loses its provider location", async () => {

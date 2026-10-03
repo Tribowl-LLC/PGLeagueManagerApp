@@ -325,7 +325,7 @@ async function replayManualRecordCommandBeforeRequote(
     && payment.bowlerId === input.request.payerBowlerId
     && payment.amount === input.request.amountMinor
     && payment.type === input.request.type
-    && (payment.checkNumber ?? null) === (input.request.checkNumber ?? null)
+    && (input.request.type !== "check" || (payment.checkNumber ?? null) === (input.request.checkNumber ?? null))
     && (payment.notes ?? null) === (input.request.notes ?? null);
   if (!exactPayload) throw new RosterPaymentError("IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different manual payment", 409);
   throw new RosterPaymentReplay(existing.result);
@@ -3231,7 +3231,7 @@ export async function recordCanonicalManualPayment(input: {
           paymentIdempotencyKey: input.request.idempotencyKey,
           existingPayment: {
             type: input.request.type,
-            checkNumber: input.request.checkNumber ?? null,
+            checkNumber: quoteIdentity.checkNumber,
             notes: input.request.notes ?? null,
             paidByUserId: input.actorUserId,
           },

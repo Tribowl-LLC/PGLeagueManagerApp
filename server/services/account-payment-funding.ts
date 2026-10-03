@@ -77,6 +77,7 @@ type ForecastParticipant = {
 type AccountContext = {
   response: AccountPaymentParticipantsResponseV4;
   recipientById: Map<number, ForecastParticipant>;
+  reviewHeldConfirmedDebtById: Map<number, boolean>;
   partnerLinkById: Map<number, { id: number; fingerprint: string } | null>;
 };
 
@@ -310,6 +311,7 @@ async function accountContextInTransaction(
     return {
       response: { ...base, accountingMode: "legacy_roster_v3" },
       recipientById: new Map(),
+      reviewHeldConfirmedDebtById: new Map(),
       partnerLinkById: new Map(),
     };
   }
@@ -330,6 +332,7 @@ async function accountContextInTransaction(
   }
 
   const recipientById = new Map<number, ForecastParticipant>();
+  const reviewHeldConfirmedDebtById = new Map<number, boolean>();
   const partnerLinkById = new Map<number, { id: number; fingerprint: string } | null>();
   const recipients: ForecastParticipant[] = [];
   for (const participant of resolved.participants) {
@@ -343,6 +346,7 @@ async function accountContextInTransaction(
     });
     const balance = balances.get(participant.bowlerId);
     const ownerDebts = debts.filter((debt) => debt.debtorBowlerId === participant.bowlerId);
+    reviewHeldConfirmedDebtById.set(participant.bowlerId, ownerDebts.some((debt) => debt.reviewRequired && debt.outstandingMinor > 0));
     const response: ForecastParticipant = {
       bowlerId: participant.bowlerId,
       name: participant.name,
@@ -375,6 +379,7 @@ async function accountContextInTransaction(
   return {
     response: contractResponse,
     recipientById,
+    reviewHeldConfirmedDebtById,
     partnerLinkById,
   };
 }
@@ -438,6 +443,9 @@ export async function quoteAccountPaymentFundingV4(input: {
       const participant = context.recipientById.get(bowlerId);
       if (!participant) throw new RosterPaymentError("PARTNER_AUTHORIZATION_REQUIRED", "The selected recipient is not an active direct payment partner in this league", 403);
       const selection = accountPaymentFundingSelectionV4Schema.parse(rawSelection);
+      if (selection.kind !== "explicit_amount" && context.reviewHeldConfirmedDebtById.get(bowlerId) === true) {
+        throw new RosterPaymentError("FINANCIAL_EVIDENCE_REQUIRES_REVIEW", "This recipient's confirmed balance needs review before using a preset", 409);
+      }
       const targets = selectedCollectionTargets(selection, participant, paymentMode);
       const providerChargeAmountMinor = resolveAccountPaymentFundingChargeAmountV4({
         selection,
