@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { build } from "esbuild";
 import { describe, it } from "vitest";
 import {
   parseArguments,
@@ -149,61 +150,78 @@ describe("owned payment adoption CLI", () => {
   });
 
   it("keeps built-artifact help and invalid-proof refusals free of secrets", async () => {
-    const artifact = join(process.cwd(), "dist", "owned-payment-ledger-adoption.js");
-    const help = spawnSync(process.execPath, [artifact, "--help"], { encoding: "utf8" });
-    assert.equal(help.status, 0);
-    assert.match(help.stdout, /preflight/);
-    assert.doesNotMatch(help.stdout + help.stderr, /DATABASE_URL=.*@|FIELD_ENCRYPTION_KEY=/);
-
-    const directory = await mkdtemp(join(tmpdir(), "owned-payment-adoption-cli-"));
-    const proofPath = join(directory, "proof.json");
-    const fakeSecret = "CLI_TEST_SECRET_MUST_NOT_ESCAPE";
-    await writeFile(proofPath, JSON.stringify({ unexpected: fakeSecret }), { mode: 0o600 });
+    const buildDirectory = resolve(".local/agent-tasks/payments_ci_contracts");
+    await mkdir(buildDirectory, { recursive: true });
+    const artifactDirectory = await mkdtemp(join(buildDirectory, "owned-payment-adoption-cli-"));
+    const artifact = join(artifactDirectory, "owned-payment-ledger-adoption.js");
     try {
-      const environment = {
-        ...process.env,
-        ...runtimeEnvironment(directHost),
-      };
-      const refused = spawnSync(process.execPath, [
+      await build({
+        entryPoints: [resolve("scripts/owned-payment-ledger-adoption.ts")],
+        bundle: true,
+        packages: "external",
+        platform: "node",
+        format: "esm",
+        outfile: artifact,
+        logLevel: "silent",
+      });
+
+      const help = spawnSync(process.execPath, [artifact, "--help"], { encoding: "utf8" });
+      assert.equal(help.status, 0);
+      assert.match(help.stdout, /preflight/);
+      assert.doesNotMatch(help.stdout + help.stderr, /DATABASE_URL=.*@|FIELD_ENCRYPTION_KEY=/);
+
+      const directory = await mkdtemp(join(tmpdir(), "owned-payment-adoption-cli-"));
+      const proofPath = join(directory, "proof.json");
+      const fakeSecret = "CLI_TEST_SECRET_MUST_NOT_ESCAPE";
+      await writeFile(proofPath, JSON.stringify({ unexpected: fakeSecret }), { mode: 0o600 });
+      try {
+        const environment = {
+          ...process.env,
+          ...runtimeEnvironment(directHost),
+        };
+        const refused = spawnSync(process.execPath, [
+          artifact,
+          "apply",
+          "--expected-db-host", directHost,
+          "--expected-db-name", "neondb",
+          "--expected-render-git-commit", sha,
+          "--organization-id", "1",
+          "--league-id", "2",
+          "--actor-user-id", "3",
+          "--expected-source-fingerprint", sourceFingerprint,
+          "--expected-result-fingerprint", resultFingerprint,
+          "--backup-proof-file", proofPath,
+        ], { encoding: "utf8", env: environment });
+        const output = `${refused.stdout}${refused.stderr}`;
+        assert.equal(refused.status, 1);
+        assert.match(refused.stderr, /refused \(PREFLIGHT_OR_APPLY_REFUSED\)/);
+        assert.doesNotMatch(output, new RegExp(fakeSecret));
+        assert.doesNotMatch(output, /SQLSTATE|select\s|insert\s|database_url|password/i);
+        assert.equal(refused.stdout, "");
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+
+      const invalidTarget = spawnSync(process.execPath, [
         artifact,
-        "apply",
+        "preflight",
         "--expected-db-host", directHost,
         "--expected-db-name", "neondb",
         "--expected-render-git-commit", sha,
         "--organization-id", "1",
         "--league-id", "2",
         "--actor-user-id", "3",
-        "--expected-source-fingerprint", sourceFingerprint,
-        "--expected-result-fingerprint", resultFingerprint,
-        "--backup-proof-file", proofPath,
-      ], { encoding: "utf8", env: environment });
-      const output = `${refused.stdout}${refused.stderr}`;
-      assert.equal(refused.status, 1);
-      assert.match(refused.stderr, /refused \(PREFLIGHT_OR_APPLY_REFUSED\)/);
-      assert.doesNotMatch(output, new RegExp(fakeSecret));
-      assert.doesNotMatch(output, /SQLSTATE|select\s|insert\s|database_url|password/i);
-      assert.equal(refused.stdout, "");
+        "--evidence-file", "/tmp/unused-owned-adoption-evidence.json",
+      ], {
+        encoding: "utf8",
+        env: { ...process.env, ...runtimeEnvironment(poolerHost) },
+      });
+      assert.equal(invalidTarget.status, 1);
+      assert.match(invalidTarget.stderr, /refused \(PREFLIGHT_OR_APPLY_REFUSED\)/);
+      assert.doesNotMatch(`${invalidTarget.stdout}${invalidTarget.stderr}`, /cli-test-only|FIELD_ENCRYPTION_KEY|DATABASE_URL/);
+      assert.equal(invalidTarget.stdout, "");
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await rm(artifactDirectory, { recursive: true, force: true });
     }
-
-    const invalidTarget = spawnSync(process.execPath, [
-      artifact,
-      "preflight",
-      "--expected-db-host", directHost,
-      "--expected-db-name", "neondb",
-      "--expected-render-git-commit", sha,
-      "--organization-id", "1",
-      "--league-id", "2",
-      "--actor-user-id", "3",
-      "--evidence-file", "/tmp/unused-owned-adoption-evidence.json",
-    ], {
-      encoding: "utf8",
-      env: { ...process.env, ...runtimeEnvironment(poolerHost) },
-    });
-    assert.equal(invalidTarget.status, 1);
-    assert.match(invalidTarget.stderr, /refused \(PREFLIGHT_OR_APPLY_REFUSED\)/);
-    assert.doesNotMatch(`${invalidTarget.stdout}${invalidTarget.stderr}`, /cli-test-only|FIELD_ENCRYPTION_KEY|DATABASE_URL/);
-    assert.equal(invalidTarget.stdout, "");
   });
 });
