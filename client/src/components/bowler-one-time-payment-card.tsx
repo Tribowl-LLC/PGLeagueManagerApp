@@ -274,6 +274,10 @@ interface Props {
     onRetry: () => void;
     isRetrying: boolean;
   } | null;
+  accountFunding?: boolean;
+  explicitAmountValue?: string;
+  explicitAmountError?: string | null;
+  onExplicitAmountChange?: (value: string) => void;
 }
 
 export const BowlerOneTimePaymentCard: FC<Props> = ({
@@ -291,6 +295,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   onResetRecipientSelection, paymentRefreshState = "idle", paymentRefreshError = null,
   onRetryPaymentRefresh, onRetryQuote, dueNowOnly = false, onCancelDueNow,
   combinedConsentRecovery = null, rotatingMode = false,
+  accountFunding = false, explicitAmountValue, explicitAmountError = null, onExplicitAmountChange,
 }) => {
   const cardCallbackRef = useRef<(el: HTMLDivElement | null) => void>(() => undefined);
   cardCallbackRef.current = (el) => { if (el && cardMode === "new" && cardEditorMode === "one-time") void initializeCard(el); };
@@ -379,15 +384,16 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   const reviewRecipients = recipientRows.filter((row) => row.selected && row.eligible);
   const reviewQuoteForRecipient = (row: PaymentRecipientRow) => breakdownRows?.find((candidate) => candidate.bowlerId === row.bowlerId);
   const reviewCoverageForRecipient = (row: PaymentRecipientRow) => {
+    if (accountFunding) return "Account funding";
     // Rotating prepayments do not promise specific league obligations yet.
     if (rotatingMode) return `${row.weeks} ${row.weeks === 1 ? "week" : "weeks"}`;
     return formatReviewCoverageFromRow(reviewQuoteForRecipient(row), row.weeks);
   };
-  const reviewCoverage = reviewRecipients.length > 0
+  const reviewCoverage = accountFunding ? "Account funding" : reviewRecipients.length > 0
     ? reviewCoverageForRecipient(reviewRecipients[0])
     : "Coverage details unavailable";
   const reviewDisabled = (cardMode === "new" && !isInitialized) || (cardMode === "saved" && !selectedSavedCardId)
-    || paymentInFlight || paymentAmountMinor <= 0 || !hasSelectedRecipient || quoteLoading || Boolean(quoteError)
+    || paymentInFlight || paymentAmountMinor <= 0 || !hasSelectedRecipient || quoteLoading || Boolean(quoteError) || Boolean(explicitAmountError)
     || selectionStale || (!bowlerHasEmail && !receiptEmail.trim());
 
   if (completedPayment) {
@@ -425,7 +431,8 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
         <CardTitle>{fullBalanceOnly ? "Full season payment" : "One-time payment"}</CardTitle>
         {showRecipientChooser && !fullBalanceOnly && <CardDescription>Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.</CardDescription>}
         {showRecipientChooser && fullBalanceOnly && <CardDescription>Pay for</CardDescription>}
-        {!showRecipientChooser && !fullBalanceOnly && <CardDescription>Payments cover your oldest unpaid weeks first.</CardDescription>}
+        {accountFunding && <CardDescription>Choose a payment option or enter an amount to add funds to your account.</CardDescription>}
+        {!accountFunding && !showRecipientChooser && !fullBalanceOnly && <CardDescription>Payments cover your oldest unpaid weeks first.</CardDescription>}
         {dueNowOnly && <CardDescription>Pay the amount needed to get up to date and enable automatic payments in one checkout.</CardDescription>}
       </CardHeader>
       <CardContent spacing="normal">
@@ -479,7 +486,25 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
                 </div>
               ))}
         </fieldset>
-        {hasSelectedRecipient && !dueNowOnly && !compactFullBalanceRows && <p className="familiar-payment-coverage" aria-live="polite">{coverageCopy}</p>}
+        {accountFunding && explicitAmountValue !== undefined && onExplicitAmountChange && <div className="space-y-2">
+          <Label htmlFor="account-funding-amount" size="sm">Amount to add to your account</Label>
+          <Input
+            id="account-funding-amount"
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            placeholder="0.00"
+            value={explicitAmountValue}
+            onChange={(event) => onExplicitAmountChange(event.target.value)}
+            disabled={paymentInFlight}
+            aria-invalid={Boolean(explicitAmountError)}
+            aria-describedby={explicitAmountError ? "account-funding-amount-error" : "account-funding-amount-help"}
+          />
+          {explicitAmountError
+            ? <p id="account-funding-amount-error" className="text-xs text-destructive" role="alert">{explicitAmountError}</p>
+            : <p id="account-funding-amount-help" className="text-xs text-muted-foreground">Leave blank to use the available payment options.</p>}
+        </div>}
+        {hasSelectedRecipient && !dueNowOnly && !compactFullBalanceRows && !accountFunding && <p className="familiar-payment-coverage" aria-live="polite">{coverageCopy}</p>}
         {recipientRows.length === 0 && <Alert><AlertDescription>No payment recipients are available for this league.</AlertDescription></Alert>}
         {showRecipientChooser && !hasSelectedRecipient && <Alert><AlertDescription>Select at least one recipient to continue.</AlertDescription></Alert>}
         {paymentRefreshState === "refreshing" && <Alert><AlertDescription>Refreshing payment balances before continuing…</AlertDescription></Alert>}

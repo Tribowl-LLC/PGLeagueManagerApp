@@ -3,6 +3,8 @@ import { useLocation } from "wouter";
 import { tokenizeCard } from "@/lib/square";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, csrfFetch } from "@/lib/queryClient";
+import { accountPaymentParticipantsQueryKey, loadAccountPaymentParticipantsV4 } from "@/lib/account-payment-v4";
+import { accountPaymentFundingQuoteResponseV4Schema } from "@shared/account-payment-v4-contract";
 import { logger } from "@/lib/logger";
 import {
   isProviderNotConfiguredError,
@@ -79,29 +81,64 @@ export function useBowlerPaymentSubmit({
       if (cardMode === "new" && !card) throw new Error("Please enter your card details before proceeding.");
       if (cardMode === "saved" && !selectedSavedCardId) throw new Error("Please select a saved card.");
       const requestKey = preparedIntent.requestKey;
-      const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amountMinor, payerBowlerId: bowler.id }),
-      });
-      const quoteBody = await quoteResponse.json().catch(() => ({}));
-      if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment quote is unavailable");
       const sourceId = cardMode === "saved" ? selectedSavedCardId : card ? await tokenizeCard(card) : "";
       if (!sourceId) throw new Error("A payment source is required.");
-      const response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, {
-        method: "POST",
-        headers: paymentRequestHeaders(requestKey),
-        body: JSON.stringify({
-          amountMinor,
-          payerBowlerId: quoteBody.data.payerBowlerId ?? bowler.id,
-          sourceId,
-          sourceKind: cardMode === "saved" ? "saved_card" : "new_card",
-          buyerEmail: buyerEmail?.trim() || null,
-          storeCard,
-          idempotencyKey: requestKey,
-          requestFingerprint: quoteBody.data.fingerprint,
-        }),
-      }), league.id);
+      const participants = await queryClient.fetchQuery({
+        queryKey: accountPaymentParticipantsQueryKey(league.id, bowler.id),
+        queryFn: ({ signal }) => loadAccountPaymentParticipantsV4(league.id, bowler.id, signal),
+        staleTime: 30_000,
+      });
+      let response: Response;
+      if (participants.accountingMode === "confirmed_account_v4") {
+        const recipients = [{ bowlerId: bowler.id, selection: { kind: "explicit_amount" as const, amountMinor } }];
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-quote/4`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ payerBowlerId: bowler.id, recipients }),
+        });
+        const quoteBody = await quoteResponse.json().catch(() => ({}));
+        if (!quoteResponse.ok) throw makeApiError(quoteBody, quoteResponse.status, "Payment quote is unavailable");
+        const quote = accountPaymentFundingQuoteResponseV4Schema.parse(quoteBody.data);
+        if (quote.providerChargeAmountMinor !== amountMinor || quote.recipients.length !== 1 || quote.recipients[0]?.bowlerId !== bowler.id) {
+          throw new Error("The exact account funding amount could not be confirmed. Refresh and try again.");
+        }
+        response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-payment-charge/4`, {
+          method: "POST",
+          headers: paymentRequestHeaders(requestKey),
+          body: JSON.stringify({
+            payerBowlerId: bowler.id,
+            recipients,
+            sourceId,
+            sourceKind: cardMode === "saved" ? "saved_card" : "new_card",
+            buyerEmail: buyerEmail?.trim() || null,
+            storeCard,
+            idempotencyKey: requestKey,
+            quoteFingerprint: quote.quoteFingerprint,
+          }),
+        }), league.id);
+      } else {
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-quote/2`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ amountMinor, payerBowlerId: bowler.id }),
+        });
+        const quoteBody = await quoteResponse.json().catch(() => ({}));
+        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment quote is unavailable");
+        response = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${league.id}/interactive-obligation-charge/2`, {
+          method: "POST",
+          headers: paymentRequestHeaders(requestKey),
+          body: JSON.stringify({
+            amountMinor,
+            payerBowlerId: quoteBody.data.payerBowlerId ?? bowler.id,
+            sourceId,
+            sourceKind: cardMode === "saved" ? "saved_card" : "new_card",
+            buyerEmail: buyerEmail?.trim() || null,
+            storeCard,
+            idempotencyKey: requestKey,
+            requestFingerprint: quoteBody.data.fingerprint,
+          }),
+        }), league.id);
+      }
       const body = await response.json();
       if (!response.ok) throw makeApiError(body, response.status, "Payment failed");
       const status = body.data?.status;
@@ -112,6 +149,8 @@ export function useBowlerPaymentSubmit({
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/financials", league.id] });
       queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
+      queryClient.invalidateQueries({ queryKey: accountPaymentParticipantsQueryKey(league.id, bowler.id).slice(0, 3) });
+      queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", league.id] });
       if (storeCard && cardMode === "new") {
         queryClient.invalidateQueries({ queryKey: [`/api/payments-provider/cards/${bowler.id}`] });
       }

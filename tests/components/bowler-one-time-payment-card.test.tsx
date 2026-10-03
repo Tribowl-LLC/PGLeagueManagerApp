@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
 import { BowlerOneTimePaymentCard, type CompletedPayment, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
 
-function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[], dueNowOnly = false, options: { applePayAvailable?: boolean; googlePayAvailable?: boolean; rotatingMode?: boolean; cardMode?: "new" | "saved"; selectedSavedCardId?: string; savedCards?: Array<{ id: string; brand: string; last4: string; expMonth: number; expYear: number }>; storeCard?: boolean; quoteFingerprint?: string; completedPayment?: CompletedPayment; onViewPaymentHistory?: () => void; onMakeAnotherPayment?: () => void; onRetryQuote?: () => void } = {}) {
+function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[], dueNowOnly = false, options: { applePayAvailable?: boolean; googlePayAvailable?: boolean; rotatingMode?: boolean; cardMode?: "new" | "saved"; selectedSavedCardId?: string; savedCards?: Array<{ id: string; brand: string; last4: string; expMonth: number; expYear: number }>; storeCard?: boolean; quoteFingerprint?: string; completedPayment?: CompletedPayment; onViewPaymentHistory?: () => void; onMakeAnotherPayment?: () => void; onRetryQuote?: () => void; accountFunding?: boolean; explicitAmountValue?: string; explicitAmountError?: string | null; onExplicitAmountChange?: (value: string) => void } = {}) {
   const applePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const googlePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const onRecipientToggle = vi.fn();
@@ -65,11 +65,33 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     dueNowOnly={dueNowOnly}
     rotatingMode={options.rotatingMode ?? false}
     onCancelDueNow={vi.fn()}
+    accountFunding={options.accountFunding}
+    explicitAmountValue={options.explicitAmountValue}
+    explicitAmountError={options.explicitAmountError}
+    onExplicitAmountChange={options.onExplicitAmountChange}
   />);
   return { onRecipientToggle, onRecipientWeeksChange, onSubmit };
 }
 
 describe("BowlerOneTimePaymentCard payment mode", () => {
+  it("renders a decimal account funding amount input and reports invalid entry accessibly", () => {
+    const onExplicitAmountChange = vi.fn();
+    renderCard(false, { amountMinor: 0 }, [], [], false, false, undefined, false, {
+      accountFunding: true,
+      explicitAmountValue: "-",
+      explicitAmountError: "Enter a valid amount.",
+      onExplicitAmountChange,
+    });
+
+    const amountInput = screen.getByRole("textbox", { name: "Amount to add to your account" });
+    expect(amountInput).toHaveValue("-");
+    expect(amountInput).toHaveAttribute("inputmode", "decimal");
+    expect(amountInput).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a valid amount.");
+    fireEvent.change(amountInput, { target: { value: "25.50" } });
+    expect(onExplicitAmountChange).toHaveBeenCalledWith("25.50");
+  });
+
   it("explains when the participant projection is empty without showing an impossible chooser action", () => {
     renderCard(false, { amountMinor: 0 }, [], [], false, false, []);
 

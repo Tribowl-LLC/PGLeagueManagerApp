@@ -37,6 +37,8 @@ import { PaymentProviderNotConfiguredAlert } from "@/components/payment-provider
 import { PaymentFormActions } from "@/components/payment-form-actions";
 import { isHandledPaymentError, sanitizePaymentErrorMessage } from "@/lib/payment-user-error";
 import { logger } from "@/lib/logger";
+import { accountPaymentParticipantsQueryKey, loadAccountPaymentParticipantsV4 } from "@/lib/account-payment-v4";
+import { accountPaymentFundingQuoteResponseV4Schema } from "@shared/account-payment-v4-contract";
 
 interface SavedCard {
   id: string;
@@ -338,9 +340,37 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
     const overrideEmail = !selected?.email && trimmedReceiptEmail ? trimmedReceiptEmail : undefined;
     try {
       if (!leagueInfo || leagueInfo.id !== currentLeagueId) throw new Error("Payment league context is unavailable.");
-      const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-quote/2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: amount, payerBowlerId: bowlerId }) });
-      const quoteBody = await quoteResponse.json();
-      if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw new Error(quoteBody.error?.message || "Payment allocation is unavailable.");
+      const participants = await queryClient.fetchQuery({
+        queryKey: accountPaymentParticipantsQueryKey(currentLeagueId, bowlerId),
+        queryFn: ({ signal }) => loadAccountPaymentParticipantsV4(currentLeagueId, bowlerId, signal),
+        staleTime: 30_000,
+      });
+      let accountQuoteFingerprint: string | null = null;
+      let legacyRequestFingerprint: string | null = null;
+      if (participants.accountingMode === "confirmed_account_v4") {
+        const recipients = [{ bowlerId, selection: { kind: "explicit_amount" as const, amountMinor: amount } }];
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-payment-quote/4`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ payerBowlerId: bowlerId, recipients }),
+        });
+        const quoteBody = await quoteResponse.json().catch(() => ({}));
+        if (!quoteResponse.ok) throw makeApiError(quoteBody, quoteResponse.status, "Payment allocation is unavailable.");
+        const quote = accountPaymentFundingQuoteResponseV4Schema.parse(quoteBody.data);
+        if (quote.providerChargeAmountMinor !== amount || quote.recipients.length !== 1 || quote.recipients[0]?.bowlerId !== bowlerId) {
+          throw new Error("The exact account funding amount could not be confirmed. Refresh and try again.");
+        }
+        accountQuoteFingerprint = quote.quoteFingerprint;
+      } else {
+        const quoteResponse = await csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-quote/2`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ amountMinor: amount, payerBowlerId: bowlerId }),
+        });
+        const quoteBody = await quoteResponse.json().catch(() => ({}));
+        if (!quoteResponse.ok || !quoteBody.data?.fingerprint) throw makeApiError(quoteBody, quoteResponse.status, "Payment allocation is unavailable.");
+        legacyRequestFingerprint = quoteBody.data.fingerprint;
+      }
       const actorUserId = currentUser?.id;
       const organizationId = leagueInfo.organizationId;
       if (typeof actorUserId !== "number" || !Number.isSafeInteger(actorUserId) || typeof organizationId !== "number" || !Number.isSafeInteger(organizationId)) {
@@ -349,7 +379,17 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       const paymentScope = interactivePaymentIntentScope({ actorUserId, organizationId, leagueId: currentLeagueId, bowlerId });
       const requestKey = walletRequestKeyRef.current;
       if (!requestKey) throw new Error("Payment identity is unavailable. Retry payment recovery before trying again.");
-      const exactResponse = await paymentRequestWithRecovery(requestKey, () => csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-charge/2`, { method: "POST", headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" }, body: JSON.stringify({ amountMinor: amount, payerBowlerId: quoteBody.data.payerBowlerId ?? bowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: quoteBody.data.fingerprint }) }), currentLeagueId);
+      const exactResponse = await paymentRequestWithRecovery(requestKey, () => accountQuoteFingerprint
+        ? csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-payment-charge/4`, {
+          method: "POST",
+          headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" },
+          body: JSON.stringify({ payerBowlerId: bowlerId, recipients: [{ bowlerId, selection: { kind: "explicit_amount", amountMinor: amount } }], sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, quoteFingerprint: accountQuoteFingerprint }),
+        })
+        : csrfFetch(`/api/financials/leagues/${currentLeagueId}/interactive-obligation-charge/2`, {
+          method: "POST",
+          headers: { ...paymentRequestHeaders(requestKey), "Content-Type": "application/json" },
+          body: JSON.stringify({ amountMinor: amount, payerBowlerId: bowlerId, sourceId: token, sourceKind: "wallet", buyerEmail: overrideEmail ?? selected?.email ?? null, storeCard: false, idempotencyKey: requestKey, requestFingerprint: legacyRequestFingerprint }),
+        }), currentLeagueId);
       const exactBody = await exactResponse.json();
       const rosterStatus = exactBody.data?.status ?? exactBody.status;
       if (!exactResponse.ok) {
@@ -362,6 +402,8 @@ export function PaymentForm({ open, onClose, bowlers, leagueId, paymentManager =
       toast({ title: "Success", description: `Payment processed via ${walletType === "apple_pay" ? "Apple Pay" : "Google Pay"}` });
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
+      queryClient.invalidateQueries({ queryKey: accountPaymentParticipantsQueryKey(currentLeagueId, bowlerId).slice(0, 3) });
+      queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", currentLeagueId] });
       onClose();
     } catch (error) {
       if (isProviderNotConfiguredError(error)) {

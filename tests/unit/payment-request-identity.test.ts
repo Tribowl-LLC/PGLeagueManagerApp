@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   beginPaymentIntent,
   clearPaymentIntent,
+  classifyRosterResponse,
   interactivePaymentIntentScope,
   isValidPaymentRequestKey,
   paymentRequestHeaders,
@@ -83,6 +84,13 @@ describe('interactive payment request identity', () => {
     const scope = interactivePaymentIntentScope({ actorUserId: 4, organizationId: 8, leagueId: 17, bowlerId: 42 });
     values.set(`leaguevault:payment-intent:v1:${scope}`, 'malformed-key');
     expect(() => beginPaymentIntent(scope)).toThrow('Stored payment request identity is invalid');
+  });
+
+  it('recognizes a successful V4 account receipt without allocation rows', () => {
+    expect(classifyRosterResponse({ contractVersion: 'account-payment-funding-charge/4', operationId: 'op-1', status: 'succeeded' })).toBe('success');
+    expect(classifyRosterResponse({ contractVersion: 'account-payment-funding-charge/4', operationId: 'op-2', status: 'reconciliation_required' })).toBe('recover');
+    expect(classifyRosterResponse({ contractVersion: 'account-payment-funding-charge/4', operationId: 'op-3', status: 'pending' })).toBe('preserve');
+    expect(classifyRosterResponse({ contractVersion: 'account-payment-funding-charge/4', operationId: 'op-4', status: 'failed_terminal' })).toBe('terminal_failure');
   });
 
 });
