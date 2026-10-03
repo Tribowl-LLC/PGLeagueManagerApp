@@ -33,6 +33,7 @@ vi.mock("../../server/services/manage-payments-worksheet-read.js", () => ({
       this.name = "ManagePaymentsWorksheetReadError";
     }
   },
+  isManagePaymentsWorksheetReadAborted: (error: unknown) => error instanceof Error && error.name === "ManagePaymentsWorksheetReadAborted",
   readManagePaymentsWorksheetSnapshot: (...args: unknown[]) => mocks.readSnapshot(...args),
 }));
 vi.mock("../../server/services/manage-payments-worksheet-write.js", () => ({
@@ -158,9 +159,35 @@ describe("Manage Payments worksheet read route", () => {
     expect(response.status).toBe(200);
     expect(body).toMatchObject({ success: true, data: { contractVersion: 1 } });
     expect(mocks.hasMembership).toHaveBeenCalledWith(user("org_admin", 12), 12);
-    expect(mocks.readSnapshot).toHaveBeenCalledWith({ organizationId: 12, leagueId: 7, occurrenceId: valid });
+    const readInput = mocks.readSnapshot.mock.calls[0]?.[0] as { organizationId: number; leagueId: number; occurrenceId: string; signal: AbortSignal };
+    expect(readInput).toMatchObject({ organizationId: 12, leagueId: 7, occurrenceId: valid });
+    expect(readInput.signal).toBeInstanceOf(AbortSignal);
     expect(invalid.status).toBe(400);
     expect(mocks.readSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("signals the worksheet reader when an in-flight GET is abandoned", async () => {
+    let readSignal: AbortSignal | undefined;
+    mocks.readSnapshot.mockImplementation((input: { signal: AbortSignal }) => new Promise((_resolve, reject) => {
+      readSignal = input.signal;
+      const rejectAborted = () => reject(Object.assign(new Error("aborted"), { name: "ManagePaymentsWorksheetReadAborted" }));
+      if (input.signal.aborted) rejectAborted();
+      else input.signal.addEventListener("abort", rejectAborted, { once: true });
+    }));
+    const requestController = new AbortController();
+    const pendingResponse = fetch(`${baseUrl}/api/financials/leagues/7/manage-payments/1`, {
+      signal: requestController.signal,
+      headers: {
+        "x-test-user": JSON.stringify(user("org_admin", 12)),
+        "x-test-org-context": "12",
+      },
+    });
+    await vi.waitFor(() => expect(readSignal).toBeInstanceOf(AbortSignal));
+
+    requestController.abort();
+
+    await expect(pendingResponse).rejects.toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(readSignal?.aborted).toBe(true));
   });
 
   it("returns a deliberate safe response until the league ledger has been adopted", async () => {

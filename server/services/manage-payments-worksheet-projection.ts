@@ -353,22 +353,59 @@ export function selectManagePaymentsOccurrence(
   return selected;
 }
 
+export interface ManagePaymentsCardReceiptOccurrenceIndex {
+  billableOccurrenceIds: ReadonlySet<string>;
+  collectionOrder: readonly LeagueOccurrenceScheduleOccurrence[];
+}
+
+export function createManagePaymentsCardReceiptOccurrenceIndex(
+  schedule: LeagueOccurrenceScheduleReadContract,
+): ManagePaymentsCardReceiptOccurrenceIndex {
+  const billable = schedule.occurrences.filter(isBillableOccurrence);
+  return {
+    billableOccurrenceIds: new Set(billable.map((occurrence) => occurrence.occurrenceId)),
+    collectionOrder: [...billable].sort(compareOccurrenceCollectionDate),
+  };
+}
+
+export function mapCardReceiptCollectionOccurrenceFromIndex(
+  receipt: Pick<ManagePaymentsProjectionCardReceipt, "explicitCollectionOccurrenceId" | "triggerOccurrenceId" | "collectionLocalDate">,
+  index: ManagePaymentsCardReceiptOccurrenceIndex,
+): string | null {
+  const [earliest] = index.collectionOrder;
+  if (!earliest) return null;
+  if (receipt.explicitCollectionOccurrenceId !== null) {
+    return index.billableOccurrenceIds.has(receipt.explicitCollectionOccurrenceId)
+      ? receipt.explicitCollectionOccurrenceId
+      : null;
+  }
+  if (receipt.triggerOccurrenceId !== null) {
+    return index.billableOccurrenceIds.has(receipt.triggerOccurrenceId)
+      ? receipt.triggerOccurrenceId
+      : null;
+  }
+  let lower = 0;
+  let upper = index.collectionOrder.length - 1;
+  let match = -1;
+  while (lower <= upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    const occurrence = index.collectionOrder[middle];
+    if (!occurrence) break;
+    if (occurrence.authoritativeLocalDate <= receipt.collectionLocalDate) {
+      match = middle;
+      lower = middle + 1;
+    } else {
+      upper = middle - 1;
+    }
+  }
+  return index.collectionOrder[match]?.occurrenceId ?? earliest.occurrenceId;
+}
+
 export function mapCardReceiptCollectionOccurrence(
   receipt: Pick<ManagePaymentsProjectionCardReceipt, "explicitCollectionOccurrenceId" | "triggerOccurrenceId" | "collectionLocalDate">,
   schedule: LeagueOccurrenceScheduleReadContract,
 ): string | null {
-  const billable = schedule.occurrences.filter(isBillableOccurrence);
-  if (billable.length === 0) return null;
-  if (receipt.explicitCollectionOccurrenceId !== null) {
-    return billable.find((occurrence) => occurrence.occurrenceId === receipt.explicitCollectionOccurrenceId)?.occurrenceId ?? null;
-  }
-  if (receipt.triggerOccurrenceId !== null) {
-    return billable.find((occurrence) => occurrence.occurrenceId === receipt.triggerOccurrenceId)?.occurrenceId ?? null;
-  }
-  const collectionDate = receipt.collectionLocalDate;
-  const collectionOrder = [...billable].sort(compareOccurrenceCollectionDate);
-  const atOrBefore = collectionOrder.filter((occurrence) => occurrence.authoritativeLocalDate <= collectionDate);
-  return atOrBefore[atOrBefore.length - 1]?.occurrenceId ?? collectionOrder[0]?.occurrenceId ?? null;
+  return mapCardReceiptCollectionOccurrenceFromIndex(receipt, createManagePaymentsCardReceiptOccurrenceIndex(schedule));
 }
 
 function responsibilityRows(
@@ -700,6 +737,20 @@ function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<numbe
 
   const output = new Map<number, boolean>();
   const forecastTargets = buildManagePaymentsForecastTargets(input);
+  const obligationsByOccurrenceAndBowler = new Map<string, ManagePaymentsProjectionFinalObligation[]>();
+  for (const obligation of input.finalObligations) {
+    const key = JSON.stringify([obligation.occurrenceId, obligation.debtorBowlerId]);
+    const rows = obligationsByOccurrenceAndBowler.get(key);
+    if (rows) rows.push(obligation);
+    else obligationsByOccurrenceAndBowler.set(key, [obligation]);
+  }
+  const forecastTargetsByOccurrenceAndBowler = new Map<string, ManagePaymentsForecastTarget[]>();
+  for (const target of forecastTargets) {
+    const key = JSON.stringify([target.occurrenceId, target.bowlerId]);
+    const rows = forecastTargetsByOccurrenceAndBowler.get(key);
+    if (rows) rows.push(target);
+    else forecastTargetsByOccurrenceAndBowler.set(key, [target]);
+  }
 
   for (const [bowlerId, targets] of targetByBowler) {
     let covered = true;
@@ -707,8 +758,7 @@ function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<numbe
       const target = targets.get(occurrence.occurrenceId);
       if (!target) continue;
       if (target.confirmed) {
-        const obligations = input.finalObligations.filter((row) => row.occurrenceId === target.occurrenceId
-          && row.debtorBowlerId === bowlerId);
+        const obligations = obligationsByOccurrenceAndBowler.get(JSON.stringify([target.occurrenceId, bowlerId])) ?? [];
         const paidMinor = obligations.reduce((sum, row) => sum + row.paidMinor, 0);
         const projectedCreditMinor = obligations.reduce((sum, row) => sum
           + (input.finalAccountProjection.rowsByObligationId.get(row.obligationId)?.projectedCreditMinor ?? 0), 0);
@@ -718,7 +768,7 @@ function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<numbe
         continue;
       }
 
-      const forecastRows = forecastTargets.filter((row) => row.occurrenceId === target.occurrenceId && row.bowlerId === bowlerId);
+      const forecastRows = forecastTargetsByOccurrenceAndBowler.get(JSON.stringify([target.occurrenceId, bowlerId])) ?? [];
       const coverage = forecastRows.map((row) => input.finalAccountProjection.forecastCoverageByTargetId.get(row.projectionId));
       const paidMinor = coverage.reduce((sum, row) => sum + (row?.paidMinor ?? 0), 0);
       const projectedCreditMinor = coverage.reduce((sum, row) => sum + (row?.obligationIds.reduce((credit, obligationId) => (
@@ -752,6 +802,7 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
   if (!selectedWeekOption) {
     throw new ManagePaymentsWorksheetProjectionError("invalid_occurrence", "The selected week is not available");
   }
+  const cardReceiptOccurrenceIndex = createManagePaymentsCardReceiptOccurrenceIndex(input.schedule);
   const fullFeeMinor = input.fullFeeMinorByOccurrence.get(selectedOccurrence.occurrenceId) ?? 0;
   if (fullFeeMinor <= 0) {
     throw new ManagePaymentsWorksheetProjectionError("invalid_occurrence", "The selected week is missing its canonical full-fee amount");
@@ -784,15 +835,25 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
     }
     exactByBowler.set(row.bowlerId, row);
   }
+  const actualBowlerIds = new Set(actualRows.map((row) => row.bowlerId));
+  const mainBowlerByResponsibility = new Map<string, number>();
+  for (const source of sourceResponsibilities) {
+    if (source.mainBowlerId !== null && !mainBowlerByResponsibility.has(source.responsibilityId)) {
+      mainBowlerByResponsibility.set(source.responsibilityId, source.mainBowlerId);
+    }
+  }
 
   const teamById = new Map(input.teams.map((team) => [team.teamId, team]));
   const memberByBowler = new Map<number, ManagePaymentsProjectionMember>();
+  const memberByBowlerAndTeam = new Map<string, ManagePaymentsProjectionMember>();
   for (const member of input.members) {
     const existing = memberByBowler.get(member.bowlerId);
     if (existing && existing.teamId !== member.teamId) {
       throw new ManagePaymentsWorksheetProjectionError("ambiguous_roster", "A bowler has active memberships on more than one team in this league");
     }
     if (!existing || member.order < existing.order) memberByBowler.set(member.bowlerId, member);
+    const memberKey = `${member.bowlerId}:${member.teamId}`;
+    if (!memberByBowlerAndTeam.has(memberKey)) memberByBowlerAndTeam.set(memberKey, member);
     if (!teamById.has(member.teamId)) {
       throw new ManagePaymentsWorksheetProjectionError("missing_historical_team", "An active roster membership has no matching league team");
     }
@@ -818,15 +879,12 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
 
   for (const row of actualRows) {
     const existingSeed = rowSeeds.get(row.bowlerId);
-    const exactMember = input.members.find((member) => member.bowlerId === row.bowlerId && member.teamId === row.teamId);
+    const exactMember = memberByBowlerAndTeam.get(`${row.bowlerId}:${row.teamId}`);
     const team = teamById.get(row.teamId);
     if (!team) {
       throw new ManagePaymentsWorksheetProjectionError("missing_historical_team", "A saved responsibility references a team that cannot be resolved");
     }
-    const mainBowlerId = sourceResponsibilities
-      .filter((source) => source.responsibilityId === row.responsibilityId)
-      .map((source) => source.mainBowlerId)
-      .find((value) => value !== null) ?? null;
+    const mainBowlerId = mainBowlerByResponsibility.get(row.responsibilityId) ?? null;
     rowSeeds.set(row.bowlerId, {
       teamId: row.teamId,
       displayName: exactMember?.displayName ?? existingSeed?.displayName ?? input.displayNamesByBowler.get(row.bowlerId) ?? "Former bowler",
@@ -863,13 +921,13 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
     if (rotating) recordResponsibilityParticipant(rotating.bowlerId, rotating.teamId, "substitute");
   }
   for (const [bowlerId, teamId] of responsibilityTeamByBowler) {
-    if (actualRows.some((row) => row.bowlerId === bowlerId)) continue;
+    if (actualBowlerIds.has(bowlerId)) continue;
     const team = teamById.get(teamId);
     if (!team) {
       throw new ManagePaymentsWorksheetProjectionError("missing_historical_team", "A saved responsibility references a team that cannot be resolved");
     }
     const current = rowSeeds.get(bowlerId);
-    const exactMember = input.members.find((member) => member.bowlerId === bowlerId && member.teamId === teamId);
+    const exactMember = memberByBowlerAndTeam.get(`${bowlerId}:${teamId}`);
     rowSeeds.set(bowlerId, {
       teamId,
       displayName: exactMember?.displayName ?? current?.displayName ?? input.displayNamesByBowler.get(bowlerId) ?? "Former bowler",
@@ -910,9 +968,15 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
       });
     }
   }
-  const selectedCardReceipts = input.cardReceipts.filter((receipt) =>
-    mapCardReceiptCollectionOccurrence(receipt, input.schedule) === selectedOccurrence.occurrenceId,
-  );
+  const selectedCardReceipts: ManagePaymentsProjectionCardReceipt[] = [];
+  const selectedCardReceiptsByBowler = new Map<number, ManagePaymentsProjectionCardReceipt[]>();
+  for (const receipt of input.cardReceipts) {
+    if (mapCardReceiptCollectionOccurrenceFromIndex(receipt, cardReceiptOccurrenceIndex) !== selectedOccurrence.occurrenceId) continue;
+    selectedCardReceipts.push(receipt);
+    const bowlerReceipts = selectedCardReceiptsByBowler.get(receipt.bowlerId);
+    if (bowlerReceipts) bowlerReceipts.push(receipt);
+    else selectedCardReceiptsByBowler.set(receipt.bowlerId, [receipt]);
+  }
   for (const receipt of selectedCardReceipts) {
     if (rowSeeds.has(receipt.bowlerId)) continue;
     const member = memberByBowler.get(receipt.bowlerId);
@@ -931,10 +995,30 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
   }
 
   const finalPaid = buildFinalPaidByBowler(input);
+  const manualReceiptsByBowlerAndTeam = new Map<number, Map<number, ManagePaymentsProjectionManualReceipt[]>>();
+  for (const receipt of input.manualReceipts) {
+    if (receipt.occurrenceId !== selectedOccurrence.occurrenceId) continue;
+    let byTeam = manualReceiptsByBowlerAndTeam.get(receipt.bowlerId);
+    if (!byTeam) {
+      byTeam = new Map();
+      manualReceiptsByBowlerAndTeam.set(receipt.bowlerId, byTeam);
+    }
+    const receipts = byTeam.get(receipt.teamId);
+    if (receipts) receipts.push(receipt);
+    else byTeam.set(receipt.teamId, [receipt]);
+  }
+  const defaultsByBowlerAndTeam = new Map<string, ProjectedResponsibility>();
+  const defaultMainKeys = new Set<string>();
+  for (const row of defaults) {
+    const key = `${row.bowlerId}:${row.teamId}`;
+    defaultMainKeys.add(key);
+    if (!defaultsByBowlerAndTeam.has(key)) defaultsByBowlerAndTeam.set(key, row);
+  }
   const teamRows = new Map<number, Array<{ bowlerId: number; order: number; displayName: string; row: ManagePaymentsSnapshot["teams"][number]["rows"][number]; stateRow: StateFingerprintRow }>>();
   for (const [bowlerId, seed] of rowSeeds) {
     const exact = exactByBowler.get(bowlerId);
-    const isDefaultMain = defaults.some((row) => row.bowlerId === bowlerId && row.teamId === seed.teamId);
+    const defaultKey = `${bowlerId}:${seed.teamId}`;
+    const isDefaultMain = defaultMainKeys.has(defaultKey);
     const responsible = exact?.teamId === seed.teamId
       ? true
       : exact !== undefined
@@ -945,15 +1029,12 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
           ? false
           : !weekConfirmed && seed.rosterRole === "main";
     const feeComponent = exact?.teamId === seed.teamId ? exact.feeComponent : "full";
-    const defaultResponsibility = defaults.find((row) => row.bowlerId === bowlerId && row.teamId === seed.teamId);
+    const defaultResponsibility = defaultsByBowlerAndTeam.get(defaultKey);
     const feeMinor = exact?.teamId === seed.teamId ? exact.feeMinor : defaultResponsibility?.feeMinor ?? (responsible ? fullFeeMinor : 0);
-    const manualReceipts: ManagePaymentsManualReceipt[] = input.manualReceipts
-      .filter((receipt) => receipt.bowlerId === bowlerId && receipt.teamId === seed.teamId
-        && receipt.occurrenceId === selectedOccurrence.occurrenceId)
+    const manualReceipts: ManagePaymentsManualReceipt[] = (manualReceiptsByBowlerAndTeam.get(bowlerId)?.get(seed.teamId) ?? [])
       .map(({ bowlerId: _bowlerId, teamId: _teamId, occurrenceId: _occurrenceId, ...receipt }) => receipt)
       .sort((left, right) => left.receiptId.localeCompare(right.receiptId));
-    const cardReceiptsForBowler: ManagePaymentsCardReceipt[] = selectedCardReceipts
-      .filter((receipt) => receipt.bowlerId === bowlerId)
+    const cardReceiptsForBowler: ManagePaymentsCardReceipt[] = (selectedCardReceiptsByBowler.get(bowlerId) ?? [])
       .map(({ bowlerId: _bowlerId, explicitCollectionOccurrenceId: _explicit, triggerOccurrenceId: _trigger, recordedAt, receiptNumber, ...receipt }) => ({
         ...receipt,
         recordedAt,

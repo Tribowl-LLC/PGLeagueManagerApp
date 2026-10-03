@@ -47,6 +47,7 @@ import {
   isConfirmedNoRefundCreditOutcome,
   isRotatingCreditRefundUnresolvedForReversal,
   readRotatingCreditFundingBalancesInTransaction,
+  type RotatingCreditFundingBalance,
 } from "./rotating-credit-applications.js";
 
 export class OwnedPaymentLedgerError extends Error {
@@ -86,6 +87,31 @@ export interface OwnedAccountBalance {
 export interface OwnedLedgerScope {
   organizationId: number;
   leagueId: number;
+}
+
+const OWNED_LEDGER_READ_SNAPSHOT_TRANSACTION = Symbol("owned-ledger-read-snapshot-transaction");
+type OwnedLedgerAdoptionRead = Pick<WeeklyPaymentLedgerAdoption, "organizationId" | "leagueId" | "adoptedThroughLocalDate">;
+type OwnedLedgerReadCheckpoint = (() => void) | undefined;
+
+async function readOwnedLedgerStage<T>(checkpoint: OwnedLedgerReadCheckpoint, read: () => Promise<T>): Promise<T> {
+  checkpoint?.();
+  const result = await read();
+  checkpoint?.();
+  return result;
+}
+
+/** Validated account evidence shared only by readers inside one transaction.
+ * The hidden transaction token prevents reuse across transactions, while the
+ * explicit scope check below prevents cross-organization or cross-league use. */
+export interface OwnedPaymentLedgerReadSnapshot extends OwnedLedgerScope {
+  readonly adoption: OwnedLedgerAdoptionRead;
+  readonly confirmedObligations: readonly OwnedConfirmedObligation[];
+  readonly confirmedOccurrenceIds: ReadonlySet<string>;
+  readonly genericFundingLots: readonly OwnedPaymentFundingLot[];
+  readonly rotatingFundingLots: readonly RotatingCreditFundingBalance[];
+  readonly balances: ReadonlyMap<number, OwnedAccountBalance>;
+  readonly balanceOwnerIds: readonly number[];
+  readonly [OWNED_LEDGER_READ_SNAPSHOT_TRANSACTION]: PaymentOperationTransaction;
 }
 
 export interface AssertOwnedPaymentTenderInput extends OwnedLedgerScope {
@@ -145,6 +171,18 @@ export interface OwnedPaymentFundingLot {
   availableMinor: number;
   reviewRequired: boolean;
   createdAt: string;
+}
+
+export function assertOwnedPaymentLedgerReadSnapshot(
+  tx: PaymentOperationTransaction,
+  scope: OwnedLedgerScope,
+  snapshot: OwnedPaymentLedgerReadSnapshot,
+): void {
+  if (snapshot.organizationId !== scope.organizationId
+    || snapshot.leagueId !== scope.leagueId
+    || snapshot[OWNED_LEDGER_READ_SNAPSHOT_TRANSACTION] !== tx) {
+    throw new OwnedPaymentLedgerError("READ_SNAPSHOT_SCOPE_MISMATCH");
+  }
 }
 
 export interface OwnedGenericFundingSourceByPayment {
@@ -291,10 +329,27 @@ export function isOccurrenceConfirmedInOwnedLedger(
 export async function readConfirmedOwnedObligationsInTransaction(
   tx: PaymentOperationTransaction,
   scope: OwnedLedgerScope & { bowlerIds?: readonly number[] },
+  snapshot?: OwnedPaymentLedgerReadSnapshot,
 ): Promise<OwnedConfirmedObligation[]> {
+  if (snapshot) {
+    assertOwnedPaymentLedgerReadSnapshot(tx, scope, snapshot);
+    const selectedBowlerIds = scope.bowlerIds === undefined ? undefined : new Set(scope.bowlerIds);
+    return selectedBowlerIds
+      ? snapshot.confirmedObligations.filter((row) => selectedBowlerIds.has(row.debtorBowlerId))
+      : [...snapshot.confirmedObligations];
+  }
   const adoption = await readOwnedLedgerAdoptionInTransaction(tx, scope);
+  return (await readConfirmedOwnedObligationEvidenceInTransaction(tx, scope, adoption)).confirmedObligations;
+}
+
+async function readConfirmedOwnedObligationEvidenceInTransaction(
+  tx: PaymentOperationTransaction,
+  scope: OwnedLedgerScope & { bowlerIds?: readonly number[] },
+  adoption: OwnedLedgerAdoptionRead | null,
+  checkpoint?: () => void,
+): Promise<{ confirmedObligations: OwnedConfirmedObligation[]; confirmedOccurrenceIds: Set<string> }> {
   const [obligations, confirmations] = await Promise.all([
-    tx.select({
+    readOwnedLedgerStage(checkpoint, () => tx.select({
       obligation: paymentObligations,
       occurrenceLocalDate: leagueOccurrences.authoritativeLocalDate,
       occurrenceStartAt: leagueOccurrences.startAt,
@@ -314,13 +369,13 @@ export async function readConfirmedOwnedObligationsInTransaction(
         eq(paymentObligations.organizationId, scope.organizationId),
         eq(paymentObligations.leagueId, scope.leagueId),
         ne(paymentObligations.state, "voided"),
-      )).orderBy(asc(paymentObligations.dueAt), asc(leagueOccurrences.authoritativeLocalDate), asc(paymentObligations.id)),
-    tx.select({ occurrenceId: weeklyPaymentWeekConfirmations.occurrenceId })
+      )).orderBy(asc(paymentObligations.dueAt), asc(leagueOccurrences.authoritativeLocalDate), asc(paymentObligations.id))),
+    readOwnedLedgerStage(checkpoint, () => tx.select({ occurrenceId: weeklyPaymentWeekConfirmations.occurrenceId })
       .from(weeklyPaymentWeekConfirmations)
       .where(and(
-        eq(weeklyPaymentWeekConfirmations.organizationId, scope.organizationId),
-        eq(weeklyPaymentWeekConfirmations.leagueId, scope.leagueId),
-      )),
+      eq(weeklyPaymentWeekConfirmations.organizationId, scope.organizationId),
+      eq(weeklyPaymentWeekConfirmations.leagueId, scope.leagueId),
+      ))),
   ]);
   const confirmedOccurrenceIds = new Set(confirmations.map((row) => row.occurrenceId));
   const confirmed = obligations.filter(({ occurrenceLocalDate, obligation }) => isOccurrenceConfirmedInOwnedLedger(
@@ -328,19 +383,19 @@ export async function readConfirmedOwnedObligationsInTransaction(
     occurrenceLocalDate ?? "",
     confirmedOccurrenceIds.has(obligation.occurrenceId),
   ));
-  if (confirmed.length === 0) return [];
+  if (confirmed.length === 0) return { confirmedObligations: [], confirmedOccurrenceIds };
 
   const selectedBowlerIds = scope.bowlerIds === undefined ? undefined : [...new Set(scope.bowlerIds)];
-  const owners = await resolvePaymentObligationOwnersInTransaction(tx, {
+  const owners = await readOwnedLedgerStage(checkpoint, () => resolvePaymentObligationOwnersInTransaction(tx, {
     organizationId: scope.organizationId,
     leagueId: scope.leagueId,
     obligations: confirmed.map(({ obligation }) => obligation),
-  });
-  const assignmentRows = await tx.select().from(rotatingOccurrenceAssignments).where(and(
+  }));
+  const assignmentRows = await readOwnedLedgerStage(checkpoint, () => tx.select().from(rotatingOccurrenceAssignments).where(and(
     eq(rotatingOccurrenceAssignments.organizationId, scope.organizationId),
     eq(rotatingOccurrenceAssignments.leagueId, scope.leagueId),
     inArray(rotatingOccurrenceAssignments.occurrenceId, [...new Set(confirmed.map(({ obligation }) => obligation.occurrenceId))]),
-  )).orderBy(asc(rotatingOccurrenceAssignments.occurrenceId), asc(rotatingOccurrenceAssignments.teamId), asc(rotatingOccurrenceAssignments.slotIndex), desc(rotatingOccurrenceAssignments.version));
+  )).orderBy(asc(rotatingOccurrenceAssignments.occurrenceId), asc(rotatingOccurrenceAssignments.teamId), asc(rotatingOccurrenceAssignments.slotIndex), desc(rotatingOccurrenceAssignments.version)));
   const latestAssignmentBySlot = new Map<string, typeof assignmentRows[number]>();
   for (const assignment of assignmentRows) {
     const key = `${assignment.occurrenceId}:${assignment.teamId}:${assignment.slotIndex}`;
@@ -348,27 +403,27 @@ export async function readConfirmedOwnedObligationsInTransaction(
   }
 
   const obligationIds = confirmed.map(({ obligation }) => obligation.id);
-  const allocations = await tx.select({
+  const allocations = await readOwnedLedgerStage(checkpoint, () => tx.select({
     allocation: paymentAllocations,
   }).from(paymentAllocations).where(and(
     eq(paymentAllocations.organizationId, scope.organizationId),
     eq(paymentAllocations.leagueId, scope.leagueId),
     eq(paymentAllocations.state, "active"),
     inArray(paymentAllocations.obligationId, obligationIds),
-  ));
+  )));
   const allocationIds = allocations.map(({ allocation }) => allocation.id);
-  const adjustments = allocationIds.length === 0 ? [] : await tx.select().from(refundAllocationAdjustments).where(and(
+  const adjustments = allocationIds.length === 0 ? [] : await readOwnedLedgerStage(checkpoint, () => tx.select().from(refundAllocationAdjustments).where(and(
     eq(refundAllocationAdjustments.organizationId, scope.organizationId),
     eq(refundAllocationAdjustments.leagueId, scope.leagueId),
     inArray(refundAllocationAdjustments.sourceAllocationId, allocationIds),
-  ));
+  )));
   const adjustmentsByAllocation = new Map<string, typeof adjustments>();
   for (const adjustment of adjustments) adjustmentsByAllocation.set(adjustment.sourceAllocationId, [...(adjustmentsByAllocation.get(adjustment.sourceAllocationId) ?? []), adjustment]);
   const allocationsByObligation = new Map<string, typeof allocations>();
   for (const row of allocations) allocationsByObligation.set(row.allocation.obligationId, [...(allocationsByObligation.get(row.allocation.obligationId) ?? []), row]);
 
   const paymentIds = [...new Set(allocations.map(({ allocation }) => allocation.paymentId))];
-  const sourcePayments = paymentIds.length === 0 ? [] : await tx.select({
+  const sourcePayments = paymentIds.length === 0 ? [] : await readOwnedLedgerStage(checkpoint, () => tx.select({
     id: payments.id,
     status: payments.status,
     paymentOperationId: payments.paymentOperationId,
@@ -380,20 +435,20 @@ export async function readConfirmedOwnedObligationsInTransaction(
     eq(payments.organizationId, scope.organizationId),
     eq(payments.leagueId, scope.leagueId),
     inArray(payments.id, paymentIds),
-  ));
+  )));
   const paymentById = new Map(sourcePayments.map((payment) => [payment.id, payment]));
   const operationIds = [...new Set(sourcePayments.flatMap((payment) => payment.paymentOperationId === null ? [] : [payment.paymentOperationId]))];
   const [disputes, operationRows, refundEvidenceRows] = await Promise.all([
-    operationIds.length === 0 ? Promise.resolve([]) : tx.select({ operationId: paymentDisputes.paymentOperationId, state: paymentDisputes.state }).from(paymentDisputes).where(and(
+    operationIds.length === 0 ? Promise.resolve([]) : readOwnedLedgerStage(checkpoint, () => tx.select({ operationId: paymentDisputes.paymentOperationId, state: paymentDisputes.state }).from(paymentDisputes).where(and(
       eq(paymentDisputes.organizationId, scope.organizationId),
       inArray(paymentDisputes.paymentOperationId, operationIds),
-    )),
-    operationIds.length === 0 ? Promise.resolve([]) : tx.select({ id: paymentOperations.id, status: paymentOperations.status }).from(paymentOperations).where(and(
+    ))),
+    operationIds.length === 0 ? Promise.resolve([]) : readOwnedLedgerStage(checkpoint, () => tx.select({ id: paymentOperations.id, status: paymentOperations.status }).from(paymentOperations).where(and(
       eq(paymentOperations.organizationId, scope.organizationId),
       eq(paymentOperations.leagueId, scope.leagueId),
       inArray(paymentOperations.id, operationIds),
-    )),
-    paymentIds.length === 0 ? Promise.resolve([]) : tx.select({
+    ))),
+    paymentIds.length === 0 ? Promise.resolve([]) : readOwnedLedgerStage(checkpoint, () => tx.select({
       snapshot: refundPaymentOperationSnapshots,
       operation: paymentOperations,
     }).from(refundPaymentOperationSnapshots).innerJoin(paymentOperations, and(
@@ -402,7 +457,7 @@ export async function readConfirmedOwnedObligationsInTransaction(
     )).where(and(
       eq(refundPaymentOperationSnapshots.leagueId, scope.leagueId),
       inArray(refundPaymentOperationSnapshots.paymentId, paymentIds),
-    )),
+    ))),
   ]);
   const disputedOperationIds = new Set(disputes.filter((row) => REVIEW_DISPUTE_STATES.has(row.state)).map((row) => row.operationId));
   const operationById = new Map(operationRows.map((row) => [row.id, row]));
@@ -413,17 +468,18 @@ export async function readConfirmedOwnedObligationsInTransaction(
     ...(refundRowsByPayment.get(row.snapshot.paymentId) ?? []), row,
   ]);
   for (const payment of sourcePayments) {
+    checkpoint?.();
     const hasSucceededRefund = (refundRowsByPayment.get(payment.id) ?? []).some(({ operation: refundOperation }) => refundOperation.status === "succeeded");
     if (payment.status !== "refunded" && !hasSucceededRefund) continue;
     try {
-      const proof = await readCompletedOwnedPaymentRefundEvidenceInTransaction(tx, {
+      const proof = await readOwnedLedgerStage(checkpoint, () => readCompletedOwnedPaymentRefundEvidenceInTransaction(tx, {
         organizationId: scope.organizationId,
         leagueId: scope.leagueId,
         paymentId: payment.id,
         chargeOperationId: payment.paymentOperationId ?? "",
         providerPaymentId: payment.providerPaymentId ?? "",
         amountMinor: payment.amount,
-      });
+      }));
       if (proof) validRefundPaymentIds.add(payment.id);
       else incompatibleRefundPaymentIds.add(payment.id);
     } catch (error) {
@@ -499,7 +555,7 @@ export async function readConfirmedOwnedObligationsInTransaction(
       reviewRequired,
     });
   }
-  return confirmedRows;
+  return { confirmedObligations: confirmedRows, confirmedOccurrenceIds };
 }
 
 export async function readGenericFundingAvailabilityInTransaction(
@@ -508,11 +564,12 @@ export async function readGenericFundingAvailabilityInTransaction(
     bowlerIds?: readonly number[];
     paymentIds?: readonly number[];
   },
+  checkpoint?: () => void,
 ): Promise<OwnedPaymentFundingLot[]> {
   if (scope.bowlerIds?.length === 0 || scope.paymentIds?.length === 0) return [];
   const selectedBowlerIds = scope.bowlerIds === undefined ? undefined : [...new Set(scope.bowlerIds)];
   const selectedPaymentIds = scope.paymentIds === undefined ? undefined : [...new Set(scope.paymentIds)];
-  const rows = await tx.select({ funding: weeklyPaymentFundings, payment: payments, operation: paymentOperations }).from(weeklyPaymentFundings)
+  const rows = await readOwnedLedgerStage(checkpoint, () => tx.select({ funding: weeklyPaymentFundings, payment: payments, operation: paymentOperations }).from(weeklyPaymentFundings)
     .innerJoin(payments, and(
       eq(payments.id, weeklyPaymentFundings.paymentId),
       eq(payments.organizationId, scope.organizationId),
@@ -528,55 +585,55 @@ export async function readGenericFundingAvailabilityInTransaction(
       eq(weeklyPaymentFundings.leagueId, scope.leagueId),
       ...(selectedBowlerIds ? [inArray(weeklyPaymentFundings.creditedBowlerId, selectedBowlerIds)] : []),
       ...(selectedPaymentIds ? [inArray(weeklyPaymentFundings.paymentId, selectedPaymentIds)] : []),
-    )).orderBy(asc(weeklyPaymentFundings.createdAt), asc(weeklyPaymentFundings.id));
+    )).orderBy(asc(weeklyPaymentFundings.createdAt), asc(weeklyPaymentFundings.id)));
   if (rows.length === 0) return [];
   const paymentIds = [...new Set(rows.map(({ funding }) => funding.paymentId))];
   const [allFundings, allPaymentAllocations, voids, refunds, disputes, corrections, releases, rotatingSources] = await Promise.all([
-    tx.select().from(weeklyPaymentFundings).where(and(
+    readOwnedLedgerStage(checkpoint, () => tx.select().from(weeklyPaymentFundings).where(and(
       eq(weeklyPaymentFundings.organizationId, scope.organizationId),
       eq(weeklyPaymentFundings.leagueId, scope.leagueId),
       inArray(weeklyPaymentFundings.paymentId, paymentIds),
-    )),
-    tx.select({ allocation: paymentAllocations }).from(paymentAllocations).where(and(
+    ))),
+    readOwnedLedgerStage(checkpoint, () => tx.select({ allocation: paymentAllocations }).from(paymentAllocations).where(and(
       eq(paymentAllocations.organizationId, scope.organizationId),
       eq(paymentAllocations.leagueId, scope.leagueId),
       inArray(paymentAllocations.paymentId, paymentIds),
-    )),
-    tx.select({ paymentId: paymentVoids.paymentId }).from(paymentVoids).where(and(
+    ))),
+    readOwnedLedgerStage(checkpoint, () => tx.select({ paymentId: paymentVoids.paymentId }).from(paymentVoids).where(and(
       eq(paymentVoids.organizationId, scope.organizationId),
       eq(paymentVoids.leagueId, scope.leagueId),
       inArray(paymentVoids.paymentId, paymentIds),
-    )),
-    tx.select({ snapshot: refundPaymentOperationSnapshots, operation: paymentOperations }).from(refundPaymentOperationSnapshots)
+    ))),
+    readOwnedLedgerStage(checkpoint, () => tx.select({ snapshot: refundPaymentOperationSnapshots, operation: paymentOperations }).from(refundPaymentOperationSnapshots)
       .innerJoin(paymentOperations, and(
         eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
         eq(paymentOperations.organizationId, scope.organizationId),
       )).where(and(
         eq(refundPaymentOperationSnapshots.leagueId, scope.leagueId),
         inArray(refundPaymentOperationSnapshots.paymentId, paymentIds),
-      )),
-    tx.select({ operationId: paymentDisputes.paymentOperationId, state: paymentDisputes.state }).from(paymentDisputes).where(and(
+      ))),
+    readOwnedLedgerStage(checkpoint, () => tx.select({ operationId: paymentDisputes.paymentOperationId, state: paymentDisputes.state }).from(paymentDisputes).where(and(
       eq(paymentDisputes.organizationId, scope.organizationId),
       inArray(paymentDisputes.paymentOperationId, [...new Set(rows.flatMap(({ payment }) => payment.paymentOperationId === null ? [] : [payment.paymentOperationId]))]),
-    )),
-    tx.select().from(paymentAllocationCorrections).where(and(
+    ))),
+    readOwnedLedgerStage(checkpoint, () => tx.select().from(paymentAllocationCorrections).where(and(
       eq(paymentAllocationCorrections.organizationId, scope.organizationId),
       eq(paymentAllocationCorrections.leagueId, scope.leagueId),
       inArray(paymentAllocationCorrections.paymentId, paymentIds),
-    )),
-    tx.select().from(weeklyPaymentAllocationReleases).where(and(
+    ))),
+    readOwnedLedgerStage(checkpoint, () => tx.select().from(weeklyPaymentAllocationReleases).where(and(
       eq(weeklyPaymentAllocationReleases.organizationId, scope.organizationId),
       eq(weeklyPaymentAllocationReleases.leagueId, scope.leagueId),
       inArray(weeklyPaymentAllocationReleases.paymentId, paymentIds),
-    )),
-    tx.select({ paymentId: rotatingCreditFundings.paymentId }).from(rotatingCreditFundings).where(and(
+    ))),
+    readOwnedLedgerStage(checkpoint, () => tx.select({ paymentId: rotatingCreditFundings.paymentId }).from(rotatingCreditFundings).where(and(
       eq(rotatingCreditFundings.organizationId, scope.organizationId),
       eq(rotatingCreditFundings.leagueId, scope.leagueId),
       inArray(rotatingCreditFundings.paymentId, paymentIds),
-    )),
+    ))),
   ]);
   const fundingIds = allFundings.map(({ id }) => id);
-  const applications = await tx.select({ application: paymentAllocationFundingApplications, allocation: paymentAllocations }).from(paymentAllocationFundingApplications)
+  const applications = await readOwnedLedgerStage(checkpoint, () => tx.select({ application: paymentAllocationFundingApplications, allocation: paymentAllocations }).from(paymentAllocationFundingApplications)
     .innerJoin(paymentAllocations, and(
       eq(paymentAllocations.id, paymentAllocationFundingApplications.allocationId),
       eq(paymentAllocations.organizationId, scope.organizationId),
@@ -585,7 +642,7 @@ export async function readGenericFundingAvailabilityInTransaction(
       eq(paymentAllocationFundingApplications.organizationId, scope.organizationId),
       eq(paymentAllocationFundingApplications.leagueId, scope.leagueId),
       inArray(paymentAllocationFundingApplications.genericFundingId, fundingIds),
-    ));
+    )));
   const appByFunding = new Map<string, typeof applications>();
   const appByAllocation = new Map<string, typeof applications>();
   for (const row of applications) {
@@ -626,17 +683,18 @@ export async function readGenericFundingAvailabilityInTransaction(
   const incompatibleRefundPaymentIds = new Set<number>();
   const uniqueSourcePayments = new Map(rows.map(({ payment }) => [payment.id, payment]));
   for (const payment of uniqueSourcePayments.values()) {
+    checkpoint?.();
     const hasSucceededRefund = (refundsByPayment.get(payment.id) ?? []).some(({ operation: refundOperation }) => refundOperation.status === "succeeded");
     if (payment.status !== "refunded" && !hasSucceededRefund) continue;
     try {
-      const proof = await readCompletedOwnedPaymentRefundEvidenceInTransaction(tx, {
+      const proof = await readOwnedLedgerStage(checkpoint, () => readCompletedOwnedPaymentRefundEvidenceInTransaction(tx, {
         organizationId: scope.organizationId,
         leagueId: scope.leagueId,
         paymentId: payment.id,
         chargeOperationId: payment.paymentOperationId ?? "",
         providerPaymentId: payment.providerPaymentId ?? "",
         amountMinor: payment.amount,
-      });
+      }));
       if (proof) validRefundPaymentIds.add(payment.id);
       else incompatibleRefundPaymentIds.add(payment.id);
     } catch (error) {
@@ -724,6 +782,86 @@ export async function readGenericFundingAvailabilityInTransaction(
   return result;
 }
 
+function buildOwnedAccountBalances(
+  ownerIds: readonly number[],
+  confirmedObligations: readonly OwnedConfirmedObligation[],
+  genericLots: readonly OwnedPaymentFundingLot[],
+  rotatingLots: readonly RotatingCreditFundingBalance[],
+): Map<number, OwnedAccountBalance> {
+  const availableByBowler = new Map<number, number>();
+  for (const lot of genericLots) {
+    if (lot.availableMinor > 0) availableByBowler.set(lot.bowlerId, (availableByBowler.get(lot.bowlerId) ?? 0) + lot.availableMinor);
+  }
+  for (const lot of rotatingLots) {
+    if (!lot.reviewRequired && lot.availableMinor > 0) availableByBowler.set(lot.bowlerId, (availableByBowler.get(lot.bowlerId) ?? 0) + lot.availableMinor);
+  }
+  const owedByBowler = new Map<number, number>();
+  for (const obligation of confirmedObligations) {
+    owedByBowler.set(obligation.debtorBowlerId, (owedByBowler.get(obligation.debtorBowlerId) ?? 0) + obligation.outstandingMinor);
+  }
+  return new Map(ownerIds.map((bowlerId) => {
+    const availableCreditMinor = availableByBowler.get(bowlerId) ?? 0;
+    const confirmedOwedMinor = owedByBowler.get(bowlerId) ?? 0;
+    return [bowlerId, { bowlerId, availableCreditMinor, confirmedOwedMinor, netBalanceMinor: availableCreditMinor - confirmedOwedMinor }];
+  }));
+}
+
+/** Load all validated account evidence once for readers sharing one adopted
+ * league snapshot. The caller supplies the adoption row it already checked,
+ * so this loader does not repeat that lookup. */
+export async function readOwnedPaymentLedgerReadSnapshotInTransaction(
+  tx: PaymentOperationTransaction,
+  scope: OwnedLedgerScope,
+  adoption: OwnedLedgerAdoptionRead,
+  checkpoint?: () => void,
+): Promise<OwnedPaymentLedgerReadSnapshot> {
+  checkpoint?.();
+  if (adoption.organizationId !== scope.organizationId || adoption.leagueId !== scope.leagueId) {
+    throw new OwnedPaymentLedgerError("READ_SNAPSHOT_SCOPE_MISMATCH");
+  }
+  const confirmedEvidence = await readConfirmedOwnedObligationEvidenceInTransaction(tx, scope, adoption, checkpoint);
+  const genericFundingRows = await readOwnedLedgerStage(checkpoint, () => tx.select({ id: weeklyPaymentFundings.creditedBowlerId }).from(weeklyPaymentFundings).where(and(
+    eq(weeklyPaymentFundings.organizationId, scope.organizationId),
+    eq(weeklyPaymentFundings.leagueId, scope.leagueId),
+  )));
+  const rotatingFundingRows = await readOwnedLedgerStage(checkpoint, () => tx.select({ id: rotatingCreditFundings.bowlerId }).from(rotatingCreditFundings).where(and(
+    eq(rotatingCreditFundings.organizationId, scope.organizationId),
+    eq(rotatingCreditFundings.leagueId, scope.leagueId),
+  )));
+  const balanceOwnerIds = [...new Set([
+    ...confirmedEvidence.confirmedObligations.map((row) => row.debtorBowlerId),
+    ...genericFundingRows.map((row) => row.id),
+    ...rotatingFundingRows.map((row) => row.id),
+  ])];
+  let genericFundingLots: OwnedPaymentFundingLot[] = [];
+  let rotatingFundingLots: RotatingCreditFundingBalance[] = [];
+  if (balanceOwnerIds.length > 0) {
+    genericFundingLots = await readGenericFundingAvailabilityInTransaction(tx, {
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        bowlerIds: balanceOwnerIds,
+      }, checkpoint);
+    rotatingFundingLots = await readOwnedLedgerStage(checkpoint, () => readRotatingCreditFundingBalancesInTransaction(tx, {
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        bowlerIds: balanceOwnerIds,
+      }));
+  }
+  checkpoint?.();
+  return Object.freeze({
+    organizationId: scope.organizationId,
+    leagueId: scope.leagueId,
+    adoption,
+    confirmedObligations: confirmedEvidence.confirmedObligations,
+    confirmedOccurrenceIds: confirmedEvidence.confirmedOccurrenceIds,
+    genericFundingLots,
+    rotatingFundingLots,
+    balanceOwnerIds,
+    balances: buildOwnedAccountBalances(balanceOwnerIds, confirmedEvidence.confirmedObligations, genericFundingLots, rotatingFundingLots),
+    [OWNED_LEDGER_READ_SNAPSHOT_TRANSACTION]: tx,
+  });
+}
+
 /** Return every generic recipient portion for one exact tender, including
  * zero-available or held portions. This uses the same validated accounting
  * path as account reads/FIFO so full-tender refund snapshots cannot omit an
@@ -766,8 +904,24 @@ export async function readOwnedGenericFundingSourcesByPaymentInTransaction(
 export async function readOwnedAccountBalancesInTransaction(
   tx: PaymentOperationTransaction,
   scope: ReadOwnedAccountBalancesInput,
+  snapshot?: OwnedPaymentLedgerReadSnapshot,
 ): Promise<Map<number, OwnedAccountBalance>> {
   const selectedIds = scope.bowlerIds === undefined ? undefined : [...new Set(scope.bowlerIds)];
+  if (snapshot) {
+    assertOwnedPaymentLedgerReadSnapshot(tx, scope, snapshot);
+    if (selectedIds) {
+      return new Map(selectedIds.map((bowlerId) => [
+        bowlerId,
+        snapshot.balances.get(bowlerId) ?? {
+          bowlerId,
+          availableCreditMinor: 0,
+          confirmedOwedMinor: 0,
+          netBalanceMinor: 0,
+        },
+      ]));
+    }
+    return new Map(snapshot.balances);
+  }
   const [ownedDebt, fundingRows, rotatingFundingRows] = await Promise.all([
     readConfirmedOwnedObligationsInTransaction(tx, { organizationId: scope.organizationId, leagueId: scope.leagueId, ...(selectedIds ? { bowlerIds: selectedIds } : {}) }),
     tx.select({ id: weeklyPaymentFundings.creditedBowlerId }).from(weeklyPaymentFundings).where(and(
@@ -791,20 +945,7 @@ export async function readOwnedAccountBalancesInTransaction(
     readGenericFundingAvailabilityInTransaction(tx, { organizationId: scope.organizationId, leagueId: scope.leagueId, bowlerIds: ownerIds }),
     readRotatingCreditFundingBalancesInTransaction(tx, { organizationId: scope.organizationId, leagueId: scope.leagueId, bowlerIds: ownerIds }),
   ]);
-  const availableByBowler = new Map<number, number>();
-  for (const lot of genericLots) {
-    if (lot.availableMinor > 0) availableByBowler.set(lot.bowlerId, (availableByBowler.get(lot.bowlerId) ?? 0) + lot.availableMinor);
-  }
-  for (const lot of rotatingLots) {
-    if (!lot.reviewRequired && lot.availableMinor > 0) availableByBowler.set(lot.bowlerId, (availableByBowler.get(lot.bowlerId) ?? 0) + lot.availableMinor);
-  }
-  const owedByBowler = new Map<number, number>();
-  for (const obligation of ownedDebt) owedByBowler.set(obligation.debtorBowlerId, (owedByBowler.get(obligation.debtorBowlerId) ?? 0) + obligation.outstandingMinor);
-  return new Map(ownerIds.map((bowlerId) => {
-    const availableCreditMinor = availableByBowler.get(bowlerId) ?? 0;
-    const confirmedOwedMinor = owedByBowler.get(bowlerId) ?? 0;
-    return [bowlerId, { bowlerId, availableCreditMinor, confirmedOwedMinor, netBalanceMinor: availableCreditMinor - confirmedOwedMinor }];
-  }));
+  return buildOwnedAccountBalances(ownerIds, ownedDebt, genericLots, rotatingLots);
 }
 
 /** Record one immutable recipient portion of an already-persisted real tender.

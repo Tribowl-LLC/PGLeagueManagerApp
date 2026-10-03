@@ -144,12 +144,14 @@ export default function AdminWeeklyPaymentsPage() {
   const queryClient = useQueryClient();
   const [selectedLeagueId, setSelectedLeagueId] = useState<number | null>(null);
   const [selectedOccurrenceByLeague, setSelectedOccurrenceByLeague] = useState<Readonly<Record<number, string>>>({});
+  const [weekOptionsByLeague, setWeekOptionsByLeague] = useState<Readonly<Record<number, ManagePaymentsSnapshot["weekOptions"]>>>({});
   const [selectedBowlerAccount, setSelectedBowlerAccount] = useState<SelectedBowlerAccount | null>(null);
   const [selectionDrafts, setSelectionDrafts] = useState<SelectionDraftCache>({});
   const [saving, setSaving] = useState(false);
   const [reloadState, setReloadState] = useState<{ selectionKey: string; status: "loading" | "error" } | null>(null);
   const [worksheetGeneration, setWorksheetGeneration] = useState(0);
   const [retryRequest, setRetryRequest] = useState<{ signature: string; request: ManagePaymentsSaveRequest } | null>(null);
+  const [seededSelectionKey, setSeededSelectionKey] = useState<string | null>(null);
 
   const { data: leaguesResponse, isLoading: leaguesLoading, error: leaguesError, refetch: refetchLeagues } = useQuery<{ data: League[] }>({
     queryKey: LEAGUES_QUERY_KEY,
@@ -168,6 +170,9 @@ export default function AdminWeeklyPaymentsPage() {
   const requestedOccurrenceId = selectedLeagueId === null
     ? null
     : selectedOccurrenceByLeague[selectedLeagueId] ?? null;
+  const currentSelectionKey = selectedLeagueId !== null && requestedOccurrenceId !== null
+    ? selectionCacheKey(selectedLeagueId, requestedOccurrenceId)
+    : null;
   const snapshotQuery = useQuery<ManagePaymentsSnapshot>({
     queryKey: managePaymentsSnapshotQueryKey(selectedLeagueId ?? 0, requestedOccurrenceId),
     queryFn: ({ signal }) => {
@@ -175,19 +180,26 @@ export default function AdminWeeklyPaymentsPage() {
       return fetchSnapshot(selectedLeagueId, requestedOccurrenceId, signal);
     },
     enabled: selectedLeagueId !== null,
-    staleTime: 0,
+    staleTime: seededSelectionKey !== null && seededSelectionKey === currentSelectionKey ? Infinity : 0,
     retry: false,
   });
 
   useEffect(() => {
     const snapshot = snapshotQuery.data;
-    if (!snapshot || selectedLeagueId === null || requestedOccurrenceId !== null) return;
+    if (!snapshot || snapshotQuery.isFetching || snapshotQuery.error || selectedLeagueId === null || requestedOccurrenceId !== null) return;
     const occurrenceId = snapshot.selectedOccurrence.occurrenceId;
+    setSeededSelectionKey(selectionCacheKey(selectedLeagueId, occurrenceId));
     queryClient.setQueryData(managePaymentsSnapshotQueryKey(selectedLeagueId, occurrenceId), snapshot);
     setSelectedOccurrenceByLeague((current) => current[selectedLeagueId]
       ? current
       : { ...current, [selectedLeagueId]: occurrenceId });
-  }, [queryClient, requestedOccurrenceId, selectedLeagueId, snapshotQuery.data]);
+  }, [queryClient, requestedOccurrenceId, selectedLeagueId, snapshotQuery.data, snapshotQuery.error, snapshotQuery.isFetching]);
+
+  useEffect(() => {
+    if (seededSelectionKey === null) return;
+    // Let the normalized key reuse this discovery response for one render, then return it to normal stale handling.
+    setSeededSelectionKey(null);
+  }, [seededSelectionKey]);
 
   const querySnapshot = snapshotQuery.data;
   const resolvedOccurrenceId = requestedOccurrenceId ?? querySnapshot?.selectedOccurrence.occurrenceId ?? null;
@@ -204,12 +216,21 @@ export default function AdminWeeklyPaymentsPage() {
   const snapshot = activeCacheEntry?.dirty && activeCacheEntry.snapshot
     ? activeCacheEntry.snapshot
     : latestSnapshot ?? null;
+
+  useEffect(() => {
+    if (!querySnapshot || selectedLeagueId === null || querySnapshot.league.leagueId !== selectedLeagueId) return;
+    setWeekOptionsByLeague((current) => ({ ...current, [selectedLeagueId]: querySnapshot.weekOptions }));
+  }, [querySnapshot, selectedLeagueId]);
+
   const visibleAccount = selectedBowlerAccount?.leagueId === snapshot?.league.leagueId
     ? selectedBowlerAccount
     : null;
 
   const leaguesErrorMessage = leaguesError ? safeReadError(leaguesError) : null;
-  const weekOptions = snapshot?.weekOptions ?? latestSnapshot?.weekOptions ?? [];
+  const weekOptions = snapshot?.weekOptions
+    ?? latestSnapshot?.weekOptions
+    ?? (selectedLeagueId === null ? undefined : weekOptionsByLeague[selectedLeagueId])
+    ?? [];
   const selectedWeekIndex = weekOptions.findIndex((week) => week.occurrenceId === resolvedOccurrenceId);
 
   const handleDraftStateChange = useCallback((drafts: AdminWeeklyPaymentsWorksheetDraftState) => {
@@ -356,12 +377,16 @@ export default function AdminWeeklyPaymentsPage() {
   function chooseLeague(value: string) {
     const leagueId = Number(value);
     if (!Number.isSafeInteger(leagueId) || !leagues.some((league) => league.id === leagueId)) return;
-    if (leagueId !== selectedLeagueId) setSelectedBowlerAccount(null);
+    if (leagueId !== selectedLeagueId) {
+      setSeededSelectionKey(null);
+      setSelectedBowlerAccount(null);
+    }
     setSelectedLeagueId(leagueId);
   }
 
   function chooseOccurrence(occurrenceId: string) {
     if (selectedLeagueId === null || !weekOptions.some((week) => week.occurrenceId === occurrenceId)) return;
+    setSeededSelectionKey(null);
     setSelectedOccurrenceByLeague((current) => ({ ...current, [selectedLeagueId]: occurrenceId }));
   }
 

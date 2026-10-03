@@ -52,6 +52,13 @@ import {
   historicalSquareAllocationFingerprint,
   historicalSquareAllocationCorrectionFingerprint,
 } from "../../server/services/historical-square-payment-correction";
+import {
+  readConfirmedOwnedObligationsInTransaction,
+  readOwnedAccountBalancesInTransaction,
+  readOwnedLedgerAdoptionInTransaction,
+  readOwnedPaymentLedgerReadSnapshotInTransaction,
+} from "../../server/services/owned-payment-ledger";
+import { readCanonicalDuePastDueV3InTransaction } from "../../server/services/roster-payment-core";
 import { canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
 import {
   appendManualReceiptRevisionInTransaction,
@@ -1065,6 +1072,34 @@ describe("owned payment ledger adoption preflight", () => {
       fixture.legacyManualPaymentId,
       fixture.rotatingManualPaymentId,
     ].sort());
+    expect(worksheetRow?.manualReceipts.map((receipt) => receipt.amountMinor).sort((a, b) => a - b)).toEqual([700, 1_500]);
+    expect(snapshot.revision).toBe(1);
+
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+      const scope = { organizationId, leagueId: fixture.leagueId };
+      const adoption = await readOwnedLedgerAdoptionInTransaction(tx, scope);
+      if (!adoption) throw new Error("adopted account snapshot is missing");
+      const preloaded = await readOwnedPaymentLedgerReadSnapshotInTransaction(tx, scope, adoption);
+      const preloadedBalances = await readOwnedAccountBalancesInTransaction(tx, scope, preloaded);
+      const standaloneBalances = await readOwnedAccountBalancesInTransaction(tx, scope);
+      const preloadedDebt = await readConfirmedOwnedObligationsInTransaction(tx, scope, preloaded);
+      const standaloneDebt = await readConfirmedOwnedObligationsInTransaction(tx, scope);
+      expect([...preloadedBalances]).toEqual([...standaloneBalances]);
+      expect(preloadedBalances.get(fixture.bowlerId)).toEqual({
+        bowlerId: fixture.bowlerId,
+        availableCreditMinor: 1_200,
+        confirmedOwedMinor: 0,
+        netBalanceMinor: 1_200,
+      });
+      expect(preloadedDebt).toEqual(standaloneDebt);
+      const standaloneCanonical = await readCanonicalDuePastDueV3InTransaction(tx, scope);
+      const preloadedCanonical = await readCanonicalDuePastDueV3InTransaction(tx, {
+        ...scope,
+        ledgerReadSnapshot: preloaded,
+      });
+      expect(preloadedCanonical).toEqual(standaloneCanonical);
+    });
 
     await db.transaction(async (tx) => {
       const receiptId = await createManualReceiptHeadInTransaction(tx, {

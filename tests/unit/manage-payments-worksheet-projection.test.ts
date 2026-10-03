@@ -8,10 +8,12 @@ import {
 import {
   buildManagePaymentsForecastTargets,
   buildManagePaymentsWorksheetSnapshot,
+  createManagePaymentsCardReceiptOccurrenceIndex,
   fingerprintManagePaymentsWorksheet,
   getManagePaymentsWeekOptions,
   localDateForInstant,
   mapCardReceiptCollectionOccurrence,
+  mapCardReceiptCollectionOccurrenceFromIndex,
   selectManagePaymentsOccurrence,
   type ManagePaymentsProjectionInput,
 } from "../../server/services/manage-payments-worksheet-projection.js";
@@ -245,6 +247,35 @@ describe("Manage Payments worksheet projection", () => {
       "2026-10-06T15:00:00.000Z",
       "forged-but-well-formed-uuid",
     )).toThrow();
+  });
+
+  it("maps indexed card receipt weeks with the same explicit, trigger, date-fallback, and cancellation rules", () => {
+    const scheduleData = schedule([
+      occurrence("late-first", "2026-10-12", 1),
+      occurrence("early-second", "2026-10-05", 2),
+      occurrence("cancelled-middle", "2026-10-08", 3, { status: "cancelled" }),
+    ]);
+    const index = createManagePaymentsCardReceiptOccurrenceIndex(scheduleData);
+    const receipts = [
+      { explicitCollectionOccurrenceId: "late-first", triggerOccurrenceId: "early-second", collectionLocalDate: "2026-10-06" },
+      { explicitCollectionOccurrenceId: null, triggerOccurrenceId: "early-second", collectionLocalDate: "2026-10-06" },
+      { explicitCollectionOccurrenceId: "cancelled-middle", triggerOccurrenceId: null, collectionLocalDate: "2026-10-06" },
+      { explicitCollectionOccurrenceId: null, triggerOccurrenceId: null, collectionLocalDate: "2026-10-01" },
+      { explicitCollectionOccurrenceId: null, triggerOccurrenceId: null, collectionLocalDate: "2026-10-08" },
+      { explicitCollectionOccurrenceId: null, triggerOccurrenceId: null, collectionLocalDate: "2026-10-20" },
+    ] as const;
+
+    expect(receipts.map((receipt) => mapCardReceiptCollectionOccurrenceFromIndex(receipt, index))).toEqual([
+      "late-first",
+      "early-second",
+      null,
+      "early-second",
+      "early-second",
+      "late-first",
+    ]);
+    expect(receipts.map((receipt) => mapCardReceiptCollectionOccurrence(receipt, scheduleData))).toEqual(
+      receipts.map((receipt) => mapCardReceiptCollectionOccurrenceFromIndex(receipt, index)),
+    );
   });
 
   it("normalizes PostgreSQL canonical start times to the worksheet minute contract", () => {

@@ -21,7 +21,9 @@ import {
   readGenericFundingAvailabilityInTransaction,
   readOwnedAccountBalancesInTransaction,
   readOwnedLedgerAdoptionInTransaction,
+  assertOwnedPaymentLedgerReadSnapshot,
   type OwnedConfirmedObligation,
+  type OwnedPaymentLedgerReadSnapshot,
 } from "./owned-payment-ledger.js";
 import type { OwnedAccountBalance } from "./owned-payment-ledger.js";
 import { readRotatingCreditFundingBalancesInTransaction } from "./rotating-credit-applications.js";
@@ -49,6 +51,8 @@ export interface OwnedAccountProjectionInput {
   rows: readonly OwnedAccountProjectionRowInput[];
   /** Existing API scope. Only this account may be returned for a bowler read. */
   bowlerId?: number;
+  /** Reuse already validated league account evidence within the same tx. */
+  ledgerReadSnapshot?: OwnedPaymentLedgerReadSnapshot;
 }
 
 export interface PublishedCollectionOrderSeed {
@@ -98,10 +102,11 @@ function accountBalance(balance: OwnedAccountBalance | undefined, bowlerId: numb
 /** Batch-read published collection-group order for one league snapshot. */
 export async function readPublishedCollectionOrderInTransaction(
   tx: PaymentOperationTransaction,
-  input: { organizationId: number; leagueId: number; occurrences: readonly PublishedCollectionOrderSeed[] },
+  input: { organizationId: number; leagueId: number; occurrences: readonly PublishedCollectionOrderSeed[]; checkpoint?: () => void },
 ): Promise<Map<string, PublishedCollectionOrder>> {
   const occurrenceIds = [...new Set(input.occurrences.map((row) => row.occurrenceId))];
   if (occurrenceIds.length === 0) return new Map();
+  input.checkpoint?.();
   const [billingTerms, members] = await Promise.all([
     tx.select({ occurrenceId: leagueOccurrenceBillingTerms.occurrenceId, billingOrdinal: leagueOccurrenceBillingTerms.billingOrdinal })
       .from(leagueOccurrenceBillingTerms).where(and(
@@ -128,6 +133,7 @@ export async function readPublishedCollectionOrderInTransaction(
       inArray(canonicalCollectionGroupMembers.occurrenceId, occurrenceIds),
     )),
   ]);
+  input.checkpoint?.();
   const billingByOccurrence = new Map<string, number>();
   for (const term of billingTerms) {
     if (term.billingOrdinal === null || billingByOccurrence.has(term.occurrenceId)) {
@@ -151,6 +157,7 @@ export async function readPublishedCollectionOrderInTransaction(
     memberByOccurrence.set(member.occurrenceId, member);
   }
   const groupIds = [...new Set(members.map((member) => member.groupId))];
+  input.checkpoint?.();
   const triggers = groupIds.length === 0 ? [] : await tx.select({ groupId: canonicalCollectionGroupMembers.groupId, startAt: leagueOccurrences.startAt })
     .from(canonicalCollectionGroupMembers).innerJoin(leagueOccurrences, and(
       eq(leagueOccurrences.id, canonicalCollectionGroupMembers.occurrenceId),
@@ -163,6 +170,7 @@ export async function readPublishedCollectionOrderInTransaction(
       eq(canonicalCollectionGroupMembers.active, true),
       inArray(canonicalCollectionGroupMembers.groupId, groupIds),
     ));
+  input.checkpoint?.();
   const triggerAtByGroup = new Map<string, string>();
   for (const trigger of triggers) {
     if (triggerAtByGroup.has(trigger.groupId)) throw new Error("published collection group has multiple trigger occurrences");
@@ -358,32 +366,46 @@ export async function readOwnedAccountFinancialProjectionInTransaction(
   tx: PaymentOperationTransaction,
   input: OwnedAccountProjectionInput,
 ): Promise<OwnedAccountProjectionResult | null> {
-  const adoption = await readOwnedLedgerAdoptionInTransaction(tx, input);
+  const ledgerReadSnapshot = input.ledgerReadSnapshot;
+  if (ledgerReadSnapshot) assertOwnedPaymentLedgerReadSnapshot(tx, input, ledgerReadSnapshot);
+  const adoption = ledgerReadSnapshot?.adoption ?? await readOwnedLedgerAdoptionInTransaction(tx, input);
   if (!adoption) return null;
   // The caller prepares all canonical rows before this read. Read league-wide
   // ledger evidence in bounded batches so the shared account budget is
   // complete; only the response projection is bowler-scoped below.
   const ledgerScope = { organizationId: input.organizationId, leagueId: input.leagueId };
-  const [confirmedDebts, balances, genericLots, confirmationRows] = await Promise.all([
-    readConfirmedOwnedObligationsInTransaction(tx, ledgerScope),
-    readOwnedAccountBalancesInTransaction(tx, ledgerScope),
-    readGenericFundingAvailabilityInTransaction(tx, ledgerScope),
-    tx.select({ occurrenceId: weeklyPaymentWeekConfirmations.occurrenceId })
-      .from(weeklyPaymentWeekConfirmations)
-      .where(and(
-        eq(weeklyPaymentWeekConfirmations.organizationId, input.organizationId),
-        eq(weeklyPaymentWeekConfirmations.leagueId, input.leagueId),
-      )),
-  ]);
+  const [confirmedDebts, balances, genericLots, confirmedOccurrenceIds] = ledgerReadSnapshot
+    ? [
+      ledgerReadSnapshot.confirmedObligations,
+      ledgerReadSnapshot.balances,
+      ledgerReadSnapshot.genericFundingLots,
+      ledgerReadSnapshot.confirmedOccurrenceIds,
+    ] as const
+    : await Promise.all([
+      readConfirmedOwnedObligationsInTransaction(tx, ledgerScope),
+      readOwnedAccountBalancesInTransaction(tx, ledgerScope),
+      readGenericFundingAvailabilityInTransaction(tx, ledgerScope),
+      tx.select({ occurrenceId: weeklyPaymentWeekConfirmations.occurrenceId })
+        .from(weeklyPaymentWeekConfirmations)
+        .where(and(
+          eq(weeklyPaymentWeekConfirmations.organizationId, input.organizationId),
+          eq(weeklyPaymentWeekConfirmations.leagueId, input.leagueId),
+        )),
+    ]).then(([debts, accountBalances, fundingLots, confirmationRows]) => [
+      debts,
+      accountBalances,
+      fundingLots,
+      new Set(confirmationRows.map((row) => row.occurrenceId)),
+    ] as const);
   const accountOwnerIds = [...new Set([
     ...balances.keys(),
     ...input.rows.flatMap((row) => row.effectiveDebtorBowlerId === null ? [] : [row.effectiveDebtorBowlerId]),
   ])];
-  const rotatingLots = accountOwnerIds.length === 0 ? [] : await readRotatingCreditFundingBalancesInTransaction(tx, {
+  const rotatingLots = ledgerReadSnapshot?.rotatingFundingLots ?? (accountOwnerIds.length === 0 ? [] : await readRotatingCreditFundingBalancesInTransaction(tx, {
     organizationId: input.organizationId,
     leagueId: input.leagueId,
     bowlerIds: accountOwnerIds,
-  });
+  }));
   const amountPaidByBowler = new Map<number, number>();
   const sourceReviewBowlerIds = new Set<number>();
   for (const lot of genericLots) {
@@ -395,7 +417,6 @@ export async function readOwnedAccountFinancialProjectionInTransaction(
     addMinor(amountPaidByBowler, lot.bowlerId, lot.receivedMinor);
   }
 
-  const confirmedOccurrenceIds = new Set(confirmationRows.map((row) => row.occurrenceId));
   const projected = projectOwnedAccountCoverage({
     rows: input.rows,
     confirmedDebts,

@@ -28,6 +28,8 @@ import {
   readConfirmedOwnedObligationsInTransaction,
   readOwnedAccountBalancesInTransaction,
   readOwnedLedgerAdoptionInTransaction,
+  readOwnedPaymentLedgerReadSnapshotInTransaction,
+  type OwnedPaymentLedgerReadSnapshot,
 } from "./owned-payment-ledger.js";
 import { readCanonicalDuePastDueV3InTransaction } from "./roster-payment-core.js";
 import {
@@ -65,6 +67,29 @@ export interface ReadManagePaymentsWorksheetInput {
   organizationId: number;
   leagueId: number;
   occurrenceId?: string;
+  signal?: AbortSignal;
+}
+
+class ManagePaymentsWorksheetReadAborted extends Error {
+  constructor() {
+    super("Manage Payments worksheet read was abandoned");
+    this.name = "ManagePaymentsWorksheetReadAborted";
+  }
+}
+
+export function isManagePaymentsWorksheetReadAborted(error: unknown): boolean {
+  return error instanceof ManagePaymentsWorksheetReadAborted;
+}
+
+function checkpointWorksheetRead(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new ManagePaymentsWorksheetReadAborted();
+}
+
+async function readWorksheetStage<T>(signal: AbortSignal | undefined, read: () => Promise<T>): Promise<T> {
+  checkpointWorksheetRead(signal);
+  const result = await read();
+  checkpointWorksheetRead(signal);
+  return result;
 }
 
 function idsOrEmpty(values: readonly string[]): string[] {
@@ -77,7 +102,9 @@ function addTeamEvidence(
   teamId: number,
 ): void {
   if (bowlerId === null) return;
-  teamsByBowler.set(bowlerId, new Set([...(teamsByBowler.get(bowlerId) ?? []), teamId]));
+  const teamIds = teamsByBowler.get(bowlerId);
+  if (teamIds) teamIds.add(teamId);
+  else teamsByBowler.set(bowlerId, new Set([teamId]));
 }
 
 function addRoleEvidence(
@@ -127,7 +154,7 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   input: ReadManagePaymentsWorksheetInput,
 ): Promise<ManagePaymentsSnapshot> {
-  const [league] = await tx.select({
+  const [league] = await readWorksheetStage(input.signal, () => tx.select({
     id: leagues.id,
     organizationId: leagues.organizationId,
     name: leagues.name,
@@ -138,29 +165,29 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
   }).from(leagues).where(and(
     eq(leagues.id, input.leagueId),
     eq(leagues.organizationId, input.organizationId),
-  )).limit(1);
+  )).limit(1));
   if (!league || league.organizationId !== input.organizationId) {
     throw new ManagePaymentsWorksheetReadError("league_not_found", "League was not found in the authorized organization");
   }
 
-  const adoption = await readOwnedLedgerAdoptionInTransaction(tx, {
+  const adoption = await readWorksheetStage(input.signal, () => readOwnedLedgerAdoptionInTransaction(tx, {
     organizationId: input.organizationId,
     leagueId: input.leagueId,
-  });
+  }));
   if (!adoption) {
     throw new ManagePaymentsWorksheetReadError("ledger_not_adopted", "Payment setup is not complete for this league.");
   }
 
-  const nowResult = await tx.execute<{ databaseNow: string }>(sql`SELECT CURRENT_TIMESTAMP::text AS "databaseNow"`);
+  const nowResult = await readWorksheetStage(input.signal, () => tx.execute<{ databaseNow: string }>(sql`SELECT CURRENT_TIMESTAMP::text AS "databaseNow"`));
   const databaseNow = nowResult.rows[0]?.databaseNow;
   if (!databaseNow) {
     throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "Database time is not available for canonical week selection");
   }
-  const schedule = await loadLeagueOccurrenceScheduleSnapshot({
+  const schedule = await readWorksheetStage(input.signal, () => loadLeagueOccurrenceScheduleSnapshot({
     organizationId: input.organizationId,
     leagueId: input.leagueId,
     includeAdministratorEvidence: false,
-  }, tx);
+  }, tx));
   const timeZone = league.timezone ?? schedule.occurrences[0]?.timezone;
   if (!timeZone) {
     throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "League time zone is not available in canonical schedule data");
@@ -178,16 +205,16 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
       && occurrence.billing.billingOrdinal !== null,
   );
   const occurrenceIds = idsOrEmpty(billableOccurrences.map((occurrence) => occurrence.occurrenceId));
-  const termRows = occurrenceIds.length === 0 ? [] : await tx.select().from(leagueOccurrenceBillingTerms).where(and(
+  const termRows = occurrenceIds.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select().from(leagueOccurrenceBillingTerms).where(and(
       eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
       eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
       eq(leagueOccurrenceBillingTerms.purpose, "league_weekly_fee"),
       eq(leagueOccurrenceBillingTerms.state, "published"),
       inArray(leagueOccurrenceBillingTerms.occurrenceId, occurrenceIds),
-    ));
-  const teamRows = await tx.select({ teamId: teamsTable.id, teamName: teamsTable.name, displayOrder: teamsTable.displayOrder, active: teamsTable.active })
-    .from(teamsTable).where(eq(teamsTable.leagueId, input.leagueId)).orderBy(asc(teamsTable.displayOrder), asc(teamsTable.id));
-  const memberRows = await tx.select({
+    )));
+  const teamRows = await readWorksheetStage(input.signal, () => tx.select({ teamId: teamsTable.id, teamName: teamsTable.name, displayOrder: teamsTable.displayOrder, active: teamsTable.active })
+    .from(teamsTable).where(eq(teamsTable.leagueId, input.leagueId)).orderBy(asc(teamsTable.displayOrder), asc(teamsTable.id)));
+  const memberRows = await readWorksheetStage(input.signal, () => tx.select({
       teamId: bowlerLeagues.teamId,
       bowlerId: bowlers.id,
       displayName: bowlers.name,
@@ -200,14 +227,14 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
         eq(bowlerLeagues.active, true),
         eq(bowlers.organizationId, input.organizationId),
         eq(bowlers.active, true),
-      )).orderBy(asc(bowlerLeagues.order), asc(bowlers.name), asc(bowlers.id));
-  const slotRows = await tx.select({ teamId: teamPaymentSlots.teamId, slotIndex: teamPaymentSlots.slotIndex, bowlerId: teamPaymentSlots.mainBowlerId })
+      )).orderBy(asc(bowlerLeagues.order), asc(bowlers.name), asc(bowlers.id)));
+  const slotRows = await readWorksheetStage(input.signal, () => tx.select({ teamId: teamPaymentSlots.teamId, slotIndex: teamPaymentSlots.slotIndex, bowlerId: teamPaymentSlots.mainBowlerId })
       .from(teamPaymentSlots).where(and(
         eq(teamPaymentSlots.organizationId, input.organizationId),
         eq(teamPaymentSlots.leagueId, input.leagueId),
         eq(teamPaymentSlots.occupant, "main"),
-      ));
-  const responsibilityRows = occurrenceIds.length === 0 ? [] : await tx.select().from(occurrencePaymentResponsibilities).where(and(
+      )));
+  const responsibilityRows = occurrenceIds.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select().from(occurrencePaymentResponsibilities).where(and(
       eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
       eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
       eq(occurrencePaymentResponsibilities.state, "active"),
@@ -218,9 +245,9 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
       asc(occurrencePaymentResponsibilities.slotIndex),
       asc(occurrencePaymentResponsibilities.positionIndex),
       desc(occurrencePaymentResponsibilities.version),
-    );
+    ));
 
-  const assignmentRows = occurrenceIds.length === 0 ? [] : await tx.select().from(rotatingOccurrenceAssignments).where(and(
+  const assignmentRows = occurrenceIds.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select().from(rotatingOccurrenceAssignments).where(and(
       eq(rotatingOccurrenceAssignments.organizationId, input.organizationId),
       eq(rotatingOccurrenceAssignments.leagueId, input.leagueId),
       inArray(rotatingOccurrenceAssignments.occurrenceId, occurrenceIds),
@@ -229,18 +256,25 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
       asc(rotatingOccurrenceAssignments.teamId),
       asc(rotatingOccurrenceAssignments.slotIndex),
       desc(rotatingOccurrenceAssignments.version),
-    );
-  const confirmationRows = occurrenceIds.length === 0 ? [] : await tx.select().from(weeklyPaymentWeekConfirmations).where(and(
+    ));
+  const confirmationRows = occurrenceIds.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select().from(weeklyPaymentWeekConfirmations).where(and(
       eq(weeklyPaymentWeekConfirmations.organizationId, input.organizationId),
       eq(weeklyPaymentWeekConfirmations.leagueId, input.leagueId),
       inArray(weeklyPaymentWeekConfirmations.occurrenceId, occurrenceIds),
-    )).orderBy(asc(weeklyPaymentWeekConfirmations.occurrenceId), desc(weeklyPaymentWeekConfirmations.revision));
+    )).orderBy(asc(weeklyPaymentWeekConfirmations.occurrenceId), desc(weeklyPaymentWeekConfirmations.revision)));
 
   const fullFeeMinorByOccurrence = new Map<string, number>();
+  const termByOccurrenceRevision = new Map<string, (typeof termRows)[number]>();
+  for (const term of termRows) {
+    const key = JSON.stringify([term.occurrenceId, term.version, term.currentRevision]);
+    if (!termByOccurrenceRevision.has(key)) termByOccurrenceRevision.set(key, term);
+  }
   for (const occurrence of billableOccurrences) {
-    const term = termRows.find((row) => row.occurrenceId === occurrence.occurrenceId
-      && row.version === occurrence.billing?.version
-      && row.currentRevision === occurrence.billing?.currentRevision);
+    const term = termByOccurrenceRevision.get(JSON.stringify([
+      occurrence.occurrenceId,
+      occurrence.billing?.version,
+      occurrence.billing?.currentRevision,
+    ]));
     if (term) fullFeeMinorByOccurrence.set(occurrence.occurrenceId, term.defaultAmountMinor);
   }
 
@@ -302,19 +336,24 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     displayOrder: row.displayOrder,
     active: row.active,
   }));
+  const mainBowlerPairs = new Set(slotRows.flatMap((slot) => slot.bowlerId === null ? [] : [`${slot.teamId}:${slot.bowlerId}`]));
   const members: ManagePaymentsProjectionMember[] = memberRows.map((row) => ({
     teamId: row.teamId,
     bowlerId: row.bowlerId,
     displayName: row.displayName,
     order: row.order,
-    rosterRole: slotRows.some((slot) => slot.teamId === row.teamId && slot.bowlerId === row.bowlerId) ? "main" : "substitute",
+    rosterRole: mainBowlerPairs.has(`${row.teamId}:${row.bowlerId}`) ? "main" : "substitute",
   }));
   const mainBowlerIdsByTeam = new Map<number, Set<number>>();
   const mainBowlerIdsBySlot = new Map<number, Map<number, number>>();
   for (const row of slotRows) {
     if (row.bowlerId === null) continue;
-    mainBowlerIdsByTeam.set(row.teamId, new Set([...(mainBowlerIdsByTeam.get(row.teamId) ?? []), row.bowlerId]));
-    mainBowlerIdsBySlot.set(row.teamId, new Map([...(mainBowlerIdsBySlot.get(row.teamId) ?? []), [row.slotIndex, row.bowlerId]]));
+    const teamBowlers = mainBowlerIdsByTeam.get(row.teamId);
+    if (teamBowlers) teamBowlers.add(row.bowlerId);
+    else mainBowlerIdsByTeam.set(row.teamId, new Set([row.bowlerId]));
+    const slotsByTeam = mainBowlerIdsBySlot.get(row.teamId);
+    if (slotsByTeam) slotsByTeam.set(row.slotIndex, row.bowlerId);
+    else mainBowlerIdsBySlot.set(row.teamId, new Map([[row.slotIndex, row.bowlerId]]));
   }
 
   const currentTeamByBowler = new Map<number, number>();
@@ -323,18 +362,18 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     else if (currentTeamByBowler.get(member.bowlerId) !== member.teamId) currentTeamByBowler.delete(member.bowlerId);
   }
 
-  const selectedReceiptParents = await tx.select().from(weeklyPaymentWorksheetReceipts).where(and(
+  const selectedReceiptParents = await readWorksheetStage(input.signal, () => tx.select().from(weeklyPaymentWorksheetReceipts).where(and(
       eq(weeklyPaymentWorksheetReceipts.organizationId, input.organizationId),
       eq(weeklyPaymentWorksheetReceipts.leagueId, input.leagueId),
       eq(weeklyPaymentWorksheetReceipts.occurrenceId, selectedOccurrence.occurrenceId),
       eq(weeklyPaymentWorksheetReceipts.receiptKind, "manual"),
-    )).orderBy(asc(weeklyPaymentWorksheetReceipts.id));
-  const cardReceiptParents = await tx.select().from(weeklyPaymentWorksheetReceipts).where(and(
+    )).orderBy(asc(weeklyPaymentWorksheetReceipts.id)));
+  const cardReceiptParents = await readWorksheetStage(input.signal, () => tx.select().from(weeklyPaymentWorksheetReceipts).where(and(
       eq(weeklyPaymentWorksheetReceipts.organizationId, input.organizationId),
       eq(weeklyPaymentWorksheetReceipts.leagueId, input.leagueId),
       eq(weeklyPaymentWorksheetReceipts.receiptKind, "card"),
-    ));
-  const fundingRows = await tx.select({ funding: weeklyPaymentFundings, payment: payments, triggerOccurrenceId: paymentOperations.triggerOccurrenceId })
+    )));
+  const fundingRows = await readWorksheetStage(input.signal, () => tx.select({ funding: weeklyPaymentFundings, payment: payments, triggerOccurrenceId: paymentOperations.triggerOccurrenceId })
       .from(weeklyPaymentFundings)
       .innerJoin(payments, and(
         eq(payments.id, weeklyPaymentFundings.paymentId),
@@ -351,8 +390,8 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
         eq(weeklyPaymentFundings.leagueId, input.leagueId),
         eq(payments.status, "paid"),
         inArray(payments.type, ["credit_card", "square"]),
-      ));
-  const rotatingFundingRows = await tx.select({ funding: rotatingCreditFundings, payment: payments, triggerOccurrenceId: paymentOperations.triggerOccurrenceId })
+      )));
+  const rotatingFundingRows = await readWorksheetStage(input.signal, () => tx.select({ funding: rotatingCreditFundings, payment: payments, triggerOccurrenceId: paymentOperations.triggerOccurrenceId })
       .from(rotatingCreditFundings)
       .innerJoin(payments, and(
         eq(payments.id, rotatingCreditFundings.paymentId),
@@ -369,18 +408,18 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
         eq(rotatingCreditFundings.leagueId, input.leagueId),
         eq(payments.status, "paid"),
         inArray(payments.type, ["credit_card", "square"]),
-      ));
+      )));
 
-  const latestReceiptRevisions = selectedReceiptParents.length === 0 ? [] : await tx.select()
+  const latestReceiptRevisions = selectedReceiptParents.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select()
     .from(weeklyPaymentWorksheetReceiptRevisions).where(and(
       eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, input.organizationId),
       eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, input.leagueId),
       inArray(weeklyPaymentWorksheetReceiptRevisions.receiptId, selectedReceiptParents.map((row) => row.id)),
-    )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptId), desc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision));
+    )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptId), desc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision)));
   const latestRevisionByReceipt = latestByReceipt(latestReceiptRevisions);
   const latestManualPaymentIds = [...new Set([...latestRevisionByReceipt.values()]
     .flatMap((row) => row.paymentId === null ? [] : [row.paymentId]))];
-  const manualPayments = latestManualPaymentIds.length === 0 ? [] : await tx.select({
+  const manualPayments = latestManualPaymentIds.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select({
     id: payments.id,
     type: payments.type,
     status: payments.status,
@@ -388,7 +427,7 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     eq(payments.organizationId, input.organizationId),
     eq(payments.leagueId, input.leagueId),
     inArray(payments.id, latestManualPaymentIds),
-  ));
+  )));
   const manualPaymentById = new Map(manualPayments.map((row) => [row.id, row]));
 
   const selectedResponsibilityTeams = new Map<number, number>();
@@ -402,15 +441,22 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
   }
 
   const selectedManualParentsById = new Map(selectedReceiptParents.map((row) => [row.id, row]));
+  const selectedManualParentByOwnerPayment = new Map<string, (typeof selectedReceiptParents)[number]>();
+  for (const parent of selectedManualParentsById.values()) {
+    const paymentId = latestRevisionByReceipt.get(parent.id)?.paymentId;
+    if (paymentId === undefined || paymentId === null) continue;
+    const key = `${parent.payerBowlerId}:${paymentId}`;
+    if (!selectedManualParentByOwnerPayment.has(key)) selectedManualParentByOwnerPayment.set(key, parent);
+  }
   const manualHistoryTeamByBowler = new Map<number, number>();
   if (latestManualPaymentIds.length > 0) {
-    const fundingApplications = await tx.select({ paymentId: paymentAllocationFundingApplications.paymentId, bowlerId: paymentAllocationFundingApplications.creditedBowlerId, teamId: paymentAllocationFundingApplications.teamId, occurrenceId: paymentAllocationFundingApplications.occurrenceId })
+    const fundingApplications = await readWorksheetStage(input.signal, () => tx.select({ paymentId: paymentAllocationFundingApplications.paymentId, bowlerId: paymentAllocationFundingApplications.creditedBowlerId, teamId: paymentAllocationFundingApplications.teamId, occurrenceId: paymentAllocationFundingApplications.occurrenceId })
         .from(paymentAllocationFundingApplications).where(and(
           eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
           eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
           inArray(paymentAllocationFundingApplications.paymentId, latestManualPaymentIds),
-        ));
-    const obligationAllocations = await tx.select({ paymentId: paymentAllocations.paymentId, bowlerId: paymentObligations.payerBowlerId, teamId: occurrencePaymentResponsibilities.teamId, occurrenceId: paymentObligations.occurrenceId })
+        )));
+    const obligationAllocations = await readWorksheetStage(input.signal, () => tx.select({ paymentId: paymentAllocations.paymentId, bowlerId: paymentObligations.payerBowlerId, teamId: occurrencePaymentResponsibilities.teamId, occurrenceId: paymentObligations.occurrenceId })
         .from(paymentAllocations)
         .innerJoin(paymentObligations, and(
           eq(paymentObligations.id, paymentAllocations.obligationId),
@@ -425,14 +471,15 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
           eq(paymentAllocations.organizationId, input.organizationId),
           eq(paymentAllocations.leagueId, input.leagueId),
           inArray(paymentAllocations.paymentId, latestManualPaymentIds),
-        ));
+        )));
     const historyTeamsByReceiptOwner = new Map<number, Set<number>>();
     for (const evidence of [...fundingApplications, ...obligationAllocations]) {
       if (evidence.bowlerId === null) continue;
-      const selectedParent = [...selectedManualParentsById.values()].find((parent) => parent.payerBowlerId === evidence.bowlerId
-        && latestRevisionByReceipt.get(parent.id)?.paymentId === evidence.paymentId);
+      const selectedParent = selectedManualParentByOwnerPayment.get(`${evidence.bowlerId}:${evidence.paymentId}`);
       if (!selectedParent || evidence.occurrenceId !== selectedOccurrence.occurrenceId) continue;
-      historyTeamsByReceiptOwner.set(evidence.bowlerId, new Set([...(historyTeamsByReceiptOwner.get(evidence.bowlerId) ?? []), evidence.teamId]));
+      const teamIds = historyTeamsByReceiptOwner.get(evidence.bowlerId);
+      if (teamIds) teamIds.add(evidence.teamId);
+      else historyTeamsByReceiptOwner.set(evidence.bowlerId, new Set([evidence.teamId]));
     }
     for (const [bowlerId, teamIds] of historyTeamsByReceiptOwner) {
       if (teamIds.size > 1) {
@@ -461,6 +508,7 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
   }
 
   const manualReceipts: ManagePaymentsProjectionManualReceipt[] = [];
+  const leagueTeamIds = new Set(teamRows.map((team) => team.teamId));
   for (const parent of selectedReceiptParents) {
     const revision = latestRevisionByReceipt.get(parent.id);
     if (!revision || revision.paymentId === null || revision.amountMinor <= 0) continue;
@@ -473,7 +521,7 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
       currentTeamByBowler,
       uniqueHistoricalTeamByBowler,
     );
-    if (teamId === null || !teamRows.some((team) => team.teamId === teamId)) {
+    if (teamId === null || !leagueTeamIds.has(teamId)) {
       throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "A manual receipt owner cannot be placed on a league team");
     }
     manualReceipts.push({
@@ -490,12 +538,12 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
   }
 
   const cardReceiptParentsById = new Map(cardReceiptParents.map((row) => [row.id, row]));
-  const cardReceiptRevisions = cardReceiptParents.length === 0 ? [] : await tx.select()
+  const cardReceiptRevisions = cardReceiptParents.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select()
     .from(weeklyPaymentWorksheetReceiptRevisions).where(and(
       eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, input.organizationId),
       eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, input.leagueId),
       inArray(weeklyPaymentWorksheetReceiptRevisions.receiptId, cardReceiptParents.map((row) => row.id)),
-    )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptId), desc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision));
+    )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptId), desc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision)));
   const explicitOccurrenceByPayment = new Map<number, string>();
   for (const revision of latestByReceipt(cardReceiptRevisions).values()) {
     const parent = cardReceiptParentsById.get(revision.receiptId);
@@ -551,11 +599,11 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     ...manualReceipts.map((row) => row.bowlerId),
     ...cardReceipts.map((row) => row.bowlerId),
   ]);
-  const displayRows = displayIds.size === 0 ? [] : await tx.select({ id: bowlers.id, name: bowlers.name })
+  const displayRows = displayIds.size === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select({ id: bowlers.id, name: bowlers.name })
     .from(bowlers).where(and(
       eq(bowlers.organizationId, input.organizationId),
       inArray(bowlers.id, [...displayIds]),
-    ));
+    )));
   const displayNamesByBowler = new Map(displayRows.map((row) => [row.id, row.name]));
 
   const responsibilityTeamsByBowler = new Map<number, Set<number>>();
@@ -587,10 +635,20 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     }
   }
 
-  const balancesRead = await readOwnedAccountBalancesInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId });
-  const finalObligationsRead = await readConfirmedOwnedObligationsInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId });
+  const ledgerReadSnapshot: OwnedPaymentLedgerReadSnapshot = await readWorksheetStage(input.signal, () => readOwnedPaymentLedgerReadSnapshotInTransaction(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+  }, adoption, () => checkpointWorksheetRead(input.signal)));
+  const balancesRead = await readWorksheetStage(input.signal, () => readOwnedAccountBalancesInTransaction(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+  }, ledgerReadSnapshot));
+  const finalObligationsRead = await readWorksheetStage(input.signal, () => readConfirmedOwnedObligationsInTransaction(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+  }, ledgerReadSnapshot));
   const finalObligationIds = finalObligationsRead.map((row) => row.obligationId);
-  const finalObligationComponents = finalObligationIds.length === 0 ? [] : await tx.select({
+  const finalObligationComponents = finalObligationIds.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select({
     obligationId: paymentObligations.id,
     responsibilityId: paymentObligations.responsibilityId,
     component: paymentObligations.component,
@@ -600,7 +658,7 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     eq(paymentObligations.leagueId, input.leagueId),
     inArray(paymentObligations.id, finalObligationIds),
     ne(paymentObligations.state, "voided"),
-  ));
+  )));
   const finalObligationComponentById = new Map(finalObligationComponents.map((row) => [row.obligationId, row]));
   const balances = new Map<number, ManagePaymentsProjectionBalance>([...balancesRead].map(([bowlerId, balance]) => [bowlerId, {
     availableCreditMinor: balance.availableCreditMinor,
@@ -658,12 +716,15 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     balances,
     finalObligations,
   };
+  checkpointWorksheetRead(input.signal);
   const forecastTargets = buildManagePaymentsForecastTargets(worksheetProjectionInput);
-  const finalProjectionRead = await readCanonicalDuePastDueV3InTransaction(tx, {
+  const finalProjectionRead = await readWorksheetStage(input.signal, () => readCanonicalDuePastDueV3InTransaction(tx, {
     organizationId: input.organizationId,
     leagueId: input.leagueId,
     forecastTargets,
-  });
+    ledgerReadSnapshot,
+    checkpoint: () => checkpointWorksheetRead(input.signal),
+  }));
   if (!finalProjectionRead.accountProjectionResult) {
     throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "Owned account adoption evidence changed during the worksheet read");
   }
@@ -673,6 +734,7 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     forecastCoverageByTargetId: finalProjectionRead.forecastCoverageByTargetId,
   };
 
+  checkpointWorksheetRead(input.signal);
   return buildManagePaymentsWorksheetSnapshot({
     ...worksheetProjectionInput,
     finalAccountProjection,

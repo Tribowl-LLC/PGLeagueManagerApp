@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  readConfirmedOwnedObligationsInTransaction,
+  readOwnedAccountBalancesInTransaction,
+  readOwnedPaymentLedgerReadSnapshotInTransaction,
   isOccurrenceConfirmedInOwnedLedger,
   isOwnedPaymentLedgerInvariantError,
   legacyProviderRecipientItemsMatchSnapshot,
@@ -9,6 +12,18 @@ import {
   type OwnedConfirmedObligation,
   type OwnedPaymentFundingLot,
 } from "../../server/services/owned-payment-ledger.js";
+import type { PaymentOperationTransaction } from "../../server/storage/payment-operations.js";
+
+vi.mock("../../server/db.js", () => ({ db: {} }));
+vi.mock("../../server/services/league-occurrence-schedule.js", () => ({
+  LeagueOccurrenceScheduleError: class extends Error {},
+  loadLeagueOccurrenceScheduleSnapshot: vi.fn(),
+}));
+vi.mock("../../server/services/roster-payment-core.js", () => ({
+  readCanonicalDuePastDueV3InTransaction: vi.fn(),
+}));
+
+const { loadManagePaymentsWorksheetSnapshotInTransaction } = await import("../../server/services/manage-payments-worksheet-read.js");
 
 function debt(overrides: Partial<OwnedConfirmedObligation> & Pick<OwnedConfirmedObligation, "obligationId" | "dueAt" | "outstandingMinor">): OwnedConfirmedObligation {
   return {
@@ -41,6 +56,37 @@ function lot(overrides: Partial<OwnedPaymentFundingLot> & Pick<OwnedPaymentFundi
     ...overrides,
   };
 }
+
+function createReadTransaction(responses: readonly unknown[], afterRead?: (readCount: number) => void) {
+  let readCount = 0;
+  const fakeTransaction = {
+    select: () => {
+      const current = readCount++;
+      afterRead?.(readCount);
+      const response = responses[current] ?? [];
+      const builder = {
+        from: () => builder,
+        innerJoin: () => builder,
+        leftJoin: () => builder,
+        where: () => builder,
+        orderBy: () => builder,
+        limit: () => builder,
+        then: (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) => Promise.resolve(response).then(resolve, reject),
+      };
+      return builder;
+    },
+  };
+  // eslint-disable-next-line no-restricted-syntax -- this fake implements only the SELECT chain exercised by these tests.
+  const tx = fakeTransaction as unknown as PaymentOperationTransaction;
+  return { tx, get readCount() { return readCount; } };
+}
+
+const readScope = { organizationId: 91, leagueId: 37 };
+const readAdoption = {
+  organizationId: readScope.organizationId,
+  leagueId: readScope.leagueId,
+  adoptedThroughLocalDate: "2038-01-31",
+};
 
 describe("owned payment ledger confirmation eligibility", () => {
   it("uses an explicit saved confirmation regardless of the adoption cutoff", () => {
@@ -76,6 +122,74 @@ describe("owned payment ledger SQL failure mapping", () => {
       constraint: "payment_allocations_conservation",
     })).toBe(false);
     expect(isOwnedPaymentLedgerInvariantError({ code: "23514", constraint: OWNED_PAYMENT_TENDER_LEDGER_CONSTRAINT })).toBe(false);
+  });
+});
+
+describe("transaction-scoped owned ledger read snapshot", () => {
+  it("keeps raw zero-value owners and reuses validated reads without extra queries", async () => {
+    const preloaded = createReadTransaction([
+      [], // confirmed obligations
+      [], // explicit confirmations
+      [{ id: 501 }, { id: 502 }], // generic funding recipient ids
+      [{ id: 503 }], // rotating funding recipient ids
+      [], // no valid generic lots remain after evidence validation
+      [], // no rotating funding lots
+    ]);
+    const snapshot = await readOwnedPaymentLedgerReadSnapshotInTransaction(preloaded.tx, readScope, readAdoption);
+
+    expect(preloaded.readCount).toBe(6);
+    expect(snapshot.balanceOwnerIds).toEqual([501, 502, 503]);
+    expect([...snapshot.balances.values()]).toEqual([
+      { bowlerId: 501, availableCreditMinor: 0, confirmedOwedMinor: 0, netBalanceMinor: 0 },
+      { bowlerId: 502, availableCreditMinor: 0, confirmedOwedMinor: 0, netBalanceMinor: 0 },
+      { bowlerId: 503, availableCreditMinor: 0, confirmedOwedMinor: 0, netBalanceMinor: 0 },
+    ]);
+
+    const reusedBalances = await readOwnedAccountBalancesInTransaction(preloaded.tx, readScope, snapshot);
+    const reusedDebts = await readConfirmedOwnedObligationsInTransaction(preloaded.tx, readScope, snapshot);
+    expect([...reusedBalances]).toEqual([...snapshot.balances]);
+    expect(reusedDebts).toEqual([]);
+    expect(preloaded.readCount).toBe(6);
+
+    const standalone = createReadTransaction([
+      [], // adoption lookup
+      [{ id: 501 }, { id: 502 }], // generic funding recipient ids
+      [{ id: 503 }], // rotating funding recipient ids
+      [], // confirmed obligations
+      [], // explicit confirmations
+      [], // generic lots rejected by evidence validation
+      [], // no rotating funding lots
+    ]);
+    const standaloneBalances = await readOwnedAccountBalancesInTransaction(standalone.tx, readScope);
+    expect([...standaloneBalances]).toEqual([...snapshot.balances]);
+    expect(standalone.readCount).toBe(7);
+  });
+
+  it("rejects a preload reused across league scope or transaction identity", async () => {
+    const preloaded = createReadTransaction([[], [], [], [], [], []]);
+    const snapshot = await readOwnedPaymentLedgerReadSnapshotInTransaction(preloaded.tx, readScope, readAdoption);
+    const otherTransaction = createReadTransaction([]);
+
+    await expect(readOwnedAccountBalancesInTransaction(preloaded.tx, { ...readScope, leagueId: readScope.leagueId + 1 }, snapshot))
+      .rejects.toMatchObject({ code: "READ_SNAPSHOT_SCOPE_MISMATCH" });
+    await expect(readOwnedAccountBalancesInTransaction(otherTransaction.tx, readScope, snapshot))
+      .rejects.toMatchObject({ code: "READ_SNAPSHOT_SCOPE_MISMATCH" });
+    expect(preloaded.readCount).toBe(4);
+    expect(otherTransaction.readCount).toBe(0);
+  });
+
+  it("stops worksheet stages after a request is abandoned between reads", async () => {
+    const controller = new AbortController();
+    const league = { id: readScope.leagueId, organizationId: readScope.organizationId, timezone: "UTC" };
+    const tx = createReadTransaction([[league]], (readCount) => {
+      if (readCount === 1) controller.abort();
+    });
+
+    await expect(loadManagePaymentsWorksheetSnapshotInTransaction(tx.tx, {
+      ...readScope,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: "ManagePaymentsWorksheetReadAborted" });
+    expect(tx.readCount).toBe(1);
   });
 });
 
