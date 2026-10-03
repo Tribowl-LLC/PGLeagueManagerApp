@@ -371,9 +371,16 @@ function refundBody(input: {
   });
 }
 
-function paymentBody(input: { eventId: string; paymentId: string; operationId?: string; amount?: number }) {
+function paymentBody(input: {
+  eventId: string;
+  paymentId: string;
+  operationId?: string;
+  amount?: number;
+  merchantId?: string;
+  providerLocationId?: string;
+}) {
   return JSON.stringify({
-    merchant_id: merchantId,
+    merchant_id: input.merchantId ?? merchantId,
     type: "payment.updated",
     event_id: input.eventId,
     created_at: "2034-03-05T00:01:00.000Z",
@@ -382,7 +389,7 @@ function paymentBody(input: { eventId: string; paymentId: string; operationId?: 
       id: input.paymentId,
       object: { payment: {
         id: input.paymentId,
-        location_id: providerLocationId,
+        location_id: input.providerLocationId ?? providerLocationId,
         status: "COMPLETED",
         amount_money: { amount: input.amount ?? 2_000, currency: "USD" },
         updated_at: "2034-03-05T00:01:00.000Z",
@@ -398,6 +405,8 @@ function disputeBody(input: {
   eventId: string;
   disputeId: string;
   paymentId: string;
+  merchantId?: string;
+  providerLocationId?: string;
   eventType?: "dispute.created" | "dispute.state.updated";
   amount?: number;
   state?: "EVIDENCE_REQUIRED" | "PROCESSING" | "WON" | "LOST" | "ACCEPTED";
@@ -408,7 +417,7 @@ function disputeBody(input: {
 }) {
   const updatedAt = input.updatedAt ?? "2034-03-06T00:01:00.000Z";
   return JSON.stringify({
-    merchant_id: merchantId,
+    merchant_id: input.merchantId ?? merchantId,
     type: input.eventType ?? "dispute.created",
     event_id: input.eventId,
     created_at: updatedAt,
@@ -417,7 +426,7 @@ function disputeBody(input: {
       id: input.disputeId,
       object: { dispute: {
         id: input.disputeId,
-        location_id: providerLocationId,
+        location_id: input.providerLocationId ?? providerLocationId,
         state: input.state ?? "EVIDENCE_REQUIRED",
         reason: input.reason ?? "DUPLICATE",
         amount_money: { amount: input.amount ?? 2_000, currency: "USD" },
@@ -434,11 +443,11 @@ function disputeBody(input: {
   });
 }
 
-async function ingest(body: string) {
+async function ingest(body: string, providerApplicationId = applicationId) {
   const event = normalizeSquareWebhookEvent(body);
   const recorded = await ingestSquareWebhookEvent({
     ...event,
-    providerApplicationId: applicationId,
+    providerApplicationId,
     providerApiVersion: "2026-05-20",
     payloadHash: createHash("sha256").update(body).digest("hex"),
     rawPayload: body,
@@ -469,16 +478,22 @@ async function completedInteractiveCharge(options: { combined?: boolean } = {}) 
   return { operation, providerPaymentId, payment };
 }
 
-async function preparedAccountFundingCharge() {
+async function preparedAccountFundingCharge(input: {
+  organizationId: number;
+  leagueId: number;
+  payerBowlerId: number;
+  locationId: number;
+  authorizingUserId: number;
+}) {
   const operation = await prepareAccountPaymentOperation({
     requestKey: `account-funding-${randomUUID()}`,
-    organizationId,
-    leagueId,
-    payerBowlerId: bowlerId,
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    payerBowlerId: input.payerBowlerId,
     amountMinor: 2_000,
-    fundingPortions: [{ portionIndex: 0, creditedBowlerId: bowlerId, amountMinor: 2_000 }],
+    fundingPortions: [{ portionIndex: 0, creditedBowlerId: input.payerBowlerId, amountMinor: 2_000 }],
     recipientEvidence: [{
-      recipientBowlerId: bowlerId,
+      recipientBowlerId: input.payerBowlerId,
       role: "self",
       paymentLinkId: null,
       linkFingerprint: null,
@@ -486,9 +501,9 @@ async function preparedAccountFundingCharge() {
     }],
     currency: "USD",
     providerName: "square",
-    locationId,
+    locationId: input.locationId,
     providerLocationId: null,
-    authorizingUserId: actorUserId,
+    authorizingUserId: input.authorizingUserId,
     sourceKind: "new_card",
     sourceId: `cnon:account-funding-${randomUUID()}`,
     customerId: "CUSTOMER_WEBHOOK_FIXTURE",
@@ -498,7 +513,7 @@ async function preparedAccountFundingCharge() {
     now: new Date("2034-03-05T00:00:00.000Z"),
   });
   const leased = await acquirePaymentOperationLease({
-    organizationId,
+    organizationId: input.organizationId,
     operationId: operation.id,
     leaseOwner: `webhook-account-charge-${randomUUID()}`,
     leaseDurationMs: 15 * 60_000,
@@ -510,70 +525,114 @@ async function preparedAccountFundingCharge() {
 
 describe("Square webhook payment/refund PostgreSQL reconciliation", () => {
   it("finalizes and maps a V4 account funding tender to its Square dispute", async () => {
-    const [adoption] = await db.insert(weeklyPaymentLedgerAdoptions).values({
-      organizationId,
-      leagueId,
+    const v4ApplicationId = `app-webhook-processing-v4-${randomUUID()}`;
+    const v4MerchantId = `merchant-webhook-processing-v4-${randomUUID()}`;
+    const v4ProviderLocationId = `location-webhook-processing-v4-${randomUUID()}`;
+    const [v4Organization] = await db.insert(organizations).values({
+      name: "Square V4 Account Funding Webhook Fixture",
+      slug: `${slug}-v4-${randomUUID().slice(0, 8)}`,
+    }).returning({ id: organizations.id });
+    const [v4Location] = await db.insert(locations).values({
+      organizationId: v4Organization.id,
+      name: "Square V4 Account Funding Location",
+      squareCredentials: { appId: v4ApplicationId, locationId: v4ProviderLocationId },
+    }).returning({ id: locations.id });
+    const [v4League] = await db.insert(leagues).values({
+      name: "Square V4 Account Funding League",
+      seasonStart: "2034-01-01T00:00:00.000Z",
+      seasonEnd: "2034-12-31T23:59:59.000Z",
+      weekDay: "Monday",
+      weeklyFee: 2_000,
+      payingLineupSize: 3,
+      substituteAccess: "team_only",
+      substitutePaymentRegime: "team_choice",
+      organizationId: v4Organization.id,
+      locationId: v4Location.id,
+    }).returning({ id: leagues.id });
+    const [v4Bowler] = await db.insert(bowlers).values({
+      name: "Square V4 Account Funding Bowler",
+      organizationId: v4Organization.id,
+    }).returning({ id: bowlers.id });
+    const [v4Actor] = await db.insert(users).values({
+      email: `webhook-processing-v4-${randomUUID()}@example.test`,
+      password: "deterministic-test-password-hash",
+      name: "Square V4 Account Funding Admin",
+      role: "org_admin",
+      organizationId: v4Organization.id,
+    }).returning({ id: users.id });
+
+    // Keep this append-only marker until Vitest drops the isolated worker DB.
+    await db.insert(weeklyPaymentLedgerAdoptions).values({
+      organizationId: v4Organization.id,
+      leagueId: v4League.id,
       adoptedThroughLocalDate: "2034-03-01",
       preflightFingerprint: `lvweeklyadoptpre:v1:${"c".repeat(64)}`,
       resultFingerprint: `lvweeklyadopt:v1:${"d".repeat(64)}`,
-      recordedByUserId: actorUserId,
-    }).returning({ id: weeklyPaymentLedgerAdoptions.id });
-    try {
-      const operation = await preparedAccountFundingCharge();
-      const providerPaymentId = `payment-${randomUUID()}`;
-      const chargeDelivery = await ingest(paymentBody({
-        eventId: `event-${randomUUID()}`,
-        paymentId: providerPaymentId,
-        operationId: operation.id,
-      }));
-      const chargeResult = await processSquareWebhookEvent({
-        organizationId,
-        eventId: chargeDelivery.recorded.event.id,
-        event: chargeDelivery.event,
-        now: new Date("2034-03-05T00:01:01.000Z"),
-      });
-      expect(chargeResult.businessStateChanged).toBe(true);
-      const [payment] = await db.select().from(payments).where(eq(payments.paymentOperationId, operation.id));
-      expect(payment).toMatchObject({ bowlerId, amount: 2_000, status: "paid", providerPaymentId });
-      expect(await db.select().from(weeklyPaymentFundings).where(and(
-        eq(weeklyPaymentFundings.paymentId, payment.id),
-        eq(weeklyPaymentFundings.creditedBowlerId, bowlerId),
-      ))).toMatchObject([{
-        organizationId,
-        leagueId,
-        paymentId: payment.id,
-        creditedBowlerId: bowlerId,
-        amountMinor: 2_000,
-        source: "provider",
-        authorizationKind: "provider_snapshot",
-      }]);
+      recordedByUserId: v4Actor.id,
+    });
 
-      const disputeId = `dispute-${randomUUID()}`;
-      const disputeDelivery = await ingest(disputeBody({
-        eventId: `event-${randomUUID()}`,
-        disputeId,
-        paymentId: providerPaymentId,
-      }));
-      const disputeResult = await processSquareWebhookEvent({
-        organizationId,
-        eventId: disputeDelivery.recorded.event.id,
-        event: disputeDelivery.event,
-        processDisputes: true,
-        now: new Date("2034-03-06T00:01:01.000Z"),
-      });
-      expect(disputeResult).toMatchObject({ acknowledged: true, terminal: true, businessStateChanged: true });
-      expect(await db.select().from(paymentDisputes).where(eq(paymentDisputes.providerDisputeId, disputeId)))
-        .toMatchObject([{
-          organizationId,
-          locationId,
-          paymentOperationId: operation.id,
-          providerPaymentId,
-          amountMinor: 2_000,
-          currency: "USD",
-        }]);
-    } finally {
-      await db.delete(weeklyPaymentLedgerAdoptions).where(eq(weeklyPaymentLedgerAdoptions.id, adoption.id));
-    }
+    const operation = await preparedAccountFundingCharge({
+      organizationId: v4Organization.id,
+      leagueId: v4League.id,
+      payerBowlerId: v4Bowler.id,
+      locationId: v4Location.id,
+      authorizingUserId: v4Actor.id,
+    });
+    const providerPaymentId = `payment-${randomUUID()}`;
+    const chargeDelivery = await ingest(paymentBody({
+      eventId: `event-${randomUUID()}`,
+      paymentId: providerPaymentId,
+      operationId: operation.id,
+      merchantId: v4MerchantId,
+      providerLocationId: v4ProviderLocationId,
+    }), v4ApplicationId);
+    const chargeResult = await processSquareWebhookEvent({
+      organizationId: v4Organization.id,
+      eventId: chargeDelivery.recorded.event.id,
+      event: chargeDelivery.event,
+      now: new Date("2034-03-05T00:01:01.000Z"),
+    });
+    expect(chargeResult.businessStateChanged).toBe(true);
+    const [payment] = await db.select().from(payments).where(eq(payments.paymentOperationId, operation.id));
+    expect(payment).toMatchObject({ bowlerId: v4Bowler.id, amount: 2_000, status: "paid", providerPaymentId });
+    expect(await db.select().from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.paymentId, payment.id),
+      eq(weeklyPaymentFundings.creditedBowlerId, v4Bowler.id),
+    ))).toMatchObject([{
+      organizationId: v4Organization.id,
+      leagueId: v4League.id,
+      paymentId: payment.id,
+      creditedBowlerId: v4Bowler.id,
+      amountMinor: 2_000,
+      source: "provider",
+      authorizationKind: "provider_snapshot",
+    }]);
+
+    const disputeId = `dispute-${randomUUID()}`;
+    const disputeDelivery = await ingest(disputeBody({
+      eventId: `event-${randomUUID()}`,
+      disputeId,
+      paymentId: providerPaymentId,
+      merchantId: v4MerchantId,
+      providerLocationId: v4ProviderLocationId,
+    }), v4ApplicationId);
+    const disputeResult = await processSquareWebhookEvent({
+      organizationId: v4Organization.id,
+      eventId: disputeDelivery.recorded.event.id,
+      event: disputeDelivery.event,
+      processDisputes: true,
+      now: new Date("2034-03-06T00:01:01.000Z"),
+    });
+    expect(disputeResult).toMatchObject({ acknowledged: true, terminal: true, businessStateChanged: true });
+    expect(await db.select().from(paymentDisputes).where(eq(paymentDisputes.providerDisputeId, disputeId)))
+      .toMatchObject([{
+        organizationId: v4Organization.id,
+        locationId: v4Location.id,
+        paymentOperationId: operation.id,
+        providerPaymentId,
+        amountMinor: 2_000,
+        currency: "USD",
+      }]);
   });
 
   it("finalizes one known charge from signed reference evidence without duplicate payment rows", async () => {
