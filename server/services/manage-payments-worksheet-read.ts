@@ -29,7 +29,9 @@ import {
   readOwnedAccountBalancesInTransaction,
   readOwnedLedgerAdoptionInTransaction,
 } from "./owned-payment-ledger.js";
+import { readCanonicalDuePastDueV3InTransaction } from "./roster-payment-core.js";
 import {
+  buildManagePaymentsForecastTargets,
   buildManagePaymentsWorksheetSnapshot,
   localDateForInstant,
   ManagePaymentsWorksheetProjectionError,
@@ -634,7 +636,7 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     lineageFeeMinor: league.lineageFee ?? 0,
     prizeFeeMinor: league.prizeFundFee ?? 0,
   };
-  return buildManagePaymentsWorksheetSnapshot({
+  const worksheetProjectionInput = {
     league: projectionLeague,
     schedule,
     databaseNow,
@@ -655,6 +657,25 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     cardReceipts,
     balances,
     finalObligations,
+  };
+  const forecastTargets = buildManagePaymentsForecastTargets(worksheetProjectionInput);
+  const finalProjectionRead = await readCanonicalDuePastDueV3InTransaction(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    forecastTargets,
+  });
+  if (!finalProjectionRead.accountProjectionResult) {
+    throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "Owned account adoption evidence changed during the worksheet read");
+  }
+  const finalAccountProjection = {
+    rowsByObligationId: finalProjectionRead.accountProjectionResult.rowsByObligationId,
+    reviewRequiredByObligationId: finalProjectionRead.accountProjectionResult.reviewRequiredByObligationId,
+    forecastCoverageByTargetId: finalProjectionRead.forecastCoverageByTargetId,
+  };
+
+  return buildManagePaymentsWorksheetSnapshot({
+    ...worksheetProjectionInput,
+    finalAccountProjection,
   });
 }
 

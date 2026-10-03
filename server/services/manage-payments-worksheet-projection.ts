@@ -12,6 +12,7 @@ import {
   type ManagePaymentsWeekOption,
 } from "@shared/manage-payments-contract";
 import type { LeagueOccurrenceScheduleOccurrence, LeagueOccurrenceScheduleReadContract } from "@shared/league-occurrence-schedule";
+import type { OwnedAccountProjectionResult } from "./owned-account-financial-projection.js";
 
 export type ManagePaymentsWorksheetProjectionErrorCode =
   | "invalid_occurrence"
@@ -136,6 +137,30 @@ export interface ManagePaymentsProjectionInput {
   cardReceipts: readonly ManagePaymentsProjectionCardReceipt[];
   balances: ReadonlyMap<number, ManagePaymentsProjectionBalance>;
   finalObligations: readonly ManagePaymentsProjectionFinalObligation[];
+  /** Required shared whole-season credit result; final coverage must not run a second budget. */
+  finalAccountProjection: Pick<OwnedAccountProjectionResult, "rowsByObligationId" | "reviewRequiredByObligationId">
+    & { forecastCoverageByTargetId: ReadonlyMap<string, ManagePaymentsForecastCoverage> };
+}
+
+export interface ManagePaymentsForecastTarget {
+  projectionId: string;
+  occurrenceId: string;
+  occurrenceLocalDate: string;
+  dueAt: string;
+  billingOrdinal: number;
+  teamId: number;
+  bowlerId: number;
+  feeComponent: ManagePaymentFeeComponent;
+  feeMinor: number;
+  responsibilityId: string;
+}
+
+export interface ManagePaymentsForecastCoverage {
+  /** Canonical obligation IDs, or the in-memory forecast ID when no canonical row exists. */
+  obligationIds: readonly string[];
+  requiredMinor: number;
+  paidMinor: number;
+  reviewRequired: boolean;
 }
 
 interface ProjectedResponsibility {
@@ -424,7 +449,7 @@ function responsibilityRows(
 function confirmedResponsibilityRows(
   occurrenceId: string,
   responsibilities: readonly ManagePaymentsProjectionResponsibility[],
-  input: ManagePaymentsProjectionInput,
+  input: Omit<ManagePaymentsProjectionInput, "finalAccountProjection">,
   includeUnpricedLegacyComponents: boolean,
 ): ProjectedResponsibility[] {
   const worksheetRows = responsibilities
@@ -559,6 +584,59 @@ function finalBillableWeeks(schedule: LeagueOccurrenceScheduleReadContract): Lea
   return billable.slice(-2);
 }
 
+function selectedResponsibilitiesForOccurrence(
+  input: Omit<ManagePaymentsProjectionInput, "finalAccountProjection">,
+  occurrence: LeagueOccurrenceScheduleOccurrence,
+): { confirmed: boolean; rows: ProjectedResponsibility[] } {
+  const explicitRevision = input.explicitConfirmationRevisions.get(occurrence.occurrenceId);
+  const confirmed = input.confirmedOccurrenceIds.has(occurrence.occurrenceId);
+  const candidateRows = input.responsibilitiesByOccurrence.get(occurrence.occurrenceId) ?? [];
+  const candidateResponsibilities = candidateRows.filter((row) => row.kind !== "worksheet" || explicitRevision !== undefined);
+  if (confirmed) {
+    return {
+      confirmed,
+      rows: confirmedResponsibilityRows(occurrence.occurrenceId, candidateResponsibilities, input, explicitRevision === undefined),
+    };
+  }
+  return {
+    confirmed,
+    rows: [
+      ...candidateResponsibilities.flatMap((row) => responsibilityRows(row, input.rotatingAssignmentsByResponsibility)),
+      ...defaultMainResponsibilities(input, occurrence.occurrenceId, candidateResponsibilities),
+    ],
+  };
+}
+
+/** Pure forecast targets use the exact responsibility/default-main source shown by the worksheet. */
+export function buildManagePaymentsForecastTargets(
+  input: Omit<ManagePaymentsProjectionInput, "finalAccountProjection">,
+): ManagePaymentsForecastTarget[] {
+  const targets: ManagePaymentsForecastTarget[] = [];
+  const billable = input.schedule.occurrences.filter((occurrence) => isBillableOccurrence(occurrence)
+    && (occurrence.status === "scheduled" || occurrence.status === "completed"));
+  for (const occurrence of billable) {
+    if (input.confirmedOccurrenceIds.has(occurrence.occurrenceId)) continue;
+    const selected = selectedResponsibilitiesForOccurrence(input, occurrence);
+    for (const row of selected.rows) {
+      if (row.feeMinor <= 0) continue;
+      const projectionId = `worksheet-forecast:${occurrence.occurrenceId}:${row.teamId}:${row.responsibilityId}:${row.feeComponent}:${row.bowlerId}`;
+      targets.push({
+        projectionId,
+        occurrenceId: occurrence.occurrenceId,
+        occurrenceLocalDate: occurrence.authoritativeLocalDate,
+        dueAt: new Date(occurrence.startAt).toISOString(),
+        billingOrdinal: occurrence.billing?.billingOrdinal ?? occurrence.plannedOrdinal ?? 0,
+        teamId: row.teamId,
+        bowlerId: row.bowlerId,
+        feeComponent: row.feeComponent,
+        feeMinor: row.feeMinor,
+        responsibilityId: row.responsibilityId,
+      });
+    }
+  }
+  return targets;
+}
+
 function representedMainBowlerIds(
   responsibilities: readonly ManagePaymentsProjectionResponsibility[],
   mainBowlerIdsBySlot: ReadonlyMap<number, ReadonlyMap<number, number>>,
@@ -576,7 +654,7 @@ function representedMainBowlerIds(
 }
 
 function defaultMainResponsibilities(
-  input: ManagePaymentsProjectionInput,
+  input: Omit<ManagePaymentsProjectionInput, "finalAccountProjection">,
   occurrenceId: string,
   candidateResponsibilities: readonly ManagePaymentsProjectionResponsibility[],
 ): ProjectedResponsibility[] {
@@ -596,91 +674,56 @@ function defaultMainResponsibilities(
 function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<number, boolean> {
   const finalWeeks = finalBillableWeeks(input.schedule);
   if (finalWeeks.length === 0) return new Map();
-  const firstFinalWeek = finalWeeks[0];
-  if (!firstFinalWeek) return new Map();
-  const scheduleOccurrenceById = new Map(input.schedule.occurrences.map((occurrence) => [occurrence.occurrenceId, occurrence]));
-  const targetByBowler = new Map<number, Array<{ occurrenceId: string; feeMinor: number; confirmed: boolean }>>();
-
+  const targetByBowler = new Map<number, Map<string, { occurrenceId: string; feeMinor: number; confirmed: boolean }>>();
   for (const occurrence of finalWeeks) {
-    const explicitRevision = input.explicitConfirmationRevisions.get(occurrence.occurrenceId);
-    const confirmed = input.confirmedOccurrenceIds.has(occurrence.occurrenceId);
-    const candidateRows = input.responsibilitiesByOccurrence.get(occurrence.occurrenceId) ?? [];
-    const candidateResponsibilities = candidateRows.filter((row) => row.kind !== "worksheet" || explicitRevision !== undefined);
-    const savedRows = confirmed
-      ? confirmedResponsibilityRows(occurrence.occurrenceId, candidateResponsibilities, input, explicitRevision === undefined)
-      : candidateResponsibilities.flatMap((row) => responsibilityRows(row, input.rotatingAssignmentsByResponsibility));
-    const selected = confirmed
-      ? savedRows
-      : [...savedRows, ...defaultMainResponsibilities(input, occurrence.occurrenceId, candidateResponsibilities)];
-
-    for (const row of selected) {
+    const selected = selectedResponsibilitiesForOccurrence(input, occurrence);
+    const feeByBowler = new Map<number, number>();
+    for (const row of selected.rows) {
       if (row.feeMinor <= 0) continue;
-      targetByBowler.set(row.bowlerId, [
-        ...(targetByBowler.get(row.bowlerId) ?? []),
-        { occurrenceId: occurrence.occurrenceId, feeMinor: row.feeMinor, confirmed },
-      ]);
+      feeByBowler.set(row.bowlerId, (feeByBowler.get(row.bowlerId) ?? 0) + row.feeMinor);
+    }
+    for (const [bowlerId, feeMinor] of feeByBowler) {
+      const targets = targetByBowler.get(bowlerId) ?? new Map();
+      targets.set(occurrence.occurrenceId, {
+        occurrenceId: occurrence.occurrenceId,
+        feeMinor,
+        confirmed: selected.confirmed,
+      });
+      targetByBowler.set(bowlerId, targets);
     }
   }
 
   const output = new Map<number, boolean>();
-  const obligationsByOccurrenceAndBowler = new Map<string, ManagePaymentsProjectionFinalObligation[]>();
-  for (const obligation of input.finalObligations) {
-    obligationsByOccurrenceAndBowler.set(
-      `${obligation.occurrenceId}:${obligation.debtorBowlerId}`,
-      [...(obligationsByOccurrenceAndBowler.get(`${obligation.occurrenceId}:${obligation.debtorBowlerId}`) ?? []), obligation],
-    );
-  }
+  const forecastTargets = buildManagePaymentsForecastTargets(input);
 
   for (const [bowlerId, targets] of targetByBowler) {
-    if (targets.length === 0) {
-      output.set(bowlerId, false);
-      continue;
-    }
     let covered = true;
-    const balance = input.balances.get(bowlerId);
-    let creditRemaining = balance?.availableCreditMinor ?? 0;
-    let detailedConfirmedOwed = 0;
-    let olderReviewRequired = false;
-    for (const obligation of input.finalObligations) {
-      if (obligation.debtorBowlerId !== bowlerId) continue;
-      detailedConfirmedOwed += obligation.outstandingMinor;
-      const obligationOccurrence = scheduleOccurrenceById.get(obligation.occurrenceId);
-      const beforeFinalWeeks = !obligationOccurrence
-        || compareOccurrenceBillingOrder(obligationOccurrence, firstFinalWeek) < 0;
-      if (beforeFinalWeeks) {
-        creditRemaining = Math.max(0, creditRemaining - obligation.outstandingMinor);
-        olderReviewRequired ||= obligation.reviewRequired;
-      }
-    }
-    if (olderReviewRequired) creditRemaining = 0;
-    if (balance) {
-      const unclassifiedOwed = Math.max(0, balance.confirmedOwedMinor - detailedConfirmedOwed);
-      creditRemaining = Math.max(0, creditRemaining - unclassifiedOwed);
-    }
-
-    const targetByOccurrence = new Map(targets.map((target) => [target.occurrenceId, target]));
     for (const occurrence of finalWeeks) {
-      const target = targetByOccurrence.get(occurrence.occurrenceId);
-      const obligations = obligationsByOccurrenceAndBowler.get(`${occurrence.occurrenceId}:${bowlerId}`) ?? [];
-      const outstanding = obligations.reduce((sum, obligation) => sum + obligation.outstandingMinor, 0);
-      if (!target) {
-        creditRemaining = Math.max(0, creditRemaining - outstanding);
-        if (obligations.some((obligation) => obligation.reviewRequired)) creditRemaining = 0;
+      const target = targets.get(occurrence.occurrenceId);
+      if (!target) continue;
+      if (target.confirmed) {
+        const obligations = input.finalObligations.filter((row) => row.occurrenceId === target.occurrenceId
+          && row.debtorBowlerId === bowlerId);
+        const paidMinor = obligations.reduce((sum, row) => sum + row.paidMinor, 0);
+        const projectedCreditMinor = obligations.reduce((sum, row) => sum
+          + (input.finalAccountProjection.rowsByObligationId.get(row.obligationId)?.projectedCreditMinor ?? 0), 0);
+        const reviewRequired = obligations.some((row) => input.finalAccountProjection.reviewRequiredByObligationId.get(row.obligationId)
+          ?? row.reviewRequired);
+        if (obligations.length === 0 || reviewRequired || paidMinor + projectedCreditMinor < target.feeMinor) covered = false;
         continue;
       }
-      if (!target.confirmed) {
-        creditRemaining = Math.max(0, creditRemaining - outstanding);
-        if (obligations.some((obligation) => obligation.reviewRequired)) creditRemaining = 0;
-        if (target.feeMinor > creditRemaining) covered = false;
-        creditRemaining = Math.max(0, creditRemaining - target.feeMinor);
-        continue;
-      }
-      const moneyPaid = obligations.reduce((sum, obligation) => sum + obligation.paidMinor, 0);
-      const coveredByMoney = moneyPaid >= target.feeMinor
-        && obligations.every((obligation) => !obligation.reviewRequired);
-      if (!coveredByMoney) covered = false;
-      creditRemaining = Math.max(0, creditRemaining - outstanding);
-      if (obligations.some((obligation) => obligation.reviewRequired)) creditRemaining = 0;
+
+      const forecastRows = forecastTargets.filter((row) => row.occurrenceId === target.occurrenceId && row.bowlerId === bowlerId);
+      const coverage = forecastRows.map((row) => input.finalAccountProjection.forecastCoverageByTargetId.get(row.projectionId));
+      const paidMinor = coverage.reduce((sum, row) => sum + (row?.paidMinor ?? 0), 0);
+      const projectedCreditMinor = coverage.reduce((sum, row) => sum + (row?.obligationIds.reduce((credit, obligationId) => (
+        credit + (input.finalAccountProjection.rowsByObligationId.get(obligationId)?.projectedCreditMinor ?? 0)
+      ), 0) ?? 0), 0);
+      const reviewRequired = coverage.some((row) => row?.reviewRequired === true
+        || row?.obligationIds.some((obligationId) => input.finalAccountProjection.reviewRequiredByObligationId.get(obligationId) === true));
+      const requiredMinor = coverage.reduce((sum, row) => sum + (row?.requiredMinor ?? 0), 0);
+      if (forecastRows.length === 0 || coverage.some((row) => row === undefined)
+        || reviewRequired || paidMinor + projectedCreditMinor < requiredMinor) covered = false;
     }
     output.set(bowlerId, covered);
   }

@@ -364,6 +364,121 @@ describe("Manage Payments worksheet atomic writer", () => {
     });
   });
 
+  it("reconciles materialized split final targets after the earlier ordinary-week forecast", async () => {
+    const occurrences = await db.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt })
+      .from(leagueOccurrences)
+      .where(and(eq(leagueOccurrences.organizationId, organizationId), eq(leagueOccurrences.leagueId, leagueId)))
+      .orderBy(asc(leagueOccurrences.plannedOrdinal));
+    const finalOccurrences = occurrences.slice(-2);
+    expect(finalOccurrences).toHaveLength(2);
+    const [mainSlot] = await db.select({ id: teamPaymentSlots.id }).from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, teamId),
+      eq(teamPaymentSlots.slotIndex, 0),
+      eq(teamPaymentSlots.occupant, "main"),
+    ));
+    if (!mainSlot) throw new Error("worksheet main payment slot is missing");
+
+    for (const occurrence of finalOccurrences) {
+      const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
+        organizationId,
+        leagueId,
+        occurrenceId: occurrence.id,
+        teamId,
+        slotId: mainSlot.id,
+        slotIndex: 0,
+        positionIndex: 0,
+        version: 1,
+        state: "active",
+        responsibilityKind: "split",
+        mainBowlerId,
+        substituteBowlerId,
+        payerBowlerId: mainBowlerId,
+        lineagePayerBowlerId: mainBowlerId,
+        prizePayerBowlerId: substituteBowlerId,
+        policy: "special_split",
+        worksheetFeeComponent: null,
+        amountMinor: 2_500,
+        lineageAmountMinor: 1_800,
+        prizeFundAmountMinor: 700,
+        currency: "USD",
+        dueAt: occurrence.startAt,
+        pastDueAt: occurrence.startAt,
+        recordedByUserId: actorUserId,
+      }).returning({ id: occurrencePaymentResponsibilities.id });
+      if (!responsibility) throw new Error("final-week main responsibility was not created");
+      await db.insert(paymentObligations).values([
+        {
+          organizationId,
+          leagueId,
+          occurrenceId: occurrence.id,
+          responsibilityId: responsibility.id,
+          component: "lineage",
+          payerBowlerId: mainBowlerId,
+          amountMinor: 1_800,
+          currency: "USD",
+          dueAt: occurrence.startAt,
+          pastDueAt: occurrence.startAt,
+          state: "open",
+          createdByUserId: actorUserId,
+        },
+        {
+          organizationId,
+          leagueId,
+          occurrenceId: occurrence.id,
+          responsibilityId: responsibility.id,
+          component: "prize",
+          payerBowlerId: substituteBowlerId,
+          amountMinor: 700,
+          currency: "USD",
+          dueAt: occurrence.startAt,
+          pastDueAt: occurrence.startAt,
+          state: "open",
+          createdByUserId: actorUserId,
+        },
+      ]);
+    }
+
+    const recordAdvance = async (payerBowlerId: number, amountMinor: number, idempotencyKey: string) => {
+      const quote = await quoteCanonicalManualPayment({
+        organizationId,
+        leagueId,
+        request: { payerBowlerId, amountMinor, type: "cash", notes: null },
+      });
+      return recordCanonicalManualPayment({
+        organizationId,
+        leagueId,
+        actorUserId,
+        request: {
+          payerBowlerId,
+          amountMinor,
+          type: "cash",
+          notes: null,
+          idempotencyKey,
+          requestFingerprint: canonicalManualReceiptQuoteFingerprint({
+            organizationId,
+            leagueId,
+            payerBowlerId,
+            amountMinor,
+            type: "cash",
+            checkNumber: null,
+            notes: null,
+          }),
+        },
+      });
+    };
+    const mainAdvance = await recordAdvance(mainBowlerId, 8_600, `final-main-forecast-credit-${suffix}`);
+    const substituteAdvance = await recordAdvance(substituteBowlerId, 1_400, `final-sub-forecast-credit-${suffix}`);
+    expect(mainAdvance).toMatchObject({ appliedAmountMinor: 2_500, account: { availableCreditMinor: 6_100, confirmedOwedMinor: 0 } });
+    expect(substituteAdvance).toMatchObject({ appliedAmountMinor: 0, account: { availableCreditMinor: 1_400, confirmedOwedMinor: 0 } });
+
+    const snapshot = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    const rowsByBowler = new Map(snapshot.teams.flatMap((team) => team.rows).map((row) => [row.bowlerId, row]));
+    expect(rowsByBowler.get(mainBowlerId)?.finalTwoWeeksPaid).toBe(true);
+    expect(rowsByBowler.get(substituteBowlerId)?.finalTwoWeeksPaid).toBe(true);
+  });
+
   it("rejects adopted manual tenders for cross-organization and other-league payers at write time", async () => {
     const siblingLeague = await createLeagueWithCanonicalSetup({
       scope: { organizationId, actorUserId },

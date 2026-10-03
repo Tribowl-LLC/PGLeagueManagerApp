@@ -98,6 +98,7 @@ import { applyRotatingCreditToConfirmedObligationsInTransaction } from "./rotati
 import {
   readOwnedAccountFinancialProjectionInTransaction,
   readPublishedCollectionOrderInTransaction,
+  type OwnedAccountProjectionResult,
 } from "./owned-account-financial-projection.js";
 import { readConfirmedRotatingObligationsForCredit } from "./rotating-team-payments.js";
 import {
@@ -122,6 +123,8 @@ import {
   mapCardReceiptCollectionOccurrence,
   ManagePaymentsWorksheetProjectionError,
   selectManagePaymentsOccurrence,
+  type ManagePaymentsForecastCoverage,
+  type ManagePaymentsForecastTarget,
 } from "./manage-payments-worksheet-projection.js";
 
 export { calculateRosterPaymentTiming };
@@ -153,6 +156,12 @@ function resolveInteractiveBuyerEmail(providerName: string, requestedEmail: stri
 }
 
 export type RosterPaymentTransaction = PaymentOperationTransaction;
+
+export interface CanonicalV3ProjectionReadResult {
+  contract: FinancialReadContractV3;
+  accountProjectionResult: OwnedAccountProjectionResult | null;
+  forecastCoverageByTargetId: ReadonlyMap<string, ManagePaymentsForecastCoverage>;
+}
 
 async function assertPaymentIsNotRotatingCreditFundingInTransaction(
   tx: RosterPaymentTransaction,
@@ -1645,6 +1654,15 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
   await leagueScope(input.organizationId, input.leagueId);
   return db.transaction(async (tx) => {
     await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+    return (await readCanonicalDuePastDueV3InTransaction(tx, input)).contract;
+  });
+}
+
+/** Shared V3 canonical-row read for callers already inside a repeatable-read snapshot. */
+export async function readCanonicalDuePastDueV3InTransaction(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; bowlerId?: number; forecastTargets?: readonly ManagePaymentsForecastTarget[] },
+): Promise<CanonicalV3ProjectionReadResult> {
     if (input.bowlerId !== undefined) {
       const [member] = await tx.select({ id: bowlers.id }).from(bowlers).innerJoin(bowlerLeagues, and(
         eq(bowlerLeagues.bowlerId, bowlers.id),
@@ -1691,7 +1709,12 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
       leagueId: input.leagueId,
       obligations,
     });
-    const occurrenceIds = [...new Set(obligations.map((row) => row.occurrenceId))];
+    const forecastTargets = input.forecastTargets ?? [];
+    if (!accountAdoption && forecastTargets.length > 0) {
+      throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Worksheet forecasts require owned-account adoption", 503);
+    }
+    const forecastTargetOccurrenceIds = [...new Set(forecastTargets.map((row) => row.occurrenceId))];
+    const occurrenceIds = [...new Set([...obligations.map((row) => row.occurrenceId), ...forecastTargetOccurrenceIds])];
     const occurrenceRows = occurrenceIds.length === 0 ? [] : await tx.select({
       id: leagueOccurrences.id,
       occurrenceLocalDate: leagueOccurrences.authoritativeLocalDate,
@@ -1717,7 +1740,8 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
     for (const row of billingTerms) {
       if (row.billingOrdinal !== null && !billingByOccurrence.has(row.occurrenceId)) billingByOccurrence.set(row.occurrenceId, row.billingOrdinal);
     }
-    const forecastEligibleOccurrenceIds = new Set(accountAdoption ? obligations.flatMap((obligation) => {
+    const forecastEligibleOccurrenceIds = new Set(accountAdoption ? [
+      ...obligations.flatMap((obligation) => {
       if (obligation.state !== "open" && obligation.state !== "partially_settled") return [];
       const occurrence = occurrenceById.get(obligation.occurrenceId);
       return occurrence
@@ -1725,7 +1749,9 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
         && (occurrence.status === "scheduled" || occurrence.status === "completed")
         ? [obligation.occurrenceId]
         : [];
-    }) : []);
+      }),
+      ...forecastTargetOccurrenceIds,
+    ] : []);
     if (accountAdoption && obligations.some((obligation) => (
       !occurrenceById.get(obligation.occurrenceId)
       || occurrenceById.get(obligation.occurrenceId)?.occurrenceLocalDate === null
@@ -1742,6 +1768,14 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
         occurrenceId: obligation.occurrenceId,
         dueAt: obligation.dueAt,
         billingOrdinal,
+      });
+    }
+    for (const target of forecastTargets) {
+      if (orderSeedByOccurrence.has(target.occurrenceId)) continue;
+      orderSeedByOccurrence.set(target.occurrenceId, {
+        occurrenceId: target.occurrenceId,
+        dueAt: target.dueAt,
+        billingOrdinal: target.billingOrdinal,
       });
     }
     const collectionOrderByOccurrence = accountAdoption ? await readPublishedCollectionOrderInTransaction(tx, {
@@ -1961,6 +1995,63 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
         reviewRequired,
       });
     }
+    const forecastCoverageByTargetId = new Map<string, ManagePaymentsForecastCoverage>();
+    const projectionRowById = new Map(projectionRows.map((row) => [row.obligationId, row]));
+    for (const target of forecastTargets) {
+      const sameOwnerResponsibilityRows = allRows.filter((row) => row.occurrenceId === target.occurrenceId
+        && row.responsibilityId === target.responsibilityId
+        && row.teamId === target.teamId
+        && row.state !== "voided"
+        && projectionRowById.get(row.id)?.effectiveDebtorBowlerId === target.bowlerId);
+      const fullRows = sameOwnerResponsibilityRows.filter((row) => row.component === "full");
+      const splitRows = sameOwnerResponsibilityRows.filter((row) => row.component === "lineage" || row.component === "prize");
+      if (target.feeComponent === "full" && fullRows.length > 0 && splitRows.length > 0) {
+        throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "A forecast responsibility has ambiguous canonical fee components", 503);
+      }
+      const matchedRows = target.feeComponent === "full"
+        ? (fullRows.length > 0 ? fullRows : splitRows)
+        : sameOwnerResponsibilityRows.filter((row) => row.component === target.feeComponent);
+      if (matchedRows.length === 0 && sameOwnerResponsibilityRows.length > 0) {
+        throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "A forecast responsibility does not match its canonical fee component", 503);
+      }
+      if (matchedRows.length > 0) {
+        const componentCounts = new Map<string, number>();
+        for (const row of matchedRows) componentCounts.set(row.component, (componentCounts.get(row.component) ?? 0) + 1);
+        if ([...componentCounts.values()].some((count) => count > 1)) {
+          throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "A forecast responsibility has duplicate canonical fee components", 503);
+        }
+        forecastCoverageByTargetId.set(target.projectionId, {
+          obligationIds: matchedRows.map((row) => row.id),
+          requiredMinor: matchedRows.reduce((sum, row) => sum + row.amountMinor, 0),
+          paidMinor: matchedRows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+          reviewRequired: matchedRows.some((row) => row.reviewRequired),
+        });
+        continue;
+      }
+      const order = collectionOrderByOccurrence.get(target.occurrenceId);
+      if (!order) throw new RosterPaymentError("ROTATING_BILLING_ORDER_MISSING", "A worksheet forecast has no published collection order", 503);
+      projectionRows.push({
+        obligationId: target.projectionId,
+        occurrenceId: target.occurrenceId,
+        occurrenceLocalDate: target.occurrenceLocalDate,
+        dueAt: target.dueAt,
+        effectiveCollectionAt: order.effectiveCollectionAt,
+        memberOrdinal: order.memberOrdinal,
+        billingOrdinal: order.billingOrdinal,
+        owner: { kind: "bowler", bowlerId: target.bowlerId },
+        effectiveDebtorBowlerId: target.bowlerId,
+        forecastEligible: true,
+        state: "open",
+        outstandingMinor: target.feeMinor,
+        reviewRequired: false,
+      });
+      forecastCoverageByTargetId.set(target.projectionId, {
+        obligationIds: [target.projectionId],
+        requiredMinor: target.feeMinor,
+        paidMinor: 0,
+        reviewRequired: false,
+      });
+    }
     const accountProjectionResult = accountAdoption ? await readOwnedAccountFinancialProjectionInTransaction(tx, {
       organizationId: input.organizationId,
       leagueId: input.leagueId,
@@ -1970,6 +2061,9 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
     }) : null;
     if (accountAdoption && !accountProjectionResult) {
       throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Owned account adoption evidence changed during the financial read", 503);
+    }
+    if (accountProjectionResult && [...forecastCoverageByTargetId.values()].some((coverage) => coverage.obligationIds.some((id) => !accountProjectionResult.rowsByObligationId.has(id)))) {
+      throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "A forecast target has no shared account projection row", 503);
     }
     allRows.sort((a, b) => a.dueAt.localeCompare(b.dueAt)
       || (a.owner.kind === "team" ? `team:${a.owner.teamId}` : `bowler:${a.owner.bowlerId}`).localeCompare(b.owner.kind === "team" ? `team:${b.owner.teamId}` : `bowler:${b.owner.bowlerId}`)
@@ -1984,7 +2078,7 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
     const responseRows = accountProjectionResult
       ? scopedRows.map((row) => ({ ...row, accountProjection: accountProjectionResult.rowsByObligationId.get(row.id) }))
       : scopedRows;
-    return {
+    const contract: FinancialReadContractV3 = {
       contractVersion: "canonical-due-past-due/3" as const,
       orderVersion: "due-at,owner,occurrence,obligation/3" as const,
       organizationId: input.organizationId,
@@ -2004,7 +2098,7 @@ export async function readCanonicalDuePastDueV3(input: { organizationId: number;
         voidedCount: responseRows.filter((row) => row.classification === "voided").length,
       },
     };
-  });
+    return { contract, accountProjectionResult, forecastCoverageByTargetId };
 }
 
 /** Resolve one published occurrence from explicit roster payment evidence. */

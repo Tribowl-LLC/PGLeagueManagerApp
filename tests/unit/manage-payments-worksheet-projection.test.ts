@@ -6,6 +6,7 @@ import {
   type LeagueOccurrenceScheduleReadContract,
 } from "@shared/league-occurrence-schedule";
 import {
+  buildManagePaymentsForecastTargets,
   buildManagePaymentsWorksheetSnapshot,
   fingerprintManagePaymentsWorksheet,
   localDateForInstant,
@@ -13,6 +14,11 @@ import {
   selectManagePaymentsOccurrence,
   type ManagePaymentsProjectionInput,
 } from "../../server/services/manage-payments-worksheet-projection.js";
+import {
+  projectOwnedAccountCoverage,
+  type OwnedAccountProjectionRowInput,
+} from "../../server/services/owned-account-financial-projection.js";
+import type { OwnedConfirmedObligation } from "../../server/services/owned-payment-ledger.js";
 
 function occurrence(
   id: string,
@@ -96,8 +102,109 @@ function projectionInput(overrides: Partial<ManagePaymentsProjectionInput> = {})
     cardReceipts: [],
     balances: new Map(),
     finalObligations: [],
+    finalAccountProjection: {
+      rowsByObligationId: new Map(),
+      reviewRequiredByObligationId: new Map(),
+      forecastCoverageByTargetId: new Map(),
+    },
     ...overrides,
   };
+}
+
+function withSharedAccountProjection(input: ManagePaymentsProjectionInput): ManagePaymentsProjectionInput {
+  const occurrenceById = new Map(input.schedule.occurrences.map((row) => [row.occurrenceId, row]));
+  const debts: OwnedConfirmedObligation[] = input.finalObligations.map((row) => {
+    const occurrence = occurrenceById.get(row.occurrenceId);
+    if (!occurrence) throw new Error("test confirmed debt is missing its schedule occurrence");
+    const dueAt = new Date(occurrence.startAt).toISOString();
+    return {
+      obligationId: row.obligationId,
+      responsibilityId: row.responsibilityId,
+      occurrenceId: row.occurrenceId,
+      occurrenceLocalDate: occurrence.authoritativeLocalDate,
+      dueAt,
+      pastDueAt: dueAt,
+      teamId: row.teamId,
+      amountMinor: row.amountMinor,
+      paidMinor: row.paidMinor,
+      waivedMinor: row.waivedMinor,
+      outstandingMinor: row.outstandingMinor,
+      payerBowlerId: row.payerBowlerId,
+      debtorBowlerId: row.debtorBowlerId,
+      targetKind: "bowler_responsibility",
+      assignmentId: null,
+      reviewRequired: row.reviewRequired,
+    };
+  });
+  const rows: OwnedAccountProjectionRowInput[] = debts.map((debt) => {
+    const occurrence = occurrenceById.get(debt.occurrenceId);
+    if (!occurrence) throw new Error("test confirmed debt is missing its schedule occurrence");
+    const dueAt = new Date(debt.dueAt).toISOString();
+    const ownerBowlerId = debt.payerBowlerId ?? debt.debtorBowlerId;
+    return {
+      obligationId: debt.obligationId,
+      occurrenceId: debt.occurrenceId,
+      occurrenceLocalDate: debt.occurrenceLocalDate,
+      dueAt,
+      effectiveCollectionAt: dueAt,
+      memberOrdinal: 0,
+      billingOrdinal: occurrence.billing?.billingOrdinal ?? occurrence.plannedOrdinal ?? 0,
+      owner: { kind: "bowler", bowlerId: ownerBowlerId },
+      effectiveDebtorBowlerId: debt.debtorBowlerId,
+      forecastEligible: true,
+      state: debt.outstandingMinor > 0 ? "open" : "settled",
+      outstandingMinor: debt.outstandingMinor,
+      reviewRequired: debt.reviewRequired,
+    };
+  });
+  const forecastTargets = buildManagePaymentsForecastTargets(input);
+  for (const target of forecastTargets) {
+    rows.push({
+      obligationId: target.projectionId,
+      occurrenceId: target.occurrenceId,
+      occurrenceLocalDate: target.occurrenceLocalDate,
+      dueAt: target.dueAt,
+      effectiveCollectionAt: target.dueAt,
+      memberOrdinal: 0,
+      billingOrdinal: target.billingOrdinal,
+      owner: { kind: "bowler", bowlerId: target.bowlerId },
+      effectiveDebtorBowlerId: target.bowlerId,
+      forecastEligible: true,
+      state: "open",
+      outstandingMinor: target.feeMinor,
+      reviewRequired: false,
+    });
+  }
+  const confirmedOwedByBowler = new Map<number, number>();
+  for (const debt of debts) {
+    confirmedOwedByBowler.set(debt.debtorBowlerId, (confirmedOwedByBowler.get(debt.debtorBowlerId) ?? 0) + debt.outstandingMinor);
+  }
+  const balanceOwners = new Set([...input.balances.keys(), ...confirmedOwedByBowler.keys()]);
+  const balances = new Map([...balanceOwners].map((bowlerId) => {
+    const availableCreditMinor = input.balances.get(bowlerId)?.availableCreditMinor ?? 0;
+    const confirmedOwedMinor = confirmedOwedByBowler.get(bowlerId) ?? 0;
+    return [bowlerId, {
+      bowlerId,
+      availableCreditMinor,
+      confirmedOwedMinor,
+      netBalanceMinor: availableCreditMinor - confirmedOwedMinor,
+    }] as const;
+  }));
+  const result = projectOwnedAccountCoverage({
+    rows,
+    confirmedDebts: debts,
+    balances,
+    amountPaidByBowler: new Map(),
+    confirmedOccurrenceIds: input.confirmedOccurrenceIds,
+    asOf: input.databaseNow,
+  });
+  const forecastCoverageByTargetId = new Map(forecastTargets.map((target) => [target.projectionId, {
+    obligationIds: [target.projectionId],
+    requiredMinor: target.feeMinor,
+    paidMinor: 0,
+    reviewRequired: false,
+  }]));
+  return { ...input, finalAccountProjection: { ...result, forecastCoverageByTargetId } };
 }
 
 describe("Manage Payments worksheet projection", () => {
@@ -812,7 +919,8 @@ describe("Manage Payments worksheet projection", () => {
   });
 
   it("uses available credit only after older confirmed debt and covers only positive forecast targets", () => {
-    const input = projectionInput({
+    const input = withSharedAccountProjection(projectionInput({
+      confirmedOccurrenceIds: new Set(["occ-1", "occ-2"]),
       balances: new Map([[501, { availableCreditMinor: 2_500, confirmedOwedMinor: 600, netBalanceMinor: 1_900 }]]),
       finalObligations: [{
         obligationId: "older-obligation",
@@ -828,16 +936,38 @@ describe("Manage Payments worksheet projection", () => {
         outstandingMinor: 600,
         reviewRequired: false,
       }],
-    });
+    }));
     expect(buildManagePaymentsWorksheetSnapshot(input).teams[0]?.rows[0]?.finalTwoWeeksPaid).toBe(false);
-    expect(buildManagePaymentsWorksheetSnapshot({
+    expect(buildManagePaymentsWorksheetSnapshot(withSharedAccountProjection({
       ...input,
       balances: new Map([[501, { availableCreditMinor: 2_600, confirmedOwedMinor: 600, netBalanceMinor: 2_000 }]]),
-    }).teams[0]?.rows[0]?.finalTwoWeeksPaid).toBe(true);
+      finalAccountProjection: {
+        rowsByObligationId: new Map(),
+        reviewRequiredByObligationId: new Map(),
+        forecastCoverageByTargetId: new Map(),
+      },
+    })).teams[0]?.rows[0]?.finalTwoWeeksPaid).toBe(true);
     expect(buildManagePaymentsWorksheetSnapshot({
       ...input,
       members: [{ teamId: 31, bowlerId: 502, displayName: "Blair Quinn", order: 0, rosterRole: "substitute" }],
     }).teams[0]?.rows[0]?.finalTwoWeeksPaid).toBe(false);
+  });
+
+  it("spends the shared forecast credit on an earlier ordinary week before the final-two column", () => {
+    const input = projectionInput({
+      fullFeeMinorByOccurrence: new Map([["occ-1", 2_500], ["occ-2", 2_500], ["occ-3", 2_500], ["occ-4", 2_500]]),
+      confirmedOccurrenceIds: new Set(["occ-1"]),
+      balances: new Map([[501, { availableCreditMinor: 2_500, confirmedOwedMinor: 0, netBalanceMinor: 2_500 }]]),
+    });
+    const projected = withSharedAccountProjection(input);
+    const forecasts = buildManagePaymentsForecastTargets(projected);
+    const projectedMinorByOccurrence = new Map(forecasts.map((target) => [
+      target.occurrenceId,
+      projected.finalAccountProjection.rowsByObligationId.get(target.projectionId)?.projectedCreditMinor ?? 0,
+    ]));
+
+    expect(projectedMinorByOccurrence).toEqual(new Map([["occ-2", 2_500], ["occ-3", 0], ["occ-4", 0]]));
+    expect(buildManagePaymentsWorksheetSnapshot(projected).teams[0]?.rows[0]?.finalTwoWeeksPaid).toBe(false);
   });
 
   it("fingerprints fee choices and pricing revisions while leaving balance/card evidence out", () => {
