@@ -1284,9 +1284,17 @@ async function assertAdoptionOutcomeInTransaction(
     eq(weeklyPaymentFundingAuthorizationItems.leagueId, plan.leagueId),
     inArray(weeklyPaymentFundingAuthorizationItems.fundingId, fundingRows.map((row) => row.id)),
   )).orderBy(asc(weeklyPaymentFundingAuthorizationItems.fundingId), asc(weeklyPaymentFundingAuthorizationItems.sourceAllocationIndex));
+  const expectedAuthorizationItemByKey = new Map(expectedAuthorizationItems.map((row) => [
+    `${row.fundingId}:${row.allocationIndex}`, row,
+  ]));
+  const actualAuthorizationItemByKey = new Map(actualAuthorizationItems.map((row) => [
+    `${row.fundingId}:${row.sourceAllocationIndex}`, row,
+  ]));
   if (actualAuthorizationItems.length !== expectedAuthorizationItems.length
-    || expectedAuthorizationItems.some((expected, index) => {
-      const actual = actualAuthorizationItems[index];
+    || expectedAuthorizationItemByKey.size !== expectedAuthorizationItems.length
+    || actualAuthorizationItemByKey.size !== actualAuthorizationItems.length
+    || [...expectedAuthorizationItemByKey].some(([key, expected]) => {
+      const actual = actualAuthorizationItemByKey.get(key);
       return !actual || actual.fundingId !== expected.fundingId || actual.paymentId !== expected.paymentId
         || actual.creditedBowlerId !== expected.creditedBowlerId || actual.sourceOperationId !== expected.operationId
         || actual.sourceAllocationIndex !== expected.allocationIndex || actual.authorizedAmountMinor !== expected.amountMinor
@@ -1378,19 +1386,24 @@ async function assertAdoptionOutcomeInTransaction(
     inArray(weeklyPaymentLedgerAdoptionAllocationProofSteps.proofId, proofIds),
   )).orderBy(asc(weeklyPaymentLedgerAdoptionAllocationProofSteps.proofId), asc(weeklyPaymentLedgerAdoptionAllocationProofSteps.stepIndex));
   const expectedStepCount = expectedProofApplications.reduce((sum, row) => sum + row.correctionPath.length, 0);
-  if (proofSteps.length !== expectedStepCount) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PROOF_STEPS_VERIFY_FAILED");
-  let stepOffset = 0;
+  const expectedProofStepByKey = new Map<string, { proofId: string; stepIndex: number; edge: typeof paymentAllocationCorrections.$inferSelect }>();
   for (const expected of expectedProofApplications) {
     const proof = proofByAllocationId.get(expected.allocation.id);
     if (!proof) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PROOF_VERIFY_FAILED");
     for (const [stepIndex, edge] of expected.correctionPath.entries()) {
-      const actual = proofSteps[stepOffset];
-      stepOffset += 1;
-      if (!actual || actual.proofId !== proof.id || actual.stepIndex !== stepIndex || actual.correctionId !== edge.id
-        || actual.paymentId !== edge.paymentId || actual.sourceAllocationId !== edge.sourceAllocationId
-        || actual.replacementAllocationId !== edge.replacementAllocationId || actual.amountMinor !== edge.amountMinor
-        || actual.currency !== edge.currency) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PROOF_STEPS_VERIFY_FAILED");
+      expectedProofStepByKey.set(`${proof.id}:${stepIndex}`, { proofId: proof.id, stepIndex, edge });
     }
+  }
+  const actualProofStepByKey = new Map(proofSteps.map((row) => [`${row.proofId}:${row.stepIndex}`, row]));
+  if (proofSteps.length !== expectedStepCount || expectedProofStepByKey.size !== expectedStepCount
+    || actualProofStepByKey.size !== proofSteps.length) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PROOF_STEPS_VERIFY_FAILED");
+  for (const [key, expected] of expectedProofStepByKey) {
+    const actual = actualProofStepByKey.get(key);
+    const edge = expected.edge;
+    if (!actual || actual.proofId !== expected.proofId || actual.stepIndex !== expected.stepIndex || actual.correctionId !== edge.id
+      || actual.paymentId !== edge.paymentId || actual.sourceAllocationId !== edge.sourceAllocationId
+      || actual.replacementAllocationId !== edge.replacementAllocationId || actual.amountMinor !== edge.amountMinor
+      || actual.currency !== edge.currency) throw new OwnedPaymentLedgerAdoptionError("ADOPTION_PROOF_STEPS_VERIFY_FAILED");
   }
 
   for (const expected of plan.receipts) {

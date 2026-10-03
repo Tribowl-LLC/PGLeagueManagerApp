@@ -1,7 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
+  autopayConsentPartners,
+  autopayConsents,
+  bowlerPaymentLinks,
   bowlers,
   leagueOccurrenceBillingTerms,
   leagueOccurrenceGenerationRuns,
@@ -11,9 +14,15 @@ import {
   locations,
   occurrencePaymentResponsibilities,
   organizations,
+  paymentAllocationCorrections,
   paymentAllocations,
   paymentObligations,
   paymentObligationOwnerRevisions,
+  paymentOperationRosterSnapshotItems,
+  paymentOperationRosterSnapshots,
+  paymentOperationStandingAutopayBindings,
+  paymentOperationStandingAutopayParticipants,
+  paymentOperations,
   payments,
   rotatingCreditFundings,
   rotatingOccurrenceAssignments,
@@ -38,6 +47,12 @@ import {
 } from "../../server/services/owned-payment-ledger-adoption";
 import { localDateForInstant } from "../../server/services/manage-payments-worksheet-projection";
 import { readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read";
+import {
+  correctHistoricalSquarePaymentAllocation,
+  historicalSquareAllocationFingerprint,
+  historicalSquareAllocationCorrectionFingerprint,
+} from "../../server/services/historical-square-payment-correction";
+import { canonicalizePaymentOperationInput } from "../../server/services/payment-operation-idempotency";
 import {
   appendManualReceiptRevisionInTransaction,
   createManualReceiptHeadInTransaction,
@@ -168,17 +183,20 @@ async function createPayerObligation(
 
 interface SupplementalAdoptionFixture {
   leagueId: number;
+  generationRunId: string;
+  keySuffix: string;
   teamId: number;
   bowlerId: number;
   firstOccurrenceId: string;
   secondOccurrenceId: string;
+  extraOccurrenceIds: string[];
   secondObligationId: string;
   legacyManualPaymentId: number;
   rotatingManualPaymentId: number;
   legacyAllocationIds: string[];
 }
 
-async function createSupplementalAdoptionFixture(key: string): Promise<SupplementalAdoptionFixture> {
+async function createSupplementalAdoptionFixture(key: string, additionalDates: readonly string[] = []): Promise<SupplementalAdoptionFixture> {
   const fixtureSuffix = key.replace(/[^a-z0-9_-]/gi, "").slice(0, 40);
   const [league] = await db.insert(leagues).values({
     name: `Owned Adoption ${fixtureSuffix}`,
@@ -226,9 +244,9 @@ async function createSupplementalAdoptionFixture(key: string): Promise<Supplemen
     sourceScheduleRevision: 1,
     normalizedInputSnapshot: { fixtureKind: "legacy_published_schedule" },
     rangeStartDate: "2038-02-01",
-    rangeEndDate: "2038-02-08",
-    candidateOccurrenceCount: 2,
-    generatedOccurrenceCount: 2,
+    rangeEndDate: additionalDates.at(-1) ?? "2038-02-08",
+    candidateOccurrenceCount: 2 + additionalDates.length,
+    generatedOccurrenceCount: 2 + additionalDates.length,
     skippedDateCount: 0,
     discrepancyCount: 0,
     state: "applied",
@@ -246,6 +264,8 @@ async function createSupplementalAdoptionFixture(key: string): Promise<Supplemen
   };
   const firstOccurrenceId = await createPublishedOccurrence(1, "2038-02-01", scope);
   const secondOccurrenceId = await createPublishedOccurrence(2, "2038-02-08", scope);
+  const extraOccurrenceIds = await Promise.all(additionalDates.map((date, index) =>
+    createPublishedOccurrence(index + 3, date, scope)));
   const mainScope: AdoptionObligationFixtureScope = { ...scope, bowlerId: bowler.id, teamId: team.id };
   const secondObligationId = await createPayerObligation(secondOccurrenceId, "2038-02-08", mainScope);
   const dueAt = "2038-02-01T19:00:00.000Z";
@@ -387,14 +407,313 @@ async function createSupplementalAdoptionFixture(key: string): Promise<Supplemen
   });
   return {
     leagueId: supplementalLeagueId,
+    generationRunId: supplementalGenerationRunId,
+    keySuffix: fixtureSuffix,
     teamId: team.id,
     bowlerId: bowler.id,
     firstOccurrenceId,
     secondOccurrenceId,
+    extraOccurrenceIds,
     secondObligationId,
     legacyManualPaymentId: legacyPaymentId,
     rotatingManualPaymentId: rotatingPaymentId,
     legacyAllocationIds,
+  };
+}
+
+async function createStandingCorrectedProviderFixture(key: string): Promise<{
+  leagueId: number;
+  paymentId: number;
+  payerBowlerId: number;
+  partnerBowlerId: number;
+}> {
+  const fixture = await createSupplementalAdoptionFixture(`standing-${key}`, [
+    "2038-02-15",
+    "2038-02-22",
+    "2038-03-01",
+  ]);
+  const fixtureScope: AdoptionScheduleFixtureScope = {
+    organizationId,
+    leagueId: fixture.leagueId,
+    locationId,
+    generationRunId: fixture.generationRunId,
+    actorUserId,
+    keySuffix: fixture.keySuffix,
+  };
+  const [firstAdditionalOccurrenceId, secondAdditionalOccurrenceId, thirdAdditionalOccurrenceId] = fixture.extraOccurrenceIds;
+  if (!secondAdditionalOccurrenceId || !thirdAdditionalOccurrenceId) {
+    throw new Error("standing adoption fixture schedule is incomplete");
+  }
+  if (!firstAdditionalOccurrenceId) throw new Error("standing adoption first extra occurrence is missing");
+  const [payer] = await db.insert(bowlers).values({
+    organizationId,
+    name: `Standing Adoption Payer ${fixture.keySuffix}`,
+  }).returning({ id: bowlers.id });
+  if (!payer) throw new Error("standing adoption payer is missing");
+  const payerSourceObligationId = await createPayerObligation(fixture.firstOccurrenceId, "2038-02-01", {
+    ...fixtureScope,
+    bowlerId: payer.id,
+    teamId: fixture.teamId,
+  });
+  const partnerSourceObligationId = await createPayerObligation(firstAdditionalOccurrenceId, "2038-02-15", {
+    ...fixtureScope,
+    bowlerId: fixture.bowlerId,
+    teamId: fixture.teamId,
+  });
+  const payerReplacementObligationIds = [
+    await createPayerObligation(secondAdditionalOccurrenceId, "2038-02-22", {
+      ...fixtureScope,
+      bowlerId: payer.id,
+      teamId: fixture.teamId,
+    }),
+    await createPayerObligation(thirdAdditionalOccurrenceId, "2038-03-01", {
+      ...fixtureScope,
+      bowlerId: payer.id,
+      teamId: fixture.teamId,
+    }),
+  ];
+  for (const [index, occurrenceId] of [secondAdditionalOccurrenceId, thirdAdditionalOccurrenceId].entries()) {
+    await db.insert(weeklyPaymentWeekConfirmations).values({
+      organizationId,
+      leagueId: fixture.leagueId,
+      occurrenceId,
+      revision: 1,
+      stateFingerprint: `lvmanagepayments:v1:${(index + 7).toString(16).repeat(64)}`,
+      requestFingerprint: `lvmanagepaymentsrequest:v1:${(index + 8).toString(16).repeat(64)}`,
+      responsibilitySetFingerprint: `lvmanagepaymentsrows:v1:${(index + 9).toString(16).repeat(64)}`,
+      idempotencyKey: `owned-adoption-standing-confirm-${fixture.keySuffix}-${index}`,
+      requestSnapshot: { fixture: true },
+      recordedByUserId: actorUserId,
+    });
+  }
+
+  const operationId = randomUUID();
+  const providerPaymentId = `owned-adoption-standing-${operationId}`;
+  const snapshotFingerprint = `lvstandingcutoff:v1:${createHash("sha256").update(key).digest("hex")}`;
+  const now = "2038-03-02T20:00:00.000Z";
+  const cutoffAt = "2038-02-01T19:00:00.000Z";
+  const rowObligations = [
+    { allocationIndex: 0, obligationId: payerSourceObligationId, payerBowlerId: payer.id, amountMinor: 500 },
+    { allocationIndex: 1, obligationId: fixture.secondObligationId, payerBowlerId: fixture.bowlerId, amountMinor: 500 },
+    { allocationIndex: 2, obligationId: partnerSourceObligationId, payerBowlerId: fixture.bowlerId, amountMinor: 500 },
+  ];
+  const [consent] = await db.insert(autopayConsents).values({
+    organizationId,
+    leagueId: fixture.leagueId,
+    payerBowlerId: payer.id,
+    consentVersion: 1,
+    state: "active",
+    paymentMode: "weekly",
+    consentFingerprint: `lvstandingconsent:v1:${"a".repeat(64)}`,
+    providerName: "square",
+    providerLocationId: "square-proof-location",
+    encryptedSourceId: "fixture-encrypted-source",
+    encryptedCustomerId: "fixture-encrypted-customer",
+    createdByUserId: actorUserId,
+    activatedAt: "2038-01-15T12:00:00.000Z",
+    createdAt: "2038-01-15T12:00:00.000Z",
+  }).returning({ id: autopayConsents.id });
+  if (!consent) throw new Error("standing adoption consent is missing");
+  const [link] = await db.insert(bowlerPaymentLinks).values({
+    bowlerAId: Math.min(payer.id, fixture.bowlerId),
+    bowlerBId: Math.max(payer.id, fixture.bowlerId),
+    organizationId,
+    status: "accepted",
+    createdByUserId: actorUserId,
+    invitedAt: "2038-01-14T12:00:00.000Z",
+    respondedAt: "2038-01-15T12:00:00.000Z",
+  }).returning();
+  if (!link) throw new Error("standing adoption partner link is missing");
+  const linkFingerprint = `lvpartnerlink:v1:${createHash("sha256").update(canonicalizePaymentOperationInput({
+    id: link.id,
+    bowlerAId: link.bowlerAId,
+    bowlerBId: link.bowlerBId,
+    organizationId: link.organizationId,
+    status: link.status,
+    respondedAt: link.respondedAt,
+  })).digest("hex")}`;
+  await db.insert(autopayConsentPartners).values({
+    organizationId,
+    leagueId: fixture.leagueId,
+    consentId: consent.id,
+    consentVersion: 1,
+    partnerBowlerId: fixture.bowlerId,
+    paymentLinkId: link.id,
+    linkFingerprint,
+  });
+
+  const [payment] = await db.transaction(async (tx) => {
+    await tx.insert(paymentOperations).values({
+      id: operationId,
+      organizationId,
+      leagueId: fixture.leagueId,
+      authorizingUserId: actorUserId,
+      operationType: "standing_autopay_charge",
+      targetKey: `owned-adoption-standing-${operationId}`,
+      triggerOccurrenceId: fixture.firstOccurrenceId,
+      amountMinor: 1_500,
+      currency: "USD",
+      requestFingerprint: `lvpayreq:v1:${"b".repeat(64)}`,
+      providerIdempotencyKey: `owned-adoption-${operationId}`.slice(0, 45),
+      providerName: "square",
+      providerObjectId: providerPaymentId,
+      status: "succeeded",
+      attemptCount: 1,
+      nextAttemptAt: null,
+      dispatchClaimedAt: now,
+      startedAt: now,
+      completedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await tx.insert(paymentOperationRosterSnapshots).values({
+      operationId,
+      organizationId,
+      leagueId: fixture.leagueId,
+      snapshotVersion: 2,
+      snapshotKind: "standing_autopay",
+      collectionMode: "weekly",
+      cutoffAt,
+      amountMinor: 1_500,
+      currency: "USD",
+      obligations: rowObligations,
+      locationId: null,
+      providerLocationId: null,
+      payerBowlerId: null,
+      requestKind: null,
+      encryptedSourceId: null,
+      encryptedCustomerId: null,
+      encryptedBuyerEmail: null,
+      storeCard: false,
+      sourceKind: null,
+      quoteFingerprint: null,
+      lineItems: [],
+      partnerEvidence: null,
+      snapshotFingerprint,
+      createdAt: now,
+    });
+    await tx.insert(paymentOperationStandingAutopayBindings).values({
+      operationId,
+      organizationId,
+      leagueId: fixture.leagueId,
+      consentId: consent.id,
+      consentVersion: 1,
+      providerName: "square",
+      providerLocationId: "square-proof-location",
+      triggerOccurrenceId: fixture.firstOccurrenceId,
+      pairedOccurrenceId: null,
+      collectionGroupId: null,
+      collectionGroupRevision: null,
+      collectionGroupFingerprint: null,
+      triggerMemberId: null,
+      pairedMemberId: null,
+      cutoffAt,
+      collectionMode: "weekly",
+      evidenceFingerprint: snapshotFingerprint,
+      createdAt: now,
+    });
+    await tx.insert(paymentOperationStandingAutopayParticipants).values(rowObligations.map((row) => ({
+      operationId,
+      organizationId,
+      leagueId: fixture.leagueId,
+      allocationIndex: row.allocationIndex,
+      obligationId: row.obligationId,
+      bowlerId: row.payerBowlerId,
+      role: row.allocationIndex === 0 ? "payer" as const : "partner" as const,
+      paymentLinkId: row.allocationIndex === 0 ? null : link.id,
+      linkFingerprint: row.allocationIndex === 0 ? null : linkFingerprint,
+      consentVersion: 1,
+      createdAt: now,
+    })));
+    await tx.insert(paymentOperationRosterSnapshotItems).values(rowObligations.map((row) => ({
+      operationId,
+      organizationId,
+      leagueId: fixture.leagueId,
+      obligationId: row.obligationId,
+      allocationIndex: row.allocationIndex,
+      amountMinor: row.amountMinor,
+      state: "finalized" as const,
+      createdAt: now,
+    })));
+    const [createdPayment] = await tx.insert(payments).values({
+      organizationId,
+      leagueId: fixture.leagueId,
+      bowlerId: payer.id,
+      amount: 1_500,
+      currency: "USD",
+      status: "paid",
+      type: "square",
+      providerPaymentId,
+      paymentOperationId: operationId,
+      paidByUserId: actorUserId,
+      createdAt: now,
+    }).returning({ id: payments.id });
+    if (!createdPayment) throw new Error("standing adoption provider payment is missing");
+    await tx.insert(paymentAllocations).values(rowObligations.map((row) => ({
+      organizationId,
+      leagueId: fixture.leagueId,
+      paymentId: createdPayment.id,
+      obligationId: row.obligationId,
+      amountMinor: row.amountMinor,
+      currency: "USD" as const,
+      state: "active" as const,
+      allocationKind: "ordinary" as const,
+      recordedByUserId: actorUserId,
+    })));
+    return [createdPayment] as const;
+  });
+  if (!payment) throw new Error("standing adoption payment was not returned");
+  const sourceAllocations = await db.select().from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, organizationId),
+    eq(paymentAllocations.leagueId, fixture.leagueId),
+    eq(paymentAllocations.paymentId, payment.id),
+  )).orderBy(paymentAllocations.id);
+  const targetAllocations = [
+    { obligationId: payerSourceObligationId, amountMinor: 500 },
+    { obligationId: payerReplacementObligationIds[0] ?? "", amountMinor: 500 },
+    { obligationId: payerReplacementObligationIds[1] ?? "", amountMinor: 500 },
+  ];
+  if (sourceAllocations.length !== 3 || targetAllocations.some((row) => !row.obligationId)) {
+    throw new Error("standing adoption correction evidence is incomplete");
+  }
+  const requestWithoutFingerprint = {
+    paymentId: payment.id,
+    expectedOldAllocationFingerprint: historicalSquareAllocationFingerprint(sourceAllocations.map((row) => ({
+      allocationId: row.id,
+      obligationId: row.obligationId,
+      amountMinor: row.amountMinor,
+      state: row.state,
+      allocationKind: row.allocationKind,
+    }))),
+    expectedTargetAllocationFingerprint: historicalSquareAllocationFingerprint(targetAllocations.map((row) => ({
+      obligationId: row.obligationId,
+      amountMinor: row.amountMinor,
+      state: "active" as const,
+      allocationKind: "ordinary" as const,
+    }))),
+    targetAllocations,
+    reason: "owned adoption corrected authorization fixture",
+    idempotencyKey: `owned-adoption-correction-${fixture.keySuffix}`,
+  };
+  await correctHistoricalSquarePaymentAllocation({
+    organizationId,
+    leagueId: fixture.leagueId,
+    actorUserId,
+    allowlist: { organizationId, leagueId: fixture.leagueId, paymentAmountsMinor: { [payment.id]: 1_500 } },
+    request: {
+      ...requestWithoutFingerprint,
+      requestFingerprint: historicalSquareAllocationCorrectionFingerprint({
+        organizationId,
+        leagueId: fixture.leagueId,
+        request: requestWithoutFingerprint,
+      }),
+    },
+  });
+  return {
+    leagueId: fixture.leagueId,
+    paymentId: payment.id,
+    payerBowlerId: payer.id,
+    partnerBowlerId: fixture.bowlerId,
   };
 }
 
@@ -776,6 +1095,111 @@ describe("owned payment ledger adoption preflight", () => {
       eq(weeklyPaymentFundings.leagueId, fixture.leagueId),
       eq(weeklyPaymentFundings.adoptionId, applied.adoptionId),
     ))).toHaveLength(1);
+  });
+
+  it("applies multi-owner standing capture portions and corrected proofs independent of generated UUID order", async () => {
+    const fixture = await createStandingCorrectedProviderFixture(randomUUID().slice(0, 8));
+    const plan = await preflightOwnedPaymentLedgerAdoption({ organizationId, leagueId: fixture.leagueId }, db);
+    expect(plan.ready).toBe(true);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.counts).toMatchObject({
+      paidPayments: 3,
+      genericFundingPortions: 3,
+      retainedAllocations: 4,
+      genericAllocationReleases: 1,
+      grandfatheredAllocations: 2,
+    });
+    expect(await db.select().from(paymentAllocationCorrections).where(and(
+      eq(paymentAllocationCorrections.organizationId, organizationId),
+      eq(paymentAllocationCorrections.leagueId, fixture.leagueId),
+      eq(paymentAllocationCorrections.paymentId, fixture.paymentId),
+    ))).toHaveLength(2);
+
+    const token = randomUUID().replaceAll("-", "");
+    const fundingFunction = `owned_adopt_funding_order_${token}`;
+    const proofFunction = `owned_adopt_proof_order_${token}`;
+    const fundingTrigger = `owned_adopt_funding_order_${token}`;
+    const proofTrigger = `owned_adopt_proof_order_${token}`;
+    const fundingHighId = `f0000000-0000-4000-8000-${token.slice(0, 12)}`;
+    const fundingLowId = `10000000-0000-4000-8000-${token.slice(12, 24)}`;
+    const proofHighId = `e0000000-0000-4000-8000-${token.slice(0, 12)}`;
+    const proofLowId = `20000000-0000-4000-8000-${token.slice(12, 24)}`;
+    await db.execute(sql.raw(`CREATE FUNCTION public.${fundingFunction}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.league_id = ${fixture.leagueId} AND NEW.payment_id = ${fixture.paymentId} THEN
+          IF NEW.portion_index = 0 THEN NEW.id := '${fundingHighId}'::uuid;
+          ELSIF NEW.portion_index = 1 THEN NEW.id := '${fundingLowId}'::uuid;
+          END IF;
+        END IF;
+        RETURN NEW;
+      END;
+    $$`));
+    await db.execute(sql.raw(`CREATE FUNCTION public.${proofFunction}() RETURNS trigger LANGUAGE plpgsql AS $$
+      DECLARE existing_count integer;
+      BEGIN
+        IF NEW.league_id = ${fixture.leagueId} THEN
+          SELECT count(*) INTO existing_count FROM public.weekly_payment_ledger_adoption_allocation_proofs
+            WHERE adoption_id = NEW.adoption_id;
+          IF existing_count = 0 THEN NEW.id := '${proofHighId}'::uuid;
+          ELSE NEW.id := '${proofLowId}'::uuid;
+          END IF;
+        END IF;
+        RETURN NEW;
+      END;
+    $$`));
+    try {
+      await db.execute(sql.raw(`CREATE TRIGGER ${fundingTrigger} BEFORE INSERT ON public.weekly_payment_fundings
+        FOR EACH ROW EXECUTE FUNCTION public.${fundingFunction}()`));
+      await db.execute(sql.raw(`CREATE TRIGGER ${proofTrigger} BEFORE INSERT ON public.weekly_payment_ledger_adoption_allocation_proofs
+        FOR EACH ROW EXECUTE FUNCTION public.${proofFunction}()`));
+      const applied = await applyOwnedPaymentLedgerAdoption({
+        organizationId,
+        leagueId: fixture.leagueId,
+        actorUserId,
+        expectedSourceFingerprint: plan.sourceFingerprint,
+        expectedResultFingerprint: plan.resultFingerprint,
+      }, db);
+      expect(applied.replayed).toBe(false);
+
+      const providerFundings = await db.select().from(weeklyPaymentFundings).where(and(
+        eq(weeklyPaymentFundings.organizationId, organizationId),
+        eq(weeklyPaymentFundings.leagueId, fixture.leagueId),
+        eq(weeklyPaymentFundings.paymentId, fixture.paymentId),
+      )).orderBy(weeklyPaymentFundings.id);
+      expect(providerFundings.map((row) => ({ portionIndex: row.portionIndex, creditedBowlerId: row.creditedBowlerId })))
+        .toEqual([
+          { portionIndex: 1, creditedBowlerId: fixture.partnerBowlerId },
+          { portionIndex: 0, creditedBowlerId: fixture.payerBowlerId },
+        ]);
+      const providerAuthorizationItems = await db.select().from(weeklyPaymentFundingAuthorizationItems).where(and(
+        eq(weeklyPaymentFundingAuthorizationItems.organizationId, organizationId),
+        eq(weeklyPaymentFundingAuthorizationItems.leagueId, fixture.leagueId),
+        eq(weeklyPaymentFundingAuthorizationItems.paymentId, fixture.paymentId),
+      )).orderBy(weeklyPaymentFundingAuthorizationItems.fundingId, weeklyPaymentFundingAuthorizationItems.sourceAllocationIndex);
+      expect(providerAuthorizationItems.map((row) => [row.creditedBowlerId, row.sourceAllocationIndex])).toEqual([
+        [fixture.partnerBowlerId, 1],
+        [fixture.partnerBowlerId, 2],
+        [fixture.payerBowlerId, 0],
+      ]);
+      const proofs = await db.select().from(weeklyPaymentLedgerAdoptionAllocationProofs).where(and(
+        eq(weeklyPaymentLedgerAdoptionAllocationProofs.organizationId, organizationId),
+        eq(weeklyPaymentLedgerAdoptionAllocationProofs.leagueId, fixture.leagueId),
+        eq(weeklyPaymentLedgerAdoptionAllocationProofs.adoptionId, applied.adoptionId),
+      )).orderBy(weeklyPaymentLedgerAdoptionAllocationProofs.id);
+      expect(proofs).toHaveLength(2);
+      expect(proofs.map((row) => row.id)).toEqual([proofLowId, proofHighId]);
+      const proofSteps = await db.select().from(weeklyPaymentLedgerAdoptionAllocationProofSteps).where(and(
+        eq(weeklyPaymentLedgerAdoptionAllocationProofSteps.organizationId, organizationId),
+        eq(weeklyPaymentLedgerAdoptionAllocationProofSteps.leagueId, fixture.leagueId),
+        inArray(weeklyPaymentLedgerAdoptionAllocationProofSteps.proofId, proofs.map((row) => row.id)),
+      ));
+      expect(proofSteps).toHaveLength(2);
+    } finally {
+      await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${fundingTrigger} ON public.weekly_payment_fundings`));
+      await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${proofTrigger} ON public.weekly_payment_ledger_adoption_allocation_proofs`));
+      await db.execute(sql.raw(`DROP FUNCTION IF EXISTS public.${fundingFunction}()`));
+      await db.execute(sql.raw(`DROP FUNCTION IF EXISTS public.${proofFunction}()`));
+    }
   });
 
   it("refuses a stale reviewed source fingerprint before writing any adoption rows", async () => {
