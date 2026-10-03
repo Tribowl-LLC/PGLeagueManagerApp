@@ -20,6 +20,7 @@ import {
   paymentOperationStandingAutopayBindings,
   paymentOperationStandingAutopayParticipants,
   paymentObligationOwnerRevisions,
+  paymentDisputes,
   paymentVoids,
   payments,
   rotatingOccurrenceAssignments,
@@ -32,6 +33,7 @@ import {
   weeklyPaymentFundings,
   weeklyPaymentLedgerAdoptions,
   weeklyPaymentWeekConfirmations,
+  webhookEvents,
 } from "@shared/schema";
 import type { PaymentOperationTransaction } from "../../server/storage/payment-operations";
 import {
@@ -41,6 +43,7 @@ import {
   recordOwnedFundingInTransaction,
   releaseOwnedFundingApplicationInTransaction,
   readLegacyFundingAuthorizationInTransaction,
+  readGenericFundingAvailabilityInTransaction,
   readOwnedGenericFundingSourcesByPaymentInTransaction,
 } from "../../server/services/owned-payment-ledger";
 import { prepareRotatingCreditPaymentOperation } from "../../server/services/rotating-credit-operation-preparation";
@@ -316,7 +319,7 @@ async function createV4Tender(amountMinor: number) {
       recordedByUserId: actorUserId,
       now,
     });
-    return { paymentId: payment.id, fundingId: funding.id, operationId: operation.id };
+    return { paymentId: payment.id, fundingId: funding.id, operationId: operation.id, providerPaymentId };
   });
 }
 
@@ -1479,6 +1482,90 @@ describe("owned payment SQL guards on PostgreSQL", () => {
       fundingPortions: [{ totalRefundedMinor: 500, refundedCreditMinor: 200, appliedMinor: 300 }],
     });
     expect(creditedRecipientReport.totals).toMatchObject({ grossConfirmedPaidMinor: 500, refundedMinor: 500, activeAllocatedMinor: 0 });
+  });
+
+  it("keeps a disputed V4 tender in gross history while its credit stays held", async () => {
+    const source = await createV4Tender(500);
+    const now = new Date().toISOString();
+    const providerDisputeId = `owned-ledger-dispute-${randomUUID()}`;
+    const [event] = await db.insert(webhookEvents).values({
+      provider: "square",
+      providerEventId: `owned-ledger-dispute-event-${randomUUID()}`,
+      eventType: "payment.dispute.created",
+      providerCreatedAt: now,
+      organizationId,
+      locationId,
+      providerApplicationId: "owned-ledger-test-app",
+      providerMerchantId: "owned-ledger-test-merchant",
+      providerLocationId: "owned-ledger-test-provider-location",
+      providerObjectType: "dispute",
+      providerObjectId: providerDisputeId,
+      providerPaymentId: source.providerPaymentId,
+      providerObjectVersion: 1,
+      providerObjectUpdatedAt: now,
+      providerApiVersion: "2026-05-20",
+      payloadHash: "a".repeat(64),
+      encryptedPayload: "owned-ledger-test-encrypted-webhook",
+      status: "processed",
+      processedAt: now,
+      completedAt: now,
+    }).returning({ id: webhookEvents.id });
+    await db.insert(paymentDisputes).values({
+      organizationId,
+      locationId,
+      paymentOperationId: source.operationId,
+      provider: "square",
+      providerApplicationId: "owned-ledger-test-app",
+      providerMerchantId: "owned-ledger-test-merchant",
+      providerLocationId: "owned-ledger-test-provider-location",
+      providerDisputeId,
+      providerPaymentId: source.providerPaymentId,
+      amountMinor: 500,
+      currency: "USD",
+      reason: "NO_KNOWLEDGE",
+      state: "PROCESSING",
+      responseDueAt: null,
+      cardBrand: null,
+      brandDisputeId: null,
+      providerCreatedAt: now,
+      providerReportedAt: null,
+      providerUpdatedAt: now,
+      providerVersion: 1,
+      firstWebhookEventId: event.id,
+      lastWebhookEventId: event.id,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const [lot] = await db.transaction((tx) => readGenericFundingAvailabilityInTransaction(tx, {
+      organizationId,
+      leagueId,
+      paymentIds: [source.paymentId],
+    }));
+    expect(lot).toMatchObject({
+      fundingId: source.fundingId,
+      paymentId: source.paymentId,
+      amountMinor: 500,
+      receivedMinor: 500,
+      availableMinor: 0,
+      receiptEvidenceInvalid: false,
+      reviewRequired: true,
+    });
+
+    const report = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: source.paymentId });
+    const archivedRow = report.rows.find((row) => row.paymentId === source.paymentId);
+    expect(archivedRow).toMatchObject({
+      amountMinor: 500,
+      status: "review_required",
+      source: "held_credit",
+      allocatedMinor: 0,
+      unallocatedMinor: 0,
+      reviewRequired: true,
+      dispute: { present: true, amountMinor: 500, state: "PROCESSING", reviewRequired: true },
+      fundingPortions: [{ amountMinor: 500, availableMinor: 0, heldCreditMinor: 500, reviewRequired: true }],
+    });
+    expect(report.transactions.find((transaction) => transaction.paymentIds.includes(source.paymentId))?.amountMinor).toBe(500);
+    expect(report.totals).toMatchObject({ reviewRequiredMinor: 500, disputedReviewRequiredMinor: 500, activeAllocatedMinor: 0 });
   });
 
   it("holds an owned tender when a terminal refund still has an ambiguous provider ID", async () => {
