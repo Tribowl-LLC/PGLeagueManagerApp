@@ -1,242 +1,211 @@
-# Manage Payments implementation plan
+# Manage Payments: accepted design and release plan
 
-## Surface and contract
+## Scope and existing surfaces
 
-The production worksheet is a new LeagueVault admin surface at
-`/manage-payments`, served by the main left navigation as **Manage Payments**.
-The existing `/payments` route and other payment flows remain available. The
-versioned API uses the same path for GET and POST:
-`/api/financials/leagues/:leagueId/manage-payments/1`. Access to this new
-surface is limited to organization and system administrators; existing
-payment-manager access on other payment surfaces is unchanged.
+The organization-admin worksheet is the existing **Manage Payments** entry at
+`/manage-payments`, implemented by `AdminWeeklyPaymentsPage` and
+`AdminWeeklyPaymentsWorksheet`. Its versioned API is
+`/api/financials/leagues/:leagueId/manage-payments/1`. The older
+`/leagues/:leagueId/payments/manage` payment-manager surface, `/payments`, bowler
+login, saved-card management, receipts, and AutoPay setup remain available.
+This work adds no payment-history tab, add-bowler action, or rotating-credit
+classification.
 
-The shared Zod contract lives in `shared/manage-payments-contract.ts`. Money is
-integer cents. The client sends row identity (`teamId`, `bowlerId`),
-responsibility, and a canonical fee component (`full`, `lineage`, or `prize`);
-the server owns organization scope, roster membership, fee values, account
-balances, and receipts. An empty `changedRows` list can confirm an unconfirmed
-week using the server snapshot. Saves echo both the GET revision and opaque
-state fingerprint. The fingerprint protects editable responsibility, fee,
-and receipt identities; new read-only card receipts or a recomputed account
-balance do not by themselves invalidate a staff edit. The service recomputes
-FIFO coverage and current balances while holding the league financial lock.
+The worksheet edits one selected canonical occurrence and displays current
+roster responsibility, fee component, payment history, balance, and derived
+final-two-week coverage. Money is integer cents. The server owns team and
+roster scope, published fee values, receipt identity, balances, and source
+authorization. Each save is tied to the loaded revision and state fingerprint;
+the server recomputes from current evidence under the league financial lock.
 
-A checked worksheet responsibility may select a zero-priced canonical fee
-component; it remains responsibility evidence and creates no payment
-obligation. The saved manual receipt array retains each exact cash/check
-payment identity, type, amount, and revision; it does not merge legacy receipts. A zero edit logically clears that one receipt
-through canonical void/replacement history. New manual receipts use cash and
-the selected canonical occurrence's league-local date. Edits preserve the
-original business date. Successful card receipts remain immutable and are
-associated with their actual collection week. One tender can have authorized
-recipient portions for multiple accounts; card evidence must display each
-recipient's portion without treating the payer as every portion's owner.
-Refunds remain a separate flow.
+## Responsibility, debt, and credit
 
-## Canonical ledger extension
+The worksheet records which rostered bowler is responsible for the selected
+week and whether that responsibility covers the full, lineage, or prize fee.
+An explicitly responsible zero-priced component remains evidence, but creates
+no obligation. It preserves the current fee policy rather than altering the
+underlying settled, refunded, or waived component history.
 
-This change extends the existing responsibilities, obligations, payments, and
-allocations. It does not introduce a second payment ledger. A
-`weekly_payment_fundings` row represents one recipient-owned portion of a real
-tender. A combined checkout may create several portions against one canonical
-payment; `payments.bowlerId` remains the tender's payer. V3 partner portions
-retain the operation snapshot fingerprint and every contributing allocation
-index, and portions must sum to the single tender amount. A payment already
-represented by `rotating_credit_fundings` gets no generic funding row.
+Reconciliation retains an exact existing component when responsibility and
+amount are unchanged. A correction retires only the changed or removed open
+obligation, releases its active applications back to their source owners, and
+creates the newly selected responsibility as needed. Existing settlement,
+refund, and waiver evidence remains append-only; saving a week does not
+blanket-retire its complete legacy responsibility set.
 
-`payment_allocation_funding_applications` ties each new canonical allocation
-to exactly one generic portion or one existing rotating lot, and records its
-credited owner, amount, obligation, and target evidence. Ordinary bowler
-responsibilities record the exact obligation payer. New applications must keep
-the credited owner equal to that payer; a retained historical cross-owner
-allocation is admissible only when its immutable adoption proof matches the
-exact source portion, allocation/correction path, and obligation owner.
-Retained team-owned debt can be settled only through the confirmed
-`legacy_team_assignment` target with exact assignment evidence; its team owner
-and history stay intact. Existing rows in `rotating_credit_applications`
-remain authoritative and use their existing reversal path. A later guard must
-prevent an allocation from appearing in both the old rotating table and the
-new source-link table. New release evidence references the exact typed source
-application and returns value to that source's credited owner, including when
-the source obligation remains team-owned.
+Only confirmed weeks create collectible weekly debt. A worksheet save
+explicitly confirms a selected week; the adoption cutoff retains eligible
+historical weeks as confirmed. Unconfirmed current and future weeks remain
+forecasts. New money applies FIFO only to the source owner's oldest confirmed
+debt; an unresolved review hold at the oldest debt stops later applications.
+Surplus remains credit owned by its original credited bowler. It does not pay a
+future week before staff confirms that week's responsibility.
 
-Available value is each recipient portion or rotating lot less its effective
-applications, completed refunds, pending refund holds, and dispute/review
-holds. All ordinary-payment and rotating-credit readers, writers, and refund
-paths must share this calculation before adoption can run. Every funding,
-application, release, refund, and reservation transition must be guarded
-against overuse. Existing interactive and autopay snapshot contracts remain
-unchanged. New V4 snapshots prove provider recipient portions without
-obligation reservations; adopted legacy provider funding preserves exact
-snapshot allocation indexes in its authorization evidence rows.
+Each real tender remains one immutable parent payment. Its immutable funding
+portions identify the credited bowler or bowlers and their exact shares;
+`payments.bowlerId` remains the initiating payer. Actual allocations are
+separate evidence of debt payment. Existing rotating-credit funding lots stay
+in their existing ledger and are never copied into generic account funding.
+On a responsibility correction, released value returns to the funding
+portion's original owner and can then apply FIFO to that owner's oldest
+confirmed debt. A retained team-owned obligation may be paid using its exact
+`legacy_team_assignment` target when the assignment's actual bowler is that
+source owner. A differing source owner and effective debtor requires exact
+immutable authorization and correction proof; it must not transfer ownership
+by inference.
 
-The shared transaction-only service surface lives in
-`server/services/owned-payment-ledger.ts`. It exports:
+The account balance is one league-wide budget per bowler: available generic
+credit and existing rotating lots are considered together against confirmed
+debt. The accepted shared projection is the source of truth for due and balance
+views, the worksheet, team-envelope calculations, and final coverage; adapters
+must not derive a separate balance by summing due rows or count a credit twice.
+Final-two-week coverage uses that budget against both materialized obligations
+and canonical forecast targets. Waived debt remains waived evidence;
+unresolved refund, dispute, or financial-review holds prevent the system from
+claiming coverage.
+The existing final-two-week collection requirement and early-final collection
+targets remain. The final-two-week responsibility editor is deferred; coverage
+is derived, not manually marked paid.
 
-- `readOwnedLedgerAdoptionInTransaction(tx, { organizationId, leagueId })` to
-  read the unique per-league marker and fail closed on duplicate evidence.
-- `isOccurrenceConfirmedInOwnedLedger(adoption, occurrenceLocalDate, explicit)`
-  to accept explicit confirmation or a date at/before the adoption cutoff. The
-  cutoff is before the current billable occurrence, so current and future
-  weeks stay forecasts unless staff explicitly confirms them.
-- `readConfirmedOwnedObligationsInTransaction(tx, { organizationId, leagueId,
-  bowlerIds? })` to return exact effective debtor/assignment, actual paid,
-  waived, outstanding, and review-hold amounts for confirmed obligations.
-- `readOwnedAccountBalancesInTransaction(tx, { organizationId, leagueId,
-  bowlerIds? })` to bulk-read the union of generic recipient portions and
-  existing rotating lots and return available credit, confirmed debt, and
-  signed net balance.
-- `recordOwnedFundingInTransaction(tx, input)` to record one immutable portion
-  of an already-persisted real manual/provider tender. It rejects a tender
-  already represented by a rotating funding row and validates the exact V4
-  recipient portion or legacy operation allocation-index evidence. Matching
-  finalizer retries return the same immutable funding row.
-- `applyOwnedFundingFifoInTransaction(tx, { organizationId, leagueId,
-  bowlerId, actorUserId, now? })` to apply that credited bowler's generic and
-  rotating lots together against their oldest confirmed obligations. A review
-  hold at the oldest collectible obligation stops later applications; future
-  forecasts never receive an allocation.
-- `releaseOwnedFundingApplicationInTransaction(tx, { organizationId,
-  leagueId, applicationId, actorUserId, reason, idempotencyKey, now? })` to
-  append evidence releasing one exact application in full back to its original
-  credited owner. A correction then re-runs FIFO against the updated confirmed
-  debt. Release retries must match the original application, reason, and actor.
+## Receipts, collection dates, and refunds
 
-The follow-on ledger implementation adds typed FIFO application/release
-writers and guards. Financial mutations call these helpers only after taking
-the existing league schedule lock. Adopted account-funding refunds remain
-full-tender only: their V3 immutable refund snapshot must bind every recipient
-portion and each portion's unused credit together with current allocation
-evidence before provider I/O. No refund is apportioned across partners.
+The worksheet preserves each exact cash or check receipt. A new manual receipt
+defaults to the selected occurrence's league-local collection date. Editing an
+amount voids the old tender and records a replacement revision in the same
+receipt lineage while preserving that business date. A blank or zero amount
+clears only that receipt by voiding its tender and appending a null-payment
+clear revision; it does not delete receipt history. The latest immutable
+manual receipt revision supplies the business collection date for archive and
+month filtering. The parent payment's `createdAt` remains the actual audit
+timestamp.
 
-`occurrence_payment_responsibilities` gains a `worksheet` branch. Worksheet
-rows are payer/week identities associated with a current team, not invented
-slot positions or `main_pays_full` policy rows. Only worksheet rows may have
-null slot identity and policy fields; legacy responsibility shapes remain
-strict. Current worksheet responsibility is unique per organization, league,
-canonical occurrence, and payer. Obligations remain attached to the same
-canonical responsibility and must match its payer, occurrence, amount,
-currency, and fee component.
+Provider card receipts remain immutable and retain their actual collection
+period, standing-autopay trigger mapping, and provider evidence. A receipt's
+collection period is distinct from the week whose debt its money later pays;
+allocation does not move income into that debt week. Existing V4 interactive
+account funding and V5 standing-autopay funding record exact credited portions.
+Existing card consent, saved-card, cutoff, AutoPay, and early/final collection
+behavior remains in place. A successful collection without confirmed debt is
+owned credit until a week is confirmed; no late catch-up rule is added.
 
-The existing `bowler_leagues` schema has a non-unique active lookup index, not
-a database uniqueness rule for one active team per bowler/league. The regular
-membership POST rejects duplicates, but the team-move PATCH and season-copy
-paths do not provide a database-level guarantee. The GET/save adapter must
-detect duplicate active memberships and refuse ambiguous billing until roster
-ownership is resolved; it must not show two chargeable rows or infer which team
-owns the canonical payer/week responsibility.
+A whole-parent card refund remains a separate action and returns to the
+original card. Its immutable V3 evidence covers every owned portion and its
+allocation/refund state. Unused value is removed from the credited owner's
+source; spent value affects the corresponding debt only through the existing
+still-owed or waived disposition. Those dispositions apply only to spent
+debt. A pure-unused refund has no debt disposition choice. The archive reports
+one parent tender in league gross and reports proven refunds separately; it
+does not manufacture allocations for unused credit.
 
-Weekly confirmation records and responsibility/receipt revisions are
-append-only evidence. An absent confirmation denotes a forecast rather than
-collectible weekly debt. Later service work must keep season forecasts while
-ensuring collection readers use confirmed weeks. The per-league adoption
-marker and cutoff prevent roster materialization from creating duplicate
-legacy debt after adoption. Funding ownership comes from the authorized
-recipient portion, not `payments.bowlerId` or the current obligation owner.
-Existing allocations that cross credited-owner and obligation-owner
-identities may be grandfathered only by exact adoption proof linking the
-recipient portion, active and original allocations, each correction edge, the
-target obligation, owner kind, and amount. A past team obligation without a
-valid confirmed assignment, missing recipient authorization, unknown refund
-ownership, or unattributed dispute remains a preflight exception requiring
-explicit mapping; adoption must not guess or move money.
+## Existing history and privacy
 
-## Adoption and integration sequence
+The canonical payment archive, F5 financial report, existing receipt details,
+and receipt-opening authorization continue to serve payment history. The
+owned-source projection adds valid unallocated and partially used funding
+without inventing payment allocations. Administrators retain exact tender,
+funding-portion, and application evidence. The initiating payer retains the
+existing whole-receipt permission. Another credited recipient sees only their
+own portion, including when it has no debt allocation; they do not receive
+other recipients' names, amounts, IDs, or provider identifiers. A historical
+allocation beneficiary keeps only the narrow visibility already authorized by
+that allocation, not ownership of remaining source credit.
 
-1. Keep ordinary historical tenders and rotating funding strict until a
-   separately reviewed, guarded adoption. Startup does not auto-convert
-   payments.
-2. Preflight each league against canonical occurrence dates, existing
-   responsibilities and allocations, roster/materializer state, provider
-   operations, refunds, and disputes. Any unresolved provider/refund
-   reservation defers adoption without mutation. An unassigned past team debt,
-   missing source authorization, or unknown ownership mapping also blocks that
-   league pending explicit resolution.
-3. For adopted tenders, derive one owned portion per authorized recipient and
-   capture its exact provider/manual provenance before exposing general owner
-   credit. Preserve existing historical coverage and rotating lots without
-   copying them into generic funding. Record exact proof for retained
-   cross-owner allocations and their correction paths. Upcoming canonical
-   weeks stay unconfirmed forecasts; eligible future allocations are released
-   to their source portion's credited owner only in the guarded adoption
-   operation. The current week stays unconfirmed unless existing confirmation
-   evidence is explicit.
-4. Preserve future obligations as forecasts. On first staff confirmation of a
-   week, atomically retire that week's legacy default responsibility set and
-   create worksheet responsibility and fee evidence so two collectible
-   obligations cannot exist for one payer/week.
-5. A week save creates or revises responsibility evidence, exact manual
-   receipt history, and confirmation evidence in one league-locked
-   transaction. New and released value applies FIFO to that credited owner's
-   oldest confirmed debt only. Surplus remains owned credit; it is not assigned
-   to a future week before staff confirms that responsibility.
+Redaction applies to nested receipt and allocation data, totals, and
+transaction groupings, not only top-level fields. Credited-recipient access
+does not grant hosted full-receipt access, mutation access, or saved-card
+access. No receipt link authorization or lazy-fetch policy changes.
 
-6. Preserve current standing-autopay consent and cutoff behavior and existing
-   weekly/final-collection targets. Existing owner credit can reduce a
-   collection. A successful automatic collection without confirmed weekly
-   responsibility remains recipient-owned credit until staff confirmation; no
-   late catch-up rule is introduced here.
-7. Keep the existing final-two-week collection requirement. After older debt
-   is covered, current unused credit may cover the paired unconfirmed fees and
-   completed final allocations count. The final-two-week responsibility editor
-   is deferred; the worksheet must not ship sample-only paid status.
+## Adoption boundaries
 
-An adoption cutoff can make historical obligations collectible before staff
-have explicitly saved a worksheet. The worksheet therefore tracks explicit
-confirmation separately from ledger debt eligibility: the first Save for any
-week without a worksheet confirmation records the complete displayed
-responsibility set, even when the adopted history already counts that week as
-confirmed. It retires the complete active legacy responsibility set before
-creating worksheet rows, so the same period cannot retain duplicate
-obligations. Later saves version only changed responsibility rows.
+Existing leagues stay in legacy mode until a separate, reviewed,
+league-scoped adoption passes a read-only preflight and commits atomically
+under the league lock. The preflight preserves authorized source portions,
+legacy allocations, corrections, refunds, disputes, and receipt history; an
+ambiguous or unattributed source is held for explicit resolution rather than
+guessed. Manual receipt adoption uses the latest relevant immutable receipt
+revision's business collection date while keeping the payment's `createdAt`
+as audit provenance. Legacy rotating lots remain their own sources. Adoption
+does not run during GET, startup, or merely because an older league is empty.
 
-Manual worksheet receipt edits preserve exact receipt identity, cash/check
-type, and business collection date. Increasing or decreasing a receipt voids
-the original tender with audit evidence and records a replacement for the new
-total in the same receipt lineage; clearing it appends a null-payment receipt
-revision. New worksheet receipts default to cash and the selected canonical
-week's local date. These operations release the prior typed funding
-applications and rerun FIFO for every affected account in the same locked
-transaction.
+Pristine ledger initialization is a distinct setup action: it belongs only to
+actual new-league or new-season creation, after the canonical schedule has
+been published. It must not run on reads or startup and must not classify an
+old empty league as new. The adoption initializer and CLI/operator runbook are
+tracked separately; this document intentionally does not invent their
+commands or options. No production adoption is asserted by this design note.
 
-Legacy receipt week mapping follows the approved collection-period rule and
-never uses the week of the debt allocation. Prefer an explicit standing-autopay
-trigger occurrence when immutable metadata provides it. Otherwise convert the
-actual receipt's business-local date into the league timezone and assign it to
-the canonical collection period beginning at the latest occurrence local date
-on or before that date and ending before the next occurrence local date.
-Preseason receipts group with the first occurrence and postseason receipts
-with the last. Same-date boundaries use canonical billing order and start
-time. Only a truly invalid or missing schedule is an adoption preflight hold.
-Keep each original payment timestamp unchanged. New worksheet entries store
-the explicitly selected collection occurrence.
+After adoption, rollback is not a code-only revert. A recovery plan must
+reconcile or restore from a verified backup while preserving intervening
+payments, refunds, waivers, allocation releases, receipt revisions, confirmed
+weeks, ownership proofs, and the adoption marker. Never remove adoption
+markers or discard post-adoption payment outcomes to make an older binary run.
 
-## Stage and release boundary
+## Frozen migration sequence and data impact
 
-The schema addition is backward-compatible with legacy rows and legacy-mode
-writers; the shared contract and schema draft do not implement ledger
-services, provider adapters, production adoption, or frontend behavior. The
-release sequence is: apply the reviewed schema migration; deploy dual-mode
-code while every league remains in legacy mode; then, only with the exact
-deployed SHA, run the separately reviewed and locked adoption for a league
-after its read-only preflight passes; finally verify worksheet balances,
-provider receipts, collection reports, and legacy paths before adopting more
-leagues. Startup and page reads never adopt data.
+Migrations `0052` through `0055` are the reviewed, frozen schema sequence for
+this release. The eleven new tables are:
 
-Adoption changes which data paths can create collectible debt, so rollback
-after adoption is not a code-only revert. Before adopting a league, retain the
-preflight evidence and a verified backup/reconciliation point; after adoption,
-rollback requires a reviewed reverse/reconciliation plan that preserves the
-adoption marker, recipient portions, exact historical allocation proofs,
-receipt lineage, and all confirmed obligations. The migration and this release
-draft are not approval to apply a migration or write production data.
-Production application remains behind the repository's protected migration
-workflow, review, exact-main certification, and release gates. Root performed
-an aggregate-only read-only production inspection: 548 payments (412 paid,
-136 voided), 10,244 obligations, 2,422 allocations, 53 V3 partner snapshots,
-zero rotating-credit fundings, 30 active team-owned obligations, and zero
-duplicate active bowler/league memberships. Of those obligations, three are
-before today's league-local date and all three have a latest non-null actual
-bowler assignment; the other 27 are future obligations. No payment/customer rows were retrieved and
-no production data was changed. These counts are discovery context only; the
-future exact-SHA adoption preflight must be rerun before any league adoption.
+| Migration | Tables and contract changes |
+| --- | --- |
+| `0052_weekly_admin_payments_ledger.sql` | Ten tables: `payment_allocation_funding_applications`, `weekly_payment_allocation_releases`, `weekly_payment_funding_authorization_items`, `weekly_payment_fundings`, `weekly_payment_ledger_adoption_allocation_proof_steps`, `weekly_payment_ledger_adoption_allocation_proofs`, `weekly_payment_ledger_adoptions`, `weekly_payment_week_confirmations`, `weekly_payment_worksheet_receipt_revisions`, and `weekly_payment_worksheet_receipts`. Adds the worksheet responsibility shape and fee-component field. |
+| `0053_owned_payment_refund_support.sql` | Adds `account_payment_operation_snapshots` for V4 interactive account-funding authorization, plus source-portion refund evidence and typed assignment FK support. |
+| `0054_weekly_standing_account_funding.sql` | Adds V5 standing-funding evidence and variant-specific checks. `source_kind`, `encrypted_source_id`, and `quote_fingerprint` may be null only in the V5 standing shape; V4 interactive snapshots continue to require their source and quote evidence. |
+| `0055_owned_account_refunds_v3.sql` | Extends refund snapshots and adjustment evidence for full-parent refunds of owned V4/V5 or adopted funding, including typed allocation release. |
+
+The four legacy responsibility fields `slot_id`, `slot_index`,
+`position_index`, and `policy` become nullable only so the new worksheet
+identity shape can omit slot/policy data. The new checks preserve the strict
+legacy shape and constrain the worksheet shape separately.
+
+The sequence replaces six checks that existed before 0052: the
+responsibility-kind check in
+0052; refund-snapshot version, fingerprint, and disposition checks in 0053;
+and refund allocation-snapshot plus refund-adjustment fingerprint checks in
+0055. It also adds or revises new checks and foreign keys for tenant-scoped
+funding, typed assignments, V4/V5 snapshot variants, immutable refund proofs,
+and applications/releases. The migrations add tables and evidence columns;
+they do not drop tables or columns and contain no row deletion or truncation.
+
+Because this sequence replaces production constraints, the explicit approval
+rule in [AGENTS.md — Database And Schema Safety](../AGENTS.md#database-and-schema-safety)
+applies. This design note is not that approval. Review the exact SQL and
+production gates before any production operation.
+
+## Required release sequence
+
+Follow the [production runbook](production-runbook.md#default-release-lifecycle)
+and [DATABASE production migration process](DATABASE.md#production-migration-process):
+
+1. Finish the integrated branch, review the exact final diff, pass required CI
+   and internal review, and open the single PR ready for review. After every
+   push, recapture the head and verify the PR remains ready for review. A ready
+   PR is not permission to merge. Obtain the user's explicit approval for the
+   production constraint changes before the production release proceeds.
+2. Before merge, verify the known production service's Auto-Deploy is Off and
+   record its prior setting. Keep it Off through certification, migration,
+   adoption, deployment, and verification, as required by the
+   [schema-release hold](production-runbook.md#schema-release-auto-deploy-hold).
+3. After merge, certify the exact `main` SHA and verify its CI/check
+   provenance. Stop if `main`, PR head, tree, or certified SHA do not match.
+4. From that exact certified commit, use the protected migration workflow:
+   verify target identity and pre-fingerprint, create a current restorable
+   backup, apply only the exact reviewed ordered `0052`–`0055` pending list,
+   then require the guarded post-migration no-op. Never run production SQL
+   directly from a local shell.
+5. Manually deploy the exact certified SHA in dual mode: legacy leagues remain
+   on their established paths while adopted leagues use the owned-credit
+   ledger. Confirm the deployed SHA before any adoption.
+6. For each league, run the separately documented read-only preflight, stop
+   on blockers, and perform the guarded atomic apply only after its evidence
+   passes. Use the adoption owner's reviewed CLI/runbook for exact commands;
+   do not infer command names or flags from this document.
+7. Verify health and matching SHA, authentication, tenant isolation, weekly
+   worksheet and balance behavior, receipt/history redaction, refunds, provider
+   receipts, and financial reports. Verify both legacy and adopted paths.
+8. Restore the prior enabled Auto-Deploy mode only when the running service
+   SHA and current `main` SHA still equal the certified SHA and all health and
+   workflow checks pass. Otherwise leave Auto-Deploy Off and record the hold.
+
+No schema migration, production adoption, or deployment is authorized by this
+document alone. Production migration and adoption remain behind their exact
+review, backup, approval, and verification gates.
