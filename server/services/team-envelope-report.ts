@@ -1,3 +1,4 @@
+import { and, eq, inArray } from "drizzle-orm";
 import { render } from "takumi-pdf";
 import type {
   FinancialReadAccountProjectionRow,
@@ -12,6 +13,8 @@ import type {
 } from "../../shared/league-occurrence-schedule.js";
 import { DEFAULT_TIMEZONE } from "../../shared/schema/constants.js";
 import type { League } from "../../shared/schema/leagues.js";
+import { bowlers } from "@shared/schema";
+import { db } from "../db.js";
 import { storage } from "../storage/index.js";
 import { loadLeagueOccurrenceSchedule } from "./league-occurrence-schedule.js";
 import { readCanonicalDuePastDueV3, readRosterPaymentResponsibility, readRosterPaymentResponsibilityV2 } from "./roster-payment-core.js";
@@ -76,6 +79,7 @@ interface TeamEnvelopeReportInput {
   schedule: LeagueOccurrenceScheduleReadContract;
   roster: RosterPaymentResponsibilityRead;
   financial: FinancialReportRead;
+  reportBowlerNames?: readonly { id: number; name: string }[];
 }
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
@@ -352,7 +356,10 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
     }),
   );
 
-  const bowlerNames = new Map(roster.substituteBowlerOptions.map((bowler) => [bowler.id, bowler.name]));
+  const bowlerNames = new Map([
+    ...roster.substituteBowlerOptions.map((bowler) => [bowler.id, bowler.name] as const),
+    ...(input.reportBowlerNames ?? []).map((bowler) => [bowler.id, bowler.name] as const),
+  ]);
   const reportTeamIds = new Set(roster.teams.map((team) => team.id));
   const mainBowlerIds = new Set(
     roster.teams.flatMap((team) => team.slots.flatMap((slot) => slot.occupant === "main" && slot.mainBowlerId !== null ? [slot.mainBowlerId] : [])),
@@ -571,7 +578,30 @@ export async function readTeamEnvelopeReport(input: { organizationId: number; le
     readRosterPaymentResponsibilityV2(input),
     readCanonicalDuePastDueV3(input),
   ]);
-  return buildTeamEnvelopeReport({ league, schedule, roster, financial });
+  let reportBowlerNames: Array<{ id: number; name: string }> = [];
+  if (hasOwnedAccountProjection(financial)) {
+    const rosterBowlerIds = new Set(roster.substituteBowlerOptions.map((bowler) => bowler.id));
+    const reportBowlerIds = new Set<number>();
+    for (const account of financial.accountProjection?.accounts ?? []) {
+      if (accountHasEnvelopeBalance(account)) reportBowlerIds.add(account.bowlerId);
+    }
+    for (const row of financial.rows) {
+      if (row.state === "voided" || (row.outstandingMinor <= 0 && row.allocatedMinor <= 0)) continue;
+      const bowlerId = effectiveDebtorBowlerId(row);
+      if (bowlerId !== null) reportBowlerIds.add(bowlerId);
+    }
+    const missingRosterBowlerIds = [...reportBowlerIds].filter((bowlerId) => !rosterBowlerIds.has(bowlerId));
+    if (missingRosterBowlerIds.length > 0) {
+      reportBowlerNames = await db
+        .select({ id: bowlers.id, name: bowlers.name })
+        .from(bowlers)
+        .where(and(
+          eq(bowlers.organizationId, input.organizationId),
+          inArray(bowlers.id, missingRosterBowlerIds),
+        ));
+    }
+  }
+  return buildTeamEnvelopeReport({ league, schedule, roster, financial, reportBowlerNames });
 }
 
 function escapeHtml(value: string): string {

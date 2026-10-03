@@ -1,16 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 import type { FinancialReadAccountProjectionRow, FinancialReadRowContract, FinancialReadRowContractV3 } from "../../shared/financial-contract";
 import type { LeagueOccurrenceScheduleOccurrence } from "../../shared/league-occurrence-schedule";
 
-vi.mock("../../server/storage/index.js", () => ({ storage: {} }));
+vi.mock("../../server/storage/index.js", () => ({ storage: { getLeague: vi.fn() } }));
 vi.mock("../../server/services/league-occurrence-schedule.js", () => ({ loadLeagueOccurrenceSchedule: vi.fn() }));
+vi.mock("../../server/db.js", () => ({ db: { select: vi.fn() } }));
 vi.mock("../../server/services/roster-payment-core.js", () => ({
   readCanonicalDuePastDue: vi.fn(),
+  readCanonicalDuePastDueV3: vi.fn(),
   readRosterPaymentResponsibility: vi.fn(),
+  readRosterPaymentResponsibilityV2: vi.fn(),
 }));
+
+import { db } from "../../server/db.js";
+import { loadLeagueOccurrenceSchedule } from "../../server/services/league-occurrence-schedule.js";
+import { readCanonicalDuePastDueV3, readRosterPaymentResponsibilityV2 } from "../../server/services/roster-payment-core.js";
+import { storage } from "../../server/storage/index.js";
 
 import {
   buildTeamEnvelopeReport,
+  readTeamEnvelopeReport,
   renderTeamEnvelopePdf,
   TeamEnvelopeReportError,
 } from "../../server/services/team-envelope-report";
@@ -533,6 +543,32 @@ function adoptedEnvelopeInput(): BuildInput {
 }
 
 describe("team envelope report", () => {
+  it("resolves a historical account holder name in one organization-scoped batch", async () => {
+    const input = adoptedEnvelopeInput();
+    input.roster.substituteBowlerOptions = input.roster.substituteBowlerOptions.filter((bowler) => bowler.id !== 103);
+    vi.mocked(storage.getLeague).mockResolvedValue(input.league as never);
+    vi.mocked(loadLeagueOccurrenceSchedule).mockResolvedValue(input.schedule);
+    vi.mocked(readRosterPaymentResponsibilityV2).mockResolvedValue(input.roster as never);
+    vi.mocked(readCanonicalDuePastDueV3).mockResolvedValue(input.financial as never);
+
+    const where = vi.fn().mockResolvedValue([{ id: 103, name: "Former Sam" }]);
+    const from = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.select).mockReturnValue({ from } as never);
+
+    const report = await readTeamEnvelopeReport({ organizationId: 11, leagueId: 7 });
+
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(from).toHaveBeenCalledTimes(1);
+    expect(where).toHaveBeenCalledTimes(1);
+    const scopedFilter = new PgDialect().sqlToQuery(where.mock.calls[0]?.[0]);
+    expect(scopedFilter.sql).toContain('"bowlers"."organization_id"');
+    expect(scopedFilter.params).toEqual([11, 103]);
+    expect(report.teams.find((team) => team.teamId === 10)?.rows).toContainEqual(expect.objectContaining({
+      bowlerId: 103,
+      bowlerName: "Former Sam",
+    }));
+  });
+
   it("projects owned credit for responsible substitutes without requiring a filled legacy lineup", () => {
     const report = buildTeamEnvelopeReport(adoptedEnvelopeInput());
     const team = report.teams.find((candidate) => candidate.teamId === 10);
