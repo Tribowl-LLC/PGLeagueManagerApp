@@ -27,11 +27,13 @@ no obligation. It preserves the current fee policy rather than altering the
 underlying settled, refunded, or waived component history.
 
 Reconciliation retains an exact existing component when responsibility and
-amount are unchanged. A correction retires only the changed or removed open
-obligation, releases its active applications back to their source owners, and
-creates the newly selected responsibility as needed. Existing settlement,
-refund, and waiver evidence remains append-only; saving a week does not
-blanket-retire its complete legacy responsibility set.
+amount are unchanged, including its settled, refunded, or waived history. A
+changed or removed responsibility/component is retired with its correction
+audit evidence; exact active source applications are released back to their
+original owners before FIFO is recalculated for the resulting responsibility.
+The writer fails closed when the allocation or refund evidence cannot be
+safely reconciled. Saving a week does not blanket-retire its complete legacy
+responsibility set.
 
 Only confirmed weeks create collectible weekly debt. A worksheet save
 explicitly confirms a selected week; the adoption cutoff retains eligible
@@ -65,7 +67,10 @@ unresolved refund, dispute, or financial-review holds prevent the system from
 claiming coverage.
 The existing final-two-week collection requirement and early-final collection
 targets remain. The final-two-week responsibility editor is deferred; coverage
-is derived, not manually marked paid.
+is derived, not manually marked paid. A final week is shown Paid only when
+positive actual payment and/or projected credit fully covers a positive
+required amount. Zero demand or waived-only evidence does not by itself count
+as Paid.
 
 ## Receipts, collection dates, and refunds
 
@@ -122,10 +127,14 @@ league-scoped adoption passes a read-only preflight and commits atomically
 under the league lock. The preflight preserves authorized source portions,
 legacy allocations, corrections, refunds, disputes, and receipt history; an
 ambiguous or unattributed source is held for explicit resolution rather than
-guessed. Manual receipt adoption uses the latest relevant immutable receipt
-revision's business collection date while keeping the payment's `createdAt`
-as audit provenance. Legacy rotating lots remain their own sources. Adoption
-does not run during GET, startup, or merely because an older league is empty.
+guessed. One-time mapping of a legacy manual tender uses `payments.createdAt`
+converted to the league-local collection date and its canonical collection
+period; pre-adoption payments do not have worksheet receipt heads or revisions
+to consult. After adoption, worksheet receipt revisions carry the business
+collection date, and the latest revision drives archive/month filters while
+`payments.createdAt` remains audit provenance. Legacy rotating lots remain
+their own sources. Adoption does not run during GET, startup, or merely
+because an older league is empty.
 
 Pristine ledger initialization is a distinct setup action: it belongs only to
 actual new-league or new-season creation, after the canonical schedule has
@@ -176,17 +185,26 @@ production gates before any production operation.
 Follow the [production runbook](production-runbook.md#default-release-lifecycle)
 and [DATABASE production migration process](DATABASE.md#production-migration-process):
 
-1. Finish the integrated branch, review the exact final diff, pass required CI
-   and internal review, and open the single PR ready for review. After every
-   push, recapture the head and verify the PR remains ready for review. A ready
-   PR is not permission to merge. Obtain the user's explicit approval for the
-   production constraint changes before the production release proceeds.
+1. Complete local architect and internal review of the final branch, then open
+   the single PR ready for review. After every push, recapture the head and
+   verify the PR remains ready. The PR may open before its CI completes. Count
+   the automatic independent GitHub review if one starts; otherwise, after
+   verifying none is queued or running, request exactly one; internal review
+   does not substitute for it. Before merge, disposition findings, reply to
+   and resolve addressed threads, and pass the required CI checks on the final
+   head without starting a second review loop. A ready PR is not permission to
+   merge. Obtain the user's explicit approval for the production constraint
+   changes before the production release proceeds.
 2. Before merge, verify the known production service's Auto-Deploy is Off and
    record its prior setting. Keep it Off through certification, migration,
    adoption, deployment, and verification, as required by the
    [schema-release hold](production-runbook.md#schema-release-auto-deploy-hold).
-3. After merge, certify the exact `main` SHA and verify its CI/check
-   provenance. Stop if `main`, PR head, tree, or certified SHA do not match.
+3. After merge, certify the exact current merged `main` SHA. Verify the
+   certification proves the merged PR, identical tree, PR check provenance,
+   and certified SHA. The PR head and merge commit may have different SHAs;
+   require their reviewed merge/tree/check provenance, not SHA equality. Stop
+   if current `main` differs from the certified SHA or that evidence is
+   missing.
 4. From that exact certified commit, use the protected migration workflow:
    verify target identity and pre-fingerprint, create a current restorable
    backup, apply only the exact reviewed ordered `0052`–`0055` pending list,
