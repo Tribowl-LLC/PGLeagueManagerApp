@@ -299,7 +299,6 @@ function NavLeafRow({
       aria-label={effectiveCollapsed ? item.label : undefined}
       aria-current={isActive ? "page" : undefined}
       title={effectiveCollapsed ? item.label : undefined}
-      data-manage-payments-nav-item={appearance === "weekly-payments" ? "" : undefined}
       data-manage-payments-active-nav={weeklyPaymentsActive ? "" : undefined}
       className={cn(
         "flex w-full items-center gap-3 rounded-md transition-all duration-200 group no-underline",
@@ -328,7 +327,10 @@ function NavLeafRow({
         )}
       />
       {!effectiveCollapsed && (
-        <span className={cn("font-medium", isSub ? "navigation-subitem" : "text-sm")}>
+        <span
+          data-manage-payments-nav-label={appearance === "weekly-payments" ? "" : undefined}
+          className={cn("font-medium", isSub ? "navigation-subitem" : "text-sm")}
+        >
           {item.label}
         </span>
       )}
@@ -445,7 +447,6 @@ function NavSubMenu({
         <button
           type="button"
           data-testid={`nav-submenu-trigger-${item.href}`}
-          data-manage-payments-nav-group={appearance === "weekly-payments" ? "" : undefined}
           aria-expanded={userOpen}
           className={cn(
             "flex w-full items-center gap-3 rounded-md transition-all duration-200 group px-3 py-2.5",
@@ -461,7 +462,12 @@ function NavSubMenu({
               childActive ? "text-brand-accent-400" : "text-navigation-400 group-hover:text-navigation-300"
             )}
           />
-          <span className="font-medium text-sm">{item.label}</span>
+          <span
+            data-manage-payments-nav-label={appearance === "weekly-payments" ? "" : undefined}
+            className="font-medium text-sm"
+          >
+            {item.label}
+          </span>
           {!userOpen && aggregatedBadge > 0 && (
             <NavBadge count={aggregatedBadge} isCollapsed={false} />
           )}
