@@ -254,7 +254,11 @@ function requiredOccurrenceStartTime(occurrence: LeagueOccurrenceScheduleOccurre
   if (occurrence.authoritativeLocalStartTime === null) {
     throw new ManagePaymentsWorksheetProjectionError("invalid_occurrence", "A billable week is missing its canonical local start time");
   }
-  return occurrence.authoritativeLocalStartTime;
+  const canonicalTime = occurrence.authoritativeLocalStartTime;
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(canonicalTime)) {
+    throw new ManagePaymentsWorksheetProjectionError("invalid_occurrence", "A billable week has an invalid canonical local start time");
+  }
+  return canonicalTime.slice(0, 5);
 }
 
 export function getManagePaymentsWeekOptions(
@@ -421,6 +425,7 @@ function confirmedResponsibilityRows(
   occurrenceId: string,
   responsibilities: readonly ManagePaymentsProjectionResponsibility[],
   input: ManagePaymentsProjectionInput,
+  includeUnpricedLegacyComponents: boolean,
 ): ProjectedResponsibility[] {
   const worksheetRows = responsibilities
     .filter((row) => row.kind === "worksheet")
@@ -506,12 +511,30 @@ function confirmedResponsibilityRows(
       }
     }
 
-    if (responsibility.kind === "split") {
+    if (responsibility.kind === "split" && includeUnpricedLegacyComponents) {
       const componentEvidence = new Set(obligations.map((row) => row.component));
       const zeroComponents = [
         { component: "lineage" as const, bowlerId: responsibility.lineagePayerBowlerId, amountMinor: responsibility.lineageAmountMinor },
         { component: "prize" as const, bowlerId: responsibility.prizePayerBowlerId, amountMinor: responsibility.prizeAmountMinor },
       ];
+      const [lineageZero, prizeZero] = zeroComponents;
+      if (lineageZero && prizeZero
+        && lineageZero.amountMinor === 0
+        && prizeZero.amountMinor === 0
+        && lineageZero.bowlerId !== null
+        && lineageZero.bowlerId === prizeZero.bowlerId
+        && !componentEvidence.has("lineage")
+        && !componentEvidence.has("prize")) {
+        projected.push({
+          teamId: responsibility.teamId,
+          bowlerId: lineageZero.bowlerId,
+          feeComponent: "full",
+          feeMinor: 0,
+          responsibilityId: responsibility.responsibilityId,
+          version: versionByResponsibility.get(responsibility.responsibilityId) ?? 0,
+        });
+        continue;
+      }
       for (const zero of zeroComponents) {
         if (zero.amountMinor !== 0 || zero.bowlerId === null || componentEvidence.has(zero.component)) continue;
         const alreadyCoalesced = responsibility.lineagePayerBowlerId === responsibility.prizePayerBowlerId
@@ -584,7 +607,7 @@ function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<numbe
     const candidateRows = input.responsibilitiesByOccurrence.get(occurrence.occurrenceId) ?? [];
     const candidateResponsibilities = candidateRows.filter((row) => row.kind !== "worksheet" || explicitRevision !== undefined);
     const savedRows = confirmed
-      ? confirmedResponsibilityRows(occurrence.occurrenceId, candidateResponsibilities, input)
+      ? confirmedResponsibilityRows(occurrence.occurrenceId, candidateResponsibilities, input, explicitRevision === undefined)
       : candidateResponsibilities.flatMap((row) => responsibilityRows(row, input.rotatingAssignmentsByResponsibility));
     const selected = confirmed
       ? savedRows
@@ -699,7 +722,7 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
   });
   const useSavedResponsibilities = isExplicitlyConfirmed || sourceResponsibilities.length > 0;
   const actualRows = weekConfirmed
-    ? confirmedResponsibilityRows(selectedOccurrence.occurrenceId, sourceResponsibilities, input)
+    ? confirmedResponsibilityRows(selectedOccurrence.occurrenceId, sourceResponsibilities, input, !isExplicitlyConfirmed)
     : sourceResponsibilities.flatMap((row) => responsibilityRows(row, input.rotatingAssignmentsByResponsibility));
   const defaults = !weekConfirmed
     ? defaultMainResponsibilities(input, selectedOccurrence.occurrenceId, sourceResponsibilities)

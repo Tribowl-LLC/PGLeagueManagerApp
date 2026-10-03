@@ -127,6 +127,20 @@ describe("Manage Payments worksheet projection", () => {
     )).toThrow();
   });
 
+  it("normalizes PostgreSQL canonical start times to the worksheet minute contract", () => {
+    const snapshot = buildManagePaymentsWorksheetSnapshot(projectionInput({
+      schedule: schedule([
+        occurrence("occ-1", "2026-09-14", 1, { authoritativeLocalStartTime: "18:30:00" }),
+        occurrence("occ-2", "2026-09-21", 2, { authoritativeLocalStartTime: "18:30:00" }),
+        occurrence("occ-3", "2026-09-28", 3, { authoritativeLocalStartTime: "18:30:00" }),
+        occurrence("occ-4", "2026-10-05", 4, { authoritativeLocalStartTime: "18:30:00" }),
+      ]),
+    }));
+
+    expect(snapshot.weekOptions.at(-1)?.localStartTime).toBe("18:30");
+    expect(snapshot.selectedOccurrence.localStartTime).toBe("18:30");
+  });
+
   it("uses league-local dates across the fall daylight-saving transition", () => {
     expect(localDateForInstant("2026-11-01T06:30:00.000Z", "America/Chicago")).toBe("2026-11-01");
   });
@@ -359,6 +373,97 @@ describe("Manage Payments worksheet projection", () => {
 
     expect(snapshot.teams[0]?.rows.find((row) => row.bowlerId === 501)).toMatchObject({ responsible: true, feeComponent: "lineage", feeMinor: 700 });
     expect(snapshot.teams[0]?.rows.find((row) => row.bowlerId === 502)).toMatchObject({ responsible: true, feeComponent: "prize", feeMinor: 0 });
+  });
+
+  it("coalesces a same-payer zero-price legacy split before explicit confirmation", () => {
+    const snapshot = buildManagePaymentsWorksheetSnapshot(projectionInput({
+      confirmedOccurrenceIds: new Set(["occ-4"]),
+      responsibilitiesByOccurrence: new Map([["occ-4", [{
+        responsibilityId: "both-zero-split",
+        teamId: 31,
+        slotIndex: 0,
+        kind: "split",
+        payerBowlerId: 501,
+        mainBowlerId: 501,
+        substituteBowlerId: null,
+        lineagePayerBowlerId: 501,
+        prizePayerBowlerId: 501,
+        worksheetFeeComponent: null,
+        amountMinor: 0,
+        lineageAmountMinor: 0,
+        prizeAmountMinor: 0,
+        version: 1,
+      }]]]),
+    }));
+
+    expect(snapshot.teams.flatMap((team) => team.rows).filter((row) => row.bowlerId === 501)).toMatchObject([
+      { responsible: true, feeComponent: "full", feeMinor: 0 },
+    ]);
+  });
+
+  it("does not re-project a zero legacy component beside its saved worksheet row", () => {
+    const snapshot = buildManagePaymentsWorksheetSnapshot(projectionInput({
+      members: [
+        { teamId: 31, bowlerId: 501, displayName: "Avery Lane", order: 0, rosterRole: "main" },
+        { teamId: 31, bowlerId: 502, displayName: "Blair Quinn", order: 1, rosterRole: "substitute" },
+      ],
+      displayNamesByBowler: new Map([[501, "Avery Lane"], [502, "Blair Quinn"]]),
+      confirmedOccurrenceIds: new Set(["occ-4"]),
+      explicitConfirmationRevisions: new Map([["occ-4", 1]]),
+      responsibilitiesByOccurrence: new Map([["occ-4", [
+        {
+          responsibilityId: "retained-positive-split",
+          teamId: 31,
+          slotIndex: 0,
+          kind: "split",
+          payerBowlerId: 501,
+          mainBowlerId: 501,
+          substituteBowlerId: 502,
+          lineagePayerBowlerId: 501,
+          prizePayerBowlerId: 502,
+          worksheetFeeComponent: null,
+          amountMinor: 700,
+          lineageAmountMinor: 0,
+          prizeAmountMinor: 700,
+          version: 1,
+        },
+        {
+          responsibilityId: "worksheet-zero-lineage",
+          teamId: 31,
+          slotIndex: null,
+          kind: "worksheet",
+          payerBowlerId: 501,
+          mainBowlerId: null,
+          substituteBowlerId: null,
+          lineagePayerBowlerId: null,
+          prizePayerBowlerId: null,
+          worksheetFeeComponent: "lineage",
+          amountMinor: 0,
+          lineageAmountMinor: null,
+          prizeAmountMinor: null,
+          version: 1,
+        },
+      ]]]),
+      finalObligations: [{
+        obligationId: "retained-prize-obligation",
+        responsibilityId: "retained-positive-split",
+        occurrenceId: "occ-4",
+        teamId: 31,
+        component: "prize",
+        payerBowlerId: 502,
+        debtorBowlerId: 502,
+        amountMinor: 700,
+        paidMinor: 0,
+        waivedMinor: 0,
+        outstandingMinor: 700,
+        reviewRequired: false,
+      }],
+    }));
+
+    const rows = snapshot.teams.flatMap((team) => team.rows);
+    expect(rows.filter((row) => row.responsible)).toHaveLength(2);
+    expect(rows.find((row) => row.bowlerId === 501)).toMatchObject({ responsible: true, feeComponent: "lineage", feeMinor: 0 });
+    expect(rows.find((row) => row.bowlerId === 502)).toMatchObject({ responsible: true, feeComponent: "prize", feeMinor: 700 });
   });
 
   it("projects confirmed legacy split payers from retained obligation components and amounts", () => {

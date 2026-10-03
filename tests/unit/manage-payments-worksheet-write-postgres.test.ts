@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   bowlerLeagues,
   bowlers,
@@ -18,7 +18,6 @@ import {
   teamPaymentSlots,
   users,
   weeklyPaymentAllocationReleases,
-  weeklyPaymentFundings,
   weeklyPaymentLedgerAdoptions,
   weeklyPaymentWeekConfirmations,
   weeklyPaymentWorksheetReceiptRevisions,
@@ -29,7 +28,6 @@ import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION } from "@shared/league-setup-i
 import { createLeagueWithCanonicalSetup } from "../../server/services/league-setup-integration.js";
 import { readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read.js";
 import { saveManagePaymentsWorksheet, ManagePaymentsWorksheetWriteError } from "../../server/services/manage-payments-worksheet-write.js";
-import { deleteOrganization } from "../../server/storage/organizations.js";
 import { getTestDb } from "../setup/test-db.js";
 
 const db = getTestDb();
@@ -170,18 +168,6 @@ beforeAll(async () => {
   }).returning({ id: paymentObligations.id });
   if (!obligation) throw new Error("worksheet legacy obligation fixture was not created");
   mainLegacyObligationId = obligation.id;
-});
-
-afterAll(async () => {
-  if (!organizationId) return;
-  await db.delete(weeklyPaymentAllocationReleases).where(eq(weeklyPaymentAllocationReleases.organizationId, organizationId));
-  await db.delete(weeklyPaymentWorksheetReceiptRevisions).where(eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId));
-  await db.delete(weeklyPaymentWorksheetReceipts).where(eq(weeklyPaymentWorksheetReceipts.organizationId, organizationId));
-  await db.delete(weeklyPaymentWeekConfirmations).where(eq(weeklyPaymentWeekConfirmations.organizationId, organizationId));
-  await db.delete(weeklyPaymentLedgerAdoptions).where(eq(weeklyPaymentLedgerAdoptions.organizationId, organizationId));
-  await db.delete(paymentAllocationFundingApplications).where(eq(paymentAllocationFundingApplications.organizationId, organizationId));
-  await db.delete(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.organizationId, organizationId));
-  await deleteOrganization(organizationId);
 });
 
 function saveInput(snapshot: ManagePaymentsSnapshot, changedRows: ManagePaymentsChangedRow[], idempotencyKey: string) {
@@ -430,58 +416,61 @@ describe("Manage Payments worksheet atomic writer", () => {
       eq(leagueOccurrences.leagueId, leagueId),
     )).orderBy(asc(leagueOccurrences.plannedOrdinal)).offset(1).limit(1);
     if (!occurrence?.authoritativeLocalDate) throw new Error("future canonical occurrence fixture was not created");
-    const [forecast] = await db.insert(occurrencePaymentResponsibilities).values({
-      organizationId,
-      leagueId,
-      occurrenceId: occurrence.id,
-      teamId,
-      slotId: unassignedSlotId,
-      slotIndex: 1,
-      positionIndex: 1,
-      version: 1,
-      state: "active",
-      responsibilityKind: "rotating",
-      mainBowlerId: null,
-      substituteBowlerId: null,
-      payerBowlerId: null,
-      lineagePayerBowlerId: null,
-      prizePayerBowlerId: null,
-      policy: "main_pays_full",
-      worksheetFeeComponent: null,
-      amountMinor: 2_500,
-      lineageAmountMinor: null,
-      prizeFundAmountMinor: null,
-      currency: "USD",
-      dueAt: occurrence.startAt,
-      pastDueAt: occurrence.startAt,
-      recordedByUserId: actorUserId,
-    }).returning({ id: occurrencePaymentResponsibilities.id });
-    if (!forecast) throw new Error("unassigned forecast responsibility was not created");
-    const [forecastObligation] = await db.insert(paymentObligations).values({
-      organizationId,
-      leagueId,
-      occurrenceId: occurrence.id,
-      responsibilityId: forecast.id,
-      component: "full",
-      payerBowlerId: null,
-      amountMinor: 2_500,
-      currency: "USD",
-      dueAt: occurrence.startAt,
-      pastDueAt: occurrence.startAt,
-      state: "open",
-      createdByUserId: actorUserId,
-    }).returning({ id: paymentObligations.id });
-    if (!forecastObligation) throw new Error("unassigned forecast obligation was not created");
-    await db.insert(paymentObligationOwnerRevisions).values({
-      organizationId,
-      leagueId,
-      obligationId: forecastObligation.id,
-      revisionNumber: 1,
-      ownerKind: "team",
-      ownerBowlerId: null,
-      ownerTeamId: teamId,
-      reason: "rotating_materialization",
-      recordedByUserId: actorUserId,
+    const { forecast, forecastObligation } = await db.transaction(async (tx) => {
+      const [createdForecast] = await tx.insert(occurrencePaymentResponsibilities).values({
+        organizationId,
+        leagueId,
+        occurrenceId: occurrence.id,
+        teamId,
+        slotId: unassignedSlotId,
+        slotIndex: 1,
+        positionIndex: 1,
+        version: 1,
+        state: "active",
+        responsibilityKind: "rotating",
+        mainBowlerId: null,
+        substituteBowlerId: null,
+        payerBowlerId: null,
+        lineagePayerBowlerId: null,
+        prizePayerBowlerId: null,
+        policy: "main_pays_full",
+        worksheetFeeComponent: null,
+        amountMinor: 2_500,
+        lineageAmountMinor: null,
+        prizeFundAmountMinor: null,
+        currency: "USD",
+        dueAt: occurrence.startAt,
+        pastDueAt: occurrence.startAt,
+        recordedByUserId: actorUserId,
+      }).returning({ id: occurrencePaymentResponsibilities.id });
+      if (!createdForecast) throw new Error("unassigned forecast responsibility was not created");
+      const [createdObligation] = await tx.insert(paymentObligations).values({
+        organizationId,
+        leagueId,
+        occurrenceId: occurrence.id,
+        responsibilityId: createdForecast.id,
+        component: "full",
+        payerBowlerId: null,
+        amountMinor: 2_500,
+        currency: "USD",
+        dueAt: occurrence.startAt,
+        pastDueAt: occurrence.startAt,
+        state: "open",
+        createdByUserId: actorUserId,
+      }).returning({ id: paymentObligations.id });
+      if (!createdObligation) throw new Error("unassigned forecast obligation was not created");
+      await tx.insert(paymentObligationOwnerRevisions).values({
+        organizationId,
+        leagueId,
+        obligationId: createdObligation.id,
+        revisionNumber: 1,
+        ownerKind: "team",
+        ownerBowlerId: null,
+        ownerTeamId: teamId,
+        reason: "rotating_materialization",
+        recordedByUserId: actorUserId,
+      });
+      return { forecast: createdForecast, forecastObligation: createdObligation };
     });
 
     const snapshot = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: occurrence.id });
