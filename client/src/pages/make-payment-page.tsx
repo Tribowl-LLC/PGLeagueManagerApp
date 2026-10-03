@@ -399,6 +399,9 @@ export default function MakePaymentPage() {
     return legacy;
   }, [refetchLegacyParticipants, refetchAccountParticipants]);
   const paymentMode: InteractivePaymentMode = accountParticipants?.paymentMode ?? legacyParticipantsQuery.data?.data?.paymentMode ?? league?.paymentMode ?? "weekly";
+  const hasAccountForecastChoices = !accountParticipants || (paymentMode === "upfront"
+    ? participants.some((participant) => participant.remainingMinor > 0)
+    : participants.some((participant) => participant.weeklyOptions.some((option) => option.amountMinor > 0)));
   const explicitAmount = parseExplicitPaymentAmountMinor(explicitAmountText);
   const explicitAmountMinor = explicitAmountText.trim() && explicitAmount.valid ? explicitAmount.amountMinor : null;
   const explicitAmountError = !explicitAmount.valid
@@ -519,7 +522,7 @@ export default function MakePaymentPage() {
     : buildInteractivePaymentRecipients(participants, effectiveSelectedRecipients, recipientWeeks, paymentMode, combinedAutopayMode ? selfParticipant?.bowlerId : undefined),
   [accountParticipants, combinedAutopayMode, effectiveSelectedRecipients, participants, paymentMode, recipientWeeks, selectionStale, selfParticipant?.bowlerId]);
   const accountRecipientSelections = useMemo<AccountPaymentRecipientSelectionV4[]>(() => {
-    if (selectionStale || !accountParticipants || explicitAmountError) return [];
+    if (selectionStale || !accountParticipants || (!combinedAutopayMode && explicitAmountError)) return [];
     return buildAccountPaymentSelectionsV4({
         response: accountParticipants,
         selected: effectiveSelectedRecipients,
@@ -1712,8 +1715,9 @@ export default function MakePaymentPage() {
           dueNowOnly={combinedAutopayMode}
           rotatingMode={isRotatingPoolMember}
           accountFunding={isAccountMode}
+          hasAccountForecastChoices={isAccountMode ? hasAccountForecastChoices : undefined}
           explicitAmountValue={isAccountMode ? explicitAmountText : undefined}
-          explicitAmountError={isAccountMode ? explicitAmountError : null}
+          explicitAmountError={isAccountMode && !combinedAutopayMode ? explicitAmountError : null}
           onExplicitAmountChange={isAccountMode ? setExplicitAmountText : undefined}
           onCancelDueNow={combinedAutopayConsentRecovery ? undefined : cancelCombinedAutopay}
           combinedConsentRecovery={combinedConsentRecoveryProps}

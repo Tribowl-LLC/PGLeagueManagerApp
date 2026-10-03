@@ -23,6 +23,9 @@ const mocks = vi.hoisted(() => {
   let remainingMinor = 8_750;
   let dueNowMinor = 1_000;
   let pastDueMinor = 0;
+  let accountCurrentCollectionMinor = 0;
+  let accountSelectedWeekMinor = 0;
+  let accountFullSeasonMinor = 0;
   let participantRefreshUsesCurrentData = false;
   let detailsLeagueReady = true;
   let leagueActive = true;
@@ -127,7 +130,11 @@ const mocks = vi.hoisted(() => {
       role: "self",
       confirmedDebtMinor: 0,
       availableCreditMinor: 5_000,
-      forecastTargets: { currentCollectionMinor: 0, selectedWeeks: [], fullSeasonMinor: 0 },
+      forecastTargets: {
+        currentCollectionMinor: accountCurrentCollectionMinor,
+        selectedWeeks: accountSelectedWeekMinor > 0 ? [{ weeks: 1, amountMinor: accountSelectedWeekMinor }] : [],
+        fullSeasonMinor: accountFullSeasonMinor,
+      },
     }],
   } : {
     contractVersion: "interactive-payment-participants/4",
@@ -298,6 +305,11 @@ const mocks = vi.hoisted(() => {
     setIncludePartner: (value: boolean) => { includePartner = value; },
     setRemainingBalance: (value: number) => { remainingMinor = value; },
     setDueNowMinor: (value: number) => { dueNowMinor = value; },
+    setAccountForecastTargets: (values: { currentCollectionMinor: number; selectedWeekMinor: number; fullSeasonMinor: number }) => {
+      accountCurrentCollectionMinor = values.currentCollectionMinor;
+      accountSelectedWeekMinor = values.selectedWeekMinor;
+      accountFullSeasonMinor = values.fullSeasonMinor;
+    },
     setPastDueMinor: (value: number) => { pastDueMinor = value; },
     setParticipantRefreshUsesCurrentData: (value: boolean) => { participantRefreshUsesCurrentData = value; },
     setDetailsLeagueReady: (value: boolean) => { detailsLeagueReady = value; },
@@ -424,6 +436,7 @@ afterEach(() => {
   mocks.setRemainingBalance(8_750);
   mocks.setDueNowMinor(1_000);
   mocks.setPastDueMinor(0);
+  mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 0 });
   mocks.setParticipantRefreshUsesCurrentData(false);
   mocks.setDetailsLeagueReady(true);
   mocks.setLeagueActive(true);
@@ -580,12 +593,13 @@ describe("MakePaymentPage upfront payment mode", () => {
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
     let checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
       accountFunding: boolean;
+      hasAccountForecastChoices: boolean;
       explicitAmountValue: string;
       recipientRows: Array<{ bowlerId: number; remainingMinor: number; selected: boolean }>;
       onExplicitAmountChange: (value: string) => void;
       onSubmit: () => void;
     };
-    expect(checkout).toMatchObject({ accountFunding: true, explicitAmountValue: "" });
+    expect(checkout).toMatchObject({ accountFunding: true, hasAccountForecastChoices: false, explicitAmountValue: "" });
     expect(checkout.recipientRows).toEqual([expect.objectContaining({ bowlerId: 42, remainingMinor: 0, selected: true })]);
 
     act(() => checkout.onExplicitAmountChange("25.00"));
@@ -609,6 +623,49 @@ describe("MakePaymentPage upfront payment mode", () => {
       recipients: [{ bowlerId: 42, selection: { kind: "explicit_amount", amountMinor: 2_500 } }],
     });
     expect(mocks.paymentRequestWithRecovery).toHaveBeenCalledWith("account-v4-explicit-request", expect.any(Function), 17);
+  });
+
+  it("ignores a prior invalid account amount during combined autopay and restores it on cancel", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.setConfirmedAccountMode(true);
+    mocks.setAccountForecastTargets({ currentCollectionMinor: 6_000, selectedWeekMinor: 6_000, fullSeasonMinor: 6_000 });
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    let checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
+      dueNowOnly: boolean;
+      explicitAmountValue: string;
+      explicitAmountError: string | null;
+      onExplicitAmountChange: (value: string) => void;
+      onCancelDueNow?: () => void;
+    };
+    act(() => checkout.onExplicitAmountChange("-"));
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      dueNowOnly: false,
+      explicitAmountValue: "-",
+      explicitAmountError: "Enter an amount with up to two decimal places.",
+    }));
+
+    const standingProps = mocks.standingAutopayCard.mock.calls.at(-1)?.[0] as { onPayDueNow: () => void };
+    act(() => standingProps.onPayDueNow());
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      dueNowOnly: true,
+      explicitAmountValue: "-",
+      explicitAmountError: null,
+    }));
+    const dueNowQuery = mocks.query.mock.calls
+      .map(([options]) => options)
+      .find((options) => options.queryKey[2] === "interactive-payment-quote/4"
+        && (options.queryKey[5] as Array<{ selection?: { scope?: string } }> | undefined)?.[0]?.selection?.scope === "current_collection");
+    expect(dueNowQuery).toBeDefined();
+
+    checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof checkout;
+    act(() => checkout.onCancelDueNow?.());
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      dueNowOnly: false,
+      explicitAmountValue: "-",
+      explicitAmountError: "Enter an amount with up to two decimal places.",
+    }));
   });
 
   it("replaces standing autopay setup with a revoke path for a rotating member who has legacy consent", async () => {

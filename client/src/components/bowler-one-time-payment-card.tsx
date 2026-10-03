@@ -275,6 +275,8 @@ interface Props {
     isRetrying: boolean;
   } | null;
   accountFunding?: boolean;
+  /** Whether server-priced forecast presets are available for this account. */
+  hasAccountForecastChoices?: boolean;
   explicitAmountValue?: string;
   explicitAmountError?: string | null;
   onExplicitAmountChange?: (value: string) => void;
@@ -295,7 +297,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   onResetRecipientSelection, paymentRefreshState = "idle", paymentRefreshError = null,
   onRetryPaymentRefresh, onRetryQuote, dueNowOnly = false, onCancelDueNow,
   combinedConsentRecovery = null, rotatingMode = false,
-  accountFunding = false, explicitAmountValue, explicitAmountError = null, onExplicitAmountChange,
+  accountFunding = false, hasAccountForecastChoices = true, explicitAmountValue, explicitAmountError = null, onExplicitAmountChange,
 }) => {
   const cardCallbackRef = useRef<(el: HTMLDivElement | null) => void>(() => undefined);
   cardCallbackRef.current = (el) => { if (el && cardMode === "new" && cardEditorMode === "one-time") void initializeCard(el); };
@@ -303,7 +305,8 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   const hasWalletOptions = applePayAvailable || googlePayAvailable;
   const hasPaymentPartner = recipientRows.some((row) => row.role === "partner");
   const showRecipientChooser = hasPaymentPartner && !dueNowOnly;
-  const showSoloWeekSelection = !hasPaymentPartner && !dueNowOnly && !fullBalanceOnly && !rotatingMode;
+  const showSoloWeekSelection = !hasPaymentPartner && !dueNowOnly && !fullBalanceOnly && !rotatingMode
+    && !(accountFunding && !hasAccountForecastChoices);
   const compactFullBalanceRows = fullBalanceOnly && hasPaymentPartner;
   const showRecipientRows = hasPaymentPartner || dueNowOnly || showSoloWeekSelection;
   const hasSelectedRecipient = recipientRows.some((row) => row.selected);
@@ -393,7 +396,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     ? reviewCoverageForRecipient(reviewRecipients[0])
     : "Coverage details unavailable";
   const reviewDisabled = (cardMode === "new" && !isInitialized) || (cardMode === "saved" && !selectedSavedCardId)
-    || paymentInFlight || paymentAmountMinor <= 0 || !hasSelectedRecipient || quoteLoading || Boolean(quoteError) || Boolean(explicitAmountError)
+    || paymentInFlight || paymentAmountMinor <= 0 || !hasSelectedRecipient || quoteLoading || Boolean(quoteError) || (!dueNowOnly && Boolean(explicitAmountError))
     || selectionStale || (!bowlerHasEmail && !receiptEmail.trim());
 
   if (completedPayment) {
@@ -431,7 +434,9 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
         <CardTitle>{fullBalanceOnly ? "Full season payment" : "One-time payment"}</CardTitle>
         {showRecipientChooser && !fullBalanceOnly && <CardDescription>Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.</CardDescription>}
         {showRecipientChooser && fullBalanceOnly && <CardDescription>Pay for</CardDescription>}
-        {accountFunding && <CardDescription>Choose a payment option or enter an amount to add funds to your account.</CardDescription>}
+        {accountFunding && <CardDescription>{hasAccountForecastChoices
+          ? "Choose a payment option or enter an amount to add funds to your account."
+          : "Add funds to your account."}</CardDescription>}
         {!accountFunding && !showRecipientChooser && !fullBalanceOnly && <CardDescription>Payments cover your oldest unpaid weeks first.</CardDescription>}
         {dueNowOnly && <CardDescription>Pay the amount needed to get up to date and enable automatic payments in one checkout.</CardDescription>}
       </CardHeader>
@@ -486,7 +491,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
                 </div>
               ))}
         </fieldset>
-        {accountFunding && explicitAmountValue !== undefined && onExplicitAmountChange && <div className="space-y-2">
+        {accountFunding && !dueNowOnly && explicitAmountValue !== undefined && onExplicitAmountChange && <div className="space-y-2">
           <Label htmlFor="account-funding-amount" size="sm">Amount to add to your account</Label>
           <Input
             id="account-funding-amount"
@@ -502,7 +507,9 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
           />
           {explicitAmountError
             ? <p id="account-funding-amount-error" className="text-xs text-destructive" role="alert">{explicitAmountError}</p>
-            : <p id="account-funding-amount-help" className="text-xs text-muted-foreground">Leave blank to use the available payment options.</p>}
+            : <p id="account-funding-amount-help" className="text-xs text-muted-foreground">{hasAccountForecastChoices
+              ? "Leave blank to use the available payment options."
+              : "No forecast presets are available. Enter an amount to add funds."}</p>}
         </div>}
         {hasSelectedRecipient && !dueNowOnly && !compactFullBalanceRows && !accountFunding && <p className="familiar-payment-coverage" aria-live="polite">{coverageCopy}</p>}
         {recipientRows.length === 0 && <Alert><AlertDescription>No payment recipients are available for this league.</AlertDescription></Alert>}
