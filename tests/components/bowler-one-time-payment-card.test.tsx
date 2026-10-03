@@ -103,7 +103,7 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
 
     expect(screen.queryByText("Weeks to pay")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Amount to add to your account" })).toBeInTheDocument();
-    expect(screen.getByText("No forecast presets are available. Enter an amount to add funds.")).toBeInTheDocument();
+    expect(screen.getByText("Enter an amount to add funds.")).toBeInTheDocument();
   });
 
   it("hides and ignores a prior invalid amount during combined autopay checkout", () => {
@@ -114,6 +114,8 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
       onExplicitAmountChange: vi.fn(),
     });
 
+    expect(screen.getByText("Pay the amount needed to get up to date and enable automatic payments in one checkout.")).toBeInTheDocument();
+    expect(screen.queryByText("Choose a payment option or enter an amount to add funds to your account.")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Amount to add to your account" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review payment of $45" })).toBeEnabled();
   });

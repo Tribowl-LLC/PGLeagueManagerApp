@@ -638,6 +638,7 @@ describe("MakePaymentPage upfront payment mode", () => {
       explicitAmountError: string | null;
       onExplicitAmountChange: (value: string) => void;
       onCancelDueNow?: () => void;
+      onSubmit: () => void;
     };
     act(() => checkout.onExplicitAmountChange("-"));
     await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
@@ -658,6 +659,20 @@ describe("MakePaymentPage upfront payment mode", () => {
       .find((options) => options.queryKey[2] === "interactive-payment-quote/4"
         && (options.queryKey[5] as Array<{ selection?: { scope?: string } }> | undefined)?.[0]?.selection?.scope === "current_collection");
     expect(dueNowQuery).toBeDefined();
+
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "combined-with-invalid-input", outcome: "new" });
+    mocks.csrfFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: { code: "QUOTE_TEMPORARY", message: "Synthetic quote failure." } }),
+    });
+    checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof checkout;
+    await act(async () => { checkout.onSubmit(); });
+    await waitFor(() => expect(mocks.csrfFetch.mock.calls.some(([url]) => String(url).includes("interactive-payment-quote/4"))).toBe(true));
+    expect(mocks.toast).not.toHaveBeenCalledWith(expect.objectContaining({
+      title: "Payment unavailable",
+      description: "Enter an amount with up to two decimal places.",
+    }));
 
     checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof checkout;
     act(() => checkout.onCancelDueNow?.());

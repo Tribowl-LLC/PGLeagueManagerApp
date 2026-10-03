@@ -432,12 +432,12 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     <Card data-testid="one-time-payment-card" data-full-balance={fullBalanceOnly ? "true" : undefined} data-rotating-mode={rotatingMode ? "true" : undefined} className="familiar-one-time-card familiar-partner-one-time-card">
       <CardHeader>
         <CardTitle>{fullBalanceOnly ? "Full season payment" : "One-time payment"}</CardTitle>
-        {showRecipientChooser && !fullBalanceOnly && <CardDescription>Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.</CardDescription>}
-        {showRecipientChooser && fullBalanceOnly && <CardDescription>Pay for</CardDescription>}
-        {accountFunding && <CardDescription>{hasAccountForecastChoices
+        {!dueNowOnly && showRecipientChooser && !fullBalanceOnly && !accountFunding && <CardDescription>Choose who to pay and how many weeks to cover. Each recipient is paid oldest-first.</CardDescription>}
+        {!dueNowOnly && showRecipientChooser && fullBalanceOnly && !accountFunding && <CardDescription>Pay for</CardDescription>}
+        {!dueNowOnly && accountFunding && <CardDescription>{hasAccountForecastChoices
           ? "Choose a payment option or enter an amount to add funds to your account."
           : "Add funds to your account."}</CardDescription>}
-        {!accountFunding && !showRecipientChooser && !fullBalanceOnly && <CardDescription>Payments cover your oldest unpaid weeks first.</CardDescription>}
+        {!dueNowOnly && !accountFunding && !showRecipientChooser && !fullBalanceOnly && <CardDescription>Payments cover your oldest unpaid weeks first.</CardDescription>}
         {dueNowOnly && <CardDescription>Pay the amount needed to get up to date and enable automatic payments in one checkout.</CardDescription>}
       </CardHeader>
       <CardContent spacing="normal">
@@ -509,7 +509,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
             ? <p id="account-funding-amount-error" className="text-xs text-destructive" role="alert">{explicitAmountError}</p>
             : <p id="account-funding-amount-help" className="text-xs text-muted-foreground">{hasAccountForecastChoices
               ? "Leave blank to use the available payment options."
-              : "No forecast presets are available. Enter an amount to add funds."}</p>}
+              : "Enter an amount to add funds."}</p>}
         </div>}
         {hasSelectedRecipient && !dueNowOnly && !compactFullBalanceRows && !accountFunding && <p className="familiar-payment-coverage" aria-live="polite">{coverageCopy}</p>}
         {recipientRows.length === 0 && <Alert><AlertDescription>No payment recipients are available for this league.</AlertDescription></Alert>}

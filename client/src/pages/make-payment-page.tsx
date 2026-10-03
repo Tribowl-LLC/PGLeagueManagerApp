@@ -1339,7 +1339,7 @@ export default function MakePaymentPage() {
   useEffect(() => () => cleanupWallet(), [cleanupWallet]);
 
   const submitOneTimePayment = async () => {
-    if (explicitAmountError) { toast({ title: "Payment unavailable", description: explicitAmountError, variant: "destructive" }); return; }
+    if (!combinedAutopayMode && explicitAmountError) { toast({ title: "Payment unavailable", description: explicitAmountError, variant: "destructive" }); return; }
     if (!bowlerId || !leagueId || !league || recipientSelections.length === 0 || quoteError || selectionStale || paymentRefreshState !== "idle" || isRecoveryBlocked) { toast({ title: "Payment unavailable", description: "Select at least one payable recipient and wait for an exact payment quote.", variant: "destructive" }); return; }
     if (isWalletProcessing || wallet.isProcessing) return;
     const paymentGeneration = pageGenerationRef.current;
