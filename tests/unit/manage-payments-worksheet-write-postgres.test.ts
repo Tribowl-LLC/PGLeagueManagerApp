@@ -20,7 +20,6 @@ import {
   teamPaymentSlots,
   users,
   weeklyPaymentAllocationReleases,
-  weeklyPaymentLedgerAdoptions,
   weeklyPaymentWeekConfirmations,
   weeklyPaymentWorksheetReceiptRevisions,
   weeklyPaymentWorksheetReceipts,
@@ -142,14 +141,6 @@ beforeEach(async () => {
   )).orderBy(asc(leagueOccurrences.plannedOrdinal)).limit(1);
   if (!occurrence?.authoritativeLocalDate) throw new Error("worksheet canonical occurrence fixture was not created");
   selectedOccurrenceId = occurrence.id;
-  await db.insert(weeklyPaymentLedgerAdoptions).values({
-    organizationId,
-    leagueId,
-    adoptedThroughLocalDate: occurrence.authoritativeLocalDate,
-    preflightFingerprint: `lvweeklyadoptpre:v1:${"a".repeat(64)}`,
-    resultFingerprint: `lvweeklyadopt:v1:${"b".repeat(64)}`,
-    recordedByUserId: actorUserId,
-  });
   const startAt = occurrence.startAt;
   const [legacy] = await db.insert(occurrencePaymentResponsibilities).values({
     organizationId,
@@ -369,6 +360,9 @@ describe("Manage Payments worksheet atomic writer", () => {
       .from(leagueOccurrences)
       .where(and(eq(leagueOccurrences.organizationId, organizationId), eq(leagueOccurrences.leagueId, leagueId)))
       .orderBy(asc(leagueOccurrences.plannedOrdinal));
+    const currentWeek = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    expect(currentWeek).toMatchObject({ weekConfirmed: false, needsConfirmation: true });
+    await saveManagePaymentsWorksheet(saveInput(currentWeek, [], `final-current-week-confirm-${suffix}`));
     const finalOccurrences = occurrences.slice(-2);
     expect(finalOccurrences).toHaveLength(2);
     const [mainSlot] = await db.select({ id: teamPaymentSlots.id }).from(teamPaymentSlots).where(and(
@@ -685,9 +679,9 @@ describe("Manage Payments worksheet atomic writer", () => {
     await expect(deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: deleteRequest })).rejects.toMatchObject({ code: "IDEMPOTENCY_REPLAY" });
   });
 
-  it("confirms adopted legacy rows, versions payer responsibility, replaces and clears exact receipts atomically", async () => {
+  it("confirms legacy rows, versions payer responsibility, replaces and clears exact receipts atomically", async () => {
     const initial = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
-    expect(initial.weekConfirmed).toBe(true);
+    expect(initial.weekConfirmed).toBe(false);
     expect(initial.needsConfirmation).toBe(true);
     const before = await db.select().from(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, mainLegacyResponsibilityId));
     expect(before[0]?.state).toBe("active");
