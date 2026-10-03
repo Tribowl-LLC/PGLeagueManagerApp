@@ -1,0 +1,6 @@
+# Test idempotency tokens in rotating credit funding fixtures.
+cc3ded255c7adc7b659d2a46b0813ee028f59a28:tests/unit/manage-payments-worksheet-write-postgres.test.ts:generic-api-key:263
+034bd3cdc006862592e0089e3841d4db44f1bb6d:tests/unit/manage-payments-worksheet-write-postgres.test.ts:generic-api-key:268
+
+# Test idempotency token in the standing funding input fixture.
+2e23d5c55f2d3b970e9ebacd472273f8ad01d4c4:tests/unit/account-standing-funding-v5.test.ts:generic-api-key:90
