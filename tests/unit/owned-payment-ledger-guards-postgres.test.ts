@@ -75,6 +75,7 @@ let responsibilityId: string;
 let obligationId: string;
 let adoptionId: string;
 let legacyStandingConsentVersion = 0;
+let isolatedWorksheetOccurrenceOrdinal = 1;
 
 beforeAll(async () => {
   const [organization] = await db.insert(organizations).values({
@@ -324,16 +325,78 @@ async function createV4Tender(amountMinor: number) {
   });
 }
 
-async function createWorksheetDebt(input: { amountMinor: number; name: string; bowlerId?: number }) {
+async function createIsolatedWorksheetOccurrence(name: string) {
+  const ordinal = ++isolatedWorksheetOccurrenceOrdinal;
+  const commandId = randomUUID();
+  const localDate = new Date(Date.UTC(2038, 1, ordinal)).toISOString().slice(0, 10);
+  const instant = `${localDate}T19:00:00.000Z`;
+  const nextWeek = new Date(Date.parse(instant) + 7 * 24 * 60 * 60 * 1_000).toISOString();
+  await db.insert(leagueScheduleCommands).values({
+    id: commandId,
+    organizationId,
+    leagueId,
+    actorUserId,
+    commandType: "publish",
+    idempotencyKey: `owned-ledger-publish-debt-${suffix}-${ordinal}`,
+    requestFingerprint: `owned-ledger-publish-debt-fingerprint-${suffix}-${ordinal}`,
+  });
+  const [occurrence] = await db.insert(leagueOccurrences).values({
+    organizationId,
+    leagueId,
+    locationId,
+    generationKey: `owned-ledger-debt-occurrence-${suffix}-${ordinal}-${name}`,
+    kind: "regular",
+    status: "scheduled",
+    lifecycle: "published",
+    authoritativeLocalDate: localDate,
+    authoritativeLocalStartTime: "19:00:00",
+    timezone: "UTC",
+    startAt: instant,
+    selectedUtcOffsetMinutes: 0,
+    foldResolution: "unambiguous",
+    resolverVersion: "owned-ledger-guard-test",
+    plannedOrdinal: ordinal,
+    competitionNumber: ordinal,
+    competitive: true,
+    countsInStandings: true,
+    publishedAt: instant,
+    publishedByUserId: actorUserId,
+    publicationCommandId: commandId,
+  }).returning({ id: leagueOccurrences.id });
+  const evidenceHex = ordinal.toString(16).padStart(64, "0");
+  await db.insert(weeklyPaymentWeekConfirmations).values({
+    organizationId,
+    leagueId,
+    occurrenceId: occurrence.id,
+    revision: 1,
+    stateFingerprint: `lvmanagepayments:v1:${evidenceHex}`,
+    requestFingerprint: `lvmanagepaymentsrequest:v1:${evidenceHex}`,
+    responsibilitySetFingerprint: `lvmanagepaymentsrows:v1:${evidenceHex}`,
+    idempotencyKey: `owned-ledger-confirm-debt-${suffix}-${ordinal}`,
+    requestSnapshot: {},
+    recordedByUserId: actorUserId,
+  });
+  return { occurrenceId: occurrence.id, instant, pastDueAt: nextWeek };
+}
+
+async function createWorksheetDebt(input: {
+  amountMinor: number;
+  name: string;
+  bowlerId?: number;
+  isolatedOccurrence?: boolean;
+}) {
   const bowlerId = input.bowlerId ?? (await db.insert(bowlers).values({
     name: `${input.name} ${suffix}`,
     organizationId,
   }).returning({ id: bowlers.id }))[0]?.id;
   if (!bowlerId) throw new Error("worksheet debt payer was not created");
+  const occurrence = input.isolatedOccurrence
+    ? await createIsolatedWorksheetOccurrence(input.name)
+    : { occurrenceId, instant: "2038-02-01T19:00:00.000Z", pastDueAt: "2038-02-08T19:00:00.000Z" };
   const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
     organizationId,
     leagueId,
-    occurrenceId,
+    occurrenceId: occurrence.occurrenceId,
     teamId,
     slotId: null,
     slotIndex: null,
@@ -346,25 +409,25 @@ async function createWorksheetDebt(input: { amountMinor: number; name: string; b
     worksheetFeeComponent: "full",
     amountMinor: input.amountMinor,
     currency: "USD",
-    dueAt: "2038-02-01T19:00:00.000Z",
-    pastDueAt: "2038-02-08T19:00:00.000Z",
+    dueAt: occurrence.instant,
+    pastDueAt: occurrence.pastDueAt,
     recordedByUserId: actorUserId,
   }).returning({ id: occurrencePaymentResponsibilities.id, responsibilityKey: occurrencePaymentResponsibilities.responsibilityKey });
   const [obligation] = await db.insert(paymentObligations).values({
     organizationId,
     leagueId,
-    occurrenceId,
+    occurrenceId: occurrence.occurrenceId,
     responsibilityId: responsibility.id,
     component: "full",
     payerBowlerId: bowlerId,
     amountMinor: input.amountMinor,
     currency: "USD",
-    dueAt: "2038-02-01T19:00:00.000Z",
-    pastDueAt: "2038-02-08T19:00:00.000Z",
+    dueAt: occurrence.instant,
+    pastDueAt: occurrence.pastDueAt,
     state: "open",
     createdByUserId: actorUserId,
   }).returning({ id: paymentObligations.id });
-  return { bowlerId, responsibilityId: responsibility.id, responsibilityKey: responsibility.responsibilityKey, obligationId: obligation.id };
+  return { bowlerId, responsibilityId: responsibility.id, responsibilityKey: responsibility.responsibilityKey, obligationId: obligation.id, occurrenceId: occurrence.occurrenceId };
 }
 
 async function createRotatingProviderFunding(input: { bowlerId: number; amountMinor: number }) {
@@ -645,11 +708,12 @@ async function createLegacyStandingFunding(): Promise<{ paymentId: number; fundi
 
 async function insertApplication(
   tx: PaymentOperationTransaction,
-  input: { paymentId: number; fundingId: string; amountMinor: number; sourceAmountMinor?: number; creditedBowlerId?: number; obligationId?: string; responsibilityId?: string },
+  input: { paymentId: number; fundingId: string; amountMinor: number; sourceAmountMinor?: number; creditedBowlerId?: number; obligationId?: string; responsibilityId?: string; occurrenceId?: string },
 ) {
   const payerBowlerId = input.creditedBowlerId ?? creditedBowlerId;
   const targetObligationId = input.obligationId ?? obligationId;
   const targetResponsibilityId = input.responsibilityId ?? responsibilityId;
+  const targetOccurrenceId = input.occurrenceId ?? occurrenceId;
   const [allocation] = await tx.insert(paymentAllocations).values({
     organizationId,
     leagueId,
@@ -672,7 +736,7 @@ async function insertApplication(
     currency: "USD",
     obligationId: targetObligationId,
     responsibilityId: targetResponsibilityId,
-    occurrenceId,
+    occurrenceId: targetOccurrenceId,
     teamId,
     targetKind: "bowler_responsibility",
     targetPayerBowlerId: payerBowlerId,
@@ -982,6 +1046,7 @@ describe("owned payment SQL guards on PostgreSQL", () => {
         amountMinor: 2_500,
         name: `Owned Release Reopen ${reason}`,
         bowlerId: creditedBowlerId,
+        isolatedOccurrence: true,
       });
       const source = await createV4Tender(1_000);
       const application = await db.transaction((tx) => insertApplication(tx, {
@@ -991,6 +1056,7 @@ describe("owned payment SQL guards on PostgreSQL", () => {
         creditedBowlerId: debt.bowlerId,
         obligationId: debt.obligationId,
         responsibilityId: debt.responsibilityId,
+        occurrenceId: debt.occurrenceId,
       }));
       await db.update(paymentObligations).set({ state: "partially_settled" }).where(and(
         eq(paymentObligations.organizationId, organizationId),
@@ -1032,7 +1098,12 @@ describe("owned payment SQL guards on PostgreSQL", () => {
   );
 
   it("rejects no-proof, stale, and other-obligation release evidence for partial-to-open updates", async () => {
-    const createDebt = async (name: string) => createWorksheetDebt({ amountMinor: 2_500, name, bowlerId: creditedBowlerId });
+    const createDebt = async (name: string) => createWorksheetDebt({
+      amountMinor: 2_500,
+      name,
+      bowlerId: creditedBowlerId,
+      isolatedOccurrence: true,
+    });
     const createPartiallyCoveredDebt = async (name: string) => {
       const debt = await createDebt(name);
       const source = await createV4Tender(1_000);
@@ -1043,6 +1114,7 @@ describe("owned payment SQL guards on PostgreSQL", () => {
         creditedBowlerId: debt.bowlerId,
         obligationId: debt.obligationId,
         responsibilityId: debt.responsibilityId,
+        occurrenceId: debt.occurrenceId,
       }));
       await db.update(paymentObligations).set({ state: "partially_settled" }).where(eq(
         paymentObligations.id,
