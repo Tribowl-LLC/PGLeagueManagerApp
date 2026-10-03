@@ -605,6 +605,55 @@ describe("PaymentDetailsDialog", () => {
     expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
   });
 
+  it("allows only an admin to edit a cash tender backed by exact unused owned funding", async () => {
+    const user = userEvent.setup();
+    const unusedOwnedCredit: CanonicalPaymentRow = {
+      ...evidence,
+      source: "prepaid_credit",
+      allocatedMinor: 0,
+      unallocatedMinor: 5000,
+      allocations: [],
+      fundingPortions: [{
+        fundingId: "owned-funding-1",
+        creditedBowlerId: 42,
+        portionIndex: 0,
+        amountMinor: 5000,
+        availableMinor: 5000,
+        appliedMinor: 0,
+        refundedCreditMinor: 0,
+        totalRefundedMinor: 0,
+        heldCreditMinor: 0,
+        reviewRequired: false,
+      }],
+    };
+    render(<PaymentDetailsDialog payment={payment} evidence={unusedOwnedCredit} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    await user.click(screen.getByRole("button", { name: "Edit cash payment" }));
+    expect(screen.getByRole("button", { name: "Save payment edit" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    const nonAdmin = render(<PaymentDetailsDialog payment={payment} evidence={unusedOwnedCredit} bowlerName="Test Bowler" canCorrect={false} onClose={() => {}} />);
+    expect(nonAdmin.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
+  });
+
+  it("keeps cash edit closed when owned unused-source evidence is incomplete", () => {
+    const incompleteOwnedCredit: CanonicalPaymentRow = {
+      ...evidence,
+      source: "prepaid_credit",
+      allocatedMinor: 0,
+      unallocatedMinor: 5000,
+      allocations: [],
+      fundingPortions: [],
+    };
+    render(<PaymentDetailsDialog payment={payment} evidence={incompleteOwnedCredit} bowlerName="Test Bowler" canCorrect onClose={() => {}} />);
+
+    expect(screen.queryByRole("button", { name: "Edit cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void cash payment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete cash payment" })).not.toBeInTheDocument();
+  });
+
   it("renders evidence-only details without manufacturing a payment", () => {
     render(<PaymentDetailsDialog
       payment={null}
