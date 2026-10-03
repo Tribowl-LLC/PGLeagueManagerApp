@@ -392,10 +392,10 @@ export default function AdminWeeklyPaymentsPage() {
               <div data-awpw="league-picker">
                 <Label className="sr-only" htmlFor="manage-payments-league">League</Label>
                 <Select value={selectedLeagueId === null ? "" : String(selectedLeagueId)} onValueChange={chooseLeague}>
-                  <SelectTrigger appearance="managePayments" id="manage-payments-league" aria-label="League">
+                  <SelectTrigger appearance="managePaymentsControl" id="manage-payments-league" aria-label="League">
                     <SelectValue placeholder="Select a league" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent appearance="managePaymentsControl">
                     {leagues.map((league) => (
                       <SelectItem key={league.id} value={String(league.id)}>{league.name}</SelectItem>
                     ))}
@@ -421,10 +421,10 @@ export default function AdminWeeklyPaymentsPage() {
                     onValueChange={chooseOccurrence}
                     disabled={weekOptions.length === 0 || saving || activeReloadState?.status === "loading"}
                   >
-                    <SelectTrigger appearance="managePayments" id="manage-payments-week" aria-label="Collection week" className="min-w-0 flex-1">
+                    <SelectTrigger appearance="managePaymentsWeekPicker" id="manage-payments-week" aria-label="Collection week" className="min-w-0 flex-1">
                       <SelectValue placeholder="Choose a collection week" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent appearance="managePaymentsControl">
                       {weekOptions.map((week) => (
                         <SelectItem key={week.occurrenceId} value={week.occurrenceId}>{week.label}</SelectItem>
                       ))}

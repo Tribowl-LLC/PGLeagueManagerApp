@@ -513,6 +513,7 @@
 @utility familiar-payment-overview__actions { --lv-familiar-pay-component: 1; }
 @utility manage-payments-layout-content { --lv-manage-payments-layout: 1; }
 @utility manage-payments-layout-inner { --lv-manage-payments-layout: 1; }
+@utility manage-payments-global-header { --lv-manage-payments-layout: 1; }
 @utility manage-payments-sidebar-expanded { --lv-manage-payments-layout: 1; }
 @utility manage-payments-main-expanded { --lv-manage-payments-layout: 1; }
 @utility manage-payments-table { --lv-manage-payments-component: 1; }
@@ -522,6 +523,10 @@
 @utility manage-payments-checkbox-indicator { --lv-manage-payments-component: 1; }
 @utility manage-payments-input { --lv-manage-payments-component: 1; }
 @utility manage-payments-select-trigger { --lv-manage-payments-component: 1; }
+@utility manage-payments-select-control-trigger { --lv-manage-payments-component: 1; }
+@utility manage-payments-select-fee-trigger { --lv-manage-payments-component: 1; }
+@utility manage-payments-select-content-control { --lv-manage-payments-component: 1; }
+@utility manage-payments-select-content-fee { --lv-manage-payments-component: 1; }
 @utility manage-payments-table-header { --lv-manage-payments-component: 1; }
 @utility manage-payments-table-body { --lv-manage-payments-component: 1; }
 @utility manage-payments-table-row { --lv-manage-payments-component: 1; }

@@ -272,6 +272,11 @@ function occurrenceWeekLabel(occurrence: LeagueOccurrenceScheduleOccurrence): st
     year: "numeric",
     timeZone: "UTC",
   }).format(date);
+  if (typeof occurrence.plannedOrdinal === "number"
+    && Number.isSafeInteger(occurrence.plannedOrdinal)
+    && occurrence.plannedOrdinal > 0) {
+    return `Week ${occurrence.plannedOrdinal} · ${dateLabel}`;
+  }
   return `${dateLabel} · ${requiredOccurrenceStartTime(occurrence)}`;
 }
 

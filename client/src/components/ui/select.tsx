@@ -10,7 +10,7 @@ const SelectValue = SelectPrimitive.Value
 
 interface SelectTriggerProps
   extends React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger> {
-  appearance?: "default" | "managePayments";
+  appearance?: "default" | "managePayments" | "managePaymentsControl" | "managePaymentsFee" | "managePaymentsWeekPicker";
 }
 
 const SelectTrigger = React.forwardRef<
@@ -22,6 +22,9 @@ const SelectTrigger = React.forwardRef<
     className={cn(
       "flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1",
       appearance === "managePayments" && "manage-payments-select-trigger h-11 border-familiar-line bg-familiar-surface text-familiar-ink focus:ring-familiar-navy",
+      appearance === "managePaymentsControl" && "manage-payments-select-trigger manage-payments-select-control-trigger h-11 border-familiar-line bg-familiar-surface px-3 py-[9px] text-[13px] text-familiar-ink focus:ring-familiar-navy",
+      appearance === "managePaymentsFee" && "manage-payments-select-trigger manage-payments-select-fee-trigger h-11 border-familiar-line bg-familiar-surface text-familiar-ink focus:ring-familiar-navy",
+      appearance === "managePaymentsWeekPicker" && "manage-payments-select-trigger h-11 border-familiar-line bg-familiar-surface px-3 py-[9px] pr-[38px] text-[13px] text-familiar-ink focus:ring-familiar-navy",
       className
     )}
     {...props}
@@ -69,10 +72,15 @@ const SelectScrollDownButton = React.forwardRef<
 SelectScrollDownButton.displayName =
   SelectPrimitive.ScrollDownButton.displayName
 
+interface SelectContentProps
+  extends React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content> {
+  appearance?: "default" | "managePaymentsControl" | "managePaymentsFee";
+}
+
 const SelectContent = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content>
->(({ className, children, position = "popper", ...props }, ref) => (
+  SelectContentProps
+>(({ className, children, appearance = "default", position = "popper", ...props }, ref) => (
   <SelectPrimitive.Portal>
     <SelectPrimitive.Content
       ref={ref}
@@ -80,6 +88,8 @@ const SelectContent = React.forwardRef<
         "relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2",
         position === "popper" &&
           "data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1",
+        appearance === "managePaymentsControl" && "manage-payments-select-content-control",
+        appearance === "managePaymentsFee" && "manage-payments-select-content-fee",
         className
       )}
       position={position}

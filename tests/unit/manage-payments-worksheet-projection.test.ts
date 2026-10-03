@@ -9,6 +9,7 @@ import {
   buildManagePaymentsForecastTargets,
   buildManagePaymentsWorksheetSnapshot,
   fingerprintManagePaymentsWorksheet,
+  getManagePaymentsWeekOptions,
   localDateForInstant,
   mapCardReceiptCollectionOccurrence,
   selectManagePaymentsOccurrence,
@@ -208,6 +209,18 @@ function withSharedAccountProjection(input: ManagePaymentsProjectionInput): Mana
 }
 
 describe("Manage Payments worksheet projection", () => {
+  it("labels the week picker from canonical planned ordinals and falls back to date and time", () => {
+    const weekOptions = getManagePaymentsWeekOptions(schedule([
+      occurrence("canonical-week-7", "2026-09-14", 1, { plannedOrdinal: 7 }),
+      occurrence("missing-canonical-week", "2026-09-21", 2, { plannedOrdinal: null }),
+    ]));
+
+    expect(weekOptions.map((week) => week.label)).toEqual([
+      "Week 7 · Sep 14, 2026",
+      "Sep 21, 2026 · 18:30",
+    ]);
+  });
+
   it("selects the latest actual local collection date even when billing order differs", () => {
     const scheduleData = schedule([
       occurrence("later-date-first-ordinal", "2026-10-12", 1),
