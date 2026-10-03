@@ -40,7 +40,7 @@ import {
   resolveParticipantsInTransaction,
 } from "./interactive-partner-payment.js";
 import { buildOneTimePaymentOptions } from "@shared/one-time-payment-options";
-import { effectiveCollectionPrefixMinor } from "./account-payment-funding-targets.js";
+import { effectiveCollectionPrefixMinor, projectStandingAccountFundingTarget, type StandingAccountFundingTarget } from "./account-payment-funding-targets.js";
 import {
   readOwnedAccountBalancesInTransaction,
   readOwnedLedgerAdoptionInTransaction,
@@ -168,6 +168,87 @@ async function addConfirmedLedgerCandidates(
   }
   for (const [bowlerId, candidates] of byOwner) byOwner.set(bowlerId, candidates.sort(comparePublishedCollectionOrder));
   return byOwner;
+}
+
+export type OwnedAccountFundingTargetEvidence = {
+  recipientBowlerId: number;
+  asOf: string;
+  confirmedDebts: Awaited<ReturnType<typeof readConfirmedOwnedObligationsInTransaction>>;
+  candidates: FifoPaymentCandidate[];
+  availableCreditMinor: number;
+  scopedTarget: StandingAccountFundingTarget;
+};
+
+/** Read canonical account evidence for an explicit owner scope and projection
+ * time. This reader deliberately does not resolve or lock interactive partner
+ * links. Candidate rows are locked by default for charge preparation, so those
+ * callers must hold the league schedule lock. Read-only report projections
+ * must explicitly set forUpdateCandidates:false; the remaining evidence
+ * readers in this path do not lock rows. Callers select the occurrence scope
+ * they are authorized to project and cannot turn unrelated forecasts into a
+ * charge target. */
+export async function readOwnedAccountFundingTargetEvidenceInTransaction(
+  tx: PaymentOperationTransaction,
+  input: {
+    organizationId: number;
+    leagueId: number;
+    recipientIds: number[];
+    asOf: string;
+    collectionRequirementOccurrenceIdsByRecipient: ReadonlyMap<number, readonly string[]>;
+    forUpdateCandidates?: boolean;
+  },
+): Promise<Map<number, OwnedAccountFundingTargetEvidence>> {
+  const parsedAsOf = new Date(input.asOf);
+  if (!Number.isFinite(parsedAsOf.getTime())) throw new RosterPaymentError("INVALID_TIMESTAMP", "The account funding projection timestamp is invalid", 422);
+  const asOf = parsedAsOf.toISOString();
+  const recipientIds = [...new Set(input.recipientIds)];
+  if (recipientIds.length === 0) return new Map();
+  const [debts, balances, candidateLists] = await Promise.all([
+    readConfirmedOwnedObligationsInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, bowlerIds: recipientIds }),
+    readOwnedAccountBalancesInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, bowlerIds: recipientIds }),
+    Promise.all(recipientIds.map(async (bowlerId) => ({
+      bowlerId,
+      candidates: await fifoCandidatesInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        payerBowlerId: bowlerId,
+        forUpdate: input.forUpdateCandidates !== false,
+      }),
+    }))),
+  ]);
+  const candidatesByOwner = await addConfirmedLedgerCandidates(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+  }, candidateLists, debts);
+  const result = new Map<number, OwnedAccountFundingTargetEvidence>();
+  for (const bowlerId of recipientIds) {
+    const balance = balances.get(bowlerId);
+    const requirementIds = input.collectionRequirementOccurrenceIdsByRecipient.get(bowlerId) ?? [];
+    const ownerDebts = debts.filter((debt) => debt.debtorBowlerId === bowlerId).map((debt) => ({
+      obligationId: debt.obligationId,
+      occurrenceId: debt.occurrenceId,
+      outstandingMinor: debt.outstandingMinor,
+      reviewRequired: debt.reviewRequired,
+    }));
+    const candidates = candidatesByOwner.get(bowlerId) ?? [];
+    const availableCreditMinor = balance?.availableCreditMinor ?? 0;
+    const scopedTarget = projectStandingAccountFundingTarget({
+      candidates,
+      confirmedDebts: ownerDebts,
+      availableCreditMinor,
+      cutoffAt: asOf,
+      collectionRequirementOccurrenceIds: requirementIds,
+    });
+    result.set(bowlerId, {
+      recipientBowlerId: bowlerId,
+      asOf,
+      confirmedDebts: debts.filter((debt) => debt.debtorBowlerId === bowlerId),
+      candidates,
+      availableCreditMinor,
+      scopedTarget,
+    });
+  }
+  return result;
 }
 
 async function transactionNow(tx: PaymentOperationTransaction): Promise<string> {

@@ -125,6 +125,7 @@ const semanticSchema = z.object({
       ? 0
       : Math.max(0, target.currentCollectionTargetMinor - creditForCollection);
     if (target.confirmedDebtMinor < target.olderConfirmedDebtMinor
+      || target.currentCollectionTargetMinor !== target.confirmedDebtMinor - target.olderConfirmedDebtMinor + target.forecastCollectionTargetMinor
       || target.creditAppliedToOlderDebtMinor !== creditApplied
       || target.olderConfirmedDebtRemainingMinor !== olderRemaining
       || target.forecastCollectionTargetMinor > target.currentCollectionTargetMinor
@@ -152,6 +153,8 @@ const semanticSchema = z.object({
 export type AccountStandingFundingSnapshotSemantic = z.infer<typeof semanticSchema>;
 export type AccountStandingFundingSnapshotInput = Omit<AccountStandingFundingSnapshotSemantic,
   "snapshotVersion" | "snapshotKind" | "operationType" | "requestKind">;
+export type AccountStandingFundingSnapshotBuildInput = Omit<AccountStandingFundingSnapshotInput,
+  "operationId" | "providerIdempotencyKey">;
 
 export type AccountStandingFundingOperationIdentity = {
   id: string;
@@ -188,7 +191,7 @@ export function validateAccountStandingFundingSnapshot(value: unknown): AccountS
 
 export function buildAccountStandingFundingSnapshot(
   operation: Pick<AccountStandingFundingOperationIdentity, "id" | "providerIdempotencyKey">,
-  input: AccountStandingFundingSnapshotInput,
+  input: AccountStandingFundingSnapshotBuildInput,
 ): AccountStandingFundingSnapshotSemantic {
   return normalize({
     ...input,

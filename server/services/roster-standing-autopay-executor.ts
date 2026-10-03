@@ -111,7 +111,18 @@ export class RosterStandingAutopayOperationExecutor {
       log.error("Standing automatic-payment snapshot could not be decoded", { operationId: operation.id, errorName: error instanceof Error ? error.name : "UnknownError" });
       return recordPaymentOperationFailedTerminal({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, errorClassification: "configuration", errorCode: "STANDING_SNAPSHOT_UNREADABLE", now: new Date() });
     }
-    if (!snapshot || snapshot.operation.amountMinor !== snapshot.snapshot.amountMinor || snapshot.snapshot.snapshotKind !== "standing_autopay" || snapshot.operation.authorizingUserId === null) {
+    if (!snapshot) {
+      return recordPaymentOperationFailedTerminal({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, errorClassification: "internal", errorCode: "STANDING_SNAPSHOT_INVALID", now: new Date() });
+    }
+    if (snapshot.accountFunding) {
+      if (snapshot.operation.amountMinor !== snapshot.snapshot.amountMinor
+        || snapshot.snapshot.snapshotKind !== "standing_funding"
+        || snapshot.operation.authorizingUserId === null) {
+        return recordPaymentOperationFailedTerminal({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, errorClassification: "internal", errorCode: "STANDING_SNAPSHOT_INVALID", now: new Date() });
+      }
+    } else if (snapshot.operation.amountMinor !== snapshot.snapshot.amountMinor
+      || snapshot.snapshot.snapshotKind !== "standing_autopay"
+      || snapshot.operation.authorizingUserId === null) {
       return recordPaymentOperationFailedTerminal({ organizationId: operation.organizationId, operationId: operation.id, leaseToken, errorClassification: "internal", errorCode: "STANDING_SNAPSHOT_INVALID", now: new Date() });
     }
     const sourceId = snapshot.sourceId;

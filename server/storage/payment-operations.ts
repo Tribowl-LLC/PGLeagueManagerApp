@@ -3026,7 +3026,7 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
     attempt_count: number | null;
     due_at: string;
   }>(sql`
-    WITH eligible_cutoffs AS (
+    WITH eligible_cutoffs_legacy AS (
       SELECT DISTINCT
         c.organization_id,
         c.league_id,
@@ -3209,6 +3209,87 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
         AND c.state = 'active'
         AND c.payment_mode = 'weekly'
         AND c.revoked_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM weekly_payment_ledger_adoptions adopted
+          WHERE adopted.organization_id = c.organization_id
+            AND adopted.league_id = c.league_id
+        )
+    ), eligible_cutoffs_account AS (
+      SELECT DISTINCT
+        c.organization_id,
+        c.league_id,
+        c.id AS consent_id,
+        c.consent_version,
+        trigger_occurrence.start_at AS cutoff_at,
+        trigger_occurrence.current_revision AS occurrence_revision,
+        preparation.state AS preparation_state,
+        COALESCE(preparation.attempt_count, 0) AS preparation_attempt_count,
+        preparation.next_attempt_at
+      FROM autopay_consents c
+      INNER JOIN weekly_payment_ledger_adoptions adopted
+        ON adopted.organization_id = c.organization_id
+       AND adopted.league_id = c.league_id
+      INNER JOIN league_occurrences trigger_occurrence
+        ON trigger_occurrence.organization_id = c.organization_id
+       AND trigger_occurrence.league_id = c.league_id
+       AND trigger_occurrence.start_at >= c.activated_at
+       AND trigger_occurrence.start_at >= transaction_timestamp()
+      LEFT JOIN standing_autopay_preparation_attempts preparation
+        ON preparation.organization_id = c.organization_id
+       AND preparation.league_id = c.league_id
+       AND preparation.consent_id = c.id
+       AND preparation.consent_version = c.consent_version
+       AND preparation.cutoff_at = trigger_occurrence.start_at
+       AND preparation.occurrence_revision = trigger_occurrence.current_revision
+      WHERE c.state = 'active'
+        AND c.payment_mode = 'weekly'
+        AND c.revoked_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+            FROM canonical_collection_group_members paired_member
+            INNER JOIN canonical_collection_groups paired_group
+              ON paired_group.id = paired_member.group_id
+             AND paired_group.organization_id = paired_member.organization_id
+             AND paired_group.league_id = paired_member.league_id
+           WHERE paired_member.organization_id = c.organization_id
+             AND paired_member.league_id = c.league_id
+             AND paired_member.occurrence_id = trigger_occurrence.id
+             AND paired_member.role = 'paired'
+             AND paired_member.active = true
+             AND paired_group.state = 'published'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+            FROM payment_operations blocked
+            INNER JOIN payment_operation_standing_autopay_bindings blocked_binding
+              ON blocked_binding.operation_id = blocked.id
+             AND blocked_binding.organization_id = blocked.organization_id
+             AND blocked_binding.league_id = blocked.league_id
+           WHERE blocked.organization_id = c.organization_id
+             AND blocked.league_id = c.league_id
+             AND blocked.operation_type = 'standing_autopay_charge'
+             AND blocked.status IN ('canceled', 'failed_terminal', 'action_required', 'reconciliation_required')
+             AND blocked_binding.consent_id = c.id
+             AND blocked_binding.consent_version = c.consent_version
+             AND blocked.trigger_occurrence_id = trigger_occurrence.id
+             AND blocked.target_key LIKE concat('standing-autopay:%:', trigger_occurrence.current_revision)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM financial_commands decided
+          WHERE decided.organization_id = c.organization_id
+            AND decided.league_id = c.league_id
+            AND decided.command_type = 'standing_autopay_cutoff'
+            AND decided.idempotency_key = concat(
+              'account:', c.id, ':', c.consent_version, ':',
+              to_char(trigger_occurrence.start_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+            )
+            AND decided.state = 'applied'
+        )
+        AND ${configuredOrganizationScope}
+    ), eligible_cutoffs AS (
+      SELECT * FROM eligible_cutoffs_legacy
+      UNION ALL
+      SELECT * FROM eligible_cutoffs_account
     ), ranked_cutoffs AS (
       SELECT eligible_cutoffs.*,
         row_number() OVER (

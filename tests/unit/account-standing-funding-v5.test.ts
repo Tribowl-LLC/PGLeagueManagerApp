@@ -167,6 +167,15 @@ describe("account standing funding V5 snapshot", () => {
       ...valid,
       amountMinor: 900,
     })).toThrow();
+    expect(() => buildAccountStandingFundingSnapshot({ id: valid.operationId, providerIdempotencyKey: valid.providerIdempotencyKey }, {
+      ...valid,
+      recipientEvidence: [{
+        ...authorizedPartnerEvidence,
+        target: { ...authorizedPartnerEvidence.target, currentCollectionTargetMinor: 1_500, newChargeMinor: 1_500 },
+      }],
+      fundingPortions: [{ portionIndex: 0, creditedBowlerId: partnerBowlerId, amountMinor: 1_500 }],
+      amountMinor: 1_500,
+    })).toThrow();
   });
 
   it("rejects fingerprint tampering and tenant/operation provenance mismatch", () => {

@@ -1881,7 +1881,7 @@ type FifoQuoteInput = {
 
 export async function fifoCandidatesInTransaction(
   tx: RosterPaymentTransaction,
-  input: { organizationId: number; leagueId: number; payerBowlerId: number; includeSettledObligationIds?: string[] },
+  input: { organizationId: number; leagueId: number; payerBowlerId: number; includeSettledObligationIds?: string[]; forUpdate?: boolean },
 ): Promise<FifoPaymentCandidate[]> {
   const stateFilter = input.includeSettledObligationIds && input.includeSettledObligationIds.length > 0
     ? or(
@@ -1889,7 +1889,7 @@ export async function fifoCandidatesInTransaction(
       and(inArray(paymentObligations.id, input.includeSettledObligationIds), eq(paymentObligations.state, "settled")),
     )
     : inArray(paymentObligations.state, ["open", "partially_settled"] as const);
-  const rows = await tx.select().from(paymentObligations).where(and(
+  const candidatesQuery = tx.select().from(paymentObligations).where(and(
     eq(paymentObligations.organizationId, input.organizationId),
     eq(paymentObligations.leagueId, input.leagueId),
     eq(paymentObligations.payerBowlerId, input.payerBowlerId),
@@ -1901,7 +1901,8 @@ export async function fifoCandidatesInTransaction(
       bowlerId: input.payerBowlerId,
     }),
     stateFilter,
-  )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.occurrenceId), asc(paymentObligations.id)).for("update");
+  )).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.occurrenceId), asc(paymentObligations.id));
+  const rows = await (input.forUpdate === false ? candidatesQuery : candidatesQuery.for("update"));
   if (rows.length === 0) return [];
   const responsibilityIds = [...new Set(rows.map((row) => row.responsibilityId))];
   const responsibilities = await tx.select({
@@ -1993,12 +1994,13 @@ export async function fifoCandidatesInTransaction(
     throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Each published collection group must have exactly one trigger occurrence", 503);
   }
   for (const row of triggerEvidence) triggerAtByGroup.set(row.groupId, new Date(row.startAt).toISOString());
-  const allocations = await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
+  const allocationsQuery = tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
     eq(paymentAllocations.organizationId, input.organizationId),
     eq(paymentAllocations.leagueId, input.leagueId),
     eq(paymentAllocations.state, "active"),
     inArray(paymentAllocations.obligationId, rows.map((row) => row.id)),
-  )).for("update");
+  ));
+  const allocations = await (input.forUpdate === false ? allocationsQuery : allocationsQuery.for("update"));
   const allocatedById = new Map<string, number>();
   const reviewById = new Map<string, boolean>();
   for (const row of allocations) {
@@ -2019,12 +2021,13 @@ export async function fifoCandidatesInTransaction(
       { amountMinor: adjustment.amountMinor, disposition: adjustment.disposition },
     ]);
   }
-  const reservations = await tx.select({ obligationId: paymentOperationRosterSnapshotItems.obligationId, amountMinor: paymentOperationRosterSnapshotItems.amountMinor }).from(paymentOperationRosterSnapshotItems).where(and(
+  const reservationsQuery = tx.select({ obligationId: paymentOperationRosterSnapshotItems.obligationId, amountMinor: paymentOperationRosterSnapshotItems.amountMinor }).from(paymentOperationRosterSnapshotItems).where(and(
     eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
     eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
     eq(paymentOperationRosterSnapshotItems.state, "reserved"),
     inArray(paymentOperationRosterSnapshotItems.obligationId, rows.map((row) => row.id)),
-  )).for("update");
+  ));
+  const reservations = await (input.forUpdate === false ? reservationsQuery : reservationsQuery.for("update"));
   const reservedById = new Map<string, number>();
   for (const row of reservations) reservedById.set(row.obligationId, (reservedById.get(row.obligationId) ?? 0) + row.amountMinor);
   // The query above deliberately keeps its dueAt order for row-lock

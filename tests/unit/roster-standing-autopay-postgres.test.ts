@@ -28,12 +28,16 @@ import {
   paymentOperationStandingAutopayBindings,
   paymentOperationStandingAutopayParticipants,
   paymentOperations,
+  paymentAllocationFundingApplications,
   paymentVoids,
   standingAutopayPreparationAttempts,
   teamPaymentSlots,
   teams,
   users,
   webhookEvents,
+  weeklyPaymentFundings,
+  weeklyPaymentLedgerAdoptions,
+  weeklyPaymentWeekConfirmations,
 } from "@shared/schema";
 import { getTestDb } from "../setup/test-db";
 import { deleteOrganization } from "../../server/storage/organizations";
@@ -51,6 +55,9 @@ import { RefundPaymentOperationExecutor } from "../../server/services/refund-pay
 import { fifoCandidatesInTransaction, quoteInteractiveObligations, recordCanonicalManualPayment } from "../../server/services/roster-payment-core";
 import { quoteInteractivePartnerPayments, readInteractivePaymentParticipants } from "../../server/services/interactive-partner-payment";
 import { prepareInteractivePartnerPaymentOperation } from "../../server/services/interactive-payment-operation-preparation";
+import { finalizeRosterSnapshotInTransaction } from "../../server/services/roster-payment-finalizer";
+import { recordOwnedFundingInTransaction } from "../../server/services/owned-payment-ledger";
+import { lockLeagueSchedule } from "../../server/storage/league-schedule-lock";
 
 // This suite deliberately enables only the standing runtime in the isolated
 // test process. It never supplies provider credentials or calls a real
@@ -984,6 +991,24 @@ async function insertSiblingObligation(target: Awaited<ReturnType<typeof publish
 }
 
 describe("standing automatic payments on migrated PostgreSQL", () => {
+  it("supports explicit nonlocking account target reads in a read-only transaction", async () => {
+    const target = await publishOccurrence("2038-12-01T19:00:00.000Z");
+    const { readOwnedAccountFundingTargetEvidenceInTransaction } = await import("../../server/services/account-payment-funding");
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET TRANSACTION READ ONLY`);
+      const evidence = await readOwnedAccountFundingTargetEvidenceInTransaction(tx, {
+        organizationId,
+        leagueId,
+        recipientIds: [payerBowlerId],
+        asOf: target.occurrence.startAt,
+        collectionRequirementOccurrenceIdsByRecipient: new Map([[payerBowlerId, [target.occurrence.id]]]),
+        forUpdateCandidates: false,
+      });
+      expect(evidence.get(payerBowlerId)?.candidates.some((candidate) => candidate.occurrenceId === target.occurrence.id)).toBe(true);
+      expect(evidence.get(payerBowlerId)?.scopedTarget.currentCollectionTargetMinor).toBe(target.obligation.amountMinor);
+    });
+  });
+
   it("blocks pre-consent arrears until one-time FIFO settlement, then advances a cutoff", async () => {
     const beforeConsent = await publishOccurrence("2039-01-01T19:00:00.000Z");
     const afterConsent = await publishOccurrence("2039-01-08T19:00:00.000Z");

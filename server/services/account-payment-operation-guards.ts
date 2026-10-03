@@ -6,6 +6,7 @@ import {
   getAccountPaymentOperationSnapshotInTransaction,
   type PaymentOperationTransaction,
 } from "../storage/payment-operations.js";
+import { reconstructAccountStandingFundingSnapshot } from "./account-standing-funding-snapshot.js";
 
 const ACCOUNT_FUNDING_UNRESOLVED_STATUSES = [
   "pending",
@@ -36,7 +37,7 @@ export async function hasUnresolvedAccountFundingOverlapInTransaction(
 ): Promise<boolean> {
   const selectedOwners = new Set(input.creditedBowlerIds);
   if (selectedOwners.size === 0) return false;
-  const operations = await tx.select({ operation: paymentOperations }).from(paymentOperations)
+  const operations = await tx.select({ operation: paymentOperations, snapshot: accountPaymentOperationSnapshots }).from(paymentOperations)
     .innerJoin(accountPaymentOperationSnapshots, and(
       eq(accountPaymentOperationSnapshots.operationId, paymentOperations.id),
       eq(accountPaymentOperationSnapshots.organizationId, paymentOperations.organizationId),
@@ -44,11 +45,11 @@ export async function hasUnresolvedAccountFundingOverlapInTransaction(
     )).where(and(
       eq(paymentOperations.organizationId, input.organizationId),
       eq(paymentOperations.leagueId, input.leagueId),
-      eq(paymentOperations.operationType, "interactive_charge"),
+      inArray(paymentOperations.operationType, ["interactive_charge", "standing_autopay_charge"]),
       inArray(paymentOperations.status, [...ACCOUNT_FUNDING_UNRESOLVED_STATUSES]),
     ));
 
-  for (const { operation } of operations) {
+  for (const { operation, snapshot: stored } of operations) {
     if (operation.id === input.excludeOperationId || !isAccountFundingOperationUnresolvedV4({
       status: operation.status,
       errorClassification: operation.errorClassification,
@@ -57,7 +58,9 @@ export async function hasUnresolvedAccountFundingOverlapInTransaction(
       attemptCount: operation.attemptCount,
     })) continue;
     try {
-      const snapshot = await getAccountPaymentOperationSnapshotInTransaction(tx, operation);
+      const snapshot = stored.snapshotKind === "standing_funding"
+        ? reconstructAccountStandingFundingSnapshot({ operation, stored })
+        : await getAccountPaymentOperationSnapshotInTransaction(tx, operation);
       // A malformed immutable record cannot safely prove that a recipient is
       // disjoint from the new charge, so fail closed without exposing details.
       if (!snapshot) return true;
