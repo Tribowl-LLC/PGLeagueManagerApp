@@ -147,6 +147,25 @@ function makePaymentRow(overrides: Partial<CanonicalPaymentRow> = {}): Canonical
   };
 }
 
+function makeOperationOnlyRow(
+  status: "pending" | "unresolved",
+  amountMinor: number,
+): CanonicalPaymentRow {
+  return makePaymentRow({
+    paymentId: null,
+    paymentOperationId: `operation-${status}`,
+    operationType: "interactive_charge",
+    operationStatus: status === "pending" ? "provider_unknown" : "reconciliation_required",
+    amountMinor,
+    allocatedMinor: 0,
+    unallocatedMinor: amountMinor,
+    status,
+    source: "unresolved_operation",
+    unresolved: true,
+    fundingPortions: undefined,
+  });
+}
+
 function paymentReport(rows: CanonicalPaymentRow[], page: number, totalRows: number, totalTransactions: number) {
   return {
     success: true,
@@ -295,6 +314,25 @@ describe("AdminWeeklyPaymentsAccountDialog", () => {
     expect(screen.getByText("1 confirmed fee needs review and is not included.")).toBeInTheDocument();
   });
 
+  it("withholds balances and confirmed fee details when the account projection requires review", async () => {
+    const financial = makeFinancialReport({
+      accountProjection: {
+        contractVersion: "owned-account-projection/1",
+        accounts: [makeAccount({ reviewRequired: true })],
+      },
+      rows: [makeFee({ id: "otherwise-confirmed-fee" })],
+    });
+    renderDialog({}, financial);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Account needs review.");
+    expect(await screen.findAllByText("Unavailable")).toHaveLength(3);
+    expect(screen.getByText("Confirmed fee details are unavailable while this account is under review.")).toBeInTheDocument();
+    expect(screen.queryByText("Week 1")).not.toBeInTheDocument();
+    expect(screen.queryByText("$12.50")).not.toBeInTheDocument();
+    expect(screen.queryByText("$7.50")).not.toBeInTheDocument();
+    expect(screen.queryByText("$30.00")).not.toBeInTheDocument();
+  });
+
   it("uses only this bowler's portion of a shared tender in payment history", async () => {
     renderDialog({}, makeFinancialReport(), [makePaymentRow()]);
 
@@ -303,6 +341,33 @@ describe("AdminWeeklyPaymentsAccountDialog", () => {
     expect(within(history).getByText("check · $50.00 applied · $50.00 credit")).toBeInTheDocument();
     expect(within(history).queryByText("$600.00 · Sep 10, 2034")).not.toBeInTheDocument();
     expect(within(history).queryByText("$500.00 · Sep 10, 2034")).not.toBeInTheDocument();
+  });
+
+  it.each(["pending", "unresolved"] as const)(
+    "flags a %s operation without owned funding evidence instead of showing no payments",
+    async (status) => {
+      renderDialog({}, makeFinancialReport(), [makeOperationOnlyRow(status, 99_999)]);
+
+      expect(await screen.findByText("Payment history needs review and is unavailable.")).toBeInTheDocument();
+      expect(screen.queryByText("No payments credited to this account.")).not.toBeInTheDocument();
+      expect(screen.queryByText("$999.99 · Sep 10, 2034")).not.toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Payment transactions" })).not.toBeInTheDocument();
+    },
+  );
+
+  it("keeps owned receipts visible while flagging pending and unresolved operations without funding portions", async () => {
+    renderDialog({}, makeFinancialReport(), [
+      makePaymentRow(),
+      makeOperationOnlyRow("pending", 98_000),
+      makeOperationOnlyRow("unresolved", 87_000),
+    ]);
+
+    const history = await screen.findByRole("region", { name: "Payment transactions" });
+    expect(within(history).getByText("$100.00 · Sep 10, 2034")).toBeInTheDocument();
+    expect(within(history).getByText("Some payment history needs review and is not included.")).toBeInTheDocument();
+    expect(within(history).queryByText("$600.00 · Sep 10, 2034")).not.toBeInTheDocument();
+    expect(within(history).queryByText("$980.00 · Sep 10, 2034")).not.toBeInTheDocument();
+    expect(within(history).queryByText("$870.00 · Sep 10, 2034")).not.toBeInTheDocument();
   });
 
   it("loads every history page beyond the first 200 rows", async () => {

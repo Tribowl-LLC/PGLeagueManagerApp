@@ -307,8 +307,11 @@ async function readAllPaymentHistory(
       || row.status === "refunded"
       || row.status === "disputed"
       || row.status === "review_required";
+    const isPendingOrUnresolvedOperation = row.source === "unresolved_operation"
+      && (row.status === "pending" || row.status === "unresolved" || row.unresolved);
     if (!row.fundingPortions || row.fundingPortions.length === 0) {
-      if (isCompletedReceipt && row.correctionEvidence?.status !== "voided") {
+      if ((isCompletedReceipt || isPendingOrUnresolvedOperation)
+        && row.correctionEvidence?.status !== "voided") {
         hasIncompleteOwnershipEvidence = true;
       }
       return;
@@ -380,11 +383,23 @@ function formatPaymentDate(value: string): string {
 function financialReadForDialog(
   financialReport: FinancialReadContractV3 | undefined,
   bowlerId: number,
-): { account: FinancialReadAccountProjectionRow | undefined; fees: FinancialReadRowContractV3[]; reviewFeeCount: number } {
-  if (!financialReport?.accountProjection) return { account: undefined, fees: [], reviewFeeCount: 0 };
+): {
+  account: FinancialReadAccountProjectionRow | undefined;
+  fees: FinancialReadRowContractV3[];
+  reviewFeeCount: number;
+  accountNeedsReview: boolean;
+} {
+  if (!financialReport?.accountProjection) {
+    return { account: undefined, fees: [], reviewFeeCount: 0, accountNeedsReview: false };
+  }
   const account = accountProjectionForBowler(financialReport, bowlerId);
   const matchingAccounts = financialReport.accountProjection.accounts.filter((candidate) => candidate.bowlerId === bowlerId);
-  if (!account || matchingAccounts.length !== 1) return { account: undefined, fees: [], reviewFeeCount: 0 };
+  if (!account || matchingAccounts.length !== 1) {
+    return { account: undefined, fees: [], reviewFeeCount: 0, accountNeedsReview: false };
+  }
+  if (account.reviewRequired) {
+    return { account: undefined, fees: [], reviewFeeCount: 0, accountNeedsReview: true };
+  }
   const selectedRows = financialReport.rows.filter((row) => (
     row.accountProjection?.effectiveDebtorBowlerId === bowlerId
     && row.accountProjection.confirmationStatus === "confirmed"
@@ -393,7 +408,7 @@ function financialReadForDialog(
   ));
   const reviewFeeCount = selectedRows.filter((row) => row.reviewRequired || row.classification === "review_required").length;
   const fees = selectedRows.filter((row) => !row.reviewRequired && row.classification !== "review_required");
-  return { account, fees, reviewFeeCount };
+  return { account, fees, reviewFeeCount, accountNeedsReview: false };
 }
 
 function summaryAmount(value: number | undefined, loading: boolean): string {
@@ -470,6 +485,12 @@ export function AdminWeeklyPaymentsAccountDialog({
           </DialogClose>
         </DialogHeader>
 
+        {financial.accountNeedsReview && (
+          <p data-awpa="account-review" role="alert">
+            <strong>Account needs review.</strong> Summary balances and confirmed fee details are unavailable.
+          </p>
+        )}
+
         <dl data-awpa="summary" aria-label="Account summary">
           <div data-awpa="summary-cell">
             <dt>Owed now</dt>
@@ -499,6 +520,8 @@ export function AdminWeeklyPaymentsAccountDialog({
                 Try again
               </Button>
             </div>
+          ) : financial.accountNeedsReview ? (
+            <p data-awpa="empty">Confirmed fee details are unavailable while this account is under review.</p>
           ) : !feesAvailable ? (
             <p data-awpa="empty">Confirmed fee details are unavailable for this account.</p>
           ) : financial.fees.length === 0 ? (
