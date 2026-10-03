@@ -785,6 +785,285 @@ export async function readOwnedAccountBalancesInTransaction(
 /** Record one immutable recipient portion of an already-persisted real tender.
  * Rotating-credit tenders are deliberately excluded: their existing funding
  * row remains the sole account source. */
+interface LegacyProviderSnapshotAllocation {
+  allocationIndex: number;
+  obligationId: string;
+  bowlerId: number;
+  amountMinor: number;
+}
+
+interface LegacyProviderSnapshotEvidence {
+  operationId: string;
+  fingerprint: string;
+  items: Array<{ allocationIndex: number; obligationId: string; amountMinor: number; state: string }>;
+  allocations: LegacyProviderSnapshotAllocation[];
+}
+
+/** Reconstruct the original, immutable recipient allocations for a legacy
+ * provider tender. This reader has no adoption-marker dependency so it can be
+ * used by the one-time preflight before any ledger rows exist. */
+async function readLegacyProviderSnapshotEvidenceInTransaction(
+  tx: PaymentOperationTransaction,
+  input: {
+    organizationId: number;
+    leagueId: number;
+    payment: typeof payments.$inferSelect;
+  },
+): Promise<LegacyProviderSnapshotEvidence> {
+  const authorizationOperationId = input.payment.paymentOperationId;
+  if (!authorizationOperationId || !input.payment.providerPaymentId
+    || input.payment.type === "cash" || input.payment.type === "check") {
+    throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
+  }
+  const [operationRows, snapshotRows] = await Promise.all([
+    tx.select().from(paymentOperations).where(and(
+      eq(paymentOperations.id, authorizationOperationId),
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+    )).limit(1),
+    tx.select().from(paymentOperationRosterSnapshots).where(and(
+      eq(paymentOperationRosterSnapshots.operationId, authorizationOperationId),
+      eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
+      eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
+    )).limit(1),
+  ]);
+  const [operation] = operationRows;
+  const [snapshot] = snapshotRows;
+  if (!operation || operation.status !== "succeeded" || operation.providerObjectId === null
+    || input.payment.providerPaymentId !== operation.providerObjectId
+    || operation.amountMinor !== input.payment.amount || operation.currency !== input.payment.currency
+    || !snapshot || !["interactive", "standing_autopay"].includes(snapshot.snapshotKind)
+    || (snapshot.snapshotKind === "interactive" && operation.operationType !== "interactive_charge")
+    || (snapshot.snapshotKind === "standing_autopay" && operation.operationType !== "standing_autopay_charge")
+    || snapshot.amountMinor !== input.payment.amount || snapshot.currency !== input.payment.currency
+    || snapshot.payerBowlerId !== input.payment.bowlerId) {
+    throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
+  }
+  const items = await tx.select({
+    allocationIndex: paymentOperationRosterSnapshotItems.allocationIndex,
+    obligationId: paymentOperationRosterSnapshotItems.obligationId,
+    amountMinor: paymentOperationRosterSnapshotItems.amountMinor,
+    state: paymentOperationRosterSnapshotItems.state,
+  }).from(paymentOperationRosterSnapshotItems).where(and(
+    eq(paymentOperationRosterSnapshotItems.operationId, authorizationOperationId),
+    eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
+    eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
+  )).orderBy(asc(paymentOperationRosterSnapshotItems.allocationIndex));
+  if (items.length === 0 || items.some((item) => item.state !== "finalized")) {
+    throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_ITEMS_INVALID");
+  }
+  type SnapshotAllocation = { allocationIndex?: number; obligationId?: string; bowlerId?: number; payerBowlerId?: number; amountMinor?: number };
+  const recordedSnapshotRows = Array.isArray(snapshot.obligations) ? snapshot.obligations as SnapshotAllocation[] : [];
+  const allocations: LegacyProviderSnapshotAllocation[] = [];
+  if (snapshot.snapshotKind === "interactive" && snapshot.snapshotVersion === 2
+    && snapshot.requestKind !== null && snapshot.encryptedSourceId !== null && snapshot.payerBowlerId !== null
+    && snapshot.sourceKind !== null && snapshot.quoteFingerprint !== null) {
+    try {
+      const reconstructed = reconstructRosterOperationSnapshot({
+        organizationId: input.organizationId,
+        amountMinor: operation.amountMinor,
+        currency: operation.currency,
+        providerName: operation.providerName,
+        providerIdempotencyKey: operation.providerIdempotencyKey,
+        stored: {
+          snapshotVersion: 2,
+          snapshotFingerprint: snapshot.snapshotFingerprint,
+          leagueId: snapshot.leagueId,
+          locationId: snapshot.locationId,
+          providerLocationId: snapshot.providerLocationId,
+          payerBowlerId: snapshot.payerBowlerId,
+          requestKind: snapshot.requestKind,
+          encryptedSourceId: snapshot.encryptedSourceId,
+          encryptedCustomerId: snapshot.encryptedCustomerId,
+          encryptedBuyerEmail: snapshot.encryptedBuyerEmail,
+          storeCard: snapshot.storeCard,
+          sourceKind: snapshot.sourceKind,
+          quoteFingerprint: snapshot.quoteFingerprint,
+        },
+        allocations: recordedSnapshotRows as RosterOperationSemanticSnapshot["allocations"],
+        lineItems: snapshot.lineItems,
+      });
+      allocations.push(...reconstructed.allocations.map((row) => ({
+        allocationIndex: row.allocationIndex,
+        obligationId: row.obligationId,
+        bowlerId: row.bowlerId,
+        amountMinor: row.amountMinor,
+      })));
+    } catch {
+      throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
+    }
+  } else if (snapshot.snapshotKind === "interactive" && snapshot.snapshotVersion === 3
+    && snapshot.requestKind !== null && snapshot.encryptedSourceId !== null && snapshot.payerBowlerId !== null
+    && snapshot.sourceKind !== null && snapshot.quoteFingerprint !== null && snapshot.partnerEvidence !== null) {
+    try {
+      const reconstructed = reconstructInteractivePartnerSnapshot({
+        organizationId: input.organizationId,
+        amountMinor: operation.amountMinor,
+        currency: operation.currency,
+        providerName: operation.providerName,
+        providerIdempotencyKey: operation.providerIdempotencyKey,
+        stored: {
+          snapshotVersion: 3,
+          snapshotFingerprint: snapshot.snapshotFingerprint,
+          leagueId: snapshot.leagueId,
+          locationId: snapshot.locationId,
+          providerLocationId: snapshot.providerLocationId,
+          payerBowlerId: snapshot.payerBowlerId,
+          requestKind: snapshot.requestKind,
+          encryptedSourceId: snapshot.encryptedSourceId,
+          encryptedCustomerId: snapshot.encryptedCustomerId,
+          encryptedBuyerEmail: snapshot.encryptedBuyerEmail,
+          storeCard: snapshot.storeCard,
+          sourceKind: snapshot.sourceKind,
+          quoteFingerprint: snapshot.quoteFingerprint,
+          partnerEvidence: snapshot.partnerEvidence,
+        },
+        allocations: recordedSnapshotRows as InteractivePartnerPaymentSnapshot["allocations"],
+        lineItems: snapshot.lineItems,
+      });
+      allocations.push(...reconstructed.allocations.map((row) => ({
+        allocationIndex: row.allocationIndex,
+        obligationId: row.obligationId,
+        bowlerId: row.bowlerId,
+        amountMinor: row.amountMinor,
+      })));
+    } catch {
+      throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
+    }
+  } else if (snapshot.snapshotKind === "standing_autopay" && snapshot.snapshotVersion === 2
+    && operation.operationType === "standing_autopay_charge") {
+    const [bindingRows, participantRows] = await Promise.all([
+      tx.select().from(paymentOperationStandingAutopayBindings).where(and(
+        eq(paymentOperationStandingAutopayBindings.operationId, authorizationOperationId),
+        eq(paymentOperationStandingAutopayBindings.organizationId, input.organizationId),
+        eq(paymentOperationStandingAutopayBindings.leagueId, input.leagueId),
+      )).limit(1),
+      tx.select().from(paymentOperationStandingAutopayParticipants).where(and(
+        eq(paymentOperationStandingAutopayParticipants.operationId, authorizationOperationId),
+        eq(paymentOperationStandingAutopayParticipants.organizationId, input.organizationId),
+        eq(paymentOperationStandingAutopayParticipants.leagueId, input.leagueId),
+      )),
+    ]);
+    const [binding] = bindingRows;
+    const participantByIndex = new Map(participantRows.map((row) => [row.allocationIndex, row]));
+    if (!binding || binding.evidenceFingerprint !== snapshot.snapshotFingerprint || participantRows.length !== items.length) {
+      throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
+    }
+    for (const item of items) {
+      const record = recordedSnapshotRows.find((row) => row.allocationIndex === item.allocationIndex);
+      const participant = participantByIndex.get(item.allocationIndex);
+      if (!record || record.obligationId !== item.obligationId || record.amountMinor !== item.amountMinor
+        || !Number.isSafeInteger(record.payerBowlerId) || !participant || participant.obligationId !== item.obligationId
+        || participant.bowlerId !== record.payerBowlerId) {
+        throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
+      }
+      allocations.push({
+        allocationIndex: item.allocationIndex,
+        obligationId: item.obligationId,
+        bowlerId: participant.bowlerId,
+        amountMinor: item.amountMinor,
+      });
+    }
+  } else {
+    throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
+  }
+  if (!finalizedLegacyProviderItemsMatchSnapshot(items, allocations)
+    || allocations.reduce((sum, row) => sum + row.amountMinor, 0) !== input.payment.amount) {
+    throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_ITEMS_INVALID");
+  }
+  return { operationId: authorizationOperationId, fingerprint: snapshot.snapshotFingerprint, items, allocations };
+}
+
+export interface LegacyFundingAuthorizationPortion {
+  creditedBowlerId: number;
+  portionIndex: number;
+  amountMinor: number;
+  authorizationKind: "legacy_payment" | "legacy_provider_snapshot";
+  authorizationOperationId: string | null;
+  authorizationItemCount: number;
+  authorizationFingerprint: string;
+  authorizationItems: Array<{ allocationIndex: number; amountMinor: number; snapshotFingerprint: string }>;
+}
+
+/** Strict read-only source-of-funds proof used by the guarded league-adoption
+ * planner. It deliberately has no marker override: ordinary writes continue
+ * through the existing validator below and still require a durable marker. */
+export async function readLegacyFundingAuthorizationInTransaction(
+  tx: PaymentOperationTransaction,
+  input: { organizationId: number; leagueId: number; paymentId: number; payment?: typeof payments.$inferSelect },
+): Promise<{ payment: typeof payments.$inferSelect; portions: LegacyFundingAuthorizationPortion[] }> {
+  const [selectedPayment] = input.payment === undefined ? await tx.select().from(payments).where(and(
+    eq(payments.id, input.paymentId),
+    eq(payments.organizationId, input.organizationId),
+    eq(payments.leagueId, input.leagueId),
+  )).limit(1) : [input.payment];
+  const payment = selectedPayment;
+  if (!payment || payment.status !== "paid" || payment.currency !== "USD"
+    || !Number.isSafeInteger(payment.amount) || payment.amount <= 0) {
+    throw new OwnedPaymentLedgerError(payment?.status === "refunded" ? "LEGACY_REFUNDED_TENDER_UNSUPPORTED" : "LEGACY_PAYMENT_INVALID");
+  }
+  const [rotatingSource] = await tx.select({ id: rotatingCreditFundings.id }).from(rotatingCreditFundings).where(and(
+    eq(rotatingCreditFundings.organizationId, input.organizationId),
+    eq(rotatingCreditFundings.leagueId, input.leagueId),
+    eq(rotatingCreditFundings.paymentId, input.paymentId),
+  )).limit(1);
+  if (rotatingSource) throw new OwnedPaymentLedgerError("ROTATING_TENDER_ALREADY_OWNED");
+  if (payment.paymentOperationId === null && payment.providerPaymentId === null
+    && (payment.type === "cash" || payment.type === "check")) {
+    const fingerprint = `lvweeklyadopt:v1:${createHash("sha256").update(canonicalizePaymentOperationInput({
+      version: 1,
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      paymentId: payment.id,
+      creditedBowlerId: payment.bowlerId,
+      amountMinor: payment.amount,
+      currency: payment.currency,
+      type: payment.type,
+      createdAt: payment.createdAt,
+    })).digest("hex")}`;
+    return {
+      payment,
+      portions: [{
+        creditedBowlerId: payment.bowlerId,
+        portionIndex: 0,
+        amountMinor: payment.amount,
+        authorizationKind: "legacy_payment",
+        authorizationOperationId: null,
+        authorizationItemCount: 0,
+        authorizationFingerprint: fingerprint,
+        authorizationItems: [],
+      }],
+    };
+  }
+  const evidence = await readLegacyProviderSnapshotEvidenceInTransaction(tx, { ...input, payment });
+  const allocationsByOwner = new Map<number, LegacyProviderSnapshotAllocation[]>();
+  for (const allocation of evidence.allocations) {
+    const owned = allocationsByOwner.get(allocation.bowlerId) ?? [];
+    owned.push(allocation);
+    allocationsByOwner.set(allocation.bowlerId, owned);
+  }
+  const ownerRows = [...allocationsByOwner.entries()].sort((left, right) =>
+    Math.min(...left[1].map((row) => row.allocationIndex)) - Math.min(...right[1].map((row) => row.allocationIndex)));
+  const portions = ownerRows.map(([creditedBowlerId, ownerAllocations], portionIndex): LegacyFundingAuthorizationPortion => ({
+    creditedBowlerId,
+    portionIndex,
+    amountMinor: ownerAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+    authorizationKind: "legacy_provider_snapshot",
+    authorizationOperationId: evidence.operationId,
+    authorizationItemCount: ownerAllocations.length,
+    authorizationFingerprint: evidence.fingerprint,
+    authorizationItems: ownerAllocations.sort((left, right) => left.allocationIndex - right.allocationIndex).map((allocation) => ({
+      allocationIndex: allocation.allocationIndex,
+      amountMinor: allocation.amountMinor,
+      snapshotFingerprint: evidence.fingerprint,
+    })),
+  }));
+  if (portions.length === 0 || portions.reduce((sum, portion) => sum + portion.amountMinor, 0) !== payment.amount) {
+    throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_ITEMS_INVALID");
+  }
+  return { payment, portions };
+}
+
 export async function validateOwnedFundingAuthorizationInTransaction(
   tx: PaymentOperationTransaction,
   input: Omit<typeof weeklyPaymentFundings.$inferInsert, "id" | "createdAt" | "provenanceFingerprint"> & {
@@ -844,156 +1123,16 @@ export async function validateOwnedFundingAuthorizationInTransaction(
     throw new OwnedPaymentLedgerError("LEGACY_PAYMENT_AUTH_INVALID");
   }
   if (input.authorizationKind === "legacy_provider_snapshot") {
-    if (input.source !== "legacy_adoption" || !authorizationOperationId
-      || payment.paymentOperationId !== authorizationOperationId || (input.authorizationItemCount ?? 0) <= 0
-      || authorizationItems.length !== input.authorizationItemCount || payment.type === "cash" || payment.type === "check"
-      || authorizationItems.reduce((sum, item) => sum + item.amountMinor, 0) !== input.amountMinor) {
-      throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_ITEMS_INVALID");
-    }
-    const [operationRows, snapshotRows] = await Promise.all([
-      tx.select().from(paymentOperations).where(and(
-        eq(paymentOperations.id, authorizationOperationId),
-        eq(paymentOperations.organizationId, input.organizationId),
-        eq(paymentOperations.leagueId, input.leagueId),
-      )).limit(1),
-      tx.select().from(paymentOperationRosterSnapshots).where(and(
-        eq(paymentOperationRosterSnapshots.operationId, authorizationOperationId),
-        eq(paymentOperationRosterSnapshots.organizationId, input.organizationId),
-        eq(paymentOperationRosterSnapshots.leagueId, input.leagueId),
-      )).limit(1),
-    ]);
-    const [operationRow] = operationRows;
-    const [snapshotRow] = snapshotRows;
-    if (!operationRow || operationRow.status !== "succeeded" || operationRow.providerObjectId === null
-      || payment.providerPaymentId !== operationRow.providerObjectId
-      || !snapshotRow || !["interactive", "standing_autopay"].includes(snapshotRow.snapshotKind)
-      || (snapshotRow.snapshotKind === "interactive" && operationRow.operationType !== "interactive_charge")
-      || (snapshotRow.snapshotKind === "standing_autopay" && operationRow.operationType !== "standing_autopay_charge")
-      || operationRow.amountMinor !== payment.amount || operationRow.currency !== payment.currency
-      || snapshotRow.amountMinor !== payment.amount || snapshotRow.currency !== payment.currency
-      || snapshotRow.snapshotFingerprint !== input.authorizationFingerprint) {
-      throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
-    }
-    const authorizedItems = await tx.select({
-      allocationIndex: paymentOperationRosterSnapshotItems.allocationIndex,
-      obligationId: paymentOperationRosterSnapshotItems.obligationId,
-      amountMinor: paymentOperationRosterSnapshotItems.amountMinor,
-      state: paymentOperationRosterSnapshotItems.state,
-    })
-      .from(paymentOperationRosterSnapshotItems).where(and(
-        eq(paymentOperationRosterSnapshotItems.operationId, authorizationOperationId),
-        eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId),
-        eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId),
-      ));
-    if (authorizedItems.some((item) => item.state !== "finalized")) {
-      throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_ITEMS_INVALID");
-    }
-    type SnapshotAllocation = { allocationIndex?: number; obligationId?: string; bowlerId?: number; payerBowlerId?: number; amountMinor?: number };
-    const recordedSnapshotRows = Array.isArray(snapshotRow.obligations) ? snapshotRow.obligations as SnapshotAllocation[] : [];
-    const ownerAllocations: Array<{ allocationIndex: number; obligationId: string; bowlerId: number; amountMinor: number }> = [];
-    if (snapshotRow.snapshotKind === "interactive" && snapshotRow.snapshotVersion === 2
-      && snapshotRow.requestKind !== null && snapshotRow.encryptedSourceId !== null && snapshotRow.payerBowlerId !== null
-      && snapshotRow.sourceKind !== null && snapshotRow.quoteFingerprint !== null) {
-      try {
-        const snapshot = reconstructRosterOperationSnapshot({
-          organizationId: input.organizationId,
-          amountMinor: operationRow.amountMinor,
-          currency: operationRow.currency,
-          providerName: operationRow.providerName,
-          providerIdempotencyKey: operationRow.providerIdempotencyKey,
-          stored: {
-            snapshotVersion: 2,
-            snapshotFingerprint: snapshotRow.snapshotFingerprint,
-            leagueId: snapshotRow.leagueId,
-            locationId: snapshotRow.locationId,
-            providerLocationId: snapshotRow.providerLocationId,
-            payerBowlerId: snapshotRow.payerBowlerId,
-            requestKind: snapshotRow.requestKind,
-            encryptedSourceId: snapshotRow.encryptedSourceId,
-            encryptedCustomerId: snapshotRow.encryptedCustomerId,
-            encryptedBuyerEmail: snapshotRow.encryptedBuyerEmail,
-            storeCard: snapshotRow.storeCard,
-            sourceKind: snapshotRow.sourceKind,
-            quoteFingerprint: snapshotRow.quoteFingerprint,
-          },
-          allocations: recordedSnapshotRows as RosterOperationSemanticSnapshot["allocations"],
-          lineItems: snapshotRow.lineItems,
-        });
-        ownerAllocations.push(...snapshot.allocations.map((row) => ({ allocationIndex: row.allocationIndex, obligationId: row.obligationId, bowlerId: row.bowlerId, amountMinor: row.amountMinor })));
-      } catch {
-        throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
-      }
-    } else if (snapshotRow.snapshotKind === "interactive" && snapshotRow.snapshotVersion === 3
-      && snapshotRow.requestKind !== null && snapshotRow.encryptedSourceId !== null && snapshotRow.payerBowlerId !== null
-      && snapshotRow.sourceKind !== null && snapshotRow.quoteFingerprint !== null && snapshotRow.partnerEvidence !== null) {
-      try {
-        const snapshot = reconstructInteractivePartnerSnapshot({
-          organizationId: input.organizationId,
-          amountMinor: operationRow.amountMinor,
-          currency: operationRow.currency,
-          providerName: operationRow.providerName,
-          providerIdempotencyKey: operationRow.providerIdempotencyKey,
-          stored: {
-            snapshotVersion: 3,
-            snapshotFingerprint: snapshotRow.snapshotFingerprint,
-            leagueId: snapshotRow.leagueId,
-            locationId: snapshotRow.locationId,
-            providerLocationId: snapshotRow.providerLocationId,
-            payerBowlerId: snapshotRow.payerBowlerId,
-            requestKind: snapshotRow.requestKind,
-            encryptedSourceId: snapshotRow.encryptedSourceId,
-            encryptedCustomerId: snapshotRow.encryptedCustomerId,
-            encryptedBuyerEmail: snapshotRow.encryptedBuyerEmail,
-            storeCard: snapshotRow.storeCard,
-            sourceKind: snapshotRow.sourceKind,
-            quoteFingerprint: snapshotRow.quoteFingerprint,
-            partnerEvidence: snapshotRow.partnerEvidence,
-          },
-          allocations: recordedSnapshotRows as InteractivePartnerPaymentSnapshot["allocations"],
-          lineItems: snapshotRow.lineItems,
-        });
-        ownerAllocations.push(...snapshot.allocations.map((row) => ({ allocationIndex: row.allocationIndex, obligationId: row.obligationId, bowlerId: row.bowlerId, amountMinor: row.amountMinor })));
-      } catch {
-        throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
-      }
-    } else if (snapshotRow.snapshotKind === "standing_autopay" && snapshotRow.snapshotVersion === 2
-      && operationRow.operationType === "standing_autopay_charge") {
-      const [bindingRows, participantRows] = await Promise.all([
-        tx.select().from(paymentOperationStandingAutopayBindings).where(and(
-          eq(paymentOperationStandingAutopayBindings.operationId, authorizationOperationId),
-          eq(paymentOperationStandingAutopayBindings.organizationId, input.organizationId),
-          eq(paymentOperationStandingAutopayBindings.leagueId, input.leagueId),
-        )).limit(1),
-        tx.select().from(paymentOperationStandingAutopayParticipants).where(and(
-          eq(paymentOperationStandingAutopayParticipants.operationId, authorizationOperationId),
-          eq(paymentOperationStandingAutopayParticipants.organizationId, input.organizationId),
-          eq(paymentOperationStandingAutopayParticipants.leagueId, input.leagueId),
-        )),
-      ]);
-      const [binding] = bindingRows;
-      const participantByIndex = new Map(participantRows.map((row) => [row.allocationIndex, row]));
-      if (!binding || binding.evidenceFingerprint !== snapshotRow.snapshotFingerprint || participantRows.length !== authorizedItems.length) {
-        throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
-      }
-      for (const item of authorizedItems) {
-        const record = recordedSnapshotRows.find((row) => row.allocationIndex === item.allocationIndex);
-        const participant = participantByIndex.get(item.allocationIndex);
-        if (!record || record.obligationId !== item.obligationId || record.amountMinor !== item.amountMinor
-          || !Number.isSafeInteger(record.payerBowlerId) || !participant || participant.obligationId !== item.obligationId
-          || participant.bowlerId !== record.payerBowlerId) throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
-        ownerAllocations.push({ allocationIndex: item.allocationIndex, obligationId: item.obligationId, bowlerId: participant.bowlerId, amountMinor: item.amountMinor });
-      }
-    } else {
-      throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_SNAPSHOT_INVALID");
-    }
-    if (!legacyProviderRecipientItemsMatchSnapshot({
-      snapshotItems: authorizedItems,
-      snapshotAllocations: ownerAllocations,
-      creditedBowlerId: input.creditedBowlerId,
-      authorizationItemCount: input.authorizationItemCount ?? 0,
-      authorizationItems,
-      snapshotFingerprint: snapshotRow.snapshotFingerprint,
-    }) || authorizationItems.reduce((sum, item) => sum + item.amountMinor, 0) !== input.amountMinor) {
+    const evidence = await readLegacyProviderSnapshotEvidenceInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payment });
+    if (evidence.operationId !== authorizationOperationId || evidence.fingerprint !== input.authorizationFingerprint
+      || !legacyProviderRecipientItemsMatchSnapshot({
+        snapshotItems: evidence.items,
+        snapshotAllocations: evidence.allocations,
+        creditedBowlerId: input.creditedBowlerId,
+        authorizationItemCount: input.authorizationItemCount ?? 0,
+        authorizationItems,
+        snapshotFingerprint: evidence.fingerprint,
+      }) || authorizationItems.reduce((sum, item) => sum + item.amountMinor, 0) !== input.amountMinor) {
       throw new OwnedPaymentLedgerError("LEGACY_PROVIDER_ITEMS_INVALID");
     }
   }
