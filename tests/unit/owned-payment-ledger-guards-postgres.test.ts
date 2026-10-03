@@ -30,6 +30,7 @@ import {
   teams,
   teamPaymentSlots,
   users,
+  weeklyPaymentAllocationReleases,
   weeklyPaymentFundings,
   weeklyPaymentLedgerAdoptions,
   weeklyPaymentWeekConfirmations,
@@ -52,6 +53,11 @@ import { RefundPaymentOperationExecutor } from "../../server/services/refund-pay
 import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
 import { acquirePaymentOperationLease, finalizeRefundPaymentOperationSuccess } from "../../server/storage/payment-operations";
 import { PaymentProviderError } from "../../server/services/payment-errors";
+import {
+  appendManualReceiptRevisionInTransaction,
+  createManualReceiptHeadInTransaction,
+  createManualReceiptPaymentInTransaction,
+} from "../../server/services/manual-payment-receipts";
 import type { PaymentProvider } from "../../server/services/payment-provider";
 import { readRotatingCreditFundingBalancesInTransaction } from "../../server/services/rotating-credit-applications";
 import { readCanonicalPaymentReport } from "../../server/services/canonical-payment-report";
@@ -74,6 +80,7 @@ let responsibilityId: string;
 let obligationId: string;
 let adoptionId: string;
 let legacyStandingConsentVersion = 0;
+let isolatedWorksheetOccurrenceOrdinal = 1;
 
 beforeAll(async () => {
   const [organization] = await db.insert(organizations).values({
@@ -323,46 +330,155 @@ async function createV4Tender(amountMinor: number) {
   });
 }
 
-async function createWorksheetDebt(input: { amountMinor: number; name: string }) {
-  const [bowler] = await db.insert(bowlers).values({
+async function createManualReceiptTender(input: {
+  amountMinor: number;
+  bowlerId: number;
+  occurrenceId: string;
+  businessDate: string;
+}) {
+  const now = new Date().toISOString();
+  const idempotencyKey = `owned-ledger-manual-tender-${randomUUID()}`;
+  return db.transaction(async (tx) => {
+    const scope = { organizationId, leagueId, actorUserId, occurrenceId: input.occurrenceId, idempotencyKey };
+    const receiptId = await createManualReceiptHeadInTransaction(tx, {
+      organizationId,
+      leagueId,
+      occurrenceId: input.occurrenceId,
+      bowlerId: input.bowlerId,
+      now,
+    });
+    const paymentId = await createManualReceiptPaymentInTransaction(tx, scope, {
+      receiptId,
+      bowlerId: input.bowlerId,
+      amountMinor: input.amountMinor,
+      businessDate: input.businessDate,
+      paymentIdempotencyKey: idempotencyKey,
+    }, now);
+    await appendManualReceiptRevisionInTransaction(tx, {
+      organizationId,
+      leagueId,
+      actorUserId,
+      receiptId,
+      revision: 1,
+      paymentId,
+      amountMinor: input.amountMinor,
+      businessCollectionLocalDate: input.businessDate,
+      revisionKind: "manual_record",
+      now,
+    });
+    const [funding] = await tx.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, organizationId),
+      eq(weeklyPaymentFundings.leagueId, leagueId),
+      eq(weeklyPaymentFundings.paymentId, paymentId),
+    ));
+    if (!funding) throw new Error("manual receipt tender funding was not created");
+    return { paymentId, fundingId: funding.id };
+  });
+}
+
+async function createIsolatedWorksheetOccurrence(name: string) {
+  const ordinal = ++isolatedWorksheetOccurrenceOrdinal;
+  const commandId = randomUUID();
+  const localDate = new Date(Date.UTC(2038, 1, ordinal)).toISOString().slice(0, 10);
+  const instant = `${localDate}T19:00:00.000Z`;
+  const nextWeek = new Date(Date.parse(instant) + 7 * 24 * 60 * 60 * 1_000).toISOString();
+  await db.insert(leagueScheduleCommands).values({
+    id: commandId,
+    organizationId,
+    leagueId,
+    actorUserId,
+    commandType: "publish",
+    idempotencyKey: `owned-ledger-publish-debt-${suffix}-${ordinal}`,
+    requestFingerprint: `owned-ledger-publish-debt-fingerprint-${suffix}-${ordinal}`,
+  });
+  const [occurrence] = await db.insert(leagueOccurrences).values({
+    organizationId,
+    leagueId,
+    locationId,
+    generationKey: `owned-ledger-debt-occurrence-${suffix}-${ordinal}-${name}`,
+    kind: "regular",
+    status: "scheduled",
+    lifecycle: "published",
+    authoritativeLocalDate: localDate,
+    authoritativeLocalStartTime: "19:00:00",
+    timezone: "UTC",
+    startAt: instant,
+    selectedUtcOffsetMinutes: 0,
+    foldResolution: "unambiguous",
+    resolverVersion: "owned-ledger-guard-test",
+    plannedOrdinal: ordinal,
+    competitionNumber: ordinal,
+    competitive: true,
+    countsInStandings: true,
+    publishedAt: instant,
+    publishedByUserId: actorUserId,
+    publicationCommandId: commandId,
+  }).returning({ id: leagueOccurrences.id });
+  const evidenceHex = ordinal.toString(16).padStart(64, "0");
+  await db.insert(weeklyPaymentWeekConfirmations).values({
+    organizationId,
+    leagueId,
+    occurrenceId: occurrence.id,
+    revision: 1,
+    stateFingerprint: `lvmanagepayments:v1:${evidenceHex}`,
+    requestFingerprint: `lvmanagepaymentsrequest:v1:${evidenceHex}`,
+    responsibilitySetFingerprint: `lvmanagepaymentsrows:v1:${evidenceHex}`,
+    idempotencyKey: `owned-ledger-confirm-debt-${suffix}-${ordinal}`,
+    requestSnapshot: {},
+    recordedByUserId: actorUserId,
+  });
+  return { occurrenceId: occurrence.id, instant, pastDueAt: nextWeek, businessDate: localDate };
+}
+
+async function createWorksheetDebt(input: {
+  amountMinor: number;
+  name: string;
+  bowlerId?: number;
+  isolatedOccurrence?: boolean;
+}) {
+  const bowlerId = input.bowlerId ?? (await db.insert(bowlers).values({
     name: `${input.name} ${suffix}`,
     organizationId,
-  }).returning({ id: bowlers.id });
+  }).returning({ id: bowlers.id }))[0]?.id;
+  if (!bowlerId) throw new Error("worksheet debt payer was not created");
+  const occurrence = input.isolatedOccurrence
+    ? await createIsolatedWorksheetOccurrence(input.name)
+    : { occurrenceId, instant: "2038-02-01T19:00:00.000Z", pastDueAt: "2038-02-08T19:00:00.000Z", businessDate: "2038-02-01" };
   const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
     organizationId,
     leagueId,
-    occurrenceId,
+    occurrenceId: occurrence.occurrenceId,
     teamId,
     slotId: null,
     slotIndex: null,
     positionIndex: null,
     responsibilityKind: "worksheet",
-    payerBowlerId: bowler.id,
+    payerBowlerId: bowlerId,
     mainBowlerId: null,
     substituteBowlerId: null,
     policy: null,
     worksheetFeeComponent: "full",
     amountMinor: input.amountMinor,
     currency: "USD",
-    dueAt: "2038-02-01T19:00:00.000Z",
-    pastDueAt: "2038-02-08T19:00:00.000Z",
+    dueAt: occurrence.instant,
+    pastDueAt: occurrence.pastDueAt,
     recordedByUserId: actorUserId,
   }).returning({ id: occurrencePaymentResponsibilities.id, responsibilityKey: occurrencePaymentResponsibilities.responsibilityKey });
   const [obligation] = await db.insert(paymentObligations).values({
     organizationId,
     leagueId,
-    occurrenceId,
+    occurrenceId: occurrence.occurrenceId,
     responsibilityId: responsibility.id,
     component: "full",
-    payerBowlerId: bowler.id,
+    payerBowlerId: bowlerId,
     amountMinor: input.amountMinor,
     currency: "USD",
-    dueAt: "2038-02-01T19:00:00.000Z",
-    pastDueAt: "2038-02-08T19:00:00.000Z",
+    dueAt: occurrence.instant,
+    pastDueAt: occurrence.pastDueAt,
     state: "open",
     createdByUserId: actorUserId,
   }).returning({ id: paymentObligations.id });
-  return { bowlerId: bowler.id, responsibilityId: responsibility.id, responsibilityKey: responsibility.responsibilityKey, obligationId: obligation.id };
+  return { bowlerId, responsibilityId: responsibility.id, responsibilityKey: responsibility.responsibilityKey, obligationId: obligation.id, occurrenceId: occurrence.occurrenceId, businessDate: occurrence.businessDate };
 }
 
 async function createRotatingProviderFunding(input: { bowlerId: number; amountMinor: number }) {
@@ -643,11 +759,12 @@ async function createLegacyStandingFunding(): Promise<{ paymentId: number; fundi
 
 async function insertApplication(
   tx: PaymentOperationTransaction,
-  input: { paymentId: number; fundingId: string; amountMinor: number; sourceAmountMinor?: number; creditedBowlerId?: number; obligationId?: string; responsibilityId?: string },
+  input: { paymentId: number; fundingId: string; amountMinor: number; sourceAmountMinor?: number; creditedBowlerId?: number; obligationId?: string; responsibilityId?: string; occurrenceId?: string },
 ) {
   const payerBowlerId = input.creditedBowlerId ?? creditedBowlerId;
   const targetObligationId = input.obligationId ?? obligationId;
   const targetResponsibilityId = input.responsibilityId ?? responsibilityId;
+  const targetOccurrenceId = input.occurrenceId ?? occurrenceId;
   const [allocation] = await tx.insert(paymentAllocations).values({
     organizationId,
     leagueId,
@@ -670,7 +787,7 @@ async function insertApplication(
     currency: "USD",
     obligationId: targetObligationId,
     responsibilityId: targetResponsibilityId,
-    occurrenceId,
+    occurrenceId: targetOccurrenceId,
     teamId,
     targetKind: "bowler_responsibility",
     targetPayerBowlerId: payerBowlerId,
@@ -971,6 +1088,168 @@ describe("owned payment SQL guards on PostgreSQL", () => {
       eq(weeklyPaymentFundings.paymentId, source.paymentId),
     ));
     expect(after[0]?.count).toBe(before[0]?.count);
+  });
+
+  it.each(["ledger_adoption", "worksheet_correction"] as const)(
+    "reopens a fully released owned obligation for %s evidence in the release transaction",
+    async (reason) => {
+      const debt = await createWorksheetDebt({
+        amountMinor: 2_500,
+        name: `Owned Release Reopen ${reason}`,
+        bowlerId: creditedBowlerId,
+        isolatedOccurrence: true,
+      });
+      const source = await createManualReceiptTender({
+        amountMinor: 1_000,
+        bowlerId: debt.bowlerId,
+        occurrenceId: debt.occurrenceId,
+        businessDate: debt.businessDate,
+      });
+      const application = await db.transaction((tx) => insertApplication(tx, {
+        paymentId: source.paymentId,
+        fundingId: source.fundingId,
+        amountMinor: 1_000,
+        creditedBowlerId: debt.bowlerId,
+        obligationId: debt.obligationId,
+        responsibilityId: debt.responsibilityId,
+        occurrenceId: debt.occurrenceId,
+      }));
+      await db.update(paymentObligations).set({ state: "partially_settled" }).where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        eq(paymentObligations.id, debt.obligationId),
+      ));
+
+      await db.transaction((tx) => releaseOwnedFundingApplicationInTransaction(tx, {
+        organizationId,
+        leagueId,
+        applicationId: application.applicationId,
+        actorUserId,
+        reason,
+        idempotencyKey: `owned-ledger-reopen-${reason}-${randomUUID()}`,
+      }));
+
+      const [obligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(
+        paymentObligations.id,
+        debt.obligationId,
+      ));
+      expect(obligation?.state).toBe("open");
+      const [release] = await db.select().from(weeklyPaymentAllocationReleases).where(eq(
+        weeklyPaymentAllocationReleases.fundingApplicationId,
+        application.applicationId,
+      ));
+      expect(release).toMatchObject({
+        paymentId: source.paymentId,
+        creditedBowlerId: debt.bowlerId,
+        sourceAllocationId: application.allocationId,
+        sourceObligationId: debt.obligationId,
+        sourceApplicationAmountMinor: 1_000,
+        releasedAmountMinor: 1_000,
+        retainedAmountMinor: 0,
+        replacementAllocationId: null,
+        reason,
+      });
+      expect(release?.transactionId).toMatch(/^[0-9]+$/);
+    },
+  );
+
+  it("rejects no-proof, stale, and other-obligation release evidence for partial-to-open updates", async () => {
+    const createDebt = async (name: string) => createWorksheetDebt({
+      amountMinor: 2_500,
+      name,
+      bowlerId: creditedBowlerId,
+      isolatedOccurrence: true,
+    });
+    const createPartiallyCoveredDebt = async (name: string) => {
+      const debt = await createDebt(name);
+      const source = await createManualReceiptTender({
+        amountMinor: 1_000,
+        bowlerId: debt.bowlerId,
+        occurrenceId: debt.occurrenceId,
+        businessDate: debt.businessDate,
+      });
+      const application = await db.transaction((tx) => insertApplication(tx, {
+        paymentId: source.paymentId,
+        fundingId: source.fundingId,
+        amountMinor: 1_000,
+        creditedBowlerId: debt.bowlerId,
+        obligationId: debt.obligationId,
+        responsibilityId: debt.responsibilityId,
+        occurrenceId: debt.occurrenceId,
+      }));
+      await db.update(paymentObligations).set({ state: "partially_settled" }).where(eq(
+        paymentObligations.id,
+        debt.obligationId,
+      ));
+      return { debt, application };
+    };
+    const setOpen = (tx: PaymentOperationTransaction, targetObligationId: string) => tx.update(paymentObligations)
+      .set({ state: "open" })
+      .where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        eq(paymentObligations.id, targetObligationId),
+      ));
+
+    const setPartiallySettled = async (obligationId: string) => db.update(paymentObligations)
+      .set({ state: "partially_settled" })
+      .where(and(
+        eq(paymentObligations.organizationId, organizationId),
+        eq(paymentObligations.leagueId, leagueId),
+        eq(paymentObligations.id, obligationId),
+      ));
+
+    const noProofTarget = await createDebt("No Proof Target");
+    await setPartiallySettled(noProofTarget.obligationId);
+    await expect(db.transaction((tx) => setOpen(tx, noProofTarget.obligationId))).rejects.toThrow();
+
+    const staleSource = await createPartiallyCoveredDebt("Stale Release Source");
+    await db.transaction((tx) => releaseOwnedFundingApplicationInTransaction(tx, {
+      organizationId,
+      leagueId,
+      applicationId: staleSource.application.applicationId,
+      actorUserId,
+      reason: "ledger_adoption",
+      idempotencyKey: `owned-ledger-stale-release-${randomUUID()}`,
+    }));
+    await setPartiallySettled(staleSource.debt.obligationId);
+    await expect(db.transaction((tx) => setOpen(tx, staleSource.debt.obligationId))).rejects.toThrow();
+
+    const wrongScopeSource = await createPartiallyCoveredDebt("Wrong Scope Release Source");
+    const wrongScopeTarget = await createDebt("Wrong Scope Target");
+    await setPartiallySettled(wrongScopeTarget.obligationId);
+    await expect(db.transaction(async (tx) => {
+      await releaseOwnedFundingApplicationInTransaction(tx, {
+        organizationId,
+        leagueId,
+        applicationId: wrongScopeSource.application.applicationId,
+        actorUserId,
+        reason: "worksheet_correction",
+        idempotencyKey: `owned-ledger-wrong-scope-release-${randomUUID()}`,
+      });
+      await setOpen(tx, wrongScopeTarget.obligationId);
+    })).rejects.toThrow();
+
+    const [staleObligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(
+      paymentObligations.id,
+      staleSource.debt.obligationId,
+    ));
+    const [wrongScopeObligation] = await db.select({ state: paymentObligations.state }).from(paymentObligations).where(eq(
+      paymentObligations.id,
+      wrongScopeTarget.obligationId,
+    ));
+    const staleReleaseRows = await db.select({ id: weeklyPaymentAllocationReleases.id }).from(weeklyPaymentAllocationReleases).where(eq(
+      weeklyPaymentAllocationReleases.fundingApplicationId,
+      staleSource.application.applicationId,
+    ));
+    const wrongScopeReleaseRows = await db.select({ id: weeklyPaymentAllocationReleases.id }).from(weeklyPaymentAllocationReleases).where(eq(
+      weeklyPaymentAllocationReleases.fundingApplicationId,
+      wrongScopeSource.application.applicationId,
+    ));
+    expect(staleObligation?.state).toBe("partially_settled");
+    expect(wrongScopeObligation?.state).toBe("partially_settled");
+    expect(staleReleaseRows).toHaveLength(1);
+    expect(wrongScopeReleaseRows).toHaveLength(0);
   });
 
   it("releases completed partially refunded rotating credit and reapplies only remaining value", async () => {
