@@ -762,7 +762,7 @@ describe("owned payment SQL guards on PostgreSQL", () => {
     expect(refund).toMatchObject({ status: "succeeded", amountMinor: 1_000 });
 
     const correction = await db.transaction(async (tx) => {
-      const retiredAt = fixedNow.toISOString();
+      const retiredAt = new Date().toISOString();
       await releaseOwnedFundingApplicationInTransaction(tx, {
         organizationId,
         leagueId,
