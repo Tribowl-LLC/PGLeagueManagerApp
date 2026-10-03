@@ -53,6 +53,11 @@ import { RefundPaymentOperationExecutor } from "../../server/services/refund-pay
 import { prepareRefundPaymentOperation } from "../../server/services/refund-payment-operation-preparation";
 import { acquirePaymentOperationLease, finalizeRefundPaymentOperationSuccess } from "../../server/storage/payment-operations";
 import { PaymentProviderError } from "../../server/services/payment-errors";
+import {
+  appendManualReceiptRevisionInTransaction,
+  createManualReceiptHeadInTransaction,
+  createManualReceiptPaymentInTransaction,
+} from "../../server/services/manual-payment-receipts";
 import type { PaymentProvider } from "../../server/services/payment-provider";
 import { readRotatingCreditFundingBalancesInTransaction } from "../../server/services/rotating-credit-applications";
 import { readCanonicalPaymentReport } from "../../server/services/canonical-payment-report";
@@ -325,6 +330,52 @@ async function createV4Tender(amountMinor: number) {
   });
 }
 
+async function createManualReceiptTender(input: {
+  amountMinor: number;
+  bowlerId: number;
+  occurrenceId: string;
+  businessDate: string;
+}) {
+  const now = new Date().toISOString();
+  const idempotencyKey = `owned-ledger-manual-tender-${randomUUID()}`;
+  return db.transaction(async (tx) => {
+    const scope = { organizationId, leagueId, actorUserId, occurrenceId: input.occurrenceId, idempotencyKey };
+    const receiptId = await createManualReceiptHeadInTransaction(tx, {
+      organizationId,
+      leagueId,
+      occurrenceId: input.occurrenceId,
+      bowlerId: input.bowlerId,
+      now,
+    });
+    const paymentId = await createManualReceiptPaymentInTransaction(tx, scope, {
+      receiptId,
+      bowlerId: input.bowlerId,
+      amountMinor: input.amountMinor,
+      businessDate: input.businessDate,
+      paymentIdempotencyKey: idempotencyKey,
+    }, now);
+    await appendManualReceiptRevisionInTransaction(tx, {
+      organizationId,
+      leagueId,
+      actorUserId,
+      receiptId,
+      revision: 1,
+      paymentId,
+      amountMinor: input.amountMinor,
+      businessCollectionLocalDate: input.businessDate,
+      revisionKind: "manual_record",
+      now,
+    });
+    const [funding] = await tx.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, organizationId),
+      eq(weeklyPaymentFundings.leagueId, leagueId),
+      eq(weeklyPaymentFundings.paymentId, paymentId),
+    ));
+    if (!funding) throw new Error("manual receipt tender funding was not created");
+    return { paymentId, fundingId: funding.id };
+  });
+}
+
 async function createIsolatedWorksheetOccurrence(name: string) {
   const ordinal = ++isolatedWorksheetOccurrenceOrdinal;
   const commandId = randomUUID();
@@ -376,7 +427,7 @@ async function createIsolatedWorksheetOccurrence(name: string) {
     requestSnapshot: {},
     recordedByUserId: actorUserId,
   });
-  return { occurrenceId: occurrence.id, instant, pastDueAt: nextWeek };
+  return { occurrenceId: occurrence.id, instant, pastDueAt: nextWeek, businessDate: localDate };
 }
 
 async function createWorksheetDebt(input: {
@@ -392,7 +443,7 @@ async function createWorksheetDebt(input: {
   if (!bowlerId) throw new Error("worksheet debt payer was not created");
   const occurrence = input.isolatedOccurrence
     ? await createIsolatedWorksheetOccurrence(input.name)
-    : { occurrenceId, instant: "2038-02-01T19:00:00.000Z", pastDueAt: "2038-02-08T19:00:00.000Z" };
+    : { occurrenceId, instant: "2038-02-01T19:00:00.000Z", pastDueAt: "2038-02-08T19:00:00.000Z", businessDate: "2038-02-01" };
   const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
     organizationId,
     leagueId,
@@ -427,7 +478,7 @@ async function createWorksheetDebt(input: {
     state: "open",
     createdByUserId: actorUserId,
   }).returning({ id: paymentObligations.id });
-  return { bowlerId, responsibilityId: responsibility.id, responsibilityKey: responsibility.responsibilityKey, obligationId: obligation.id, occurrenceId: occurrence.occurrenceId };
+  return { bowlerId, responsibilityId: responsibility.id, responsibilityKey: responsibility.responsibilityKey, obligationId: obligation.id, occurrenceId: occurrence.occurrenceId, businessDate: occurrence.businessDate };
 }
 
 async function createRotatingProviderFunding(input: { bowlerId: number; amountMinor: number }) {
@@ -1048,7 +1099,12 @@ describe("owned payment SQL guards on PostgreSQL", () => {
         bowlerId: creditedBowlerId,
         isolatedOccurrence: true,
       });
-      const source = await createV4Tender(1_000);
+      const source = await createManualReceiptTender({
+        amountMinor: 1_000,
+        bowlerId: debt.bowlerId,
+        occurrenceId: debt.occurrenceId,
+        businessDate: debt.businessDate,
+      });
       const application = await db.transaction((tx) => insertApplication(tx, {
         paymentId: source.paymentId,
         fundingId: source.fundingId,
@@ -1106,7 +1162,12 @@ describe("owned payment SQL guards on PostgreSQL", () => {
     });
     const createPartiallyCoveredDebt = async (name: string) => {
       const debt = await createDebt(name);
-      const source = await createV4Tender(1_000);
+      const source = await createManualReceiptTender({
+        amountMinor: 1_000,
+        bowlerId: debt.bowlerId,
+        occurrenceId: debt.occurrenceId,
+        businessDate: debt.businessDate,
+      });
       const application = await db.transaction((tx) => insertApplication(tx, {
         paymentId: source.paymentId,
         fundingId: source.fundingId,

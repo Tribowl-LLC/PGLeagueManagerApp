@@ -111,7 +111,7 @@ function completeProductionEnvironment(): NodeJS.ProcessEnv {
 describe('normalized migration baseline tools', () => {
   it('keeps the exact baseline first and all forward migrations ordered', () => {
     const migrations = loadActiveMigrations();
-    expect(migrations).toHaveLength(56);
+    expect(migrations).toHaveLength(57);
     expect(migrations[0]).toMatchObject({
       idx: 0,
       tag: '0000_normalized_baseline',
@@ -551,6 +551,7 @@ describe('normalized migration baseline tools', () => {
       { idx: 53, tag: '0053_owned_payment_refund_support' },
       { idx: 54, tag: '0054_weekly_standing_account_funding' },
       { idx: 55, tag: '0055_owned_account_refunds_v3' },
+      { idx: 56, tag: '0056_owned_payment_release_reopen_guard' },
     ]);
     expect(ACTIVE_MIGRATIONS_DIRECTORY.endsWith('migrations')).toBe(true);
   });
