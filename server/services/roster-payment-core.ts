@@ -200,6 +200,20 @@ async function beginFinancialCommand(
   });
 }
 
+async function requireManagePaymentsForLegacyWeeklyWrite(
+  tx: RosterPaymentTransaction,
+  scope: { organizationId: number; leagueId: number },
+): Promise<void> {
+  const adoption = await readOwnedLedgerAdoptionInTransaction(tx, scope);
+  if (adoption) {
+    throw new RosterPaymentError(
+      "MANAGE_PAYMENTS_REQUIRED",
+      "This league's weekly responsibility and receipt corrections are managed in Manage Payments.",
+      409,
+    );
+  }
+}
+
 /** Applied manual-record, void, and cash-edit commands can outlive a direct
  * cash deletion. Keep their audit rows, but never replay a result containing
  * a payment that no longer exists. */
@@ -1060,6 +1074,7 @@ export async function saveRotatingOccurrenceAssignments(input: {
       idempotencyKey: input.request.commandKey,
       requestFingerprint: input.request.requestFingerprint,
     });
+    await requireManagePaymentsForLegacyWeeklyWrite(tx, input);
     const ordered = [...input.request.assignments].sort((a, b) => a.occurrenceId.localeCompare(b.occurrenceId)
       || a.teamId - b.teamId
       || a.slotIndex - b.slotIndex);
@@ -1748,6 +1763,7 @@ export async function recordOccurrenceResponsibilities(input: {
       idempotencyKey: input.commandKey,
       requestFingerprint: input.requestFingerprint,
     });
+    await requireManagePaymentsForLegacyWeeklyWrite(tx, input);
     const occurrenceIds = [...new Set(input.responsibilities.map((row) => row.occurrenceId))];
     const occurrences = await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt, status: leagueOccurrences.status }).from(leagueOccurrences).where(and(eq(leagueOccurrences.organizationId, input.organizationId), eq(leagueOccurrences.leagueId, input.leagueId), inArray(leagueOccurrences.id, occurrenceIds), inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const), inArray(leagueOccurrences.status, ["scheduled", "completed"] as const)));
     if (occurrences.length !== occurrenceIds.length) throw new RosterPaymentError("OCCURRENCE_NOT_PUBLISHED", "Responsibilities require published canonical occurrences", 422);
@@ -2717,7 +2733,7 @@ async function editAdoptedManualReceiptInTransaction(input: {
       paymentId: replacementPaymentId,
       amountMinor,
       businessCollectionLocalDate: paymentDate,
-        revisionKind: sameCollectionOccurrence ? "manual_edit" : "manual_record",
+      revisionKind: sameCollectionOccurrence ? "manual_edit" : "manual_record",
       now: collection.now,
     });
   } catch (error) {
@@ -2991,7 +3007,7 @@ export async function correctCanonicalAllocation(input: { organizationId: number
         throw new RosterPaymentError("PROVIDER_ALLOCATION_IMMUTABLE", "Provider payment evidence requires refund or reconciliation; it cannot be directly corrected", 409);
       }
       if (input.request.correctionMode !== "void_only") {
-        throw new RosterPaymentError("INVALID_CORRECTION_MODE", "The cash edit command requires correctionMode=edit_cash", 422);
+        throw new RosterPaymentError("INVALID_CORRECTION_MODE", "This command only clears an adopted manual payment; use the cash edit command to change its amount", 422);
       }
       if (input.request.requestFingerprint !== canonicalCorrectionFingerprint(input.request)) {
         throw new RosterPaymentError("INVALID_FINGERPRINT", "The correction request fingerprint is invalid", 422);
@@ -3705,6 +3721,7 @@ export async function repairHistoricalCashPaymentAllocation(input: {
       idempotencyKey: request.idempotencyKey,
       requestFingerprint: request.requestFingerprint,
     });
+    await requireManagePaymentsForLegacyWeeklyWrite(tx, input);
 
     const [payment] = await tx.select().from(payments).where(and(
       eq(payments.id, request.paymentId),

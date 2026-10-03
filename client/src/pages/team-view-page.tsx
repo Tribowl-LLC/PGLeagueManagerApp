@@ -252,6 +252,7 @@ export default function TeamViewPage() {
         league={league}
         teamBowlers={teamBowlers}
         canManage={canManageRotatingPayments}
+        isOrganizationAdmin={canManageRoster}
         roster={rotatingRosterQuery.data?.success ? rotatingRosterQuery.data.data : undefined}
         rosterLoading={rotatingRosterQuery.isLoading || rotatingRosterQuery.isFetching}
         rosterError={rotatingRosterQuery.error || (!rotatingRosterQuery.data?.success ? rotatingRosterQuery.data?.error?.message : undefined)}

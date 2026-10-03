@@ -31,14 +31,22 @@ import { createLeagueWithCanonicalSetup } from "../../server/services/league-set
 import { prepareAccountPaymentOperation } from "../../server/services/account-payment-operation-preparation.js";
 import { recoverRosterPaymentOperation } from "../../server/services/roster-payment-recovery.js";
 import {
+  canonicalHistoricalCashAllocationRepairFingerprint,
+  canonicalResponsibilityFingerprint,
+  canonicalRotatingAssignmentFingerprint,
   canonicalCashPaymentDeleteFingerprint,
   canonicalCashPaymentEditFingerprint,
   deleteCanonicalCashPayment,
   editCanonicalCashPayment,
   quoteCanonicalManualPayment,
   recordCanonicalManualPayment,
+  recordOccurrenceResponsibilities,
+  repairHistoricalCashPaymentAllocation,
+  saveRotatingOccurrenceAssignments,
 } from "../../server/services/roster-payment-core.js";
 import { canonicalManualReceiptQuoteFingerprint } from "../../server/services/manual-payment-receipts.js";
+import { historicalCashAllocationFingerprint } from "@shared/historical-payment-repair";
+import { calculateRosterPaymentTiming } from "@shared/roster-payment-contract";
 import { readOwnedAccountBalancesInTransaction } from "../../server/services/owned-payment-ledger.js";
 import { readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read.js";
 import { saveManagePaymentsWorksheet, ManagePaymentsWorksheetWriteError } from "../../server/services/manage-payments-worksheet-write.js";
@@ -217,6 +225,85 @@ function rowChange(snapshot: ManagePaymentsSnapshot, bowlerId: number, overrides
 }
 
 describe("Manage Payments worksheet atomic writer", () => {
+  it("blocks adopted legacy weekly responsibility, rotating assignment, and allocation repair writers", async () => {
+    const occurrence = (await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.id, selectedOccurrenceId)).limit(1))[0];
+    if (!occurrence) throw new Error("selected weekly occurrence fixture was not found");
+    const timing = calculateRosterPaymentTiming(occurrence.startAt);
+    const responsibility = {
+      occurrenceId: selectedOccurrenceId,
+      teamId,
+      slotIndex: 0,
+      positionIndex: 0,
+      kind: "main" as const,
+      mainBowlerId,
+      substituteBowlerId: null,
+      payerBowlerId: mainBowlerId,
+      policy: "main_pays_full" as const,
+      amountMinor: 2_500,
+      lineageAmountMinor: null,
+      prizeFundAmountMinor: null,
+      ...timing,
+    };
+    const rotatingAssignment = {
+      occurrenceId: selectedOccurrenceId,
+      teamId,
+      slotIndex: 1,
+      expectedRevision: null,
+      actualBowlerId: substituteBowlerId,
+    };
+    const repairTargetAllocations = [{ obligationId: mainLegacyObligationId, amountMinor: 2_500 }];
+    const repairRequestWithoutFingerprint = {
+      paymentId: 1,
+      expectedOldAllocationFingerprint: `lvrepaircashalloc:v1:${"c".repeat(64)}`,
+      expectedTargetAllocationFingerprint: historicalCashAllocationFingerprint(repairTargetAllocations.map((row) => ({
+        ...row,
+        state: "active" as const,
+        allocationKind: "ordinary" as const,
+      }))),
+      targetAllocations: repairTargetAllocations,
+      reason: "test adopted correction guard",
+      idempotencyKey: `legacy-repair-guard-${randomUUID()}`,
+    };
+    const repairRequest = {
+      ...repairRequestWithoutFingerprint,
+      requestFingerprint: canonicalHistoricalCashAllocationRepairFingerprint({
+        organizationId,
+        leagueId,
+        request: repairRequestWithoutFingerprint,
+      }),
+    };
+
+    await expect(recordOccurrenceResponsibilities({
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandKey: `legacy-responsibility-guard-${randomUUID()}`,
+      responsibilities: [responsibility],
+      requestFingerprint: canonicalResponsibilityFingerprint([responsibility]),
+    })).rejects.toMatchObject({ code: "MANAGE_PAYMENTS_REQUIRED" });
+
+    const rotatingRequest = {
+      commandKey: `legacy-rotation-guard-${randomUUID()}`,
+      assignments: [rotatingAssignment],
+      requestFingerprint: "",
+    };
+    rotatingRequest.requestFingerprint = canonicalRotatingAssignmentFingerprint(rotatingRequest);
+    await expect(saveRotatingOccurrenceAssignments({
+      organizationId,
+      leagueId,
+      actorUserId,
+      request: rotatingRequest,
+    })).rejects.toMatchObject({ code: "MANAGE_PAYMENTS_REQUIRED" });
+
+    await expect(repairHistoricalCashPaymentAllocation({
+      organizationId,
+      leagueId,
+      actorUserId,
+      allowlist: { paymentAmountsMinor: { "1": 2_500 } },
+      request: repairRequest,
+    })).rejects.toMatchObject({ code: "MANAGE_PAYMENTS_REQUIRED" });
+  });
+
   it("records an exact no-debt cash advance, leaves it as owned credit, and replays without duplicating income", async () => {
     const amountMinor = 1_234;
     const quote = await quoteCanonicalManualPayment({

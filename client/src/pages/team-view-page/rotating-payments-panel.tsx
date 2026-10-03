@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { fingerprintCanonicalRequest } from "@/lib/rotating-payment-fingerprint";
 import { nearestCanonicalOccurrence } from "@/lib/rotating-payment-date";
 import { apiRequest } from "@/lib/queryClient";
+import { Link } from "wouter";
 import type { TeamBowlerEntry } from "@/lib/bowler-league-utils";
 import { formatCurrency } from "@/lib/utils";
 import type { BowlerWithAccount, League } from "@shared/schema";
@@ -60,6 +61,7 @@ interface RotatingPaymentsPanelProps {
   league: League | undefined;
   teamBowlers: TeamBowlerEntry<BowlerWithAccount>[];
   canManage: boolean;
+  isOrganizationAdmin?: boolean;
   roster: RosterPaymentResponsibilityReadContractV2 | undefined;
   rosterLoading: boolean;
   rosterError: unknown;
@@ -161,6 +163,7 @@ export function RotatingPaymentsPanel({
   league,
   teamBowlers,
   canManage,
+  isOrganizationAdmin = false,
   roster,
   rosterLoading,
   rosterError,
@@ -368,7 +371,18 @@ export function RotatingPaymentsPanel({
       setCorrectionReasons({});
       toast({ title: "Lineup confirmation saved", description: "Payment status updates separately from who is confirmed to bowl." });
     },
-    onError: (error: Error) => toast({ title: "Lineup confirmation could not be saved", description: error.message, variant: "destructive" }),
+    onError: (error: Error) => {
+      const managePaymentsRequired = "code" in error && error.code === "MANAGE_PAYMENTS_REQUIRED";
+      toast({
+        title: "Lineup confirmation could not be saved",
+        description: managePaymentsRequired
+          ? isOrganizationAdmin
+            ? <>{error.message} <Link href="/manage-payments">Open Manage Payments</Link>.</>
+            : "This weekly assignment is now managed by an organization administrator. Ask an administrator to review it in Manage Payments."
+          : error.message,
+        variant: "destructive",
+      });
+    },
   });
 
   const toggleRotation = (enabled: boolean) => {
