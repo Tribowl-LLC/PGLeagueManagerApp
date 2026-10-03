@@ -1,8 +1,10 @@
 import { useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -442,6 +444,7 @@ export function AdminWeeklyPaymentsAccountDialog({
       <DialogContent
         variant="managePayments"
         viewport="dialog"
+        showCloseButton={false}
         data-awpa="dialog"
         onOpenAutoFocus={() => {
           const activeElement = document.activeElement;
@@ -455,11 +458,16 @@ export function AdminWeeklyPaymentsAccountDialog({
           focusReturnTarget.current = null;
         }}
       >
-        <DialogHeader data-awpa="header">
+        <DialogHeader variant="managePayments" data-awpa="header">
           <DialogTitle>{bowlerName} account</DialogTitle>
           <DialogDescription className="sr-only">
             Read-only account balances, confirmed fees, and payment history.
           </DialogDescription>
+          <DialogClose asChild>
+            <Button variant="paymentsGhost" size="paymentsIcon" aria-label="Close">
+              <X aria-hidden="true" />
+            </Button>
+          </DialogClose>
         </DialogHeader>
 
         <dl data-awpa="summary" aria-label="Account summary">
