@@ -1,5 +1,11 @@
 import { render } from "takumi-pdf";
-import type { FinancialReadContract, FinancialReadContractV3, FinancialReadRowContract, FinancialReadRowContractV3 } from "../../shared/financial-contract.js";
+import type {
+  FinancialReadAccountProjectionRow,
+  FinancialReadContract,
+  FinancialReadContractV3,
+  FinancialReadRowContract,
+  FinancialReadRowContractV3,
+} from "../../shared/financial-contract.js";
 import type {
   LeagueOccurrenceScheduleOccurrence,
   LeagueOccurrenceScheduleReadContract,
@@ -61,6 +67,7 @@ export interface TeamEnvelopeReport {
   finalOccurrenceId: string;
   finalOccurrenceLocalDate: string;
   finalWeekFeesDueLocalDate: string | null;
+  ownedAccountProjection?: boolean;
   teams: TeamEnvelopeReportTeam[];
 }
 
@@ -190,6 +197,38 @@ function effectiveBowlerOwnerId(row: FinancialReportRow): number | null {
   return row.payerBowlerId;
 }
 
+function effectiveDebtorBowlerId(row: FinancialReportRow): number | null {
+  return row.accountProjection ? row.accountProjection.effectiveDebtorBowlerId : effectiveBowlerOwnerId(row);
+}
+
+function hasOwnedAccountProjection(financial: FinancialReportRead): boolean {
+  return financial.accountProjection?.contractVersion === "owned-account-projection/1";
+}
+
+function accountForBowler(financial: FinancialReportRead, bowlerId: number): FinancialReadAccountProjectionRow | undefined {
+  return financial.accountProjection?.accounts.find((account) => account.bowlerId === bowlerId);
+}
+
+function projectedOutstandingMinor(row: FinancialReportRow): number {
+  return Math.max(0, row.outstandingMinor - (row.accountProjection?.projectedCreditMinor ?? 0));
+}
+
+function finalCoverageIsPaid(rows: readonly FinancialReportRow[]): boolean {
+  if (rows.length === 0) return false;
+  let hasMoney = false;
+  const allCovered = rows.every((row) => {
+    // Waived value is not money received. The final-fee marker requires the
+    // original component target to be covered by allocations or safe credit.
+    const targetMinor = row.amountMinor;
+    const receivedOrProjectedMinor = Math.max(0, row.allocatedMinor) + (row.accountProjection?.projectedCreditMinor ?? 0);
+    if (row.state === "voided" || row.reviewRequired || targetMinor <= 0
+      || receivedOrProjectedMinor <= 0 || receivedOrProjectedMinor < targetMinor) return false;
+    hasMoney = true;
+    return true;
+  });
+  return allCovered && hasMoney;
+}
+
 function teamOwnedSlotRows(rows: FinancialReportRow[], teamId: number, slotIndex: number): FinancialReadRowContractV3[] {
   return rows.filter((row): row is FinancialReadRowContractV3 => (
     "owner" in row
@@ -205,6 +244,10 @@ function envelopeAmounts(
   selectedOccurrenceId: string,
   selectedPosition: number,
   futurePairedOccurrenceIds: ReadonlySet<string>,
+  ownedAccount?: FinancialReadAccountProjectionRow,
+  accountBowlerId?: number,
+  adoptedMode = false,
+  accountProjectionRows: FinancialReportRow[] = obligations,
 ): Pick<TeamEnvelopeReportRow, "weeklyDueMinor" | "ytdDueMinor" | "ytdPaidMinor" | "remainingCreditMinor" | "pastDueMinor" | "dueTodayMinor"> {
   // Canonical occurrence order is authoritative here. Due timestamps can be
   // shared by upfront obligations and do not express the league's week order.
@@ -214,16 +257,35 @@ function envelopeAmounts(
     return position !== undefined && position < selectedPosition;
   });
   const weeklyDueMinor = selectedRows.reduce((sum, row) => sum + effectiveAmountMinor(row), 0);
-  const ytdDueMinor = priorRows.reduce((sum, row) => sum + effectiveAmountMinor(row), 0);
-  const ytdPaidMinor = obligations.reduce((sum, row) => sum + Math.max(0, row.allocatedMinor), 0);
+  const ownedPriorRows = adoptedMode
+    ? priorRows.filter((row) => row.accountProjection?.confirmationStatus === "confirmed")
+    : priorRows;
+  const ytdDueMinor = ownedPriorRows.reduce((sum, row) => sum + effectiveAmountMinor(row), 0);
+  const ytdPaidMinor = adoptedMode
+    ? ownedAccount?.amountPaidMinor ?? 0
+    : obligations.reduce((sum, row) => sum + Math.max(0, row.allocatedMinor), 0);
   // Allocations applied to a future published paired week stay earmarked for
   // that week. Current and past paired weeks are available in the balance.
   const futurePairedReservedMinor = obligations
     .filter((row) => futurePairedOccurrenceIds.has(row.occurrenceId))
     .reduce((sum, row) => sum + Math.max(0, row.allocatedMinor), 0);
-  const remainingCreditMinor = Math.max(0, ytdPaidMinor - futurePairedReservedMinor - ytdDueMinor);
-  const pastDueMinor = priorRows.reduce((sum, row) => sum + Math.max(0, row.outstandingMinor), 0);
-  const dueTodayMinor = pastDueMinor + selectedRows.reduce((sum, row) => sum + Math.max(0, row.outstandingMinor), 0);
+  const projectedForBowlerMinor = adoptedMode && accountBowlerId !== undefined
+    ? accountProjectionRows.filter((row) => effectiveDebtorBowlerId(row) === accountBowlerId)
+      .reduce((sum, row) => sum + (row.accountProjection?.projectedCreditMinor ?? 0), 0)
+    : 0;
+  const remainingCreditMinor = adoptedMode
+    ? Math.max(0, (ownedAccount?.availableCreditMinor ?? 0) - projectedForBowlerMinor)
+    : Math.max(0, ytdPaidMinor - futurePairedReservedMinor - ytdDueMinor);
+  const collectiblePriorRows = adoptedMode
+    ? priorRows.filter((row) => row.accountProjection?.confirmationStatus === "confirmed"
+      && row.classification === "past_due" && !row.reviewRequired)
+    : priorRows;
+  const pastDueMinor = collectiblePriorRows.reduce((sum, row) => sum + (adoptedMode
+    ? projectedOutstandingMinor(row)
+    : row.outstandingMinor), 0);
+  const dueTodayMinor = pastDueMinor + selectedRows.reduce((sum, row) => sum + (adoptedMode
+    ? projectedOutstandingMinor(row)
+    : row.outstandingMinor), 0);
   return {
     weeklyDueMinor,
     ytdDueMinor,
@@ -234,8 +296,28 @@ function envelopeAmounts(
   };
 }
 
+function bowlerAccountObligations(financial: FinancialReportRead, bowlerId: number): FinancialReportRow[] {
+  return financial.rows.filter((row) => (
+    row.state !== "voided"
+    && (!("owner" in row) || row.owner.kind === "bowler")
+    && effectiveDebtorBowlerId(row) === bowlerId
+  ));
+}
+
+function finalTargetRows(rows: readonly FinancialReportRow[]): FinancialReportRow[] {
+  return rows.filter((row) => row.state !== "voided" && row.amountMinor > 0);
+}
+
+function accountHasEnvelopeBalance(account: FinancialReadAccountProjectionRow): boolean {
+  return account.amountPaidMinor > 0
+    || account.availableCreditMinor > 0
+    || account.confirmedDebtMinor > 0
+    || account.seasonRemainingMinor > 0;
+}
+
 export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnvelopeReport {
   const { league, schedule, roster, financial } = input;
+  const adoptedMode = hasOwnedAccountProjection(financial);
   if (league.organizationId === null
     || schedule.organizationId !== league.organizationId
     || roster.organizationId !== league.organizationId
@@ -245,7 +327,7 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
     || financial.leagueId !== league.id) {
     throw new TeamEnvelopeReportError("REPORT_SCOPE_INVALID", "The report evidence does not share one authorized league scope", 503);
   }
-  if (!roster.ready) {
+  if (!roster.ready && !adoptedMode) {
     throw new TeamEnvelopeReportError(
       "ROSTER_INCOMPLETE",
       "Complete every active team's paying lineup before creating envelope slips",
@@ -278,9 +360,72 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
   );
 
   const bowlerNames = new Map(roster.substituteBowlerOptions.map((bowler) => [bowler.id, bowler.name]));
+  const reportTeamIds = new Set(roster.teams.map((team) => team.id));
   const mainBowlerIds = new Set(
     roster.teams.flatMap((team) => team.slots.flatMap((slot) => slot.occupant === "main" && slot.mainBowlerId !== null ? [slot.mainBowlerId] : [])),
   );
+  const membershipTeamsByBowler = new Map<number, Set<number>>();
+  for (const bowler of roster.substituteBowlerOptions) {
+    if (bowler.teamId === null || !reportTeamIds.has(bowler.teamId)) continue;
+    membershipTeamsByBowler.set(bowler.id, new Set([...(membershipTeamsByBowler.get(bowler.id) ?? []), bowler.teamId]));
+  }
+  for (const team of roster.teams) {
+    for (const slot of team.slots) {
+      if (slot.occupant !== "main" || slot.mainBowlerId === null) continue;
+      membershipTeamsByBowler.set(slot.mainBowlerId, new Set([...(membershipTeamsByBowler.get(slot.mainBowlerId) ?? []), team.id]));
+    }
+    if ("eligibleRotatingBowlerIds" in team) {
+      for (const bowlerId of team.eligibleRotatingBowlerIds) {
+        membershipTeamsByBowler.set(bowlerId, new Set([...(membershipTeamsByBowler.get(bowlerId) ?? []), team.id]));
+      }
+    }
+  }
+  const selectedTeamsByBowler = new Map<number, Set<number>>();
+  const obligationTeamsByBowler = new Map<number, Set<number>>();
+  const accountBowlerIds = new Set<number>();
+  if (adoptedMode) {
+    for (const account of financial.accountProjection?.accounts ?? []) {
+      if (accountHasEnvelopeBalance(account)) accountBowlerIds.add(account.bowlerId);
+    }
+    for (const row of financial.rows) {
+      if (row.state === "voided") continue;
+      if ("owner" in row && row.owner.kind === "team") {
+        if (row.occurrenceId === selectedOccurrence.occurrenceId && row.actualBowlerId !== null && reportTeamIds.has(row.teamId)) {
+          selectedTeamsByBowler.set(row.actualBowlerId, new Set([...(selectedTeamsByBowler.get(row.actualBowlerId) ?? []), row.teamId]));
+        }
+        continue;
+      }
+      if (row.outstandingMinor <= 0 && row.allocatedMinor <= 0) continue;
+      const bowlerId = effectiveDebtorBowlerId(row);
+      if (bowlerId === null) continue;
+      accountBowlerIds.add(bowlerId);
+      if (!reportTeamIds.has(row.teamId)) continue;
+      obligationTeamsByBowler.set(bowlerId, new Set([...(obligationTeamsByBowler.get(bowlerId) ?? []), row.teamId]));
+      if (row.occurrenceId === selectedOccurrence.occurrenceId) {
+        selectedTeamsByBowler.set(bowlerId, new Set([...(selectedTeamsByBowler.get(bowlerId) ?? []), row.teamId]));
+      }
+    }
+  }
+  const accountTeamByBowler = new Map<number, number>();
+  if (adoptedMode) {
+    for (const bowlerId of accountBowlerIds) {
+      const selectedTeams = selectedTeamsByBowler.get(bowlerId) ?? new Set<number>();
+      const membershipTeams = membershipTeamsByBowler.get(bowlerId) ?? new Set<number>();
+      const obligationTeams = obligationTeamsByBowler.get(bowlerId) ?? new Set<number>();
+      let teamId: number | undefined;
+      if (selectedTeams.size === 1) {
+        teamId = [...selectedTeams][0];
+      } else if (selectedTeams.size > 1) {
+        const matchingMembership = [...membershipTeams].filter((candidate) => selectedTeams.has(candidate));
+        teamId = matchingMembership.length === 1 ? matchingMembership[0] : [...selectedTeams].sort((a, b) => a - b)[0];
+      } else if (membershipTeams.size === 1) {
+        teamId = [...membershipTeams][0];
+      } else if (obligationTeams.size === 1) {
+        teamId = [...obligationTeams][0];
+      }
+      if (teamId !== undefined && reportTeamIds.has(teamId)) accountTeamByBowler.set(bowlerId, teamId);
+    }
+  }
   const currentRotatingSlots = roster.teams.flatMap((team) => (
     "eligibleRotatingBowlerIds" in team
       ? team.slots.filter((slot) => slot.occupant === "rotating").map((slot) => ({ teamId: team.id, slotIndex: slot.slotIndex }))
@@ -288,8 +433,8 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
   ));
   if (financial.rows.some((row) => {
     if (!row.reviewRequired) return false;
-    const ownerBowlerId = effectiveBowlerOwnerId(row);
-    if (ownerBowlerId !== null && mainBowlerIds.has(ownerBowlerId)) return true;
+    const ownerBowlerId = adoptedMode ? effectiveDebtorBowlerId(row) : effectiveBowlerOwnerId(row);
+    if (ownerBowlerId !== null && (adoptedMode ? accountTeamByBowler.has(ownerBowlerId) : mainBowlerIds.has(ownerBowlerId))) return true;
     if (!("owner" in row) || row.owner.kind !== "team") return false;
     const ownerTeamId = row.owner.teamId;
     return currentRotatingSlots.some((slot) => slot.teamId === ownerTeamId && slot.slotIndex === row.slotIndex);
@@ -302,14 +447,21 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
   }
 
   const teams = roster.teams.map<TeamEnvelopeReportTeam>((team) => {
-    const rows = team.slots.flatMap<TeamEnvelopeReportRow>((slot) => {
+    let hasFinalRequirement = false;
+    let hasUnpaidFinalRequirement = false;
+    const rows = adoptedMode ? [] as TeamEnvelopeReportRow[] : team.slots.flatMap<TeamEnvelopeReportRow>((slot) => {
       if (slot.occupant === "main" && slot.mainBowlerId !== null) {
         const bowlerName = bowlerNames.get(slot.mainBowlerId);
         if (!bowlerName) {
           throw new TeamEnvelopeReportError("ROSTER_IDENTITY_MISSING", "An active lineup member is missing a bowler identity", 503);
         }
         const obligations = financial.rows.filter((row) => effectiveBowlerOwnerId(row) === slot.mainBowlerId && row.state !== "voided");
-        const finalRows = obligations.filter((row) => row.occurrenceId === finalOccurrence.occurrenceId);
+        const finalRows = finalTargetRows(obligations.filter((row) => row.occurrenceId === finalOccurrence.occurrenceId));
+        const finalWeekPaid = finalCoverageIsPaid(finalRows);
+        if (finalRows.length > 0) {
+          hasFinalRequirement = true;
+          if (!finalWeekPaid) hasUnpaidFinalRequirement = true;
+        }
         const amounts = envelopeAmounts(
           obligations,
           occurrencePosition,
@@ -321,13 +473,18 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
           bowlerId: slot.mainBowlerId,
           bowlerName,
           ...amounts,
-          finalWeekPaid: finalRows.every((row) => row.outstandingMinor === 0),
+          finalWeekPaid,
         }];
       }
       if (slot.occupant === "rotating") {
         const obligations = teamOwnedSlotRows(financial.rows, team.id, slot.slotIndex).filter((row) => row.state !== "voided");
         const selectedRows = obligations.filter((row) => row.occurrenceId === selectedOccurrence.occurrenceId);
-        const finalRows = obligations.filter((row) => row.occurrenceId === finalOccurrence.occurrenceId);
+        const finalRows = finalTargetRows(obligations.filter((row) => row.occurrenceId === finalOccurrence.occurrenceId));
+        const finalWeekPaid = finalCoverageIsPaid(finalRows);
+        if (finalRows.length > 0) {
+          hasFinalRequirement = true;
+          if (!finalWeekPaid) hasUnpaidFinalRequirement = true;
+        }
         const amounts = envelopeAmounts(
           obligations,
           occurrencePosition,
@@ -346,16 +503,89 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
           ownerKind: "team",
           slotIndex: slot.slotIndex,
           ...amounts,
-          finalWeekPaid: finalRows.length > 0 && finalRows.every((row) => row.outstandingMinor === 0),
+          finalWeekPaid,
         }];
       }
       return [];
     });
+    if (adoptedMode) {
+      for (const bowlerId of [...accountBowlerIds].filter((id) => accountTeamByBowler.get(id) === team.id).sort((a, b) => a - b)) {
+        const bowlerName = bowlerNames.get(bowlerId);
+        if (!bowlerName) {
+          throw new TeamEnvelopeReportError("ROSTER_IDENTITY_MISSING", "An active account holder is missing a bowler identity", 503);
+        }
+        const obligations = bowlerAccountObligations(financial, bowlerId);
+        const account = accountForBowler(financial, bowlerId);
+        if (!account) {
+          throw new TeamEnvelopeReportError("FINANCIAL_EVIDENCE_INVALID", "An active account holder is missing its account projection", 503);
+        }
+        if (!accountHasEnvelopeBalance(account) && obligations.length === 0) continue;
+        const finalRows = finalTargetRows(obligations.filter((row) => row.occurrenceId === finalOccurrence.occurrenceId));
+        const finalWeekPaid = finalCoverageIsPaid(finalRows);
+        if (finalRows.length > 0) {
+          hasFinalRequirement = true;
+          if (!finalWeekPaid) hasUnpaidFinalRequirement = true;
+        }
+        const amounts = envelopeAmounts(
+          obligations,
+          occurrencePosition,
+          selectedOccurrence.occurrenceId,
+          selectedPosition,
+          futurePairedOccurrenceIds,
+          account,
+          bowlerId,
+          true,
+          financial.rows,
+        );
+        rows.push({
+          bowlerId,
+          bowlerName,
+          ...amounts,
+          finalWeekPaid,
+        });
+      }
+      // A team-owned rotating slot remains one report row. Apply projected
+      // credit to its selected and past-due balances without turning the slot
+      // into duplicate per-bowler obligations.
+      for (const slot of team.slots.filter((candidate) => candidate.occupant === "rotating")) {
+        const obligations = teamOwnedSlotRows(financial.rows, team.id, slot.slotIndex).filter((row) => row.state !== "voided");
+        const finalRows = finalTargetRows(obligations.filter((row) => row.occurrenceId === finalOccurrence.occurrenceId));
+        const finalWeekPaid = finalCoverageIsPaid(finalRows);
+        if (finalRows.length > 0) {
+          hasFinalRequirement = true;
+          if (!finalWeekPaid) hasUnpaidFinalRequirement = true;
+        }
+        const selectedRows = obligations.filter((row) => row.occurrenceId === selectedOccurrence.occurrenceId);
+        const amounts = envelopeAmounts(
+          obligations,
+          occurrencePosition,
+          selectedOccurrence.occurrenceId,
+          selectedPosition,
+          futurePairedOccurrenceIds,
+          undefined,
+          undefined,
+          true,
+        );
+        const actualBowlerId = selectedRows.find((row) => row.actualBowlerId !== null)?.actualBowlerId ?? null;
+        const actualBowlerName = actualBowlerId === null ? null : bowlerNames.get(actualBowlerId);
+        if (actualBowlerId !== null && !actualBowlerName) {
+          throw new TeamEnvelopeReportError("ROSTER_IDENTITY_MISSING", "A confirmed rotating participant is missing a bowler identity", 503);
+        }
+        rows.push({
+          bowlerId: null,
+          bowlerName: actualBowlerName ? `Rotating slot ${slot.slotIndex + 1} · ${actualBowlerName}` : `Rotating slot ${slot.slotIndex + 1}`,
+          ownerKind: "team",
+          slotIndex: slot.slotIndex,
+          ...amounts,
+          finalWeekPaid,
+        });
+      }
+    }
     return {
       teamId: team.id,
       teamName: team.name,
       teamNumber: team.number,
-      showFinalWeekPaid: rows.some((row) => !row.finalWeekPaid),
+      showFinalWeekPaid: hasFinalRequirement && hasUnpaidFinalRequirement,
       rows,
     };
   });
@@ -384,6 +614,7 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
     finalOccurrenceId: finalOccurrence.occurrenceId,
     finalOccurrenceLocalDate: finalOccurrence.authoritativeLocalDate,
     finalWeekFeesDueLocalDate,
+    ...(adoptedMode ? { ownedAccountProjection: true } : {}),
     teams,
   };
 }
@@ -443,7 +674,9 @@ function teamPage(report: TeamEnvelopeReport, team: TeamEnvelopeReportTeam, inde
       </tr>`).join("")
     : `<tr><td class="empty" colspan="8">No assigned bowlers</td></tr>`;
   const notes = [
-    `<p class="note">Remaining Credit excludes payments reserved for future final weeks.</p>`,
+    report.ownedAccountProjection
+      ? `<p class="note">Remaining Credit reflects owned credit after projected coverage, including final fees.</p>`
+      : `<p class="note">Remaining Credit excludes payments reserved for future final weeks.</p>`,
     ...(team.showFinalWeekPaid && report.finalWeekFeesDueLocalDate
       ? [`<p class="note">Final Week&#39;s Fees due by ${escapeHtml(displayDate(report.finalWeekFeesDueLocalDate))}</p>`]
       : []),

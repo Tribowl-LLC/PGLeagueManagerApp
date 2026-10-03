@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { FinancialReadRowContract, FinancialReadRowContractV3 } from "../../shared/financial-contract";
+import type { FinancialReadAccountProjectionRow, FinancialReadRowContract, FinancialReadRowContractV3 } from "../../shared/financial-contract";
 import type { LeagueOccurrenceScheduleOccurrence } from "../../shared/league-occurrence-schedule";
 
 vi.mock("../../server/storage/index.js", () => ({ storage: {} }));
@@ -333,7 +333,196 @@ function reportInput(): BuildInput {
   };
 }
 
+interface AdoptedRowOptions {
+  amountMinor: number;
+  allocatedMinor?: number;
+  outstandingMinor?: number;
+  waivedMinor?: number;
+  projectedCreditMinor?: number;
+  confirmationStatus: "confirmed" | "forecast";
+  classification?: FinancialReadRowContract["classification"];
+}
+
+function adoptedRow(
+  sourceBowlerId: number,
+  effectiveDebtorBowlerId: number,
+  occurrenceId: string,
+  options: AdoptedRowOptions,
+): FinancialReadRowContractV3 {
+  const input = reportInput();
+  const occurrenceIndex = input.schedule.occurrences.findIndex((item) => item.occurrenceId === occurrenceId);
+  const week = input.schedule.occurrences[occurrenceIndex];
+  if (!week) throw new Error(`missing adopted fixture occurrence ${occurrenceId}`);
+  const allocatedMinor = options.allocatedMinor ?? 0;
+  const outstandingMinor = options.outstandingMinor ?? options.amountMinor - allocatedMinor;
+  const waivedMinor = options.waivedMinor ?? 0;
+  const state = outstandingMinor <= 0 ? "settled" : allocatedMinor > 0 ? "partially_settled" : "open";
+  const base = financialRow(
+    sourceBowlerId,
+    occurrenceId,
+    `${week.authoritativeLocalDate}T22:30:00.000Z`,
+    allocatedMinor,
+    10,
+    options.amountMinor,
+  );
+  return {
+    ...base,
+    state,
+    grossAllocatedMinor: allocatedMinor,
+    waivedMinor,
+    stillOwed: outstandingMinor > 0,
+    outstandingMinor,
+    classification: options.classification ?? (week.authoritativeLocalDate < "2026-09-16" ? "past_due" : week.authoritativeLocalDate === "2026-09-16" ? "due" : "future"),
+    owner: { kind: "bowler", bowlerId: sourceBowlerId },
+    slotIndex: null,
+    responsibilityKind: "substitute",
+    actualBowlerId: null,
+    occurrenceLocalDate: week.authoritativeLocalDate,
+    plannedOrdinal: week.plannedOrdinal ?? occurrenceIndex + 1,
+    billingOrdinal: week.billing?.billingOrdinal ?? week.plannedOrdinal ?? occurrenceIndex + 1,
+    accountProjection: {
+      owner: { kind: "bowler", bowlerId: sourceBowlerId },
+      effectiveDebtorBowlerId,
+      confirmationStatus: options.confirmationStatus,
+      projectedCreditMinor: options.projectedCreditMinor ?? 0,
+    },
+  };
+}
+
+function adoptedEnvelopeInput(): BuildInput {
+  const input = reportInput();
+  input.roster.ready = false;
+  input.roster.incompleteTeamIds = [10];
+  input.roster.teams[0].slots = [
+    { teamId: 10, slotIndex: 0, occupant: "unassigned", mainBowlerId: null },
+    { teamId: 10, slotIndex: 1, occupant: "vacant", mainBowlerId: null },
+  ];
+  input.roster.substituteBowlerOptions.push(
+    { id: 103, name: "Sam Substitute", teamId: 10 },
+    { id: 104, name: "Avery Credit", teamId: 10 },
+    { id: 105, name: "Riley Partial Waiver", teamId: 10 },
+    { id: 106, name: "Casey Waived Only", teamId: 10 },
+  );
+  const rows = [
+    adoptedRow(101, 103, "week-1", {
+      amountMinor: 1_000,
+      outstandingMinor: 1_000,
+      projectedCreditMinor: 1_000,
+      confirmationStatus: "confirmed",
+      classification: "past_due",
+    }),
+    adoptedRow(101, 103, "week-2", {
+      amountMinor: 2_000,
+      projectedCreditMinor: 500,
+      confirmationStatus: "forecast",
+      classification: "due",
+    }),
+    adoptedRow(101, 103, "week-3", {
+      amountMinor: 2_000,
+      confirmationStatus: "forecast",
+    }),
+    adoptedRow(104, 104, "week-2", {
+      amountMinor: 2_000,
+      projectedCreditMinor: 2_000,
+      confirmationStatus: "forecast",
+      classification: "due",
+    }),
+    adoptedRow(104, 104, "week-3", {
+      amountMinor: 2_000,
+      projectedCreditMinor: 2_000,
+      confirmationStatus: "forecast",
+    }),
+    adoptedRow(105, 105, "week-3", {
+      amountMinor: 2_000,
+      allocatedMinor: 1_000,
+      outstandingMinor: 0,
+      waivedMinor: 1_000,
+      confirmationStatus: "confirmed",
+    }),
+    adoptedRow(106, 106, "week-3", {
+      amountMinor: 2_000,
+      outstandingMinor: 0,
+      waivedMinor: 2_000,
+      confirmationStatus: "confirmed",
+    }),
+  ];
+  const account = (bowlerId: number, amountPaidMinor: number, availableCreditMinor: number, confirmedDebtMinor: number, seasonRemainingMinor: number): FinancialReadAccountProjectionRow => ({
+    bowlerId,
+    amountPaidMinor,
+    availableCreditMinor,
+    confirmedDebtMinor,
+    netBalanceMinor: availableCreditMinor - confirmedDebtMinor,
+    confirmedPastDueMinor: 0,
+    seasonRemainingMinor,
+    reviewRequired: false,
+  });
+  input.financial = {
+    contractVersion: "canonical-due-past-due/3",
+    orderVersion: "due-at,owner,occurrence,obligation/3",
+    organizationId: 11,
+    leagueId: 7,
+    authoritativeSource: "payment_obligations",
+    asOf: "2026-09-16T16:00:00.000Z",
+    rows,
+    totals: {
+      amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+      allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+      outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+      collectiblePastDueMinor: 0,
+      reviewCount: 0,
+      settledCount: rows.filter((row) => row.state === "settled").length,
+      voidedCount: 0,
+    },
+    accountProjection: {
+      contractVersion: "owned-account-projection/1",
+      accounts: [
+        account(103, 1_500, 1_500, 1_000, 1_500),
+        account(104, 5_000, 5_000, 0, 0),
+        account(105, 1_000, 0, 0, 0),
+        account(106, 0, 0, 0, 0),
+      ],
+    },
+  };
+  return input;
+}
+
 describe("team envelope report", () => {
+  it("projects owned credit for responsible substitutes without requiring a filled legacy lineup", () => {
+    const report = buildTeamEnvelopeReport(adoptedEnvelopeInput());
+    const team = report.teams.find((candidate) => candidate.teamId === 10);
+    const substitute = team?.rows.find((row) => row.bowlerId === 103);
+    const creditHolder = team?.rows.find((row) => row.bowlerId === 104);
+    const partialWaiver = team?.rows.find((row) => row.bowlerId === 105);
+
+    expect(report.ownedAccountProjection).toBe(true);
+    expect(substitute).toMatchObject({
+      bowlerName: "Sam Substitute",
+      weeklyDueMinor: 2_000,
+      ytdDueMinor: 1_000,
+      ytdPaidMinor: 1_500,
+      remainingCreditMinor: 0,
+      pastDueMinor: 0,
+      dueTodayMinor: 1_500,
+      finalWeekPaid: false,
+    });
+    expect(creditHolder).toMatchObject({
+      bowlerName: "Avery Credit",
+      ytdPaidMinor: 5_000,
+      remainingCreditMinor: 1_000,
+      weeklyDueMinor: 2_000,
+      dueTodayMinor: 0,
+      finalWeekPaid: true,
+    });
+    expect(partialWaiver).toMatchObject({
+      bowlerName: "Riley Partial Waiver",
+      ytdPaidMinor: 1_000,
+      finalWeekPaid: false,
+    });
+    expect(team?.rows.some((row) => row.bowlerId === 106)).toBe(false);
+    expect(team?.showFinalWeekPaid).toBe(true);
+    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows).toEqual([]);
+  });
+
   it("uses the selected week's fees, prior YTD due, all effective payments, and due-through-today balance", () => {
     const report = buildTeamEnvelopeReport(reportInput());
 
@@ -409,6 +598,23 @@ describe("team envelope report", () => {
 
     const row = buildTeamEnvelopeReport(input).teams[0].rows[0];
     expect(row).toMatchObject({ pastDueMinor: 2_000, dueTodayMinor: 2_000 });
+  });
+
+  it("does not mark a waived-only final fee paid without genuine money coverage", () => {
+    const input = reportInput();
+    const waivedFinal = input.financial.rows.find((row) => row.payerBowlerId === 102 && row.occurrenceId === "week-3");
+    if (!waivedFinal) throw new Error("missing waived final obligation fixture");
+    waivedFinal.allocatedMinor = 0;
+    waivedFinal.grossAllocatedMinor = 0;
+    waivedFinal.waivedMinor = waivedFinal.amountMinor;
+    waivedFinal.outstandingMinor = 0;
+    waivedFinal.stillOwed = false;
+    waivedFinal.state = "settled";
+    waivedFinal.classification = "settled";
+
+    const row = buildTeamEnvelopeReport(input).teams[0].rows[1];
+
+    expect(row).toMatchObject({ bowlerId: 102, finalWeekPaid: false });
   });
 
   it("applies the same envelope amounts to an owner-aware rotating slot", () => {
