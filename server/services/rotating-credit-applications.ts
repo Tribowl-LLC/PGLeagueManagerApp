@@ -34,6 +34,10 @@ export interface RotatingCreditFundingBalance {
   appliedMinor: number;
   refundedMinor: number;
   refundHeldMinor: number;
+  /** Verified money received for this owner, net of completed refunds only. */
+  receivedMinor: number;
+  /** Invalid receipt evidence is separate from valid held refund/dispute credit. */
+  receiptEvidenceInvalid: boolean;
   availableMinor: number;
   reviewHeldMinor: number;
   reviewRequired: boolean;
@@ -393,6 +397,20 @@ export async function readRotatingCreditFundingBalancesInTransaction(
 
     const remainder = funding.amountMinor - appliedMinor - refundedMinor - refundHeldMinor;
     if (remainder < 0 || appliedMinor < 0 || refundedMinor < 0 || refundHeldMinor < 0) reviewRequired = true;
+    const validOriginalTender = Number.isSafeInteger(funding.amountMinor)
+      && funding.amountMinor > 0
+      && funding.currency === "USD"
+      && payment.bowlerId === funding.bowlerId
+      && payment.amount === funding.amountMinor
+      && payment.currency === funding.currency
+      && providerEvidenceValid;
+    const validCompletedRefundStatus = payment.status !== "refunded"
+      || (refundedMinor === funding.amountMinor && refundHeldMinor === 0);
+    const receiptEvidenceInvalid = !validOriginalTender
+      || !["paid", "disputed", "refunded"].includes(payment.status)
+      || !validCompletedRefundStatus
+      || refundedMinor > funding.amountMinor;
+    const receivedMinor = receiptEvidenceInvalid ? 0 : Math.max(0, funding.amountMinor - refundedMinor);
     const safeRemainder = Math.max(0, remainder);
     return {
       fundingId: funding.id,
@@ -402,6 +420,8 @@ export async function readRotatingCreditFundingBalancesInTransaction(
       appliedMinor,
       refundedMinor,
       refundHeldMinor,
+      receivedMinor,
+      receiptEvidenceInvalid,
       availableMinor: reviewRequired ? 0 : safeRemainder,
       reviewHeldMinor: reviewRequired ? safeRemainder : 0,
       reviewRequired,

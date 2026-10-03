@@ -135,6 +135,13 @@ export interface OwnedPaymentFundingLot {
   paymentId: number;
   bowlerId: number;
   amountMinor: number;
+  /** Structurally verified receipt value after completed refunds. This is
+   * intentionally independent of availableMinor and reviewRequired so a
+   * legitimate held refund/dispute remains recorded as incoming money. */
+  receivedMinor: number;
+  /** Malformed tender/recipient evidence is distinct from an intentionally
+   * voided receipt, which has no incoming value and needs no account hold. */
+  receiptEvidenceInvalid: boolean;
   availableMinor: number;
   reviewRequired: boolean;
   createdAt: string;
@@ -679,6 +686,22 @@ export async function readGenericFundingAvailabilityInTransaction(
     const paymentTypeValid = operation === null
       ? payment.type === "cash" || payment.type === "check"
       : payment.type !== "cash" && payment.type !== "check";
+    const explicitlyVoided = voidPaymentIds.has(payment.id);
+    const validOriginalTender = payment.amount > 0
+      && Number.isSafeInteger(payment.amount)
+      && payment.currency === "USD"
+      && paymentTypeValid
+      && (payment.paymentOperationId === null
+        ? payment.providerPaymentId === null
+        : operation?.status === "succeeded" && operation.providerObjectId !== null
+          && payment.providerPaymentId === operation.providerObjectId)
+      && !partitionInvalid;
+    const validReceiptStatus = payment.status === "paid" || payment.status === "disputed"
+      || (payment.status === "refunded" && validCompletedRefund);
+    const receiptEvidenceInvalid = !explicitlyVoided && (!validOriginalTender || !validReceiptStatus);
+    const receivedMinor = explicitlyVoided || receiptEvidenceInvalid || rotatingPaymentIds.has(payment.id) || validCompletedRefund
+      ? 0
+      : funding.amountMinor;
     const appliedMinor = activeApplications.reduce((sum, { allocation }) => sum + allocation.amountMinor, 0);
     const rawAvailable = funding.amountMinor - appliedMinor;
     const reviewRequired = invalidPayment || !paymentTypeValid || partitionInvalid || rotatingPaymentIds.has(payment.id)
@@ -691,6 +714,8 @@ export async function readGenericFundingAvailabilityInTransaction(
       paymentId: funding.paymentId,
       bowlerId: funding.creditedBowlerId,
       amountMinor: funding.amountMinor,
+      receivedMinor,
+      receiptEvidenceInvalid,
       availableMinor: available,
       reviewRequired,
       createdAt: funding.createdAt,
@@ -1774,6 +1799,8 @@ export async function applyOwnedFundingFifoInTransaction(
       paymentId: lot.paymentId,
       bowlerId: lot.bowlerId,
       amountMinor: lot.amountMinor,
+      receivedMinor: lot.receivedMinor,
+      receiptEvidenceInvalid: lot.receiptEvidenceInvalid,
       availableMinor: lot.availableMinor,
       reviewRequired: false,
       createdAt: lot.createdAt,

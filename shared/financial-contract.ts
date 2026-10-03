@@ -4,6 +4,7 @@ export const FINANCIAL_READ_ORDER_VERSION = "due-at,payer,occurrence,obligation/
 export const FINANCIAL_READ_FINGERPRINT_PREFIX = "lvfinancialread:v1:" as const;
 export const FINANCIAL_READ_CONTRACT_VERSION_V3 = "canonical-due-past-due/3" as const;
 export const FINANCIAL_READ_ORDER_VERSION_V3 = "due-at,owner,occurrence,obligation/3" as const;
+export const FINANCIAL_ACCOUNT_PROJECTION_CONTRACT = "owned-account-projection/1" as const;
 
 export type FinancialReadMode = "canonical";
 export type FinancialReadClassification = "future" | "due" | "past_due" | "settled" | "voided" | "review_required";
@@ -33,18 +34,49 @@ export interface FinancialReadRowContract {
   outstandingMinor: number;
   classification: FinancialReadClassification;
   reviewRequired: boolean;
+  accountProjection?: FinancialReadRowAccountProjection;
 }
 
 export type FinancialObligationOwner =
   | { kind: "bowler"; bowlerId: number }
   | { kind: "team"; teamId: number };
 
+/** Additive evidence present only after a league adopts owned-account accounting. */
+export interface FinancialReadAccountProjectionRow {
+  bowlerId: number;
+  /** Verified incoming owned receipts, net of completed refunds. */
+  amountPaidMinor: number;
+  availableCreditMinor: number;
+  confirmedDebtMinor: number;
+  /** Actual account balance: available owned credit minus confirmed debt. */
+  netBalanceMinor: number;
+  confirmedPastDueMinor: number;
+  /** Active confirmed debt and forecasts after safe projected credit coverage. */
+  seasonRemainingMinor: number;
+  reviewRequired: boolean;
+}
+
+export interface FinancialReadAccountProjection {
+  contractVersion: typeof FINANCIAL_ACCOUNT_PROJECTION_CONTRACT;
+  accounts: FinancialReadAccountProjectionRow[];
+}
+
+/** Projected coverage stays separate from actual payment allocations. */
+export interface FinancialReadRowAccountProjection {
+  /** Canonical obligation owner; this can be a team even when a bowler is the current debtor. */
+  owner: FinancialObligationOwner;
+  effectiveDebtorBowlerId: number | null;
+  confirmationStatus: "confirmed" | "forecast";
+  projectedCreditMinor: number;
+}
+
 /** Owner-aware due row used by rotating teams. The historic tender payer is
  * retained separately and may be null on a newly-created team obligation. */
 export interface FinancialReadRowContractV3 extends Omit<FinancialReadRowContract, "payerBowlerId"> {
   payerBowlerId: number | null;
   owner: FinancialObligationOwner;
-  slotIndex: number;
+  slotIndex: number | null;
+  responsibilityKind: "main" | "substitute" | "split" | "vacant" | "rotating" | "worksheet";
   actualBowlerId: number | null;
   occurrenceLocalDate: string;
   plannedOrdinal: number;
@@ -65,6 +97,7 @@ interface FinancialReadBase {
   contractVersion: typeof FINANCIAL_READ_CONTRACT_VERSION;
   orderVersion: typeof FINANCIAL_READ_ORDER_VERSION;
   rows: FinancialReadRowContract[];
+  accountProjection?: FinancialReadAccountProjection;
   asOf: string;
   totals: FinancialReadTotals;
 }
@@ -76,6 +109,7 @@ export type FinancialReadContractV3 = Omit<FinancialReadBase, "contractVersion" 
   contractVersion: typeof FINANCIAL_READ_CONTRACT_VERSION_V3;
   orderVersion: typeof FINANCIAL_READ_ORDER_VERSION_V3;
   rows: FinancialReadRowContractV3[];
+  accountProjection?: FinancialReadAccountProjection;
   authoritativeSource: "payment_obligations";
   mode?: never;
 };

@@ -423,6 +423,7 @@ describe("team envelope report", () => {
       payerBowlerId: null,
       owner: { kind: "team", teamId: 20 },
       slotIndex: 0,
+      responsibilityKind: "rotating",
       actualBowlerId: 201,
       occurrenceLocalDate: input.schedule.occurrences[index].authoritativeLocalDate,
       plannedOrdinal: index + 1,

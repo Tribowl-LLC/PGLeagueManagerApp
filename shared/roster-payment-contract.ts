@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { WEEKLY_BILLING_GRACE_PERIOD_MS } from "./schedule-utils";
+import type { FinancialReadAccountProjection, FinancialReadRowAccountProjection } from "./financial-contract";
 
 export const ROSTER_PAYMENT_RESPONSIBILITY_CONTRACT = "roster-payment-responsibility/1" as const;
 export const ROSTER_PAYMENT_RESPONSIBILITY_CONTRACT_V2 = "roster-payment-responsibility/2" as const;
@@ -386,6 +387,7 @@ export type CanonicalDuePastDueRowV2 = {
   outstandingMinor: number;
   classification: "future" | "due" | "past_due" | "settled" | "voided" | "review_required";
   reviewRequired: boolean;
+  accountProjection?: FinancialReadRowAccountProjection;
 };
 
 export type CanonicalDuePastDueResponseV2 = {
@@ -396,6 +398,7 @@ export type CanonicalDuePastDueResponseV2 = {
   authoritativeSource: "payment_obligations";
   asOf: string;
   rows: CanonicalDuePastDueRowV2[];
+  accountProjection?: FinancialReadAccountProjection;
   totals: {
     amountMinor: number;
     allocatedMinor: number;

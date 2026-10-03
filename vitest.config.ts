@@ -116,6 +116,7 @@ const UNIT_NO_DB = [
   'tests/unit/sentry-context.test.ts',
   'tests/unit/server-logger-sentry.test.ts',
   'tests/unit/automatic-fifo-payment-allocation.test.ts',
+  'tests/unit/owned-account-financial-projection.test.ts',
   'tests/unit/historical-square-payment-correction.test.ts',
   'tests/unit/league-create-payload.test.ts',
   'tests/unit/neon-branches-reveal-password.test.ts',
@@ -257,6 +258,7 @@ const PARALLEL_ISOLATED = [
   // Storage-only PostgreSQL race suite; it needs an isolated database but no
   // spawned Express process or mutable application singleton state.
   'tests/unit/payment-operations.test.ts',
+  'tests/unit/owned-account-projection-reads-postgres.test.ts',
   'tests/unit/roster-payment-finalizer-postgres.test.ts',
   'tests/unit/owned-payment-ledger-guards-postgres.test.ts',
   'tests/unit/owned-payment-legacy-standing-proof-postgres.test.ts',
