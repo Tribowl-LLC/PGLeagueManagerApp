@@ -143,7 +143,13 @@ export async function recoverRosterPaymentOperation(input: {
                 if (!restored) throw new RosterSnapshotFinalizationError("OPERATION_CHANGED", "Payment operation changed during recovery");
               }
             }
-            const finalized = await finalizeRosterSnapshotInTransaction(finalizerTx, { organizationId: input.organizationId, leagueId: input.leagueId, operationId: standing.id, now, actorUserId: standing.authorizingUserId ?? input.actorUserId });
+            const finalized = await finalizeRosterSnapshotInTransaction(finalizerTx, {
+              organizationId: input.organizationId,
+              leagueId: input.leagueId,
+              operationId: standing.id,
+              now,
+              actorUserId: isStandingAccountFunding ? input.actorUserId : standing.authorizingUserId ?? input.actorUserId,
+            });
             if (finalized.finalized && !isStandingAccountFunding && standing.status === "reconciliation_required") {
               const [restored] = await finalizerTx.update(paymentOperations).set({ status: "succeeded", nextAttemptAt: null, errorClassification: null, errorCode: null, completedAt: standing.completedAt ?? now, updatedAt: now }).where(and(
                 eq(paymentOperations.organizationId, input.organizationId),
@@ -231,7 +237,7 @@ export async function recoverRosterPaymentOperation(input: {
           leagueId: input.leagueId,
           operationId: operation.id,
           now,
-          actorUserId: operation.authorizingUserId ?? input.actorUserId,
+          actorUserId: isAccountFunding ? input.actorUserId : operation.authorizingUserId ?? input.actorUserId,
         });
         // Retain the historical V2/V3 recovery transition. V4 must transition
         // before funding writes because the owned ledger accepts only succeeded

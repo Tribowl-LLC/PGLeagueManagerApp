@@ -305,6 +305,17 @@ describe('Resource authorization boundaries', () => {
       }
     });
 
+    it('org A cannot read org B V4 account payment participants', async () => {
+      expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
+      const { status, data } = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/interactive-payment-participants/4?payerBowlerId=999999`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(status);
+      expect(data.success).toBe(false);
+      expect(JSON.stringify(data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+    });
+
     it('org A GET /api/financials/leagues/:leagueId/team-envelope-slips.pdf?organizationId=<orgB> must fail closed for implicit and spoofed scope', async () => {
       expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
       expect(sessionB.user.organizationId, 'expected an org B organization id').not.toBeNull();

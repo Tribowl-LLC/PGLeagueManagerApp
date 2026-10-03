@@ -68,6 +68,146 @@ function sameTimestamp(left: string, right: string): boolean {
   return Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime === rightTime;
 }
 
+type OwnedAccountFundingSnapshot = {
+  snapshotFingerprint: string;
+  payerBowlerId: number;
+  amountMinor: number;
+  currency: string;
+  providerName: string;
+  fundingPortions: Array<{ portionIndex: number; creditedBowlerId: number; amountMinor: number }>;
+  buyerEmail?: string | null;
+};
+
+/** Shared receipt/funding finalization for immutable V4 interactive and V5
+ * standing snapshots. Their authorization evidence is validated separately;
+ * from this point both represent the same one-tender, recipient-owned funding
+ * partition and use the same FIFO/assertion path. */
+async function finalizeOwnedAccountFundingReceiptInTransaction(
+  tx: PaymentOperationTransaction,
+  input: {
+    organizationId: number;
+    leagueId: number;
+    now: string;
+    actorUserId?: number | null;
+  },
+  operation: typeof paymentOperations.$inferSelect,
+  snapshot: OwnedAccountFundingSnapshot,
+  options: { notes: string; receiptEmailMissing: boolean },
+): Promise<{ finalized: true; allocationIds: string[] }> {
+  const rows = await tx.select().from(payments).where(and(
+    eq(payments.organizationId, input.organizationId),
+    eq(payments.leagueId, input.leagueId),
+    eq(payments.paymentOperationId, operation.id),
+  )).orderBy(asc(payments.id)).for("update");
+  if (rows.length > 1) {
+    throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_INCOMPLETE", "Provider payment evidence is duplicated for account funding");
+  }
+  const sourceAuthorizingUserId = operation.authorizingUserId;
+  if (sourceAuthorizingUserId === null) {
+    throw new RosterSnapshotFinalizationError("ACTOR_EVIDENCE_MISSING", "Account funding has no immutable authorizing actor");
+  }
+  const applicationActorUserId = input.actorUserId ?? sourceAuthorizingUserId;
+  let providerPayment = rows[0];
+  if (!providerPayment) {
+    const [recoveredPayment] = await tx.insert(payments).values({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      bowlerId: snapshot.payerBowlerId,
+      amount: snapshot.amountMinor,
+      currency: snapshot.currency,
+      status: "paid",
+      type: providerNameToPaymentType(snapshot.providerName),
+      providerPaymentId: operation.providerObjectId,
+      idempotencyKey: operation.id,
+      paidByUserId: sourceAuthorizingUserId,
+      paymentOperationId: operation.id,
+      notes: options.notes,
+      receiptEmailMissing: options.receiptEmailMissing,
+      createdAt: validatedReceiptTimestamp(operation, input.now),
+    }).returning();
+    providerPayment = recoveredPayment;
+  }
+  if (!providerPayment || providerPayment.organizationId !== input.organizationId
+    || providerPayment.leagueId !== input.leagueId || providerPayment.paymentOperationId !== operation.id
+    || providerPayment.amount !== operation.amountMinor || providerPayment.currency !== operation.currency
+    || providerPayment.bowlerId !== snapshot.payerBowlerId || providerPayment.paidByUserId !== operation.authorizingUserId
+    || providerPayment.status !== "paid" || providerPayment.type !== providerNameToPaymentType(operation.providerName)
+    || providerPayment.providerPaymentId !== operation.providerObjectId) {
+    throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_MISMATCH", "Provider payment evidence does not match the immutable account funding snapshot");
+  }
+
+  try {
+    for (const portion of snapshot.fundingPortions) {
+      await recordOwnedFundingInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        paymentId: providerPayment.id,
+        creditedBowlerId: portion.creditedBowlerId,
+        portionIndex: portion.portionIndex,
+        amountMinor: portion.amountMinor,
+        currency: "USD",
+        source: "provider",
+        authorizationKind: "provider_snapshot",
+        authorizationOperationId: operation.id,
+        authorizationItemCount: 0,
+        authorizationFingerprint: snapshot.snapshotFingerprint,
+        adoptionId: null,
+        recordedByUserId: sourceAuthorizingUserId,
+        now: input.now,
+      });
+    }
+    const recordedFundings = await tx.select({
+      creditedBowlerId: weeklyPaymentFundings.creditedBowlerId,
+      portionIndex: weeklyPaymentFundings.portionIndex,
+      amountMinor: weeklyPaymentFundings.amountMinor,
+      authorizationFingerprint: weeklyPaymentFundings.authorizationFingerprint,
+    }).from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, input.organizationId),
+      eq(weeklyPaymentFundings.leagueId, input.leagueId),
+      eq(weeklyPaymentFundings.paymentId, providerPayment.id),
+    )).orderBy(asc(weeklyPaymentFundings.portionIndex)).for("share");
+    if (recordedFundings.length !== snapshot.fundingPortions.length || recordedFundings.some((funding, index) => {
+      const portion = snapshot.fundingPortions[index];
+      return !portion || funding.creditedBowlerId !== portion.creditedBowlerId
+        || funding.portionIndex !== portion.portionIndex || funding.amountMinor !== portion.amountMinor
+        || funding.authorizationFingerprint !== snapshot.snapshotFingerprint;
+    })) throw new OwnedPaymentLedgerError("FUNDING_IDEMPOTENCY_CONFLICT");
+
+    const applicationIds: string[] = [];
+    for (const portion of snapshot.fundingPortions) {
+      applicationIds.push(...await applyOwnedFundingFifoInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        bowlerId: portion.creditedBowlerId,
+        actorUserId: applicationActorUserId,
+        now: input.now,
+      }));
+    }
+    await assertOwnedPaymentTenderInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      paymentId: providerPayment.id,
+    });
+    const allocations = applicationIds.length === 0 ? [] : await tx.select({
+      allocationId: paymentAllocationFundingApplications.allocationId,
+    }).from(paymentAllocationFundingApplications).where(and(
+      eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
+      inArray(paymentAllocationFundingApplications.id, [...new Set(applicationIds)]),
+    ));
+    return { finalized: true, allocationIds: allocations.map((row) => row.allocationId) };
+  } catch (error) {
+    if (isRosterSnapshotFinalizationError(error)) throw error;
+    if (error instanceof OwnedPaymentLedgerError) {
+      throw new RosterSnapshotFinalizationError(error.code, "Account funding could not be recorded or applied");
+    }
+    if (isOwnedPaymentLedgerInvariantError(error)) {
+      throw new RosterSnapshotFinalizationError("TENDER_LEDGER_INVARIANT", "The captured receipt failed the owned ledger consistency check");
+    }
+    throw error;
+  }
+}
+
 type SnapshotRecord = {
   id?: string;
   obligationId?: string;
@@ -498,105 +638,10 @@ export async function finalizeRosterSnapshotInTransaction(
         || consent.providerLocationId !== snapshot.providerLocationId) {
         throw new RosterSnapshotFinalizationError("SNAPSHOT_INVALID", "The standing consent binding does not match immutable account funding evidence");
       }
-      const rows = await tx.select().from(payments).where(and(
-        eq(payments.organizationId, input.organizationId),
-        eq(payments.leagueId, input.leagueId),
-        eq(payments.paymentOperationId, operation.id),
-      )).orderBy(asc(payments.id)).for("update");
-      if (rows.length > 1) throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_INCOMPLETE", "Provider payment evidence is duplicated for standing account funding");
-      const authorizingUserId = input.actorUserId ?? operation.authorizingUserId;
-      if (authorizingUserId === null || authorizingUserId === undefined) {
-        throw new RosterSnapshotFinalizationError("ACTOR_EVIDENCE_MISSING", "Standing account funding has no immutable authorizing actor");
-      }
-      let providerPayment = rows[0];
-      if (!providerPayment) {
-        const [recoveredPayment] = await tx.insert(payments).values({
-          organizationId: input.organizationId,
-          leagueId: input.leagueId,
-          bowlerId: snapshot.payerBowlerId,
-          amount: snapshot.amountMinor,
-          currency: snapshot.currency,
-          status: "paid",
-          type: providerNameToPaymentType(snapshot.providerName),
-          providerPaymentId: operation.providerObjectId,
-          idempotencyKey: operation.id,
-          paidByUserId: authorizingUserId,
-          paymentOperationId: operation.id,
-          notes: "Standing account funding",
-          receiptEmailMissing: false,
-          createdAt: validatedReceiptTimestamp(operation, input.now),
-        }).returning();
-        providerPayment = recoveredPayment;
-      }
-      if (!providerPayment || providerPayment.organizationId !== input.organizationId
-        || providerPayment.leagueId !== input.leagueId || providerPayment.paymentOperationId !== operation.id
-        || providerPayment.amount !== operation.amountMinor || providerPayment.currency !== operation.currency
-        || providerPayment.bowlerId !== snapshot.payerBowlerId || providerPayment.paidByUserId !== operation.authorizingUserId
-        || providerPayment.status !== "paid" || providerPayment.type !== providerNameToPaymentType(operation.providerName)
-        || providerPayment.providerPaymentId !== operation.providerObjectId) {
-        throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_MISMATCH", "Provider payment evidence does not match the immutable standing funding snapshot");
-      }
-      try {
-        for (const portion of snapshot.fundingPortions) {
-          await recordOwnedFundingInTransaction(tx, {
-            organizationId: input.organizationId,
-            leagueId: input.leagueId,
-            paymentId: providerPayment.id,
-            creditedBowlerId: portion.creditedBowlerId,
-            portionIndex: portion.portionIndex,
-            amountMinor: portion.amountMinor,
-            currency: "USD",
-            source: "provider",
-            authorizationKind: "provider_snapshot",
-            authorizationOperationId: operation.id,
-            authorizationItemCount: 0,
-            authorizationFingerprint: snapshot.snapshotFingerprint,
-            adoptionId: null,
-            recordedByUserId: authorizingUserId,
-            now: input.now,
-          });
-        }
-        const recordedFundings = await tx.select({
-          creditedBowlerId: weeklyPaymentFundings.creditedBowlerId,
-          portionIndex: weeklyPaymentFundings.portionIndex,
-          amountMinor: weeklyPaymentFundings.amountMinor,
-          authorizationFingerprint: weeklyPaymentFundings.authorizationFingerprint,
-        }).from(weeklyPaymentFundings).where(and(
-          eq(weeklyPaymentFundings.organizationId, input.organizationId),
-          eq(weeklyPaymentFundings.leagueId, input.leagueId),
-          eq(weeklyPaymentFundings.paymentId, providerPayment.id),
-        )).orderBy(asc(weeklyPaymentFundings.portionIndex)).for("share");
-        if (recordedFundings.length !== snapshot.fundingPortions.length || recordedFundings.some((funding, index) => {
-          const portion = snapshot.fundingPortions[index];
-          return !portion || funding.creditedBowlerId !== portion.creditedBowlerId
-            || funding.portionIndex !== portion.portionIndex || funding.amountMinor !== portion.amountMinor
-            || funding.authorizationFingerprint !== snapshot.snapshotFingerprint;
-        })) throw new OwnedPaymentLedgerError("FUNDING_IDEMPOTENCY_CONFLICT");
-        for (const portion of snapshot.fundingPortions) {
-          await applyOwnedFundingFifoInTransaction(tx, {
-            organizationId: input.organizationId,
-            leagueId: input.leagueId,
-            bowlerId: portion.creditedBowlerId,
-            actorUserId: authorizingUserId,
-            now: input.now,
-          });
-        }
-        await assertOwnedPaymentTenderInTransaction(tx, {
-          organizationId: input.organizationId,
-          leagueId: input.leagueId,
-          paymentId: providerPayment.id,
-        });
-        return { finalized: true, allocationIds: [] };
-      } catch (error) {
-        if (isRosterSnapshotFinalizationError(error)) throw error;
-        if (error instanceof OwnedPaymentLedgerError) {
-          throw new RosterSnapshotFinalizationError(error.code, "Standing account funding could not be recorded or applied");
-        }
-        if (isOwnedPaymentLedgerInvariantError(error)) {
-          throw new RosterSnapshotFinalizationError("TENDER_LEDGER_INVARIANT", "The captured standing receipt failed the owned ledger consistency check");
-        }
-        throw error;
-      }
+      return await finalizeOwnedAccountFundingReceiptInTransaction(tx, input, operation, snapshot, {
+        notes: "Standing account funding",
+        receiptEmailMissing: false,
+      });
     }
     let snapshot;
     try {
@@ -604,125 +649,10 @@ export async function finalizeRosterSnapshotInTransaction(
     } catch {
       throw new RosterSnapshotFinalizationError("SNAPSHOT_INVALID", "The account funding snapshot failed immutable validation");
     }
-
-    const rows = await tx.select().from(payments).where(and(
-      eq(payments.organizationId, input.organizationId),
-      eq(payments.leagueId, input.leagueId),
-      eq(payments.paymentOperationId, operation.id),
-    )).orderBy(asc(payments.id)).for("update");
-    if (rows.length > 1) {
-      throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_INCOMPLETE", "Provider payment evidence is duplicated for account funding");
-    }
-    const authorizingUserId = input.actorUserId ?? operation.authorizingUserId;
-    if (authorizingUserId === null || authorizingUserId === undefined) {
-      throw new RosterSnapshotFinalizationError("ACTOR_EVIDENCE_MISSING", "Account funding has no immutable authorizing actor");
-    }
-    let providerPayment = rows[0];
-    if (!providerPayment) {
-      const [recoveredPayment] = await tx.insert(payments).values({
-        organizationId: input.organizationId,
-        leagueId: input.leagueId,
-        bowlerId: snapshot.payerBowlerId,
-        amount: snapshot.amountMinor,
-        currency: snapshot.currency,
-        status: "paid",
-        type: providerNameToPaymentType(snapshot.providerName),
-        providerPaymentId: operation.providerObjectId,
-        idempotencyKey: operation.id,
-        paidByUserId: authorizingUserId,
-        paymentOperationId: operation.id,
-        notes: "Account funding receipt",
-        receiptEmailMissing: snapshot.buyerEmail === null,
-        // Recovery can happen after the weekly boundary. Keep the receipt in
-        // its original provider-completion period when that durable timestamp
-        // is available; finalization time is only a validated fallback.
-        createdAt: validatedReceiptTimestamp(operation, input.now),
-      }).returning();
-      providerPayment = recoveredPayment;
-    }
-    if (!providerPayment || providerPayment.organizationId !== input.organizationId || providerPayment.leagueId !== input.leagueId
-      || providerPayment.paymentOperationId !== operation.id || providerPayment.amount !== operation.amountMinor
-      || providerPayment.currency !== operation.currency || providerPayment.bowlerId !== snapshot.payerBowlerId
-      || providerPayment.paidByUserId !== operation.authorizingUserId || providerPayment.status !== "paid"
-      || providerPayment.type !== providerNameToPaymentType(operation.providerName)
-      || providerPayment.providerPaymentId !== operation.providerObjectId) {
-      throw new RosterSnapshotFinalizationError("PAYMENT_EVIDENCE_MISMATCH", "Provider payment evidence does not match the immutable account funding snapshot");
-    }
-
-    try {
-      for (const portion of snapshot.fundingPortions) {
-        await recordOwnedFundingInTransaction(tx, {
-          organizationId: input.organizationId,
-          leagueId: input.leagueId,
-          paymentId: providerPayment.id,
-          creditedBowlerId: portion.creditedBowlerId,
-          portionIndex: portion.portionIndex,
-          amountMinor: portion.amountMinor,
-          currency: "USD",
-          source: "provider",
-          authorizationKind: "provider_snapshot",
-          authorizationOperationId: operation.id,
-          authorizationItemCount: 0,
-          authorizationFingerprint: snapshot.snapshotFingerprint,
-          adoptionId: null,
-          recordedByUserId: authorizingUserId,
-          now: input.now,
-        });
-      }
-      const recordedFundings = await tx.select({
-        creditedBowlerId: weeklyPaymentFundings.creditedBowlerId,
-        portionIndex: weeklyPaymentFundings.portionIndex,
-        amountMinor: weeklyPaymentFundings.amountMinor,
-        authorizationFingerprint: weeklyPaymentFundings.authorizationFingerprint,
-      }).from(weeklyPaymentFundings).where(and(
-        eq(weeklyPaymentFundings.organizationId, input.organizationId),
-        eq(weeklyPaymentFundings.leagueId, input.leagueId),
-        eq(weeklyPaymentFundings.paymentId, providerPayment.id),
-      )).orderBy(asc(weeklyPaymentFundings.portionIndex)).for("share");
-      if (recordedFundings.length !== snapshot.fundingPortions.length
-        || recordedFundings.some((funding, index) => {
-          const portion = snapshot.fundingPortions[index];
-          return !portion || funding.creditedBowlerId !== portion.creditedBowlerId
-            || funding.portionIndex !== portion.portionIndex || funding.amountMinor !== portion.amountMinor
-            || funding.authorizationFingerprint !== snapshot.snapshotFingerprint;
-        })) {
-        throw new OwnedPaymentLedgerError("FUNDING_IDEMPOTENCY_CONFLICT");
-      }
-      const applicationIds: string[] = [];
-      for (const portion of snapshot.fundingPortions) {
-        applicationIds.push(...await applyOwnedFundingFifoInTransaction(tx, {
-          organizationId: input.organizationId,
-          leagueId: input.leagueId,
-          bowlerId: portion.creditedBowlerId,
-          actorUserId: authorizingUserId,
-          now: input.now,
-        }));
-      }
-      try {
-        await assertOwnedPaymentTenderInTransaction(tx, {
-          organizationId: input.organizationId,
-          leagueId: input.leagueId,
-          paymentId: providerPayment.id,
-        });
-      } catch (error) {
-        if (!isOwnedPaymentLedgerInvariantError(error)) throw error;
-        throw new RosterSnapshotFinalizationError("TENDER_LEDGER_INVARIANT", "The captured receipt failed the owned ledger consistency check");
-      }
-      const allocations = applicationIds.length === 0 ? [] : await tx.select({
-        allocationId: paymentAllocationFundingApplications.allocationId,
-      }).from(paymentAllocationFundingApplications).where(and(
-        eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
-        eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
-        inArray(paymentAllocationFundingApplications.id, [...new Set(applicationIds)]),
-      ));
-      return { finalized: true, allocationIds: allocations.map((row) => row.allocationId) };
-    } catch (error) {
-      if (isRosterSnapshotFinalizationError(error)) throw error;
-      if (error instanceof OwnedPaymentLedgerError) {
-        throw new RosterSnapshotFinalizationError(error.code, "Account funding could not be recorded or applied");
-      }
-      throw error;
-    }
+    return await finalizeOwnedAccountFundingReceiptInTransaction(tx, input, operation, snapshot, {
+      notes: "Account funding receipt",
+      receiptEmailMissing: snapshot.buyerEmail === null,
+    });
   }
 
   const [snapshot] = await tx.select().from(paymentOperationRosterSnapshots).where(and(

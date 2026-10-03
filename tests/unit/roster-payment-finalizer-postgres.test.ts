@@ -17,6 +17,7 @@ import {
   accountPaymentOperationSnapshots,
   organizations,
   paymentAllocations,
+  paymentAllocationFundingApplications,
   paymentObligations,
   paymentOperationRosterSnapshotItems,
   paymentOperations,
@@ -56,6 +57,7 @@ import { buildCanonicalScheduleCommandFingerprint, cancelOccurrence, rescheduleO
 import { lockLeagueSchedule } from "../../server/storage/league-schedule-lock";
 import { readCanonicalPaymentReport } from "../../server/services/canonical-payment-report";
 import * as paymentProviderFactory from "../../server/services/payment-provider-factory";
+import * as ownedPaymentLedger from "../../server/services/owned-payment-ledger";
 import { decrypt } from "../../server/utils/crypto";
 import { expectErrorLog } from "../helpers/expected-error-logs";
 
@@ -69,6 +71,7 @@ let accountFailureLeagueId: number;
 let locationId: number;
 let teamId: number;
 let accountTeamId: number;
+let accountFailureTeamId: number;
 let bowlerId: number;
 let actorUserId: number;
 let occurrenceOrdinal = 0;
@@ -151,6 +154,7 @@ beforeAll(async () => {
   const [accountTeam] = await db.insert(teams).values({ name: "Roster Account Funding Team", number: 1, leagueId: accountLeagueId }).returning({ id: teams.id });
   accountTeamId = accountTeam.id;
   const [accountFailureTeam] = await db.insert(teams).values({ name: "Roster Account Failure Team", number: 1, leagueId: accountFailureLeagueId }).returning({ id: teams.id });
+  accountFailureTeamId = accountFailureTeam.id;
   const [bowler] = await db.insert(bowlers).values({ name: "Roster Fixture Main", email: "roster-main@example.test", organizationId }).returning({ id: bowlers.id });
   bowlerId = bowler.id;
   await db.insert(bowlerLeagues).values([
@@ -679,7 +683,7 @@ async function createRosterOperation(
   });
 }
 
-async function ensureOwnedLedgerAdoption(targetLeagueId = leagueId): Promise<string> {
+async function ensureOwnedLedgerAdoption(targetLeagueId = leagueId, adoptedThroughLocalDate = "2037-12-31"): Promise<string> {
   const [existing] = await db.select({ id: weeklyPaymentLedgerAdoptions.id }).from(weeklyPaymentLedgerAdoptions).where(and(
     eq(weeklyPaymentLedgerAdoptions.organizationId, organizationId),
     eq(weeklyPaymentLedgerAdoptions.leagueId, targetLeagueId),
@@ -690,7 +694,7 @@ async function ensureOwnedLedgerAdoption(targetLeagueId = leagueId): Promise<str
   const [adoption] = await db.insert(weeklyPaymentLedgerAdoptions).values({
     organizationId,
     leagueId: targetLeagueId,
-    adoptedThroughLocalDate: "2037-12-31",
+    adoptedThroughLocalDate,
     preflightFingerprint: `lvweeklyadoptpre:v1:${preflight}`,
     resultFingerprint: `lvweeklyadopt:v1:${result}`,
     grandfatheredAllocationCount: 0,
@@ -698,6 +702,82 @@ async function ensureOwnedLedgerAdoption(targetLeagueId = leagueId): Promise<str
   }).returning({ id: weeklyPaymentLedgerAdoptions.id });
   if (!adoption) throw new Error("account funding adoption fixture was not created");
   return adoption.id;
+}
+
+async function createAccountFailureForecastObligation() {
+  const localDate = "2038-02-01";
+  await db.insert(teamPaymentSlots).values([
+    { organizationId, leagueId: accountFailureLeagueId, teamId: accountFailureTeamId, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: bowlerId, recordedByUserId: actorUserId },
+    { organizationId, leagueId: accountFailureLeagueId, teamId: accountFailureTeamId, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+    { organizationId, leagueId: accountFailureLeagueId, teamId: accountFailureTeamId, slotIndex: 2, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
+  ]);
+  const commandId = randomUUID();
+  await db.insert(leagueScheduleCommands).values({
+    id: commandId,
+    organizationId,
+    leagueId: accountFailureLeagueId,
+    actorUserId,
+    commandType: "publish",
+    idempotencyKey: `account-failure-forecast-${randomUUID()}`,
+    requestFingerprint: `account-failure-forecast-fingerprint-${randomUUID()}`,
+  });
+  const occurrenceId = randomUUID();
+  await db.insert(leagueOccurrences).values({
+    id: occurrenceId,
+    organizationId,
+    leagueId: accountFailureLeagueId,
+    locationId,
+    generationKey: `account-failure-forecast-${randomUUID()}`,
+    kind: "regular",
+    status: "scheduled",
+    lifecycle: "published",
+    authoritativeLocalDate: localDate,
+    authoritativeLocalStartTime: "19:00:00",
+    timezone: "UTC",
+    startAt: `${localDate}T19:00:00.000Z`,
+    selectedUtcOffsetMinutes: 0,
+    foldResolution: "unambiguous",
+    resolverVersion: "account-failure-forecast-test",
+    plannedOrdinal: 1,
+    competitionNumber: 1,
+    competitive: true,
+    countsInStandings: true,
+    publishedAt: `${localDate}T00:00:00.000Z`,
+    publishedByUserId: actorUserId,
+    publicationCommandId: commandId,
+  });
+  await db.insert(leagueOccurrenceBillingTerms).values({
+    organizationId,
+    leagueId: accountFailureLeagueId,
+    occurrenceId,
+    purpose: "league_weekly_fee",
+    obligationPolicy: "eligible_bowlers",
+    defaultAmountMinor: 2_000,
+    currency: "USD",
+    billingOrdinal: 1,
+    version: 1,
+    state: "published",
+    publishedAt: `${localDate}T00:00:00.000Z`,
+    publishedByUserId: actorUserId,
+    publicationCommandId: commandId,
+  });
+  await db.transaction(async (tx) => materializeRosterPaymentOccurrenceInTransaction(tx, {
+    organizationId,
+    leagueId: accountFailureLeagueId,
+    occurrenceId,
+    actorUserId,
+  }));
+  const [responsibility] = await db.select().from(occurrencePaymentResponsibilities).where(and(
+    eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+    eq(occurrencePaymentResponsibilities.leagueId, accountFailureLeagueId),
+    eq(occurrencePaymentResponsibilities.occurrenceId, occurrenceId),
+    eq(occurrencePaymentResponsibilities.state, "active"),
+    eq(occurrencePaymentResponsibilities.slotIndex, 0),
+  ));
+  if (!responsibility) throw new Error("account failure responsibility was not materialized");
+  const [obligation] = await db.select().from(paymentObligations).where(eq(paymentObligations.responsibilityId, responsibility.id));
+  if (!obligation) throw new Error("account failure obligation was not materialized");
+  return { responsibility, obligation };
 }
 
 async function createAccountFundingOperation(input: {
@@ -2040,6 +2120,137 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     expect(storedOperation.errorCode).not.toBe("CAPTURE_FINALIZATION_PENDING");
     expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.paymentOperationId, operation.id))).toHaveLength(0);
     expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.authorizationOperationId, operation.id))).toHaveLength(0);
+  });
+
+  it("retains captured provider identity when the SQL ledger assertion fails, then recovers the same receipt", async () => {
+    await createAccountFailureForecastObligation();
+    await ensureOwnedLedgerAdoption(accountFailureLeagueId, "2038-01-31");
+    const captureAt = new Date("2038-02-07T23:59:00.000Z");
+    const operation = await createAccountFundingOperation({
+      leagueId: accountFailureLeagueId,
+      requestKey: `account-ledger-assertion-${randomUUID()}`,
+      now: captureAt,
+    });
+    const providerPaymentId = `account-ledger-assertion-provider-${operation.id}`;
+    await db.update(paymentOperations).set({
+      status: "reconciliation_required",
+      providerObjectId: providerPaymentId,
+      nextAttemptAt: null,
+      errorClassification: "provider_unknown",
+      errorCode: "CAPTURE_FINALIZATION_PENDING",
+      attemptCount: 1,
+      startedAt: captureAt.toISOString(),
+      dispatchClaimedAt: captureAt.toISOString(),
+      completedAt: captureAt.toISOString(),
+      updatedAt: captureAt.toISOString(),
+    }).where(eq(paymentOperations.id, operation.id));
+
+    const originalAssert = ownedPaymentLedger.assertOwnedPaymentTenderInTransaction;
+    let observedSqlInvariant = false;
+    const assertionSpy = vi.spyOn(ownedPaymentLedger, "assertOwnedPaymentTenderInTransaction").mockImplementation(async (tx, scope) => {
+      const [funding] = await tx.select().from(weeklyPaymentFundings).where(and(
+        eq(weeklyPaymentFundings.organizationId, scope.organizationId),
+        eq(weeklyPaymentFundings.leagueId, scope.leagueId),
+        eq(weeklyPaymentFundings.paymentId, scope.paymentId),
+      )).limit(1);
+      if (!funding) throw new Error("V4 SQL assertion fixture is missing its owned funding lot");
+      const [obligation] = await tx.select().from(paymentObligations).where(and(
+        eq(paymentObligations.organizationId, scope.organizationId),
+        eq(paymentObligations.leagueId, scope.leagueId),
+        eq(paymentObligations.payerBowlerId, bowlerId),
+      )).limit(1);
+      if (!obligation) throw new Error("V4 SQL assertion fixture is missing its unconfirmed forecast obligation");
+      const [responsibility] = await tx.select().from(occurrencePaymentResponsibilities).where(eq(
+        occurrencePaymentResponsibilities.id,
+        obligation.responsibilityId,
+      ));
+      if (!responsibility) throw new Error("V4 SQL assertion fixture is missing the forecast responsibility");
+      const [overallocated] = await tx.insert(paymentAllocations).values({
+        organizationId: scope.organizationId,
+        leagueId: scope.leagueId,
+        paymentId: scope.paymentId,
+        obligationId: obligation.id,
+        amountMinor: funding.amountMinor,
+        currency: funding.currency,
+        state: "active",
+        allocationKind: "ordinary",
+        recordedByUserId: actorUserId,
+      }).returning({ id: paymentAllocations.id });
+      if (!overallocated) throw new Error("V4 SQL assertion fixture did not create the forecast allocation");
+      await tx.insert(paymentAllocationFundingApplications).values({
+        organizationId: funding.organizationId,
+        leagueId: funding.leagueId,
+        allocationId: overallocated.id,
+        paymentId: funding.paymentId,
+        creditedBowlerId: funding.creditedBowlerId,
+        genericFundingId: funding.id,
+        rotatingFundingId: null,
+        sourceAmountMinor: funding.amountMinor,
+        amountMinor: funding.amountMinor,
+        currency: funding.currency,
+        obligationId: obligation.id,
+        responsibilityId: responsibility.id,
+        occurrenceId: obligation.occurrenceId,
+        teamId: responsibility.teamId,
+        targetKind: "bowler_responsibility",
+        targetPayerBowlerId: obligation.payerBowlerId,
+        assignmentId: null,
+        appliedByUserId: actorUserId,
+      });
+      try {
+        await originalAssert(tx, scope);
+      } catch (error) {
+        observedSqlInvariant = ownedPaymentLedger.isOwnedPaymentLedgerInvariantError(error);
+        throw error;
+      }
+      throw new Error("SQL tender assertion accepted a forecast allocation");
+    });
+    let failedRecovery;
+    try {
+      failedRecovery = await recoverRosterPaymentOperation({
+        organizationId,
+        leagueId: accountFailureLeagueId,
+        operationId: operation.id,
+        actorUserId,
+        now: new Date("2038-02-08T00:01:00.000Z"),
+      });
+    } finally {
+      assertionSpy.mockRestore();
+    }
+
+    expect(observedSqlInvariant).toBe(true);
+    expect(failedRecovery).toMatchObject({
+      id: operation.id,
+      status: "reconciliation_required",
+      providerObjectId: providerPaymentId,
+      errorCode: "TENDER_LEDGER_INVARIANT",
+    });
+    expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.paymentOperationId, operation.id))).toHaveLength(0);
+    expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.authorizationOperationId, operation.id))).toHaveLength(0);
+
+    const [recoveryAdmin] = await db.insert(users).values({
+      email: `roster-finalizer-recovery-admin-${randomUUID()}@example.test`,
+      password: "deterministic-test-password-hash",
+      name: "Recovery Administrator",
+      role: "org_admin",
+      organizationId,
+    }).returning({ id: users.id });
+    const recovered = await recoverRosterPaymentOperation({
+      organizationId,
+      leagueId: accountFailureLeagueId,
+      operationId: operation.id,
+      actorUserId: recoveryAdmin.id,
+      now: new Date("2038-02-08T00:02:00.000Z"),
+    });
+    expect(recovered).toMatchObject({ id: operation.id, status: "succeeded", providerObjectId: providerPaymentId });
+    const [receipt] = await db.select().from(payments).where(eq(payments.paymentOperationId, operation.id));
+    if (!receipt) throw new Error("V4 recovery did not persist the provider receipt");
+    expect(receipt).toMatchObject({ paidByUserId: actorUserId, providerPaymentId });
+    const [funding] = await db.select().from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.authorizationOperationId, operation.id));
+    expect(funding).toMatchObject({ recordedByUserId: actorUserId, paymentId: receipt.id });
+    expect(await db.select({ id: paymentAllocationFundingApplications.id }).from(paymentAllocationFundingApplications).where(eq(paymentAllocationFundingApplications.paymentId, receipt.id))).toHaveLength(0);
+    expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.paymentOperationId, operation.id))).toHaveLength(1);
+    expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.authorizationOperationId, operation.id))).toHaveLength(1);
   });
 
   it("blocks a different-key V4 charge on an overlapping account but replays the same key first", async () => {
