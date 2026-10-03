@@ -723,7 +723,8 @@ function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<numbe
         || row?.obligationIds.some((obligationId) => input.finalAccountProjection.reviewRequiredByObligationId.get(obligationId) === true));
       const requiredMinor = coverage.reduce((sum, row) => sum + (row?.requiredMinor ?? 0), 0);
       if (forecastRows.length === 0 || coverage.some((row) => row === undefined)
-        || reviewRequired || paidMinor + projectedCreditMinor < requiredMinor) covered = false;
+        || reviewRequired || requiredMinor <= 0 || paidMinor + projectedCreditMinor <= 0
+        || paidMinor + projectedCreditMinor < requiredMinor) covered = false;
     }
     output.set(bowlerId, covered);
   }

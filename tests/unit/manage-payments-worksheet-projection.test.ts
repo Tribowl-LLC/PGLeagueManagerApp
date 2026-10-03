@@ -970,6 +970,26 @@ describe("Manage Payments worksheet projection", () => {
     expect(buildManagePaymentsWorksheetSnapshot(projected).teams[0]?.rows[0]?.finalTwoWeeksPaid).toBe(false);
   });
 
+  it("does not mark a materialized zero-demand final forecast paid without money coverage", () => {
+    const projected = withSharedAccountProjection(projectionInput());
+    const finalOccurrenceIds = new Set(projected.schedule.occurrences.slice(-2).map((row) => row.occurrenceId));
+    const coverage = new Map(projected.finalAccountProjection.forecastCoverageByTargetId);
+    for (const target of buildManagePaymentsForecastTargets(projected)) {
+      if (!finalOccurrenceIds.has(target.occurrenceId)) continue;
+      coverage.set(target.projectionId, {
+        obligationIds: [target.projectionId],
+        requiredMinor: 0,
+        paidMinor: 0,
+        reviewRequired: false,
+      });
+    }
+
+    expect(buildManagePaymentsWorksheetSnapshot({
+      ...projected,
+      finalAccountProjection: { ...projected.finalAccountProjection, forecastCoverageByTargetId: coverage },
+    }).teams[0]?.rows[0]?.finalTwoWeeksPaid).toBe(false);
+  });
+
   it("fingerprints fee choices and pricing revisions while leaving balance/card evidence out", () => {
     const base = {
       occurrenceId: "occ-4",
