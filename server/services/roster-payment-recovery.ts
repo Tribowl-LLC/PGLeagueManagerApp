@@ -159,8 +159,12 @@ export async function recoverRosterPaymentOperation(input: {
           if (!finalization.finalized) throw new RosterPaymentRecoveryError("ROSTER_FINALIZATION_NOT_CONFIRMED", "Roster payment finalization was not confirmed", 409);
         } catch (error) {
           if (!isRosterSnapshotFinalizationError(error)) throw error;
-          await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, errorClassification: "internal", errorCode: error.code, updatedAt: now }).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.id, standing.id)));
-          return standing;
+          const [reconciliationRequired] = await tx.update(paymentOperations).set({ status: "reconciliation_required", nextAttemptAt: null, errorClassification: "internal", errorCode: error.code, updatedAt: now }).where(and(
+            eq(paymentOperations.organizationId, input.organizationId),
+            eq(paymentOperations.leagueId, input.leagueId),
+            eq(paymentOperations.id, standing.id),
+          )).returning();
+          return reconciliationRequired ?? standing;
         }
         const [recoveredStanding] = await tx.select().from(paymentOperations).where(and(
           eq(paymentOperations.organizationId, input.organizationId),

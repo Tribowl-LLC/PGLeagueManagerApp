@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, lt, ne, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   autopayConsentPartners,
   autopayConsents,
@@ -11,6 +12,7 @@ import {
   canonicalCollectionGroups,
   financialCommands,
   leagueOccurrences,
+  leagueOccurrenceBillingTerms,
   leagues,
   occurrencePaymentResponsibilities,
   paymentAllocations,
@@ -278,21 +280,96 @@ async function retainedStandingRequirementOccurrenceIdsInTransaction(
   adoption: Awaited<ReturnType<typeof readOwnedLedgerAdoptionInTransaction>>,
   currentOccurrenceIds: readonly string[],
 ): Promise<string[]> {
-  const commands = await tx.select({ result: financialCommands.result }).from(financialCommands).where(and(
-    eq(financialCommands.organizationId, input.organizationId),
-    eq(financialCommands.leagueId, input.leagueId),
-    eq(financialCommands.commandType, COMMAND_CUTOFF),
-    eq(financialCommands.state, "applied"),
+  const cutoffMs = new Date(input.cutoffAt).getTime();
+  if (!Number.isFinite(cutoffMs)) throw new StandingAutopayError("CUTOFF_TIME_INVALID", "The standing cutoff timestamp is invalid", 422);
+  const triggerMember = alias(canonicalCollectionGroupMembers, "standing_retained_trigger_member");
+  const triggerGroup = alias(canonicalCollectionGroups, "standing_retained_trigger_group");
+  const triggerOccurrence = alias(leagueOccurrences, "standing_retained_trigger_occurrence");
+  const triggerCandidates = await tx.select({
+    groupId: triggerMember.groupId,
+    memberId: triggerMember.id,
+    occurrenceId: triggerMember.occurrenceId,
+    billingTermId: triggerMember.billingTermId,
+    startAt: triggerOccurrence.startAt,
+  }).from(triggerMember).innerJoin(triggerGroup, and(
+    eq(triggerGroup.id, triggerMember.groupId),
+    eq(triggerGroup.organizationId, input.organizationId),
+    eq(triggerGroup.leagueId, input.leagueId),
+    eq(triggerGroup.kind, "double_pay"),
+    eq(triggerGroup.state, "published"),
+  )).innerJoin(triggerOccurrence, and(
+    eq(triggerOccurrence.id, triggerMember.occurrenceId),
+    eq(triggerOccurrence.organizationId, input.organizationId),
+    eq(triggerOccurrence.leagueId, input.leagueId),
+    inArray(triggerOccurrence.lifecycle, ["published", "locked"] as const),
+    inArray(triggerOccurrence.status, ["scheduled", "completed"] as const),
+    isNull(triggerOccurrence.cancelledAt),
+    lt(triggerOccurrence.startAt, input.cutoffAt),
+  )).where(and(
+    eq(triggerMember.organizationId, input.organizationId),
+    eq(triggerMember.leagueId, input.leagueId),
+    eq(triggerMember.role, "trigger"),
+    eq(triggerMember.active, true),
   ));
+  const triggerByGroup = new Map<string, typeof triggerCandidates>();
+  for (const trigger of triggerCandidates) triggerByGroup.set(trigger.groupId, [...(triggerByGroup.get(trigger.groupId) ?? []), trigger]);
+  const candidateGroupIds = [...triggerByGroup.keys()];
+  const activeMembers = candidateGroupIds.length === 0 ? [] : await tx.select({
+    id: canonicalCollectionGroupMembers.id,
+    groupId: canonicalCollectionGroupMembers.groupId,
+    occurrenceId: canonicalCollectionGroupMembers.occurrenceId,
+    billingTermId: canonicalCollectionGroupMembers.billingTermId,
+    role: canonicalCollectionGroupMembers.role,
+  }).from(canonicalCollectionGroupMembers).where(and(
+    eq(canonicalCollectionGroupMembers.organizationId, input.organizationId),
+    eq(canonicalCollectionGroupMembers.leagueId, input.leagueId),
+    inArray(canonicalCollectionGroupMembers.groupId, candidateGroupIds),
+    eq(canonicalCollectionGroupMembers.active, true),
+  ));
+  const membersByGroup = new Map<string, typeof activeMembers>();
+  for (const member of activeMembers) membersByGroup.set(member.groupId, [...(membersByGroup.get(member.groupId) ?? []), member]);
   const priorIds = new Set<string>();
-  for (const row of commands) {
-    const result = commandResultRecord(row.result);
-    if (!result || result.consentId !== input.consentId || result.consentVersion !== input.consentVersion
-      || typeof result.cutoffAt !== "string" || new Date(result.cutoffAt).getTime() >= new Date(input.cutoffAt).getTime()) continue;
-    const group = commandResultRecord(result.groupIdentity);
-    // Only the unpaid paired-final requirement rolls into a later trigger.
-    // A past ordinary weekly occurrence is never treated as a catch-up target.
-    if (typeof group?.pairedOccurrenceId === "string") priorIds.add(group.pairedOccurrenceId);
+  for (const [groupId, triggers] of triggerByGroup) {
+    const members = membersByGroup.get(groupId) ?? [];
+    const trigger = triggers[0];
+    const paired = members.filter((member) => member.role === "paired");
+    if (triggers.length !== 1 || members.length !== 2 || members.filter((member) => member.role === "trigger").length !== 1 || paired.length !== 1
+      || !trigger || members[0]?.id === undefined) {
+      throw new StandingAutopayError("COLLECTION_GROUP_INVALID", "A published retained paired group is incomplete or duplicated", 503);
+    }
+    if (members.some((member) => member.id === trigger.memberId) === false) {
+      throw new StandingAutopayError("COLLECTION_GROUP_INVALID", "A retained collection trigger no longer matches its group member", 503);
+    }
+    await requireAccountStandingOccurrenceEligibility(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      occurrenceId: trigger.occurrenceId,
+      billingTermId: trigger.billingTermId,
+    });
+    const [pairedOccurrence] = await tx.select({
+      lifecycle: leagueOccurrences.lifecycle,
+      status: leagueOccurrences.status,
+      cancelledAt: leagueOccurrences.cancelledAt,
+    }).from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.id, paired[0]?.occurrenceId ?? ""),
+      eq(leagueOccurrences.organizationId, input.organizationId),
+      eq(leagueOccurrences.leagueId, input.leagueId),
+    )).limit(1);
+    if (!pairedOccurrence) throw new StandingAutopayError("COLLECTION_GROUP_INVALID", "A retained paired occurrence is missing", 503);
+    // Canceled or discarded nights no longer represent a collection need.
+    if (!(["published", "locked"].includes(pairedOccurrence.lifecycle)
+      && ["scheduled", "completed"].includes(pairedOccurrence.status)
+      && pairedOccurrence.cancelledAt === null)) continue;
+    await requireAccountStandingOccurrenceEligibility(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      occurrenceId: paired[0]?.occurrenceId ?? "",
+      billingTermId: paired[0]?.billingTermId,
+    });
+    // A paired final remains a standing requirement after its trigger cutoff
+    // has passed, independent of which consent version or payment path made
+    // the earlier collection request. Ordinary missed forecasts never enter.
+    if (new Date(trigger.startAt).getTime() < cutoffMs && paired[0]) priorIds.add(paired[0].occurrenceId);
   }
   const currentIds = new Set(currentOccurrenceIds);
   const allIds = [...new Set([...currentIds, ...priorIds])];
@@ -312,7 +389,8 @@ async function retainedStandingRequirementOccurrenceIdsInTransaction(
   const occurrenceById = new Map(occurrences.map((row) => [row.id, row.localDate]));
   const explicit = new Set(confirmations.map((row) => row.occurrenceId));
   return allIds.filter((occurrenceId) => currentIds.has(occurrenceId)
-    || !isOccurrenceConfirmedInOwnedLedger(adoption, occurrenceById.get(occurrenceId) ?? "", explicit.has(occurrenceId)));
+    || (occurrenceById.has(occurrenceId)
+      && !isOccurrenceConfirmedInOwnedLedger(adoption, occurrenceById.get(occurrenceId) ?? "", explicit.has(occurrenceId))));
 }
 
 async function prepareAccountStandingAutopayCutoffInTransaction(
@@ -350,7 +428,7 @@ async function prepareAccountStandingAutopayCutoffInTransaction(
     throw new StandingAutopayError("BOWLER_NOT_IN_LEAGUE", "A standing payer is no longer active in the league", 409);
   }
 
-  const group = await groupForCutoff(tx, { organizationId, leagueId, cutoffAt });
+  const group = await groupForCutoff(tx, { organizationId, leagueId, cutoffAt, requireAccountFundingEligibility: true });
   const currentOccurrenceIds = group.occurrenceIds;
   const collectionRequirementOccurrenceIds = await retainedStandingRequirementOccurrenceIdsInTransaction(
     tx,
@@ -1185,9 +1263,53 @@ type StandingCutoffGroup = {
 /** Resolve one exact published trigger. A double-pay is all-or-nothing: the
  * group identity and both member identities are captured before obligations
  * are selected. */
-async function groupForCutoff(tx: StandingTx, input: { organizationId: number; leagueId: number; cutoffAt: string }): Promise<StandingCutoffGroup> {
+async function requireAccountStandingOccurrenceEligibility(
+  tx: StandingTx,
+  input: { organizationId: number; leagueId: number; occurrenceId: string; billingTermId?: string },
+): Promise<void> {
+  const [occurrence] = await tx.select({
+    id: leagueOccurrences.id,
+    lifecycle: leagueOccurrences.lifecycle,
+    status: leagueOccurrences.status,
+    cancelledAt: leagueOccurrences.cancelledAt,
+  }).from(leagueOccurrences).where(and(
+    eq(leagueOccurrences.organizationId, input.organizationId),
+    eq(leagueOccurrences.leagueId, input.leagueId),
+    eq(leagueOccurrences.id, input.occurrenceId),
+  )).limit(1);
+  if (!occurrence || !["published", "locked"].includes(occurrence.lifecycle)
+    || !["scheduled", "completed"].includes(occurrence.status) || occurrence.cancelledAt !== null) {
+    throw new StandingAutopayError("TRIGGER_NOT_BILLABLE", "The standing cutoff is not a current published billable occurrence", 409);
+  }
+  const terms = await tx.select({ id: leagueOccurrenceBillingTerms.id }).from(leagueOccurrenceBillingTerms).where(and(
+    eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
+    eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
+    eq(leagueOccurrenceBillingTerms.occurrenceId, input.occurrenceId),
+    eq(leagueOccurrenceBillingTerms.state, "published"),
+    eq(leagueOccurrenceBillingTerms.obligationPolicy, "eligible_bowlers"),
+    gt(leagueOccurrenceBillingTerms.defaultAmountMinor, 0),
+    eq(leagueOccurrenceBillingTerms.currency, "USD"),
+    isNotNull(leagueOccurrenceBillingTerms.billingOrdinal),
+    ...(input.billingTermId ? [eq(leagueOccurrenceBillingTerms.id, input.billingTermId)] : []),
+  )).limit(2);
+  if (terms.length !== 1) {
+    throw new StandingAutopayError("TRIGGER_NOT_BILLABLE", "The standing cutoff has no unique published eligible-bowler billing term", 409);
+  }
+}
+
+async function groupForCutoff(
+  tx: StandingTx,
+  input: { organizationId: number; leagueId: number; cutoffAt: string; requireAccountFundingEligibility?: boolean },
+): Promise<StandingCutoffGroup> {
   const occurrence = (await tx.select({ id: leagueOccurrences.id, currentRevision: leagueOccurrences.currentRevision }).from(leagueOccurrences).where(and(eq(leagueOccurrences.organizationId, input.organizationId), eq(leagueOccurrences.leagueId, input.leagueId), eq(leagueOccurrences.startAt, input.cutoffAt))).limit(1))[0];
   if (!occurrence) throw new StandingAutopayError("TRIGGER_OCCURRENCE_MISSING", "The standing cutoff occurrence is unavailable", 409);
+  if (input.requireAccountFundingEligibility) {
+    await requireAccountStandingOccurrenceEligibility(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      occurrenceId: occurrence.id,
+    });
+  }
   const members = await tx.select({ group: canonicalCollectionGroups, member: canonicalCollectionGroupMembers }).from(canonicalCollectionGroups).innerJoin(canonicalCollectionGroupMembers, and(
     eq(canonicalCollectionGroupMembers.groupId, canonicalCollectionGroups.id), eq(canonicalCollectionGroupMembers.organizationId, input.organizationId), eq(canonicalCollectionGroupMembers.leagueId, input.leagueId), eq(canonicalCollectionGroupMembers.active, true),
   )).where(and(eq(canonicalCollectionGroups.organizationId, input.organizationId), eq(canonicalCollectionGroups.leagueId, input.leagueId), eq(canonicalCollectionGroups.state, "published"), eq(canonicalCollectionGroupMembers.occurrenceId, occurrence.id))).orderBy(asc(canonicalCollectionGroupMembers.memberOrdinal)).for("share");
@@ -1208,11 +1330,27 @@ async function groupForCutoff(tx: StandingTx, input: { organizationId: number; l
       occurrenceIds: [occurrence.id],
     };
   }
+  if (input.requireAccountFundingEligibility) {
+    await requireAccountStandingOccurrenceEligibility(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      occurrenceId: trigger.member.occurrenceId,
+      billingTermId: trigger.member.billingTermId,
+    });
+  }
   const allMembers = await tx.select({ group: canonicalCollectionGroups, member: canonicalCollectionGroupMembers }).from(canonicalCollectionGroups).innerJoin(canonicalCollectionGroupMembers, and(
     eq(canonicalCollectionGroupMembers.groupId, trigger.group.id), eq(canonicalCollectionGroupMembers.organizationId, input.organizationId), eq(canonicalCollectionGroupMembers.leagueId, input.leagueId), eq(canonicalCollectionGroupMembers.active, true),
   )).where(and(eq(canonicalCollectionGroups.id, trigger.group.id), eq(canonicalCollectionGroups.state, "published"))).orderBy(asc(canonicalCollectionGroupMembers.memberOrdinal)).for("share");
   const paired = allMembers.find((row) => row.member.role === "paired");
   if (allMembers.length !== 2 || !paired) throw new StandingAutopayError("DOUBLE_PAY_GROUP_INVALID", "The published double-pay group is incomplete", 409);
+  if (input.requireAccountFundingEligibility) {
+    await requireAccountStandingOccurrenceEligibility(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      occurrenceId: paired.member.occurrenceId,
+      billingTermId: paired.member.billingTermId,
+    });
+  }
   return { mode: "double_pay", groupId: trigger.group.id, groupRevision: trigger.group.currentRevision, groupFingerprint: trigger.group.fingerprint, triggerOccurrenceId: trigger.member.occurrenceId, triggerOccurrenceRevision: occurrence.currentRevision, pairedOccurrenceId: paired.member.occurrenceId, triggerMemberId: trigger.member.id, pairedMemberId: paired.member.id, occurrenceIds: [trigger.member.occurrenceId, paired.member.occurrenceId] };
 }
 
@@ -1556,12 +1694,24 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
       if (typeof asOfValue !== "string" || !asOfValue) throw new StandingAutopayError("QUOTE_TIME_UNAVAILABLE", "The standing quote could not establish a database timestamp", 503);
       const asOf = iso(asOfValue);
       const activationAt = iso(consent.activatedAt);
-      const [nextTrigger] = await tx.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt, currentRevision: leagueOccurrences.currentRevision })
-        .from(leagueOccurrences).where(and(
+      const [nextTrigger] = await tx.selectDistinct({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt, currentRevision: leagueOccurrences.currentRevision })
+        .from(leagueOccurrences).innerJoin(leagueOccurrenceBillingTerms, and(
+          eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
+          eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
+          eq(leagueOccurrenceBillingTerms.occurrenceId, leagueOccurrences.id),
+          eq(leagueOccurrenceBillingTerms.state, "published"),
+          eq(leagueOccurrenceBillingTerms.obligationPolicy, "eligible_bowlers"),
+          gt(leagueOccurrenceBillingTerms.defaultAmountMinor, 0),
+          eq(leagueOccurrenceBillingTerms.currency, "USD"),
+          isNotNull(leagueOccurrenceBillingTerms.billingOrdinal),
+        )).where(and(
           eq(leagueOccurrences.organizationId, input.organizationId),
           eq(leagueOccurrences.leagueId, input.leagueId),
           gte(leagueOccurrences.startAt, activationAt),
           gte(leagueOccurrences.startAt, asOf),
+          inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const),
+          inArray(leagueOccurrences.status, ["scheduled", "completed"] as const),
+          isNull(leagueOccurrences.cancelledAt),
           sql`NOT EXISTS (
             SELECT 1
             FROM canonical_collection_group_members paired_member
@@ -1592,7 +1742,7 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
         };
       }
       const cutoffAt = iso(nextTrigger.startAt);
-      const group = await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt });
+      const group = await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt, requireAccountFundingEligibility: true });
       if (group.suppressed) {
         return {
           contractVersion: "standing-autopay-quote/1" as const,
@@ -2142,7 +2292,7 @@ export async function validateStandingConsentForDispatchInTransaction(tx: Standi
             || recipient.paymentLinkId !== partner.paymentLinkId
             || recipient.linkFingerprint !== partner.linkFingerprint;
         })) throw new StandingAutopayError("PARTICIPANT_EVIDENCE_INVALID", "The standing account recipient evidence changed before dispatch");
-      const currentGroup = await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt: evidence.cutoffAt });
+      const currentGroup = await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt: evidence.cutoffAt, requireAccountFundingEligibility: true });
       if (currentGroup.suppressed || currentGroup.mode !== evidence.collectionMode
         || currentGroup.triggerOccurrenceId !== evidence.triggerOccurrenceId
         || currentGroup.triggerOccurrenceRevision !== evidence.triggerOccurrenceRevision

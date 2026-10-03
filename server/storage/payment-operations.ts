@@ -3244,6 +3244,21 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
       WHERE c.state = 'active'
         AND c.payment_mode = 'weekly'
         AND c.revoked_at IS NULL
+        AND trigger_occurrence.lifecycle IN ('published', 'locked')
+        AND trigger_occurrence.status IN ('scheduled', 'completed')
+        AND trigger_occurrence.cancelled_at IS NULL
+        AND EXISTS (
+          SELECT 1
+            FROM league_occurrence_billing_terms billable_term
+           WHERE billable_term.organization_id = c.organization_id
+             AND billable_term.league_id = c.league_id
+             AND billable_term.occurrence_id = trigger_occurrence.id
+             AND billable_term.state = 'published'
+             AND billable_term.obligation_policy = 'eligible_bowlers'
+             AND billable_term.default_amount_minor > 0
+             AND billable_term.currency = 'USD'
+             AND billable_term.billing_ordinal IS NOT NULL
+        )
         AND NOT EXISTS (
           SELECT 1
             FROM canonical_collection_group_members paired_member

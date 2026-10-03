@@ -64,8 +64,11 @@ const suffix = process.env.VITEST_POOL_ID ?? "0";
 const slug = `roster-payment-finalizer-${suffix}`;
 let organizationId: number;
 let leagueId: number;
+let accountLeagueId: number;
+let accountFailureLeagueId: number;
 let locationId: number;
 let teamId: number;
+let accountTeamId: number;
 let bowlerId: number;
 let actorUserId: number;
 let occurrenceOrdinal = 0;
@@ -101,6 +104,40 @@ beforeAll(async () => {
     timezone: "UTC",
   }).returning({ id: leagues.id });
   leagueId = league.id;
+  const [accountLeague] = await db.insert(leagues).values({
+    name: "Roster Account Funding League",
+    organizationId,
+    locationId: location.id,
+    payingLineupSize: 3,
+    substituteAccess: "team_only",
+    substitutePaymentRegime: "team_choice",
+    weeklyFee: 2_000,
+    lineageFee: null,
+    prizeFundFee: null,
+    paymentMode: "weekly",
+    seasonStart: "2038-01-01T00:00:00.000Z",
+    seasonEnd: "2038-12-31T23:59:59.000Z",
+    weekDay: "Monday",
+    timezone: "UTC",
+  }).returning({ id: leagues.id });
+  accountLeagueId = accountLeague.id;
+  const [accountFailureLeague] = await db.insert(leagues).values({
+    name: "Roster Account Funding Failure League",
+    organizationId,
+    locationId: location.id,
+    payingLineupSize: 3,
+    substituteAccess: "team_only",
+    substitutePaymentRegime: "team_choice",
+    weeklyFee: 2_000,
+    lineageFee: null,
+    prizeFundFee: null,
+    paymentMode: "weekly",
+    seasonStart: "2038-01-01T00:00:00.000Z",
+    seasonEnd: "2038-12-31T23:59:59.000Z",
+    weekDay: "Monday",
+    timezone: "UTC",
+  }).returning({ id: leagues.id });
+  accountFailureLeagueId = accountFailureLeague.id;
   const [actor] = await db.insert(users).values({
     email: `roster-finalizer-${suffix}@example.test`,
     password: "deterministic-test-password-hash",
@@ -111,9 +148,16 @@ beforeAll(async () => {
   actorUserId = actor.id;
   const [team] = await db.insert(teams).values({ name: "Roster Fixture Team", number: 1, leagueId }).returning({ id: teams.id });
   teamId = team.id;
+  const [accountTeam] = await db.insert(teams).values({ name: "Roster Account Funding Team", number: 1, leagueId: accountLeagueId }).returning({ id: teams.id });
+  accountTeamId = accountTeam.id;
+  const [accountFailureTeam] = await db.insert(teams).values({ name: "Roster Account Failure Team", number: 1, leagueId: accountFailureLeagueId }).returning({ id: teams.id });
   const [bowler] = await db.insert(bowlers).values({ name: "Roster Fixture Main", email: "roster-main@example.test", organizationId }).returning({ id: bowlers.id });
   bowlerId = bowler.id;
-  await db.insert(bowlerLeagues).values({ bowlerId, leagueId, teamId });
+  await db.insert(bowlerLeagues).values([
+    { bowlerId, leagueId, teamId },
+    { bowlerId, leagueId: accountLeagueId, teamId: accountTeamId },
+    { bowlerId, leagueId: accountFailureLeagueId, teamId: accountFailureTeam.id },
+  ]);
   await db.insert(teamPaymentSlots).values([
     { organizationId, leagueId, teamId, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId: bowlerId, recordedByUserId: actorUserId },
     { organizationId, leagueId, teamId, slotIndex: 1, lineupSize: 3, occupant: "vacant", mainBowlerId: null, recordedByUserId: actorUserId },
@@ -122,12 +166,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (organizationId) {
-    await db.delete(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.organizationId, organizationId));
-    await db.delete(accountPaymentOperationSnapshots).where(eq(accountPaymentOperationSnapshots.organizationId, organizationId));
-    await db.delete(weeklyPaymentLedgerAdoptions).where(eq(weeklyPaymentLedgerAdoptions.organizationId, organizationId));
-    await deleteOrganization(organizationId);
-  }
+  if (organizationId) await deleteOrganization(organizationId);
 });
 
 // Each test owns its occurrence/payment evidence. Release only unfinished
@@ -167,16 +206,17 @@ afterEach(async () => {
     eq(paymentOperationRosterSnapshotItems.state, "reserved"),
   ));
   await db.transaction(async (tx) => {
-    const activePayments = await tx.select({ paymentId: paymentAllocations.paymentId }).from(paymentAllocations).where(and(
+    const activePayments = await tx.select({ paymentId: paymentAllocations.paymentId, leagueId: paymentAllocations.leagueId }).from(paymentAllocations).where(and(
       eq(paymentAllocations.organizationId, organizationId),
       eq(paymentAllocations.state, "active"),
     ));
-    for (const paymentId of [...new Set(activePayments.map((row) => row.paymentId))]) {
-      await tx.insert(paymentVoids).values({ organizationId, leagueId, paymentId, reason: "test fixture cleanup", recordedByUserId: actorUserId });
-      await tx.update(payments).set({ status: "voided" }).where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId), eq(payments.leagueId, leagueId)));
+    const uniquePaymentScopes = new Map(activePayments.map((row) => [`${row.leagueId}:${row.paymentId}`, row]));
+    for (const { paymentId, leagueId: paymentLeagueId } of uniquePaymentScopes.values()) {
+      await tx.insert(paymentVoids).values({ organizationId, leagueId: paymentLeagueId, paymentId, reason: "test fixture cleanup", recordedByUserId: actorUserId });
+      await tx.update(payments).set({ status: "voided" }).where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId), eq(payments.leagueId, paymentLeagueId)));
       await tx.update(paymentAllocations).set({ state: "voided" }).where(and(
         eq(paymentAllocations.organizationId, organizationId),
-        eq(paymentAllocations.leagueId, leagueId),
+        eq(paymentAllocations.leagueId, paymentLeagueId),
         eq(paymentAllocations.paymentId, paymentId),
         eq(paymentAllocations.state, "active"),
       ));
@@ -639,17 +679,17 @@ async function createRosterOperation(
   });
 }
 
-async function ensureOwnedLedgerAdoption(): Promise<string> {
+async function ensureOwnedLedgerAdoption(targetLeagueId = leagueId): Promise<string> {
   const [existing] = await db.select({ id: weeklyPaymentLedgerAdoptions.id }).from(weeklyPaymentLedgerAdoptions).where(and(
     eq(weeklyPaymentLedgerAdoptions.organizationId, organizationId),
-    eq(weeklyPaymentLedgerAdoptions.leagueId, leagueId),
+    eq(weeklyPaymentLedgerAdoptions.leagueId, targetLeagueId),
   )).limit(1);
   if (existing) return existing.id;
   const preflight = randomUUID().replaceAll("-", "").repeat(2);
   const result = randomUUID().replaceAll("-", "").repeat(2);
   const [adoption] = await db.insert(weeklyPaymentLedgerAdoptions).values({
     organizationId,
-    leagueId,
+    leagueId: targetLeagueId,
     adoptedThroughLocalDate: "2037-12-31",
     preflightFingerprint: `lvweeklyadoptpre:v1:${preflight}`,
     resultFingerprint: `lvweeklyadopt:v1:${result}`,
@@ -661,6 +701,7 @@ async function ensureOwnedLedgerAdoption(): Promise<string> {
 }
 
 async function createAccountFundingOperation(input: {
+  leagueId?: number;
   requestKey?: string;
   amountMinor?: number;
   quoteFingerprint?: string;
@@ -672,7 +713,7 @@ async function createAccountFundingOperation(input: {
   const operation = await prepareAccountPaymentOperation({
     requestKey: input.requestKey ?? `account-recovery-${randomUUID()}`,
     organizationId,
-    leagueId,
+    leagueId: input.leagueId ?? leagueId,
     payerBowlerId: bowlerId,
     amountMinor,
     fundingPortions: [{ portionIndex: 0, creditedBowlerId: bowlerId, amountMinor }],
@@ -1916,10 +1957,11 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
   });
 
   it("recovers V4 funding with the original capture timestamp across a weekly boundary", async () => {
-    await ensureOwnedLedgerAdoption();
+    await ensureOwnedLedgerAdoption(accountLeagueId);
     const captureAt = new Date("2038-02-07T23:59:00.000Z");
     const recoveryAt = new Date("2038-02-08T00:01:00.000Z");
     const operation = await createAccountFundingOperation({
+      leagueId: accountLeagueId,
       requestKey: `account-capture-boundary-${randomUUID()}`,
       now: captureAt,
     });
@@ -1927,6 +1969,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     await db.update(paymentOperations).set({
       status: "reconciliation_required",
       providerObjectId: providerPaymentId,
+      nextAttemptAt: null,
       errorClassification: "provider_unknown",
       errorCode: "CAPTURE_FINALIZATION_PENDING",
       attemptCount: 1,
@@ -1938,7 +1981,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
 
     const recovered = await recoverRosterPaymentOperation({
       organizationId,
-      leagueId,
+      leagueId: accountLeagueId,
       operationId: operation.id,
       actorUserId,
       now: recoveryAt,
@@ -1947,12 +1990,12 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     expect(recovered.status).toBe("succeeded");
     const [payment] = await db.select({ createdAt: payments.createdAt }).from(payments).where(and(
       eq(payments.organizationId, organizationId),
-      eq(payments.leagueId, leagueId),
+      eq(payments.leagueId, accountLeagueId),
       eq(payments.paymentOperationId, operation.id),
     )).limit(1);
     const [funding] = await db.select({ createdAt: weeklyPaymentFundings.createdAt }).from(weeklyPaymentFundings).where(and(
       eq(weeklyPaymentFundings.organizationId, organizationId),
-      eq(weeklyPaymentFundings.leagueId, leagueId),
+      eq(weeklyPaymentFundings.leagueId, accountLeagueId),
       eq(weeklyPaymentFundings.authorizationOperationId, operation.id),
     )).limit(1);
     expect(payment).toBeDefined();
@@ -1960,21 +2003,22 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     expect(payment.createdAt.slice(0, 10)).toBe("2038-02-07");
     expect(funding).toBeDefined();
     expect(new Date(funding.createdAt).toISOString()).toBe(recoveryAt.toISOString());
-    await recoverRosterPaymentOperation({ organizationId, leagueId, operationId: operation.id, actorUserId, now: recoveryAt });
+    await recoverRosterPaymentOperation({ organizationId, leagueId: accountLeagueId, operationId: operation.id, actorUserId, now: recoveryAt });
     expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.paymentOperationId, operation.id))).toHaveLength(1);
     expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.authorizationOperationId, operation.id))).toHaveLength(1);
   });
 
-  it("rolls back the V4 success transition and receipt when funding finalization fails", async () => {
-    const adoptionId = await ensureOwnedLedgerAdoption();
+  it("returns the persisted reconciliation error when V4 recovery evidence is invalid", async () => {
     const captureAt = new Date("2038-03-01T20:00:00.000Z");
     const operation = await createAccountFundingOperation({
+      leagueId: accountFailureLeagueId,
       requestKey: `account-recovery-rollback-${randomUUID()}`,
       now: captureAt,
     });
     await db.update(paymentOperations).set({
       status: "reconciliation_required",
       providerObjectId: `account-provider-${operation.id}`,
+      nextAttemptAt: null,
       errorClassification: "provider_unknown",
       errorCode: "CAPTURE_FINALIZATION_PENDING",
       attemptCount: 1,
@@ -1983,36 +2027,38 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
       completedAt: captureAt.toISOString(),
       updatedAt: captureAt.toISOString(),
     }).where(eq(paymentOperations.id, operation.id));
-    await db.delete(weeklyPaymentLedgerAdoptions).where(eq(weeklyPaymentLedgerAdoptions.id, adoptionId));
-
     const recovered = await recoverRosterPaymentOperation({
       organizationId,
-      leagueId,
+      leagueId: accountFailureLeagueId,
       operationId: operation.id,
       actorUserId,
       now: new Date("2038-03-08T20:00:00.000Z"),
     });
+    const [storedOperation] = await db.select({ errorCode: paymentOperations.errorCode }).from(paymentOperations).where(eq(paymentOperations.id, operation.id));
 
-    expect(recovered).toMatchObject({ id: operation.id, status: "reconciliation_required" });
+    expect(recovered).toMatchObject({ id: operation.id, status: "reconciliation_required", errorCode: storedOperation.errorCode });
+    expect(storedOperation.errorCode).not.toBe("CAPTURE_FINALIZATION_PENDING");
     expect(await db.select({ id: payments.id }).from(payments).where(eq(payments.paymentOperationId, operation.id))).toHaveLength(0);
     expect(await db.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.authorizationOperationId, operation.id))).toHaveLength(0);
   });
 
   it("blocks a different-key V4 charge on an overlapping account but replays the same key first", async () => {
-    await ensureOwnedLedgerAdoption();
+    await ensureOwnedLedgerAdoption(accountLeagueId);
     const selection = { kind: "explicit_amount" as const, amountMinor: 2_000 };
     const recipientRequest = { recipients: [{ bowlerId, selection }] };
-    const quote = await quoteAccountPaymentFundingV4({ organizationId, leagueId, payerBowlerId: bowlerId, request: recipientRequest });
+    const quote = await quoteAccountPaymentFundingV4({ organizationId, leagueId: accountLeagueId, payerBowlerId: bowlerId, request: recipientRequest });
     const unresolvedRequestKey = `account-overlap-a-${randomUUID()}`;
     const unresolvedSourceId = `cnon:account-overlap-a-${randomUUID()}`;
     const sameKeyRequestKey = `account-overlap-b-${randomUUID()}`;
     const sameKeySourceId = `cnon:account-overlap-b-${randomUUID()}`;
     const unresolved = await createAccountFundingOperation({
+      leagueId: accountLeagueId,
       requestKey: unresolvedRequestKey,
       quoteFingerprint: quote.quoteFingerprint,
       sourceId: unresolvedSourceId,
     });
     const sameKey = await createAccountFundingOperation({
+      leagueId: accountLeagueId,
       requestKey: sameKeyRequestKey,
       quoteFingerprint: quote.quoteFingerprint,
       sourceId: sameKeySourceId,
@@ -2034,7 +2080,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     try {
       await expect(chargeAccountPaymentFundingV4({
         organizationId,
-        leagueId,
+        leagueId: accountLeagueId,
         actorUserId,
         payerBowlerId: bowlerId,
         request: makeRequest(`account-overlap-new-${randomUUID()}`, `cnon:new-${randomUUID()}`),
@@ -2043,7 +2089,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
 
       const replay = await chargeAccountPaymentFundingV4({
         organizationId,
-        leagueId,
+        leagueId: accountLeagueId,
         actorUserId,
         payerBowlerId: bowlerId,
         request: makeRequest(sameKeyRequestKey, sameKeySourceId),
