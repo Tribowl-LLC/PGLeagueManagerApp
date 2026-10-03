@@ -29,7 +29,7 @@ const inputVariants = cva(
       appearance: {
         default: "",
         managePayments:
-          "manage-payments-input h-11 rounded-md border-familiar-line bg-familiar-surface px-3 py-2 text-sm text-familiar-ink placeholder:text-familiar-muted focus-visible:ring-familiar-navy",
+          "manage-payments-input h-11 rounded-md border-familiar-line bg-familiar-surface py-2 text-sm text-familiar-ink placeholder:text-familiar-muted focus-visible:ring-familiar-navy",
       },
     },
     defaultVariants: {

@@ -361,6 +361,10 @@
   white-space: nowrap;
 }
 
+.manage-payments-table-head:nth-child(5) {
+  padding-left: 22px;
+}
+
 .manage-payments-table-cell {
   padding: 4px 8px;
   border-color: var(--familiar-line);
@@ -406,7 +410,7 @@
 }
 
 [data-awpw="responsible-control"] {
-  display: flex;
+  display: inline-flex;
   width: 44px;
   min-height: 44px;
   align-items: center;
@@ -572,6 +576,10 @@
   .manage-payments-table-cell {
     padding-right: 9px;
     padding-left: 9px;
+  }
+
+  .manage-payments-table-head:nth-child(5) {
+    padding-left: 16px;
   }
 
   .manage-payments-received-cell {
