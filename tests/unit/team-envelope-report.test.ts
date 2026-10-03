@@ -402,7 +402,12 @@ function adoptedEnvelopeInput(): BuildInput {
     { id: 104, name: "Avery Credit", teamId: 10 },
     { id: 105, name: "Riley Partial Waiver", teamId: 10 },
     { id: 106, name: "Casey Waived Only", teamId: 10 },
+    { id: 107, name: "Taylor Rotation", teamId: 20 },
   );
+  const rotatingTeam = input.roster.teams.find((team) => team.id === 20);
+  if (!rotatingTeam || !rotatingTeam.slots[0]) throw new Error("missing rotating team fixture");
+  rotatingTeam.slots[0] = { teamId: 20, slotIndex: 0, occupant: "rotating", mainBowlerId: null };
+  Object.assign(rotatingTeam, { eligibleRotatingBowlerIds: [107] });
   const rows = [
     adoptedRow(101, 103, "week-1", {
       amountMinor: 1_000,
@@ -446,6 +451,46 @@ function adoptedEnvelopeInput(): BuildInput {
       confirmationStatus: "confirmed",
     }),
   ];
+  const rotatingRow = adoptedRow(107, 107, "week-2", {
+    amountMinor: 2_000,
+    projectedCreditMinor: 1_000,
+    confirmationStatus: "forecast",
+    classification: "due",
+  });
+  rows.push({
+    ...rotatingRow,
+    teamId: 20,
+    payerBowlerId: null,
+    owner: { kind: "team", teamId: 20 },
+    slotIndex: 0,
+    responsibilityKind: "rotating",
+    actualBowlerId: 107,
+    accountProjection: {
+      owner: { kind: "team", teamId: 20 },
+      effectiveDebtorBowlerId: 107,
+      confirmationStatus: "forecast",
+      projectedCreditMinor: 1_000,
+    },
+  });
+  const unassignedTeamRow = adoptedRow(108, 108, "week-3", {
+    amountMinor: 2_000,
+    confirmationStatus: "forecast",
+  });
+  rows.push({
+    ...unassignedTeamRow,
+    teamId: 20,
+    payerBowlerId: null,
+    owner: { kind: "team", teamId: 20 },
+    slotIndex: 1,
+    responsibilityKind: "rotating",
+    actualBowlerId: null,
+    accountProjection: {
+      owner: { kind: "team", teamId: 20 },
+      effectiveDebtorBowlerId: null,
+      confirmationStatus: "forecast",
+      projectedCreditMinor: 0,
+    },
+  });
   const account = (bowlerId: number, amountPaidMinor: number, availableCreditMinor: number, confirmedDebtMinor: number, seasonRemainingMinor: number): FinancialReadAccountProjectionRow => ({
     bowlerId,
     amountPaidMinor,
@@ -480,6 +525,7 @@ function adoptedEnvelopeInput(): BuildInput {
         account(104, 5_000, 5_000, 0, 0),
         account(105, 1_000, 0, 0, 0),
         account(106, 0, 0, 0, 0),
+        account(107, 1_000, 1_000, 0, 1_000),
       ],
     },
   };
@@ -500,7 +546,7 @@ describe("team envelope report", () => {
       weeklyDueMinor: 2_000,
       ytdDueMinor: 1_000,
       ytdPaidMinor: 1_500,
-      remainingCreditMinor: 0,
+      remainingCreditMinor: 500,
       pastDueMinor: 0,
       dueTodayMinor: 1_500,
       finalWeekPaid: false,
@@ -508,7 +554,7 @@ describe("team envelope report", () => {
     expect(creditHolder).toMatchObject({
       bowlerName: "Avery Credit",
       ytdPaidMinor: 5_000,
-      remainingCreditMinor: 1_000,
+      remainingCreditMinor: 5_000,
       weeklyDueMinor: 2_000,
       dueTodayMinor: 0,
       finalWeekPaid: true,
@@ -520,7 +566,17 @@ describe("team envelope report", () => {
     });
     expect(team?.rows.some((row) => row.bowlerId === 106)).toBe(false);
     expect(team?.showFinalWeekPaid).toBe(true);
-    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows).toEqual([]);
+    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows).toMatchObject([{
+      bowlerId: 107,
+      bowlerName: "Taylor Rotation",
+      weeklyDueMinor: 2_000,
+      ytdPaidMinor: 1_000,
+      remainingCreditMinor: 1_000,
+      dueTodayMinor: 1_000,
+    }]);
+    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows).toHaveLength(1);
+    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows.every((row) => row.ownerKind !== "team")).toBe(true);
+    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows.some((row) => row.bowlerId === 108)).toBe(false);
   });
 
   it("uses the selected week's fees, prior YTD due, all effective payments, and due-through-today balance", () => {
@@ -600,8 +656,16 @@ describe("team envelope report", () => {
     expect(row).toMatchObject({ pastDueMinor: 2_000, dueTodayMinor: 2_000 });
   });
 
-  it("does not mark a waived-only final fee paid without genuine money coverage", () => {
+  it("preserves the legacy final-week waived-balance result", () => {
     const input = reportInput();
+    for (const row of input.financial.rows) {
+      row.allocatedMinor = row.amountMinor;
+      row.grossAllocatedMinor = row.amountMinor;
+      row.outstandingMinor = 0;
+      row.stillOwed = false;
+      row.state = "settled";
+      row.classification = "settled";
+    }
     const waivedFinal = input.financial.rows.find((row) => row.payerBowlerId === 102 && row.occurrenceId === "week-3");
     if (!waivedFinal) throw new Error("missing waived final obligation fixture");
     waivedFinal.allocatedMinor = 0;
@@ -612,9 +676,11 @@ describe("team envelope report", () => {
     waivedFinal.state = "settled";
     waivedFinal.classification = "settled";
 
-    const row = buildTeamEnvelopeReport(input).teams[0].rows[1];
+    const report = buildTeamEnvelopeReport(input);
+    const row = report.teams[0].rows[1];
 
-    expect(row).toMatchObject({ bowlerId: 102, finalWeekPaid: false });
+    expect(row).toMatchObject({ bowlerId: 102, finalWeekPaid: true });
+    expect(report.teams[0].showFinalWeekPaid).toBe(false);
   });
 
   it("applies the same envelope amounts to an owner-aware rotating slot", () => {
