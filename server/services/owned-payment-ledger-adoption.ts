@@ -343,6 +343,7 @@ function correctionRowsAreLinear(
 async function buildOwnedPaymentAdoptionPlan(
   tx: PaymentOperationTransaction,
   input: { organizationId: number; leagueId: number },
+  options: { cutoffBeforeFirstBillableDate?: boolean } = {},
 ): Promise<OwnedPaymentAdoptionPlan> {
   if (!Number.isSafeInteger(input.organizationId) || input.organizationId <= 0
     || !Number.isSafeInteger(input.leagueId) || input.leagueId <= 0) throw new Error("invalid organization or league scope");
@@ -361,10 +362,12 @@ async function buildOwnedPaymentAdoptionPlan(
   const databaseNow = await readDatabaseNow(tx);
   const localToday = localDateForInstant(databaseNow, timeZone);
   const billableOccurrences = schedule.occurrences.filter(BILLABLE);
-  const adoptedThroughLocalDate = deriveOwnedPaymentAdoptionCutoff(
-    billableOccurrences.map((row) => row.authoritativeLocalDate),
-    localToday,
-  );
+  const billableLocalDates = billableOccurrences.map((row) => row.authoritativeLocalDate);
+  const firstBillableLocalDate = [...billableLocalDates].sort((left, right) => left.localeCompare(right))[0];
+  if (!firstBillableLocalDate) throw new Error("canonical schedule has no billable occurrences");
+  const adoptedThroughLocalDate = options.cutoffBeforeFirstBillableDate === true
+    ? previousLocalDate(firstBillableLocalDate)
+    : deriveOwnedPaymentAdoptionCutoff(billableLocalDates, localToday);
   const occurrenceById = new Map(schedule.occurrences.map((row) => [row.occurrenceId, row]));
 
   const paymentsRows = await tx.select().from(payments).where(and(
@@ -1198,6 +1201,108 @@ async function assertAdoptionActorInTransaction(
     && (actor.role !== "org_admin" || actor.organizationId !== input.organizationId))) {
     throw new OwnedPaymentLedgerAdoptionError("UNAUTHORIZED_ACTOR");
   }
+}
+
+/** Initialize a marker only for a newly published league still inside its
+ * creating transaction. Existing setup retries must return before this seam. */
+export async function initializePristineOwnedPaymentLedgerInTransaction(
+  tx: PaymentOperationTransaction,
+  input: { organizationId: number; leagueId: number; actorUserId: number },
+): Promise<void> {
+  if (!Number.isSafeInteger(input.organizationId) || input.organizationId <= 0
+    || !Number.isSafeInteger(input.leagueId) || input.leagueId <= 0
+    || !Number.isSafeInteger(input.actorUserId) || input.actorUserId <= 0) {
+    throw new OwnedPaymentLedgerAdoptionError("INVALID_SCOPE");
+  }
+  await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+  await assertAdoptionActorInTransaction(tx, input);
+
+  const [paymentsFound, operationsFound, rosterSnapshotsFound, snapshotItemsFound,
+    standingBindingsFound, standingParticipantsFound, disputesFound, voidsFound,
+    refundSnapshotsFound, obligationsFound, responsibilitiesFound, ownerRevisionsFound,
+    assignmentsFound, correctionsFound, allocationsFound, refundAdjustmentsFound,
+    confirmationsFound, consentsFound, consentPartnersFound, adoptionRowsFound,
+    fundingsFound, authorizationItemsFound, fundingApplicationsFound,
+    adoptionProofsFound, adoptionProofStepsFound, releasesFound, receiptHeadsFound,
+    receiptRevisionsFound, rotatingFundingsFound, rotatingApplicationsFound,
+    rotatingReversalsFound, rotatingRefundsFound] = await Promise.all([
+    tx.select({ id: payments.id }).from(payments).where(and(eq(payments.organizationId, input.organizationId), eq(payments.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: paymentOperations.id }).from(paymentOperations).where(and(eq(paymentOperations.organizationId, input.organizationId), eq(paymentOperations.leagueId, input.leagueId))).limit(1),
+    tx.select({ operationId: paymentOperationRosterSnapshots.operationId }).from(paymentOperationRosterSnapshots).where(and(eq(paymentOperationRosterSnapshots.organizationId, input.organizationId), eq(paymentOperationRosterSnapshots.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: paymentOperationRosterSnapshotItems.id }).from(paymentOperationRosterSnapshotItems).where(and(eq(paymentOperationRosterSnapshotItems.organizationId, input.organizationId), eq(paymentOperationRosterSnapshotItems.leagueId, input.leagueId))).limit(1),
+    tx.select({ operationId: paymentOperationStandingAutopayBindings.operationId }).from(paymentOperationStandingAutopayBindings).where(and(eq(paymentOperationStandingAutopayBindings.organizationId, input.organizationId), eq(paymentOperationStandingAutopayBindings.leagueId, input.leagueId))).limit(1),
+    tx.select({ operationId: paymentOperationStandingAutopayParticipants.operationId }).from(paymentOperationStandingAutopayParticipants).where(and(eq(paymentOperationStandingAutopayParticipants.organizationId, input.organizationId), eq(paymentOperationStandingAutopayParticipants.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: paymentDisputes.id }).from(paymentDisputes).innerJoin(paymentOperations, and(
+      eq(paymentOperations.id, paymentDisputes.paymentOperationId),
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+    )).where(eq(paymentDisputes.organizationId, input.organizationId)).limit(1),
+    tx.select({ id: paymentVoids.id }).from(paymentVoids).where(and(eq(paymentVoids.organizationId, input.organizationId), eq(paymentVoids.leagueId, input.leagueId))).limit(1),
+    tx.select({ operationId: refundPaymentOperationSnapshots.operationId }).from(refundPaymentOperationSnapshots).innerJoin(paymentOperations, and(
+      eq(paymentOperations.id, refundPaymentOperationSnapshots.operationId),
+      eq(paymentOperations.organizationId, input.organizationId),
+      eq(paymentOperations.leagueId, input.leagueId),
+    )).limit(1),
+    tx.select({ id: paymentObligations.id }).from(paymentObligations).where(and(eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: occurrencePaymentResponsibilities.id }).from(occurrencePaymentResponsibilities).where(and(eq(occurrencePaymentResponsibilities.organizationId, input.organizationId), eq(occurrencePaymentResponsibilities.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: paymentObligationOwnerRevisions.id }).from(paymentObligationOwnerRevisions).where(and(eq(paymentObligationOwnerRevisions.organizationId, input.organizationId), eq(paymentObligationOwnerRevisions.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: rotatingOccurrenceAssignments.id }).from(rotatingOccurrenceAssignments).where(and(eq(rotatingOccurrenceAssignments.organizationId, input.organizationId), eq(rotatingOccurrenceAssignments.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: paymentAllocationCorrections.id }).from(paymentAllocationCorrections).where(and(eq(paymentAllocationCorrections.organizationId, input.organizationId), eq(paymentAllocationCorrections.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: paymentAllocations.id }).from(paymentAllocations).where(and(eq(paymentAllocations.organizationId, input.organizationId), eq(paymentAllocations.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: refundAllocationAdjustments.id }).from(refundAllocationAdjustments).where(and(eq(refundAllocationAdjustments.organizationId, input.organizationId), eq(refundAllocationAdjustments.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: weeklyPaymentWeekConfirmations.id }).from(weeklyPaymentWeekConfirmations).where(and(eq(weeklyPaymentWeekConfirmations.organizationId, input.organizationId), eq(weeklyPaymentWeekConfirmations.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: autopayConsents.id }).from(autopayConsents).where(and(eq(autopayConsents.organizationId, input.organizationId), eq(autopayConsents.leagueId, input.leagueId))).limit(1),
+    tx.select({ consentId: autopayConsentPartners.consentId }).from(autopayConsentPartners).where(and(eq(autopayConsentPartners.organizationId, input.organizationId), eq(autopayConsentPartners.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: weeklyPaymentLedgerAdoptions.id }).from(weeklyPaymentLedgerAdoptions).where(and(eq(weeklyPaymentLedgerAdoptions.organizationId, input.organizationId), eq(weeklyPaymentLedgerAdoptions.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: weeklyPaymentFundings.id }).from(weeklyPaymentFundings).where(and(eq(weeklyPaymentFundings.organizationId, input.organizationId), eq(weeklyPaymentFundings.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: weeklyPaymentFundingAuthorizationItems.id }).from(weeklyPaymentFundingAuthorizationItems).where(and(eq(weeklyPaymentFundingAuthorizationItems.organizationId, input.organizationId), eq(weeklyPaymentFundingAuthorizationItems.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: paymentAllocationFundingApplications.id }).from(paymentAllocationFundingApplications).where(and(eq(paymentAllocationFundingApplications.organizationId, input.organizationId), eq(paymentAllocationFundingApplications.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: weeklyPaymentLedgerAdoptionAllocationProofs.id }).from(weeklyPaymentLedgerAdoptionAllocationProofs).where(and(eq(weeklyPaymentLedgerAdoptionAllocationProofs.organizationId, input.organizationId), eq(weeklyPaymentLedgerAdoptionAllocationProofs.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: weeklyPaymentLedgerAdoptionAllocationProofSteps.id }).from(weeklyPaymentLedgerAdoptionAllocationProofSteps).where(and(eq(weeklyPaymentLedgerAdoptionAllocationProofSteps.organizationId, input.organizationId), eq(weeklyPaymentLedgerAdoptionAllocationProofSteps.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: weeklyPaymentAllocationReleases.id }).from(weeklyPaymentAllocationReleases).where(and(eq(weeklyPaymentAllocationReleases.organizationId, input.organizationId), eq(weeklyPaymentAllocationReleases.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: weeklyPaymentWorksheetReceipts.id }).from(weeklyPaymentWorksheetReceipts).where(and(eq(weeklyPaymentWorksheetReceipts.organizationId, input.organizationId), eq(weeklyPaymentWorksheetReceipts.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: weeklyPaymentWorksheetReceiptRevisions.id }).from(weeklyPaymentWorksheetReceiptRevisions).where(and(eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, input.organizationId), eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: rotatingCreditFundings.id }).from(rotatingCreditFundings).where(and(eq(rotatingCreditFundings.organizationId, input.organizationId), eq(rotatingCreditFundings.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: rotatingCreditApplications.id }).from(rotatingCreditApplications).where(and(eq(rotatingCreditApplications.organizationId, input.organizationId), eq(rotatingCreditApplications.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: rotatingCreditApplicationReversals.id }).from(rotatingCreditApplicationReversals).where(and(eq(rotatingCreditApplicationReversals.organizationId, input.organizationId), eq(rotatingCreditApplicationReversals.leagueId, input.leagueId))).limit(1),
+    tx.select({ id: rotatingCreditRefunds.id }).from(rotatingCreditRefunds).where(and(eq(rotatingCreditRefunds.organizationId, input.organizationId), eq(rotatingCreditRefunds.leagueId, input.leagueId))).limit(1),
+  ]);
+  const evidenceSets = [paymentsFound, operationsFound, rosterSnapshotsFound, snapshotItemsFound,
+    standingBindingsFound, standingParticipantsFound, disputesFound, voidsFound, refundSnapshotsFound,
+    obligationsFound, responsibilitiesFound, ownerRevisionsFound, assignmentsFound, correctionsFound,
+    allocationsFound, refundAdjustmentsFound, confirmationsFound, consentsFound, consentPartnersFound,
+    adoptionRowsFound, fundingsFound, authorizationItemsFound, fundingApplicationsFound,
+    adoptionProofsFound, adoptionProofStepsFound, releasesFound, receiptHeadsFound, receiptRevisionsFound,
+    rotatingFundingsFound, rotatingApplicationsFound, rotatingReversalsFound, rotatingRefundsFound];
+  if (evidenceSets.some((rows) => rows.length > 0)) {
+    throw new OwnedPaymentLedgerAdoptionError("PRISTINE_LEAGUE_PAYMENT_STATE_REQUIRED");
+  }
+
+  const scope = { organizationId: input.organizationId, leagueId: input.leagueId };
+  const plan = await buildOwnedPaymentAdoptionPlan(tx, scope, { cutoffBeforeFirstBillableDate: true });
+  if (!plan.ready || plan.blockers.length > 0 || Object.values(plan.counts).some((count) => count !== 0)
+    || plan.fundings.length > 0 || plan.applications.length > 0 || plan.rotatingReleases.length > 0 || plan.receipts.length > 0) {
+    throw new OwnedPaymentLedgerAdoptionError("PRISTINE_LEAGUE_PAYMENT_STATE_REQUIRED");
+  }
+  const now = await readDatabaseNow(tx);
+  const [adoption] = await tx.insert(weeklyPaymentLedgerAdoptions).values({
+    ...scope,
+    adoptedThroughLocalDate: plan.adoptedThroughLocalDate,
+    preflightFingerprint: plan.sourceFingerprint,
+    resultFingerprint: plan.resultFingerprint,
+    grandfatheredAllocationCount: 0,
+    recordedByUserId: input.actorUserId,
+    createdAt: now,
+  }).returning();
+  if (!adoption) throw new OwnedPaymentLedgerAdoptionError("PRISTINE_ADOPTION_MARKER_CREATE_FAILED");
+  await assertAdoptionOutcomeInTransaction(tx, {
+    plan,
+    adoption,
+    actorUserId: input.actorUserId,
+    fundingByOwner: new Map(),
+    applicationByAllocationId: new Map(),
+    receiptIdByPaymentId: new Map(),
+  });
 }
 
 function applyResult(
