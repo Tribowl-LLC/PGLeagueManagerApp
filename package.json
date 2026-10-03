@@ -9,7 +9,8 @@
   },
   "scripts": {
     "dev": "tsx server/index.ts",
-    "build": "vite build && esbuild server/index.ts --platform=node --packages=external --bundle --splitting --format=esm --chunk-names=server-chunks/[name]-[hash] --outdir=dist && npm run build:copy-apple-pay-verification",
+    "build": "vite build && esbuild server/index.ts --platform=node --packages=external --bundle --splitting --format=esm --chunk-names=server-chunks/[name]-[hash] --outdir=dist && npm run build:owned-payment-adoption && npm run build:copy-apple-pay-verification",
+    "build:owned-payment-adoption": "esbuild scripts/owned-payment-ledger-adoption.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/owned-payment-ledger-adoption.js",
     "build:copy-apple-pay-verification": "tsx scripts/copy-apple-pay-verification.ts",
     "check:sentry-bootstrap": "tsx scripts/check-sentry-bootstrap.ts",
     "start": "NODE_ENV=production node dist/index.js",
