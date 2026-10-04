@@ -277,66 +277,61 @@ describe("Manage Payments worksheet atomic writer", () => {
     const badOccurrenceId = seasonBefore.weekOptions.find((week) => week.occurrenceId !== selectedOccurrenceId)?.occurrenceId;
     const goodOccurrenceId = seasonBefore.weekOptions.find((week) => week.occurrenceId !== badOccurrenceId)?.occurrenceId;
     if (!badOccurrenceId || !goodOccurrenceId) throw new Error("fixture needs at least two billable weeks");
-    const [occurrence] = await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.id, badOccurrenceId)).limit(1);
-    if (!occurrence?.authoritativeLocalDate) throw new Error("historical receipt occurrence fixture was not found");
+    const badWeekSnapshot = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: badOccurrenceId });
+    const thirdBowlerRow = badWeekSnapshot.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === thirdBowlerId);
+    if (!thirdBowlerRow) throw new Error("temporary substitute receipt owner is missing from the historical week");
+    expect(thirdBowlerRow).toMatchObject({ rosterRole: "substitute", responsible: false });
 
-    const [orphanBowler] = await db.insert(bowlers).values({
-      name: `Unassigned historical receipt owner ${suffix}`,
-      organizationId,
-      active: false,
-    }).returning({ id: bowlers.id });
-    if (!orphanBowler) throw new Error("unassigned historical receipt owner was not created");
-    let paymentId: number | undefined;
-    const receiptId = randomUUID();
-    try {
-      const [payment] = await db.insert(payments).values({
-        organizationId,
-        leagueId,
-        bowlerId: orphanBowler.id,
-        amount: 1,
-        type: "cash",
-        status: "paid",
-        paidByUserId: actorUserId,
-      }).returning({ id: payments.id });
-      if (!payment) throw new Error("historical receipt payment was not created");
-      paymentId = payment.id;
-      await db.insert(weeklyPaymentWorksheetReceipts).values({
-        id: receiptId,
-        organizationId,
-        leagueId,
-        occurrenceId: badOccurrenceId,
-        payerBowlerId: orphanBowler.id,
-        receiptKind: "manual",
-      });
-      await db.insert(weeklyPaymentWorksheetReceiptRevisions).values({
-        organizationId,
-        leagueId,
-        receiptId,
-        receiptRevision: 1,
-        paymentId: payment.id,
-        revisionKind: "manual_record",
-        amountMinor: 1,
-        businessCollectionLocalDate: occurrence.authoritativeLocalDate,
-        recordedByUserId: actorUserId,
-      });
+    const memberships = await db.select().from(bowlerLeagues).where(and(
+      eq(bowlerLeagues.leagueId, leagueId),
+      eq(bowlerLeagues.bowlerId, thirdBowlerId),
+    ));
+    expect(memberships).toHaveLength(1);
+    const membership = memberships[0];
+    if (!membership) throw new Error("temporary substitute league membership was not found");
+    expect(membership.active).toBe(true);
+    const responsibilityHistory = await db.select().from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+    ));
+    expect(responsibilityHistory.some((row) => [
+      row.mainBowlerId,
+      row.substituteBowlerId,
+      row.payerBowlerId,
+      row.lineagePayerBowlerId,
+      row.prizePayerBowlerId,
+    ].includes(thirdBowlerId))).toBe(false);
+    const fundingApplicationHistory = await db.select({ id: paymentAllocationFundingApplications.id })
+      .from(paymentAllocationFundingApplications).where(and(
+        eq(paymentAllocationFundingApplications.organizationId, organizationId),
+        eq(paymentAllocationFundingApplications.leagueId, leagueId),
+        eq(paymentAllocationFundingApplications.creditedBowlerId, thirdBowlerId),
+      ));
+    expect(fundingApplicationHistory).toHaveLength(0);
 
-      const season = await readManagePaymentsSeasonSnapshot({ organizationId, leagueId });
-      expect(season.snapshotsByOccurrence[badOccurrenceId]).toMatchObject({
-        status: "unavailable",
-        code: "receipt_owner_unresolved",
-      });
-      const good = rehydrateManagePaymentsSeasonWeekSnapshot(season, goodOccurrenceId);
-      if (good.status !== "ready") throw new Error("unaffected fixture week became unavailable");
-      await expect(readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: badOccurrenceId }))
-        .rejects.toMatchObject({ code: "incompatible_canonical_state" });
-      const individualGood = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: goodOccurrenceId });
-      expect(good.snapshot).toEqual(individualGood);
-    } finally {
-      await db.delete(weeklyPaymentWorksheetReceiptRevisions).where(eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, receiptId));
-      await db.delete(weeklyPaymentWorksheetReceipts).where(eq(weeklyPaymentWorksheetReceipts.id, receiptId));
-      if (paymentId !== undefined) await db.delete(payments).where(eq(payments.id, paymentId));
-      await db.delete(bowlers).where(eq(bowlers.id, orphanBowler.id));
-    }
+    const saved = await saveManagePaymentsWorksheet(saveInput(badWeekSnapshot, [
+      rowChange(badWeekSnapshot, thirdBowlerId, { newManualReceiptAmountMinor: 1 }),
+    ], `season-cache-owner-isolation-${suffix}`));
+    expect(saved.snapshot.teams.flatMap((team) => team.rows)
+      .find((row) => row.bowlerId === thirdBowlerId)?.manualReceipts).toHaveLength(1);
+
+    const [deactivatedMembership] = await db.update(bowlerLeagues).set({ active: false }).where(and(
+      eq(bowlerLeagues.id, membership.id),
+      eq(bowlerLeagues.active, true),
+    )).returning({ id: bowlerLeagues.id });
+    expect(deactivatedMembership?.id).toBe(membership.id);
+
+    const season = await readManagePaymentsSeasonSnapshot({ organizationId, leagueId });
+    expect(season.snapshotsByOccurrence[badOccurrenceId]).toMatchObject({
+      status: "unavailable",
+      code: "receipt_owner_unresolved",
+    });
+    const good = rehydrateManagePaymentsSeasonWeekSnapshot(season, goodOccurrenceId);
+    if (good.status !== "ready") throw new Error("unaffected fixture week became unavailable");
+    await expect(readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: badOccurrenceId }))
+      .rejects.toMatchObject({ code: "incompatible_canonical_state" });
+    const individualGood = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: goodOccurrenceId });
+    expect(good.snapshot).toEqual(individualGood);
   });
 
   it("blocks adopted legacy weekly responsibility, rotating assignment, and allocation repair writers", async () => {
