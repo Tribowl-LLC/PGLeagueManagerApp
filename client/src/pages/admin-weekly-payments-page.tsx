@@ -69,6 +69,19 @@ function managePaymentsSeasonQueryKey(leagueId: number) {
   return ["manage-payments-snapshot", leagueId] as const;
 }
 
+function hasReadySeasonWeek(
+  season: ManagePaymentsSeasonSnapshot | undefined,
+  leagueId: number,
+  occurrenceId: string,
+): boolean {
+  return Boolean(
+    season
+    && season.league.leagueId === leagueId
+    && season.weekOptions.some((week) => week.occurrenceId === occurrenceId)
+    && rehydrateManagePaymentsSeasonWeekSnapshot(season, occurrenceId).status === "ready",
+  );
+}
+
 function selectionCacheKey(leagueId: number, occurrenceId: string) {
   return `${leagueId}:${occurrenceId}`;
 }
@@ -271,15 +284,42 @@ export default function AdminWeeklyPaymentsPage() {
   const season = seasonQuery.data?.league.leagueId === selectedLeagueId
     ? seasonQuery.data
     : undefined;
-  const weekOptions = season?.weekOptions ?? [];
+  useEffect(() => {
+    if (!season || selectedLeagueId === null) return;
+    setSelectedOccurrenceByLeague((current) => current[selectedLeagueId] === undefined
+      ? { ...current, [selectedLeagueId]: season.defaultOccurrenceId }
+      : current);
+  }, [season, selectedLeagueId]);
+
+  const weekOptions = useMemo(() => {
+    const retainedOptions = new Map(
+      (season?.weekOptions ?? []).map((week) => [week.occurrenceId, week]),
+    );
+    if (selectedLeagueId !== null) {
+      const leaguePrefix = `${selectedLeagueId}:`;
+      for (const [key, entry] of Object.entries(selectionDrafts)) {
+        if (!key.startsWith(leaguePrefix) || !entry.dirty || !entry.snapshot) continue;
+        const occurrenceId = entry.snapshot.selectedOccurrence.occurrenceId;
+        if (retainedOptions.has(occurrenceId)) continue;
+        const knownOption = entry.snapshot.weekOptions.find((week) => week.occurrenceId === occurrenceId);
+        if (knownOption) retainedOptions.set(occurrenceId, knownOption);
+      }
+    }
+    return [...retainedOptions.values()].sort((left, right) =>
+      left.localDate.localeCompare(right.localDate)
+      || left.localStartTime.localeCompare(right.localStartTime)
+      || left.occurrenceId.localeCompare(right.occurrenceId),
+    );
+  }, [season, selectedLeagueId, selectionDrafts]);
   const savedOccurrenceId = selectedLeagueId === null
     ? null
     : selectedOccurrenceByLeague[selectedLeagueId] ?? null;
   const savedOccurrenceIsAvailable = savedOccurrenceId !== null
-    && weekOptions.some((week) => week.occurrenceId === savedOccurrenceId);
-  // The server supplies the canonical first choice. Keep a prior league choice
-  // only while that occurrence still belongs to the current season response.
-  const resolvedOccurrenceId = savedOccurrenceIsAvailable
+    && (season?.weekOptions ?? []).some((week) => week.occurrenceId === savedOccurrenceId);
+  const savedOccurrenceHasDirtyBaseline = savedOccurrenceId !== null
+    && selectionDrafts[selectionCacheKey(selectedLeagueId ?? 0, savedOccurrenceId)]?.dirty === true
+    && selectionDrafts[selectionCacheKey(selectedLeagueId ?? 0, savedOccurrenceId)]?.snapshot?.selectedOccurrence.occurrenceId === savedOccurrenceId;
+  const resolvedOccurrenceId = savedOccurrenceIsAvailable || savedOccurrenceHasDirtyBaseline
     ? savedOccurrenceId
     : season?.defaultOccurrenceId ?? null;
   const activeSelectionKey = selectedLeagueId !== null && resolvedOccurrenceId !== null
@@ -310,6 +350,7 @@ export default function AdminWeeklyPaymentsPage() {
   const snapshot = dirtyBaseline
     ? canRebaseActiveDraft ? latestSnapshot ?? dirtyBaseline : dirtyBaseline
     : latestSnapshot ?? null;
+  const worksheetReadOnly = Boolean(snapshot && !latestSnapshot);
 
   useEffect(() => {
     if (
@@ -379,6 +420,11 @@ export default function AdminWeeklyPaymentsPage() {
     const key = activeSelectionKey;
     const queryKey = managePaymentsSnapshotQueryKey(leagueId, occurrenceId);
     const seasonQueryKey = managePaymentsSeasonQueryKey(leagueId);
+    const currentSeason = queryClient.getQueryData<ManagePaymentsSeasonSnapshot>(seasonQueryKey);
+    if (!hasReadySeasonWeek(currentSeason, leagueId, occurrenceId)) {
+      throw new Error("This week is unavailable. Your draft is preserved; refresh the season to check its current status.");
+    }
+
     setReloadState({ selectionKey: key, status: "loading" });
     setWorksheetGeneration((current) => current + 1);
     setSelectionDrafts((current) => {
@@ -408,6 +454,14 @@ export default function AdminWeeklyPaymentsPage() {
   const handleSave = useCallback(async (input: AdminWeeklyPaymentsSaveInput) => {
     if (selectedLeagueId === null || !activeSelectionKey || !snapshot) {
       throw new AdminWeeklyPaymentsSaveError("Choose a league and week before saving.");
+    }
+    const currentSeason = queryClient.getQueryData<ManagePaymentsSeasonSnapshot>(
+      managePaymentsSeasonQueryKey(selectedLeagueId),
+    );
+    if (!hasReadySeasonWeek(currentSeason, selectedLeagueId, input.occurrenceId)) {
+      throw new AdminWeeklyPaymentsSaveError(
+        "This week is unavailable. Your edits are still here; refresh the season to check its current status.",
+      );
     }
     if (
       snapshot.selectedOccurrence.occurrenceId !== input.occurrenceId
@@ -594,6 +648,12 @@ export default function AdminWeeklyPaymentsPage() {
                 {seasonQuery.error && (
                   <PageErrorState message="The latest server snapshot could not be refreshed. Your current edits remain based on the version shown." onRetry={() => { void seasonQuery.refetch(); }} />
                 )}
+                {!latestSnapshot && !selectedWeekUnavailable && (
+                  <PageErrorState
+                    message="The selected week’s current status is unavailable. Your draft is preserved and read-only until the season can be checked."
+                    onRetry={() => { void seasonQuery.refetch(); }}
+                  />
+                )}
                 {!seasonQuery.error && selectedWeekUnavailable && (
                   <PageErrorState message={selectedWeekUnavailable.message} onRetry={() => { void seasonQuery.refetch(); }} />
                 )}
@@ -612,6 +672,7 @@ export default function AdminWeeklyPaymentsPage() {
                   ]}
                   teams={snapshot.teams}
                   initialDrafts={activeCacheEntry?.drafts ?? EMPTY_DRAFTS}
+                  readOnly={worksheetReadOnly}
                   onSave={handleSave}
                   onDirtyChange={handleDirtyChange}
                   onDraftStateChange={handleDraftStateChange}

@@ -179,11 +179,13 @@ function makeSeasonSnapshot(
   snapshots: ReadonlyMap<string, ManagePaymentsSnapshot>,
   defaultOccurrenceId: string,
   unavailableOccurrences: ReadonlySet<string> = new Set(),
+  removedOccurrences: ReadonlySet<string> = new Set(),
 ): ManagePaymentsSeasonSnapshot {
   const firstSnapshot = snapshots.values().next().value;
   if (!firstSnapshot) throw new Error("A season fixture needs at least one week snapshot.");
 
-  const snapshotsByOccurrence = Object.fromEntries(firstSnapshot.weekOptions.map((week) => {
+  const weekOptions = firstSnapshot.weekOptions.filter((week) => !removedOccurrences.has(week.occurrenceId));
+  const snapshotsByOccurrence = Object.fromEntries(weekOptions.map((week) => {
     const snapshot = snapshots.get(week.occurrenceId);
     if (!snapshot || unavailableOccurrences.has(week.occurrenceId)) {
       return [week.occurrenceId, {
@@ -210,7 +212,7 @@ function makeSeasonSnapshot(
       name: firstSnapshot.league.name,
       timeZone: firstSnapshot.league.timeZone,
     },
-    weekOptions: firstSnapshot.weekOptions,
+    weekOptions,
     defaultOccurrenceId,
     snapshotsByOccurrence,
   };
@@ -527,6 +529,63 @@ describe("AdminWeeklyPaymentsPage", () => {
     })).toHaveLength(1);
   });
 
+  it("pins the initial server week while its draft is dirty and the default changes", async () => {
+    const user = userEvent.setup();
+    const { client, snapshots, seasons, seasonGetCounts } = setupPage();
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const weekSelect = screen.getByRole("combobox", { name: "Collection week" });
+    await user.type(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" }), "5.50");
+
+    seasons.set(7, makeSeasonSnapshot(snapshots, secondOccurrenceId));
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(2));
+    await waitFor(() => expect(client.getQueryState(["manage-payments-snapshot", 7])?.fetchStatus).toBe("idle"));
+
+    expect(weekSelect).toHaveTextContent("Mon Sep 28, 2026");
+    expect(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" })).toHaveValue("5.50");
+  });
+
+  it("keeps a removed dirty week in the picker as a read-only draft", async () => {
+    const user = userEvent.setup();
+    const { client, fetchMock, snapshots, seasons, seasonGetCounts } = setupPage();
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const weekSelect = screen.getByRole("combobox", { name: "Collection week" });
+    await user.type(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" }), "6.25");
+
+    seasons.set(7, makeSeasonSnapshot(
+      snapshots,
+      secondOccurrenceId,
+      new Set(),
+      new Set([firstOccurrenceId]),
+    ));
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(2));
+    await waitFor(() => expect(client.getQueryState(["manage-payments-snapshot", 7])?.fetchStatus).toBe("idle"));
+
+    expect(weekSelect).toHaveTextContent("Mon Sep 28, 2026");
+    expect(await screen.findByText("The selected week is unavailable.")).toBeVisible();
+    const amountInput = screen.getByRole("textbox", { name: "Amount received from Blair Quinn" });
+    expect(amountInput).toHaveValue("6.25");
+    expect(amountInput).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Responsible this week for Blair Quinn" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save week" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Next week" }));
+    await waitFor(() => expect(weekSelect).toHaveTextContent("Mon Oct 5, 2026"));
+    await user.click(screen.getByRole("button", { name: "Previous week" }));
+    await waitFor(() => expect(weekSelect).toHaveTextContent("Mon Sep 28, 2026"));
+    expect(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" })).toHaveValue("6.25");
+    expect(fetchMock.mock.calls.filter(([input, init]) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
+      return (url.pathname.endsWith("/manage-payments/1/season") || url.pathname.endsWith("/manage-payments/1"))
+        && (init?.method ?? "GET") === "GET";
+    })).toHaveLength(2);
+  });
+
   it("cancels a late league bundle response and keeps each league’s options isolated", async () => {
     const user = userEvent.setup();
     const delayedFirstLeague = createDeferred<Response>();
@@ -832,5 +891,51 @@ describe("AdminWeeklyPaymentsPage", () => {
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Collection week" })).toHaveTextContent("Mon Oct 5, 2026"));
     expect(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" })).toHaveValue("4.00");
     expect(posts).toHaveLength(1);
+  });
+
+  it("blocks edits and stale conflict recovery while a dirty week is unavailable", async () => {
+    const user = userEvent.setup();
+    const { client, fetchMock, posts, snapshots, seasons, seasonGetCounts } = setupPage({ failFirstPost: -1 });
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    await user.type(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" }), "7.50");
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("This week changed on the server");
+    expect(screen.getByRole("button", { name: "Reload this week" })).toBeEnabled();
+
+    seasons.set(7, makeSeasonSnapshot(snapshots, firstOccurrenceId, new Set([firstOccurrenceId])));
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(2));
+    await waitFor(() => expect(client.getQueryState(["manage-payments-snapshot", 7])?.fetchStatus).toBe("idle"));
+
+    expect(await screen.findByText("This week’s saved payment history needs review before it can be loaded.")).toBeVisible();
+    const amountInput = screen.getByRole("textbox", { name: "Amount received from Blair Quinn" });
+    expect(amountInput).toHaveValue("7.50");
+    expect(amountInput).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Responsible this week for Blair Quinn" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save week" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reload this week" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+    await user.click(screen.getByRole("button", { name: "Reload this week" }));
+    expect(posts).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([input, init]) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
+      return url.pathname === "/api/financials/leagues/7/manage-payments/1" && (init?.method ?? "GET") === "GET";
+    })).toHaveLength(0);
+
+    seasons.set(7, makeSeasonSnapshot(snapshots, firstOccurrenceId));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(3));
+    await waitFor(() => expect(client.getQueryState(["manage-payments-snapshot", 7])?.fetchStatus).toBe("idle"));
+
+    expect(amountInput).toBeEnabled();
+    expect(amountInput).toHaveValue("7.50");
+    expect(screen.getByRole("button", { name: "Save week" })).toBeEnabled();
+    expect(posts).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([input, init]) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
+      return url.pathname === "/api/financials/leagues/7/manage-payments/1" && (init?.method ?? "GET") === "GET";
+    })).toHaveLength(0);
   });
 });
