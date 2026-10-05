@@ -164,13 +164,22 @@ function withSharedAccountProjection(input: ManagePaymentsProjectionInput): Mana
   });
   const forecastTargets = buildManagePaymentsForecastTargets(input);
   for (const target of forecastTargets) {
+    const occurrence = occurrenceById.get(target.occurrenceId);
+    if (!occurrence) throw new Error("test forecast target is missing its schedule occurrence");
+    const collectionGroup = occurrence.collectionGroups?.find((group) => group.state === "published");
+    const triggerOccurrence = collectionGroup?.role === "paired"
+      ? occurrenceById.get(collectionGroup.pairedOccurrenceId)
+      : undefined;
+    if (collectionGroup?.role === "paired" && !triggerOccurrence) {
+      throw new Error("test paired occurrence is missing its canonical trigger");
+    }
     rows.push({
       obligationId: target.projectionId,
       occurrenceId: target.occurrenceId,
       occurrenceLocalDate: target.occurrenceLocalDate,
       dueAt: target.dueAt,
-      effectiveCollectionAt: target.dueAt,
-      memberOrdinal: 0,
+      effectiveCollectionAt: triggerOccurrence ? new Date(triggerOccurrence.startAt).toISOString() : target.dueAt,
+      memberOrdinal: collectionGroup?.role === "trigger" ? 1 : collectionGroup?.role === "paired" ? 2 : 0,
       billingOrdinal: target.billingOrdinal,
       owner: { kind: "bowler", bowlerId: target.bowlerId },
       effectiveDebtorBowlerId: target.bowlerId,
@@ -1058,16 +1067,51 @@ describe("Manage Payments worksheet projection", () => {
     });
   });
 
-  it("counts only fully covered final weeks after one shared $90 credit budget", () => {
+  it("uses published paired collection order for one shared $90 credit budget", () => {
+    const firstPairTrigger = {
+      groupId: "double-pay-week-5-31",
+      groupOrdinal: 0,
+      kind: "double_pay" as const,
+      role: "trigger" as const,
+      pairedOccurrenceId: "occ-week-31",
+      pairedLocalDate: "2027-03-29",
+      state: "published" as const,
+      currentRevision: 1,
+    };
+    const firstPairMember = {
+      ...firstPairTrigger,
+      role: "paired" as const,
+      pairedOccurrenceId: "occ-week-5",
+      pairedLocalDate: "2026-09-28",
+    };
+    const secondPairTrigger = {
+      groupId: "double-pay-week-6-32",
+      groupOrdinal: 1,
+      kind: "double_pay" as const,
+      role: "trigger" as const,
+      pairedOccurrenceId: "occ-week-32",
+      pairedLocalDate: "2027-04-05",
+      state: "published" as const,
+      currentRevision: 1,
+    };
+    const secondPairMember = {
+      ...secondPairTrigger,
+      role: "paired" as const,
+      pairedOccurrenceId: "occ-week-6",
+      pairedLocalDate: "2026-10-05",
+    };
     const weeks = [
-      occurrence("occ-1", "2026-09-14", 1),
-      occurrence("occ-2", "2026-09-21", 2),
-      occurrence("occ-3", "2026-09-28", 3),
-      occurrence("occ-4", "2026-10-05", 4),
+      occurrence("occ-week-3", "2026-09-14", 3),
+      occurrence("occ-week-4", "2026-09-21", 4),
+      occurrence("occ-week-5", "2026-09-28", 5, { collectionGroups: [firstPairTrigger] }),
+      occurrence("occ-week-6", "2026-10-05", 6, { collectionGroups: [secondPairTrigger] }),
+      occurrence("occ-week-31", "2027-03-29", 31, { collectionGroups: [firstPairMember] }),
+      occurrence("occ-week-32", "2027-04-05", 32, { collectionGroups: [secondPairMember] }),
     ];
     const input = withSharedAccountProjection(projectionInput({
       schedule: schedule(weeks),
-      fullFeeMinorByOccurrence: new Map(weeks.map((week, index) => [week.occurrenceId, index < 2 ? 2_000 : 4_000])),
+      selectedOccurrenceId: "occ-week-5",
+      fullFeeMinorByOccurrence: new Map(weeks.map((week) => [week.occurrenceId, 2_000])),
       balances: new Map([[501, { availableCreditMinor: 9_000, confirmedOwedMinor: 0, netBalanceMinor: 9_000 }]]),
     }));
     const forecastCreditByWeek = new Map(buildManagePaymentsForecastTargets(input).map((target) => [
@@ -1075,17 +1119,26 @@ describe("Manage Payments worksheet projection", () => {
       input.finalAccountProjection.rowsByObligationId.get(target.projectionId)?.projectedCreditMinor ?? 0,
     ]));
     const coverage = buildManagePaymentsFinalTwoWeeksCoverageByBowler(input).get(501);
-    const row = buildManagePaymentsWorksheetSnapshot(input).teams[0]?.rows[0];
+    const snapshot = buildManagePaymentsWorksheetSnapshot(input);
+    const row = snapshot.teams[0]?.rows[0];
 
     expect(forecastCreditByWeek).toEqual(new Map([
-      ["occ-1", 2_000],
-      ["occ-2", 2_000],
-      ["occ-3", 4_000],
-      ["occ-4", 1_000],
+      ["occ-week-3", 2_000],
+      ["occ-week-4", 2_000],
+      ["occ-week-5", 2_000],
+      ["occ-week-6", 1_000],
+      ["occ-week-31", 2_000],
+      ["occ-week-32", 0],
     ]));
     expect(coverage).toEqual({ paidCount: 1, targetCount: 2 });
     expect(buildManagePaymentsFinalTwoWeeksPaidByBowler(input).get(501)).toBe(false);
-    expect(row).toMatchObject({ finalTwoWeeksPaid: false, finalTwoWeeksPaidCount: 1 });
+    expect(snapshot.selectedOccurrence.occurrenceId).toBe("occ-week-5");
+    expect(snapshot.league.feeTerms).toMatchObject({ fullMinor: 2_000, collectionMultiplier: 2 });
+    expect(row).toMatchObject({
+      feeMinor: 2_000,
+      finalTwoWeeksPaid: false,
+      finalTwoWeeksPaidCount: 1,
+    });
   });
 
   it("uses available credit only after older confirmed debt and covers only positive forecast targets", () => {
