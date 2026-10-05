@@ -124,8 +124,8 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
 
     expect(screen.getByText("$12.50 owed")).toBeVisible();
     expect(screen.getByText("$5.00 credit")).toBeVisible();
-    expect(screen.getByText("$12.50 owed")).toHaveClass("text-destructive");
-    expect(screen.getByText("$5.00 credit")).not.toHaveClass("text-destructive");
+    expect(screen.getByText("$12.50 owed")).toHaveClass("text-danger-700");
+    expect(screen.getByText("$5.00 credit")).not.toHaveClass("text-danger-700");
     const caseyRow = screen.getByRole("row", { name: /Casey Reese/ });
     expect(within(caseyRow).getByText("—")).toBeVisible();
     expect(screen.getByText("Paid")).toBeVisible();

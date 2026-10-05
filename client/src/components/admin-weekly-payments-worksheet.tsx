@@ -341,7 +341,7 @@ function TeamWorksheet({
                         : (
                           <strong
                             data-awpw="balance-text"
-                            className={row.balanceMinor < 0 ? "text-destructive" : undefined}
+                            className={row.balanceMinor < 0 ? "text-danger-700" : undefined}
                           >
                             {balanceText}
                           </strong>
