@@ -124,12 +124,29 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
 
     expect(screen.getByText("$12.50 owed")).toBeVisible();
     expect(screen.getByText("$5.00 credit")).toBeVisible();
+    expect(screen.getByText("$12.50 owed")).toHaveClass("text-danger-700");
+    expect(screen.getByText("$5.00 credit")).not.toHaveClass("text-danger-700");
     const caseyRow = screen.getByRole("row", { name: /Casey Reese/ });
     expect(within(caseyRow).getByText("—")).toBeVisible();
     expect(screen.getByText("Paid")).toBeVisible();
     expect(screen.getAllByText("Unpaid")).toHaveLength(2);
     expect(screen.queryByText(/Paid|Unpaid/, { selector: "td:nth-child(4)" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Add bowler|Payment history|Record payment/i })).not.toBeInTheDocument();
+  });
+
+  it("shows a full-week partial count while preserving complete and zero states", () => {
+    const partialTeams = teams.map((team) => ({
+      ...team,
+      rows: team.rows.map((row) => ({
+        ...row,
+        ...(row.bowlerId === 501 || row.bowlerId === 503 ? { finalTwoWeeksPaidCount: 1 } : {}),
+      })),
+    }));
+    renderWorksheet({ teams: partialTeams });
+
+    expect(screen.getByText("1 of 2 Paid")).toBeVisible();
+    expect(screen.getByText("Paid")).toBeVisible();
+    expect(screen.getByText("Unpaid")).toBeVisible();
   });
 
   it("expands and collapses every team without changing the team header content", async () => {
@@ -170,6 +187,48 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
 
     expect(fee).toHaveTextContent("$10.00");
     expect(fee).not.toHaveTextContent("Lineage");
+  });
+
+  it("adds the paired responsibility to each displayed fee choice without changing save amounts", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn<AdminWeeklyPaymentsWorksheetProps["onSave"]>(async () => undefined);
+    const pairedTeams = teams.map((team) => ({
+      ...team,
+      rows: team.rows.map((row) => row.bowlerId === 501
+        ? { ...row, feeMinor: 2_000, pairedCollectionFeeMinor: 2_000 }
+        : row),
+    }));
+    renderWorksheet({
+      teams: pairedTeams,
+      feeMultiplier: 2,
+      feeOptions: [
+        { feeComponent: "full", amountMinor: 2_000 },
+        { feeComponent: "lineage", amountMinor: 1_000 },
+        { feeComponent: "prize", amountMinor: 500 },
+      ],
+      onSave,
+    });
+
+    const fee = screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" });
+    expect(fee).toHaveTextContent("$40.00");
+    await user.click(fee);
+    expect(screen.getByRole("option", { name: "$40.00 · Full" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "$30.00 · Lineage" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "$25.00 · Prize" })).toBeVisible();
+    await user.click(screen.getByRole("option", { name: "$30.00 · Lineage" }));
+    expect(fee).toHaveTextContent("$30.00");
+
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    const saveInput = onSave.mock.calls[0]?.[0];
+    expect(saveInput?.changedRows).toEqual([{
+      teamId: 31,
+      bowlerId: 501,
+      responsible: true,
+      feeComponent: "lineage",
+      manualReceiptEdits: [],
+    }]);
+    expect(JSON.stringify(saveInput)).not.toContain("pairedCollectionFeeMinor");
   });
 
   it("opens the selected bowler account from the row name", async () => {

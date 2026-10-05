@@ -38,8 +38,12 @@ function makeSnapshot(
   occurrenceId = firstOccurrenceId,
   revision = 14,
   amountReceived: number | null = 0,
+  collectionMultiplier: 1 | 2 = 1,
+  baseFullFeeMinor?: number,
+  pairedCollectionFeeMinor?: number,
 ): ManagePaymentsSnapshot {
   const isThirdWeek = occurrenceId === thirdOccurrenceId;
+  const fullFeeMinor = baseFullFeeMinor ?? (collectionMultiplier === 2 ? 2_000 : 2_500);
   const selectedLocalDate = occurrenceId === firstOccurrenceId
     ? "2026-09-28"
     : occurrenceId === secondOccurrenceId
@@ -51,7 +55,12 @@ function makeSnapshot(
       leagueId: 7,
       name: "Monday Night League",
       timeZone: "America/Chicago",
-      feeTerms: { fullMinor: 2_500, lineageMinor: 1_000, prizeMinor: 500 },
+      feeTerms: {
+        fullMinor: fullFeeMinor,
+        lineageMinor: 1_000,
+        prizeMinor: 500,
+        collectionMultiplier,
+      },
     },
     weekOptions: [
       {
@@ -96,7 +105,7 @@ function makeSnapshot(
           rosterRole: "main",
           responsible: true,
           feeComponent: "full",
-          feeMinor: 2_500,
+          feeMinor: fullFeeMinor,
           balanceMinor: -1_250,
           manualReceipts: amountReceived && amountReceived > 0 ? [{
             receiptId: newReceiptId,
@@ -108,6 +117,7 @@ function makeSnapshot(
           }] : [],
           cardReceipts: [],
           finalTwoWeeksPaid: false,
+          ...(pairedCollectionFeeMinor === undefined ? {} : { pairedCollectionFeeMinor }),
         },
         {
           bowlerId: 502,
@@ -242,6 +252,9 @@ interface PageSetupOptions {
   strictMode?: boolean;
   unavailableOccurrences?: ReadonlySet<string>;
   changeSiblingFinancialMetadataOnSave?: boolean;
+  collectionMultiplier?: 1 | 2;
+  baseFullFeeMinor?: number;
+  pairedCollectionFeeMinor?: number;
   delaySeason?: (
     leagueId: number,
     signal: AbortSignal | undefined,
@@ -271,7 +284,14 @@ function setupPage(options: PageSetupOptions = {}) {
   client.setQueryData(["/api/leagues"], activeLeagueEnvelope);
 
   const snapshots = new Map([
-    [firstOccurrenceId, makeSnapshot(firstOccurrenceId)],
+    [firstOccurrenceId, makeSnapshot(
+      firstOccurrenceId,
+      14,
+      0,
+      options.collectionMultiplier,
+      options.baseFullFeeMinor,
+      options.pairedCollectionFeeMinor,
+    )],
     [secondOccurrenceId, makeSnapshot(secondOccurrenceId, 15)],
     [thirdOccurrenceId, makeSnapshot(thirdOccurrenceId, 16)],
   ]);
@@ -389,7 +409,7 @@ function setupPage(options: PageSetupOptions = {}) {
             teams: sibling.teams.map((team) => ({
               ...team,
               rows: team.rows.map((row) => row.bowlerId === 501
-                ? { ...row, balanceMinor: -500, finalTwoWeeksPaid: true }
+                ? { ...row, balanceMinor: -500, finalTwoWeeksPaid: true, finalTwoWeeksPaidCount: 1 }
                 : row),
             })),
           });
@@ -451,6 +471,149 @@ describe("AdminWeeklyPaymentsPage", () => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
       return url.pathname.endsWith("/manage-payments/1") && (init?.method ?? "GET") === "GET";
     })).toHaveLength(0);
+  });
+
+  it("uses the selected week’s published collection multiplier only in displayed fee choices", async () => {
+    const user = userEvent.setup();
+    const { posts } = setupPage({ collectionMultiplier: 2 });
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const fee = screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" });
+    expect(fee).toHaveTextContent("$40.00");
+    await user.click(fee);
+    expect(screen.getByRole("option", { name: "$40.00 · Full" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "$10.00 · Prize" })).toBeVisible();
+    await user.click(screen.getByRole("option", { name: "$20.00 · Lineage" }));
+    expect(fee).toHaveTextContent("$20.00");
+
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.parsed.changedRows).toEqual([{
+      teamId: 31,
+      bowlerId: 501,
+      responsible: true,
+      feeComponent: "lineage",
+      manualReceiptEdits: [],
+    }]);
+  });
+
+  it("rebases a dirty snapshot when only the displayed collection multiplier changes", async () => {
+    const user = userEvent.setup();
+    const { client, snapshots, seasons, seasonGetCounts } = setupPage({
+      collectionMultiplier: 1,
+      baseFullFeeMinor: 2_000,
+    });
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const amountInput = screen.getByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const fee = screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" });
+    expect(fee).toHaveTextContent("$20.00");
+    await user.type(amountInput, "5.50");
+
+    const current = snapshots.get(firstOccurrenceId);
+    if (!current) throw new Error("The first week fixture is missing.");
+    const multiplierOnlyUpdate = {
+      ...current,
+      league: {
+        ...current.league,
+        feeTerms: { ...current.league.feeTerms, collectionMultiplier: 2 },
+      },
+    } satisfies ManagePaymentsSnapshot;
+    snapshots.set(firstOccurrenceId, multiplierOnlyUpdate);
+    const season = seasons.get(7);
+    if (!season) throw new Error("The league season fixture is missing.");
+    seasons.set(7, makeSeasonSnapshot(snapshots, season.defaultOccurrenceId));
+
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(2));
+    await waitFor(() => expect(client.getQueryState(["manage-payments-snapshot", 7])?.fetchStatus).toBe("idle"));
+
+    expect(amountInput).toHaveValue("5.50");
+    expect(screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" })).toHaveTextContent("$40.00");
+  });
+
+  it("rebases a dirty snapshot when only the paired display fee changes", async () => {
+    const user = userEvent.setup();
+    const { client, snapshots, seasons, seasonGetCounts } = setupPage({
+      collectionMultiplier: 1,
+      baseFullFeeMinor: 2_000,
+      pairedCollectionFeeMinor: 0,
+    });
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const amountInput = screen.getByRole("textbox", { name: "Amount received from Blair Quinn" });
+    expect(screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" })).toHaveTextContent("$20.00");
+    await user.type(amountInput, "5.50");
+
+    const current = snapshots.get(firstOccurrenceId);
+    if (!current) throw new Error("The first week fixture is missing.");
+    const pairedFeeOnlyUpdate = {
+      ...current,
+      teams: current.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map((row) => row.bowlerId === 501
+          ? { ...row, pairedCollectionFeeMinor: 2_000 }
+          : row),
+      })),
+    } satisfies ManagePaymentsSnapshot;
+    snapshots.set(firstOccurrenceId, pairedFeeOnlyUpdate);
+    const season = seasons.get(7);
+    if (!season) throw new Error("The league season fixture is missing.");
+    seasons.set(7, makeSeasonSnapshot(snapshots, season.defaultOccurrenceId));
+
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(2));
+    await waitFor(() => expect(client.getQueryState(["manage-payments-snapshot", 7])?.fetchStatus).toBe("idle"));
+
+    expect(amountInput).toHaveValue("5.50");
+    expect(screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" })).toHaveTextContent("$40.00");
+  });
+
+  it("keeps a dirty snapshot based on the old fee when the underlying fee changes", async () => {
+    const user = userEvent.setup();
+    const { client, snapshots, seasons, seasonGetCounts, posts } = setupPage({
+      failFirstPost: -1,
+      collectionMultiplier: 1,
+      baseFullFeeMinor: 2_000,
+    });
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const amountInput = screen.getByRole("textbox", { name: "Amount received from Blair Quinn" });
+    await user.type(amountInput, "5.50");
+
+    const current = snapshots.get(firstOccurrenceId);
+    if (!current) throw new Error("The first week fixture is missing.");
+    const feeOnlyUpdate = {
+      ...current,
+      league: {
+        ...current.league,
+        feeTerms: { ...current.league.feeTerms, fullMinor: 2_500 },
+      },
+      teams: current.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map((row) => row.bowlerId === 501 ? { ...row, feeMinor: 2_500 } : row),
+      })),
+    } satisfies ManagePaymentsSnapshot;
+    snapshots.set(firstOccurrenceId, feeOnlyUpdate);
+    const season = seasons.get(7);
+    if (!season) throw new Error("The league season fixture is missing.");
+    seasons.set(7, makeSeasonSnapshot(snapshots, season.defaultOccurrenceId));
+
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(2));
+    await waitFor(() => expect(client.getQueryState(["manage-payments-snapshot", 7])?.fetchStatus).toBe("idle"));
+
+    expect(amountInput).toHaveValue("5.50");
+    expect(screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" })).toHaveTextContent("$20.00");
+
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("This week changed on the server");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.parsed.expectedRevision).toBe(14);
+    expect(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" })).toHaveValue("5.50");
   });
 
   it("uses canonical week options and preserves unsaved entries while navigating cached weeks", async () => {
@@ -832,6 +995,39 @@ describe("AdminWeeklyPaymentsPage", () => {
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Collection week" })).toHaveTextContent("Mon Oct 5, 2026"));
     expect(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" })).toBeVisible();
     expect(posts).toHaveLength(1);
+  });
+
+  it("rebases a dirty snapshot and keeps its draft when only final paid count changes", async () => {
+    const user = userEvent.setup();
+    const { client, snapshots, seasons, seasonGetCounts } = setupPage();
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const amountInput = screen.getByRole("textbox", { name: "Amount received from Blair Quinn" });
+    await user.type(amountInput, "5.50");
+
+    const current = snapshots.get(firstOccurrenceId);
+    if (!current) throw new Error("The first week fixture is missing.");
+    const countOnlyUpdate = {
+      ...current,
+      teams: current.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map((row) => row.bowlerId === 501
+          ? { ...row, finalTwoWeeksPaidCount: 1 }
+          : row),
+      })),
+    } satisfies ManagePaymentsSnapshot;
+    snapshots.set(firstOccurrenceId, countOnlyUpdate);
+    const season = seasons.get(7);
+    if (!season) throw new Error("The league season fixture is missing.");
+    seasons.set(7, makeSeasonSnapshot(snapshots, season.defaultOccurrenceId));
+
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(2));
+    await waitFor(() => expect(client.getQueryState(["manage-payments-snapshot", 7])?.fetchStatus).toBe("idle"));
+
+    expect(amountInput).toHaveValue("5.50");
+    expect(screen.getByText("1 of 2 Paid")).toBeVisible();
   });
 
   it("rebases a dirty sibling week after save when only server-derived financial metadata changes", async () => {

@@ -59,6 +59,8 @@ export interface AdminWeeklyPaymentsBowlerRow {
   manualReceipts: readonly AdminWeeklyPaymentsManualReceipt[];
   cardReceipts: readonly AdminWeeklyPaymentsCardReceipt[];
   finalTwoWeeksPaid: boolean;
+  finalTwoWeeksPaidCount?: number;
+  pairedCollectionFeeMinor?: number;
 }
 
 export interface AdminWeeklyPaymentsTeam {
@@ -123,6 +125,7 @@ export interface AdminWeeklyPaymentsWorksheetProps {
   weekConfirmed: boolean;
   needsConfirmation: boolean;
   feeOptions: readonly AdminWeeklyPaymentsFeeOption[];
+  feeMultiplier?: 1 | 2;
   teams: readonly AdminWeeklyPaymentsTeam[];
   initialDrafts?: AdminWeeklyPaymentsWorksheetDraftState;
   readOnly?: boolean;
@@ -175,13 +178,18 @@ function parseEditedReceiptAmount(value: string): number | null {
 
 function feeLabel(
   option: AdminWeeklyPaymentsFeeOption,
+  feeMultiplier: 1 | 2,
+  pairedCollectionFeeMinor: number | undefined,
 ): string {
   const name = option.feeComponent === "lineage"
     ? "Lineage"
     : option.feeComponent === "prize"
       ? "Prize"
       : "Full";
-  return `${formatMoney(option.amountMinor)} · ${name}`;
+  const amountMinor = pairedCollectionFeeMinor === undefined
+    ? option.amountMinor * feeMultiplier
+    : option.amountMinor + pairedCollectionFeeMinor;
+  return `${formatMoney(amountMinor)} · ${name}`;
 }
 
 function isFeeComponent(value: string): value is AdminWeeklyPaymentsFeeComponent {
@@ -192,6 +200,7 @@ function TeamWorksheet({
   leagueId,
   team,
   feeOptions,
+  feeMultiplier,
   expanded,
   saving,
   readOnly,
@@ -210,6 +219,7 @@ function TeamWorksheet({
   leagueId: number;
   team: AdminWeeklyPaymentsTeam;
   feeOptions: readonly AdminWeeklyPaymentsFeeOption[];
+  feeMultiplier: 1 | 2;
   expanded: boolean;
   saving: boolean;
   readOnly: boolean;
@@ -296,6 +306,7 @@ function TeamWorksheet({
                   && newReceiptAmount === null;
                 const hasCardReceipt = row.cardReceipts.length > 0;
                 const hasReceiptEvidence = hasCardReceipt || row.manualReceipts.length > 0;
+                const finalTwoWeeksPaidCount = row.finalTwoWeeksPaidCount ?? 0;
                 const balanceText = row.balanceMinor < 0
                   ? `${formatMoney(Math.abs(row.balanceMinor))} owed`
                   : row.balanceMinor > 0
@@ -332,7 +343,14 @@ function TeamWorksheet({
                       <span data-awpw="mobile-label">Account balance</span>
                       {row.balanceMinor === 0
                         ? balanceText
-                        : <strong data-awpw="balance-text">{balanceText}</strong>}
+                        : (
+                          <strong
+                            data-awpw="balance-text"
+                            className={row.balanceMinor < 0 ? "text-danger-700" : undefined}
+                          >
+                            {balanceText}
+                          </strong>
+                        )}
                     </TableCell>
                     <TableCell appearance="managePaymentsFee">
                       <span data-awpw="mobile-label">This week’s fee</span>
@@ -350,7 +368,9 @@ function TeamWorksheet({
                             aria-label={`This week’s fee for ${row.displayName}`}
                           >
                             <SelectValue>
-                              {formatMoney(selectedFeeMinor)}
+                              {formatMoney(row.pairedCollectionFeeMinor === undefined
+                                ? selectedFeeMinor * feeMultiplier
+                                : selectedFeeMinor + row.pairedCollectionFeeMinor)}
                             </SelectValue>
                           </SelectTrigger>
                           <SelectContent appearance="managePaymentsFee">
@@ -359,7 +379,7 @@ function TeamWorksheet({
                                 key={option.feeComponent}
                                 value={option.feeComponent}
                               >
-                                {feeLabel(option)}
+                                {feeLabel(option, feeMultiplier, row.pairedCollectionFeeMinor)}
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -501,8 +521,17 @@ function TeamWorksheet({
                     </TableCell>
                     <TableCell appearance="managePaymentsFinal">
                       <span data-awpw="mobile-label">Final two weeks</span>
-                      <span data-awpw={row.finalTwoWeeksPaid ? "final-paid" : "final-unpaid"} className={row.finalTwoWeeksPaid ? "font-medium text-positive-700" : "text-muted-foreground"}>
-                        {row.finalTwoWeeksPaid ? "Paid" : "Unpaid"}
+                      <span
+                        data-awpw={row.finalTwoWeeksPaid
+                          ? "final-paid"
+                          : finalTwoWeeksPaidCount === 1 ? "final-partial" : "final-unpaid"}
+                        className={row.finalTwoWeeksPaid ? "font-medium text-positive-700" : "text-muted-foreground"}
+                      >
+                        {row.finalTwoWeeksPaid
+                          ? "Paid"
+                          : finalTwoWeeksPaidCount === 1
+                            ? "1 of 2 Paid"
+                            : "Unpaid"}
                       </span>
                     </TableCell>
                   </TableRow>
@@ -525,6 +554,7 @@ export function AdminWeeklyPaymentsWorksheet({
   weekConfirmed,
   needsConfirmation,
   feeOptions,
+  feeMultiplier = 1,
   teams,
   initialDrafts,
   readOnly = false,
@@ -791,6 +821,7 @@ export function AdminWeeklyPaymentsWorksheet({
               leagueId={leagueId}
               team={team}
               feeOptions={feeOptions}
+              feeMultiplier={feeMultiplier}
               expanded={expandedTeams[team.teamId] ?? index === 0}
               saving={saving}
               readOnly={readOnly}

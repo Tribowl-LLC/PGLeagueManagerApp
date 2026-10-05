@@ -41,7 +41,7 @@ import {
 import { readCanonicalDuePastDueV3InTransaction } from "./roster-payment-core.js";
 import {
   buildManagePaymentsForecastTargets,
-  buildManagePaymentsFinalTwoWeeksPaidByBowler,
+  buildManagePaymentsFinalTwoWeeksCoverageByBowler,
   buildManagePaymentsWorksheetSnapshot,
   getManagePaymentsWeekOptions,
   localDateForInstant,
@@ -88,11 +88,17 @@ interface ManagePaymentsSeasonLocalError {
 interface ManagePaymentsWorksheetProjectionContext {
   selectedOccurrenceId: string;
   seasonBase: Pick<ManagePaymentsSeasonSnapshot, "league" | "weekOptions" | "defaultOccurrenceId">;
-  projectionInput: Omit<ManagePaymentsProjectionInput, "selectedOccurrenceId" | "manualReceipts" | "finalAccountProjection" | "finalTwoWeeksPaidByBowler">;
+  projectionInput: Omit<ManagePaymentsProjectionInput,
+    | "selectedOccurrenceId"
+    | "manualReceipts"
+    | "finalAccountProjection"
+    | "finalTwoWeeksPaidByBowler"
+    | "finalTwoWeeksCoverageByBowler"
+  >;
   manualReceiptsByOccurrence: ReadonlyMap<string, readonly ManagePaymentsProjectionManualReceipt[]>;
   localErrorsByOccurrence: ReadonlyMap<string, ManagePaymentsSeasonLocalError>;
   finalAccountProjection: ManagePaymentsProjectionInput["finalAccountProjection"];
-  finalTwoWeeksPaidByBowler: ReadonlyMap<number, boolean>;
+  finalTwoWeeksCoverageByBowler: NonNullable<ManagePaymentsProjectionInput["finalTwoWeeksCoverageByBowler"]>;
 }
 
 class ManagePaymentsWorksheetReadAborted extends Error {
@@ -850,7 +856,7 @@ async function loadManagePaymentsWorksheetProjectionContextInTransaction(
     reviewRequiredByObligationId: finalProjectionRead.accountProjectionResult.reviewRequiredByObligationId,
     forecastCoverageByTargetId: finalProjectionRead.forecastCoverageByTargetId,
   };
-  const finalTwoWeeksPaidByBowler = buildManagePaymentsFinalTwoWeeksPaidByBowler({
+  const finalTwoWeeksCoverageByBowler = buildManagePaymentsFinalTwoWeeksCoverageByBowler({
     ...worksheetProjectionInput,
     selectedOccurrenceId: input.occurrenceId,
     manualReceipts,
@@ -869,7 +875,7 @@ async function loadManagePaymentsWorksheetProjectionContextInTransaction(
     manualReceiptsByOccurrence,
     localErrorsByOccurrence,
     finalAccountProjection,
-    finalTwoWeeksPaidByBowler,
+    finalTwoWeeksCoverageByBowler,
   };
 }
 
@@ -882,7 +888,7 @@ function projectOccurrenceSnapshot(
     selectedOccurrenceId: occurrenceId,
     manualReceipts: context.manualReceiptsByOccurrence.get(occurrenceId) ?? [],
     finalAccountProjection: context.finalAccountProjection,
-    finalTwoWeeksPaidByBowler: context.finalTwoWeeksPaidByBowler,
+    finalTwoWeeksCoverageByBowler: context.finalTwoWeeksCoverageByBowler,
   });
 }
 

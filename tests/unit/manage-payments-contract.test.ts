@@ -84,6 +84,53 @@ describe("Manage Payments contract", () => {
     expect(parsed.teams[0]?.rows[0]?.manualReceipts).toHaveLength(2);
   });
 
+  it("accepts optional display-only collection and final-week metadata within its bounds", () => {
+    const parsed = managePaymentsSnapshotSchema.parse({
+      ...snapshot,
+      league: {
+        ...snapshot.league,
+        feeTerms: { ...snapshot.league.feeTerms, collectionMultiplier: 2 },
+      },
+      teams: snapshot.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map((row) => ({
+          ...row,
+          finalTwoWeeksPaidCount: 1,
+          pairedCollectionFeeMinor: 3_000_000_000,
+        })),
+      })),
+    });
+
+    expect(parsed.league.feeTerms.collectionMultiplier).toBe(2);
+    expect(parsed.teams[0]?.rows[0]?.finalTwoWeeksPaidCount).toBe(1);
+    expect(parsed.teams[0]?.rows[0]?.pairedCollectionFeeMinor).toBe(3_000_000_000);
+    expect(managePaymentsSnapshotSchema.safeParse({
+      ...parsed,
+      league: { ...parsed.league, feeTerms: { ...parsed.league.feeTerms, collectionMultiplier: 3 } },
+    }).success).toBe(false);
+    expect(managePaymentsSnapshotSchema.safeParse({
+      ...parsed,
+      teams: parsed.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map((row) => ({ ...row, finalTwoWeeksPaidCount: 3 })),
+      })),
+    }).success).toBe(false);
+    expect(managePaymentsSnapshotSchema.safeParse({
+      ...parsed,
+      teams: parsed.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map((row) => ({ ...row, pairedCollectionFeeMinor: -1 })),
+      })),
+    }).success).toBe(false);
+    expect(managePaymentsSnapshotSchema.safeParse({
+      ...parsed,
+      teams: parsed.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map((row) => ({ ...row, pairedCollectionFeeMinor: Number.MAX_SAFE_INTEGER + 1 })),
+      })),
+    }).success).toBe(false);
+  });
+
   it("uses the same versioned endpoint for GET and POST", () => {
     expect(managePaymentsApiPaths.leagueSnapshot(9)).toBe("/api/financials/leagues/9/manage-payments/1");
     expect(managePaymentsApiPaths.leagueSeasonSnapshot(9)).toBe("/api/financials/leagues/9/manage-payments/1/season");

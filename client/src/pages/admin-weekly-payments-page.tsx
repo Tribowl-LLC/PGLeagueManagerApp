@@ -166,19 +166,28 @@ function canRebaseDirtySnapshot(
   baseline: ManagePaymentsSnapshot,
   latest: ManagePaymentsSnapshot,
 ) {
-  const editableEvidence = (snapshot: ManagePaymentsSnapshot) => JSON.stringify({
-    contractVersion: snapshot.contractVersion,
-    league: snapshot.league,
-    weekOptions: snapshot.weekOptions,
-    selectedOccurrence: snapshot.selectedOccurrence,
-    weekConfirmed: snapshot.weekConfirmed,
-    needsConfirmation: snapshot.needsConfirmation,
-    revision: snapshot.revision,
-    teams: snapshot.teams.map((team) => ({
-      ...team,
-      rows: team.rows.map(({ balanceMinor: _balanceMinor, finalTwoWeeksPaid: _finalTwoWeeksPaid, ...row }) => row),
-    })),
-  });
+  const editableEvidence = (snapshot: ManagePaymentsSnapshot) => {
+    const { collectionMultiplier: _collectionMultiplier, ...editableFeeTerms } = snapshot.league.feeTerms;
+    return JSON.stringify({
+      contractVersion: snapshot.contractVersion,
+      league: { ...snapshot.league, feeTerms: editableFeeTerms },
+      weekOptions: snapshot.weekOptions,
+      selectedOccurrence: snapshot.selectedOccurrence,
+      weekConfirmed: snapshot.weekConfirmed,
+      needsConfirmation: snapshot.needsConfirmation,
+      revision: snapshot.revision,
+      teams: snapshot.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map(({
+          balanceMinor: _balanceMinor,
+          finalTwoWeeksPaid: _finalTwoWeeksPaid,
+          finalTwoWeeksPaidCount: _finalTwoWeeksPaidCount,
+          pairedCollectionFeeMinor: _pairedCollectionFeeMinor,
+          ...row
+        }) => row),
+      })),
+    });
+  };
 
   return editableEvidence(baseline) === editableEvidence(latest);
 }
@@ -688,6 +697,7 @@ export default function AdminWeeklyPaymentsPage() {
                     { feeComponent: "lineage", amountMinor: snapshot.league.feeTerms.lineageMinor },
                     { feeComponent: "prize", amountMinor: snapshot.league.feeTerms.prizeMinor },
                   ]}
+                  feeMultiplier={snapshot.league.feeTerms.collectionMultiplier ?? 1}
                   teams={snapshot.teams}
                   initialDrafts={activeCacheEntry?.drafts ?? EMPTY_DRAFTS}
                   readOnly={worksheetReadOnly}

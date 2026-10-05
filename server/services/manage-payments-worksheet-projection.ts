@@ -116,6 +116,11 @@ export interface ManagePaymentsProjectionFinalObligation {
   reviewRequired: boolean;
 }
 
+export interface ManagePaymentsFinalTwoWeeksCoverage {
+  paidCount: number;
+  targetCount: number;
+}
+
 export interface ManagePaymentsProjectionInput {
   league: ManagePaymentsProjectionLeague;
   schedule: LeagueOccurrenceScheduleReadContract;
@@ -142,6 +147,8 @@ export interface ManagePaymentsProjectionInput {
     & { forecastCoverageByTargetId: ReadonlyMap<string, ManagePaymentsForecastCoverage> };
   /** Optional season-wide result reused when projecting multiple weeks from one read. */
   finalTwoWeeksPaidByBowler?: ReadonlyMap<number, boolean>;
+  /** Optional detailed season-wide coverage result, shared by paid-count and complete-status fields. */
+  finalTwoWeeksCoverageByBowler?: ReadonlyMap<number, ManagePaymentsFinalTwoWeeksCoverage>;
 }
 
 export interface ManagePaymentsForecastTarget {
@@ -224,7 +231,11 @@ export function canonicalManagePaymentsWorksheetFingerprintPayload(input: Manage
     occurrenceRevision: input.occurrenceRevision,
     billingTermVersion: input.billingTermVersion,
     billingTermRevision: input.billingTermRevision,
-    feeTerms: input.feeTerms,
+    feeTerms: {
+      fullMinor: input.feeTerms.fullMinor,
+      lineageMinor: input.feeTerms.lineageMinor,
+      prizeMinor: input.feeTerms.prizeMinor,
+    },
     rows,
   };
 }
@@ -651,6 +662,51 @@ function selectedResponsibilitiesForOccurrence(
   };
 }
 
+function pairedCollectionFeesByBowler(
+  input: ManagePaymentsProjectionInput,
+  selectedOccurrence: LeagueOccurrenceScheduleOccurrence,
+): Map<number, number> {
+  const pairedOccurrenceIds = new Set((selectedOccurrence.collectionGroups ?? [])
+    .filter((group) => group.kind === "double_pay" && group.role === "trigger" && group.state === "published")
+    .map((group) => group.pairedOccurrenceId));
+  if (pairedOccurrenceIds.size === 0) return new Map();
+
+  const occurrenceById = new Map(input.schedule.occurrences.map((occurrence) => [occurrence.occurrenceId, occurrence]));
+  const feeByBowler = new Map<number, number>();
+  for (const pairedOccurrenceId of pairedOccurrenceIds) {
+    const pairedOccurrence = occurrenceById.get(pairedOccurrenceId);
+    if (!pairedOccurrence || !isBillableOccurrence(pairedOccurrence)) {
+      throw new ManagePaymentsWorksheetProjectionError(
+        "invalid_occurrence",
+        "A published double-pay group points to a missing or non-billable paired week",
+      );
+    }
+
+    const selected = selectedResponsibilitiesForOccurrence(input, pairedOccurrence);
+    const seenBowlerIds = new Set<number>();
+    for (const row of selected.rows) {
+      if (seenBowlerIds.has(row.bowlerId)) {
+        throw new ManagePaymentsWorksheetProjectionError(
+          "duplicate_bowler_row",
+          "A bowler has more than one active responsibility row for a paired week",
+        );
+      }
+      seenBowlerIds.add(row.bowlerId);
+      if (row.feeMinor <= 0) continue;
+
+      const nextFeeMinor = (feeByBowler.get(row.bowlerId) ?? 0) + row.feeMinor;
+      if (!Number.isSafeInteger(nextFeeMinor)) {
+        throw new ManagePaymentsWorksheetProjectionError(
+          "invalid_occurrence",
+          "The paired-week fee total exceeds the supported display amount",
+        );
+      }
+      feeByBowler.set(row.bowlerId, nextFeeMinor);
+    }
+  }
+  return feeByBowler;
+}
+
 /** Pure forecast targets use the exact responsibility/default-main source shown by the worksheet. */
 export function buildManagePaymentsForecastTargets(
   input: Omit<ManagePaymentsProjectionInput, "finalAccountProjection">,
@@ -715,7 +771,7 @@ function defaultMainResponsibilities(
     }));
 }
 
-function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<number, boolean> {
+function buildFinalCoverageByBowler(input: ManagePaymentsProjectionInput): Map<number, ManagePaymentsFinalTwoWeeksCoverage> {
   const finalWeeks = finalBillableWeeks(input.schedule);
   if (finalWeeks.length === 0) return new Map();
   const targetByBowler = new Map<number, Map<string, { occurrenceId: string; feeMinor: number; confirmed: boolean }>>();
@@ -737,7 +793,7 @@ function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<numbe
     }
   }
 
-  const output = new Map<number, boolean>();
+  const output = new Map<number, ManagePaymentsFinalTwoWeeksCoverage>();
   const forecastTargets = buildManagePaymentsForecastTargets(input);
   const obligationsByOccurrenceAndBowler = new Map<string, ManagePaymentsProjectionFinalObligation[]>();
   for (const obligation of input.finalObligations) {
@@ -755,10 +811,11 @@ function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<numbe
   }
 
   for (const [bowlerId, targets] of targetByBowler) {
-    let covered = true;
+    let paidCount = 0;
     for (const occurrence of finalWeeks) {
       const target = targets.get(occurrence.occurrenceId);
       if (!target) continue;
+      let covered = true;
       if (target.confirmed) {
         const obligations = obligationsByOccurrenceAndBowler.get(JSON.stringify([target.occurrenceId, bowlerId])) ?? [];
         const paidMinor = obligations.reduce((sum, row) => sum + row.paidMinor, 0);
@@ -766,30 +823,39 @@ function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<numbe
           + (input.finalAccountProjection.rowsByObligationId.get(row.obligationId)?.projectedCreditMinor ?? 0), 0);
         const reviewRequired = obligations.some((row) => input.finalAccountProjection.reviewRequiredByObligationId.get(row.obligationId)
           ?? row.reviewRequired);
-        if (obligations.length === 0 || reviewRequired || paidMinor + projectedCreditMinor < target.feeMinor) covered = false;
-        continue;
+        covered = obligations.length > 0 && !reviewRequired && paidMinor + projectedCreditMinor >= target.feeMinor;
+      } else {
+        const forecastRows = forecastTargetsByOccurrenceAndBowler.get(JSON.stringify([target.occurrenceId, bowlerId])) ?? [];
+        const coverage = forecastRows.map((row) => input.finalAccountProjection.forecastCoverageByTargetId.get(row.projectionId));
+        const paidMinor = coverage.reduce((sum, row) => sum + (row?.paidMinor ?? 0), 0);
+        const projectedCreditMinor = coverage.reduce((sum, row) => sum + (row?.obligationIds.reduce((credit, obligationId) => (
+          credit + (input.finalAccountProjection.rowsByObligationId.get(obligationId)?.projectedCreditMinor ?? 0)
+        ), 0) ?? 0), 0);
+        const reviewRequired = coverage.some((row) => row?.reviewRequired === true
+          || row?.obligationIds.some((obligationId) => input.finalAccountProjection.reviewRequiredByObligationId.get(obligationId) === true));
+        const requiredMinor = coverage.reduce((sum, row) => sum + (row?.requiredMinor ?? 0), 0);
+        covered = forecastRows.length > 0 && !coverage.some((row) => row === undefined)
+          && !reviewRequired && requiredMinor > 0 && paidMinor + projectedCreditMinor > 0
+          && paidMinor + projectedCreditMinor >= requiredMinor;
       }
-
-      const forecastRows = forecastTargetsByOccurrenceAndBowler.get(JSON.stringify([target.occurrenceId, bowlerId])) ?? [];
-      const coverage = forecastRows.map((row) => input.finalAccountProjection.forecastCoverageByTargetId.get(row.projectionId));
-      const paidMinor = coverage.reduce((sum, row) => sum + (row?.paidMinor ?? 0), 0);
-      const projectedCreditMinor = coverage.reduce((sum, row) => sum + (row?.obligationIds.reduce((credit, obligationId) => (
-        credit + (input.finalAccountProjection.rowsByObligationId.get(obligationId)?.projectedCreditMinor ?? 0)
-      ), 0) ?? 0), 0);
-      const reviewRequired = coverage.some((row) => row?.reviewRequired === true
-        || row?.obligationIds.some((obligationId) => input.finalAccountProjection.reviewRequiredByObligationId.get(obligationId) === true));
-      const requiredMinor = coverage.reduce((sum, row) => sum + (row?.requiredMinor ?? 0), 0);
-      if (forecastRows.length === 0 || coverage.some((row) => row === undefined)
-        || reviewRequired || requiredMinor <= 0 || paidMinor + projectedCreditMinor <= 0
-        || paidMinor + projectedCreditMinor < requiredMinor) covered = false;
+      if (covered) paidCount += 1;
     }
-    output.set(bowlerId, covered);
+    output.set(bowlerId, { paidCount, targetCount: targets.size });
   }
   return output;
 }
 
+export function buildManagePaymentsFinalTwoWeeksCoverageByBowler(
+  input: ManagePaymentsProjectionInput,
+): ReadonlyMap<number, ManagePaymentsFinalTwoWeeksCoverage> {
+  return buildFinalCoverageByBowler(input);
+}
+
 export function buildManagePaymentsFinalTwoWeeksPaidByBowler(input: ManagePaymentsProjectionInput): ReadonlyMap<number, boolean> {
-  return buildFinalPaidByBowler(input);
+  return new Map([...buildFinalCoverageByBowler(input)].map(([bowlerId, coverage]) => [
+    bowlerId,
+    coverage.targetCount > 0 && coverage.paidCount === coverage.targetCount,
+  ]));
 }
 
 export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjectionInput): ManagePaymentsSnapshot {
@@ -813,10 +879,15 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
   if (fullFeeMinor <= 0) {
     throw new ManagePaymentsWorksheetProjectionError("invalid_occurrence", "The selected week is missing its canonical full-fee amount");
   }
+  const collectionMultiplier: 1 | 2 = selectedOccurrence.collectionGroups?.some((group) => (
+    group.kind === "double_pay" && group.role === "trigger" && group.state === "published"
+  )) ? 2 : 1;
+  const pairedCollectionFeeByBowler = pairedCollectionFeesByBowler(input, selectedOccurrence);
   const feeTerms = {
     fullMinor: fullFeeMinor,
     lineageMinor: input.league.lineageFeeMinor,
     prizeMinor: input.league.prizeFeeMinor,
+    collectionMultiplier,
   };
   const confirmationRevision = input.explicitConfirmationRevisions.get(selectedOccurrence.occurrenceId);
   const weekConfirmed = input.confirmedOccurrenceIds.has(selectedOccurrence.occurrenceId);
@@ -1000,7 +1071,11 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
     });
   }
 
-  const finalPaid = input.finalTwoWeeksPaidByBowler ?? buildFinalPaidByBowler(input);
+  const finalCoverageByBowler = input.finalTwoWeeksCoverageByBowler ?? buildFinalCoverageByBowler(input);
+  const finalPaid = input.finalTwoWeeksPaidByBowler ?? new Map([...finalCoverageByBowler].map(([bowlerId, coverage]) => [
+    bowlerId,
+    coverage.targetCount > 0 && coverage.paidCount === coverage.targetCount,
+  ]));
   const manualReceiptsByBowlerAndTeam = new Map<number, Map<number, ManagePaymentsProjectionManualReceipt[]>>();
   for (const receipt of input.manualReceipts) {
     if (receipt.occurrenceId !== selectedOccurrence.occurrenceId) continue;
@@ -1059,6 +1134,8 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
       manualReceipts,
       cardReceipts: cardReceiptsForBowler,
       finalTwoWeeksPaid: finalPaid.get(bowlerId) ?? false,
+      finalTwoWeeksPaidCount: finalCoverageByBowler.get(bowlerId)?.paidCount ?? 0,
+      pairedCollectionFeeMinor: pairedCollectionFeeByBowler.get(bowlerId) ?? 0,
     };
     const stateRow: StateFingerprintRow = {
       teamId: seed.teamId,

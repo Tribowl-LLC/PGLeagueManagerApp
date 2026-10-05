@@ -7,6 +7,8 @@ import {
 } from "@shared/league-occurrence-schedule";
 import {
   buildManagePaymentsForecastTargets,
+  buildManagePaymentsFinalTwoWeeksCoverageByBowler,
+  buildManagePaymentsFinalTwoWeeksPaidByBowler,
   buildManagePaymentsWorksheetSnapshot,
   createManagePaymentsCardReceiptOccurrenceIndex,
   fingerprintManagePaymentsWorksheet,
@@ -14,8 +16,10 @@ import {
   localDateForInstant,
   mapCardReceiptCollectionOccurrence,
   mapCardReceiptCollectionOccurrenceFromIndex,
+  ManagePaymentsWorksheetProjectionError,
   selectManagePaymentsOccurrence,
   type ManagePaymentsProjectionInput,
+  type ManagePaymentsProjectionResponsibility,
 } from "../../server/services/manage-payments-worksheet-projection.js";
 import {
   projectOwnedAccountCoverage,
@@ -162,13 +166,22 @@ function withSharedAccountProjection(input: ManagePaymentsProjectionInput): Mana
   });
   const forecastTargets = buildManagePaymentsForecastTargets(input);
   for (const target of forecastTargets) {
+    const occurrence = occurrenceById.get(target.occurrenceId);
+    if (!occurrence) throw new Error("test forecast target is missing its schedule occurrence");
+    const collectionGroup = occurrence.collectionGroups?.find((group) => group.state === "published");
+    const triggerOccurrence = collectionGroup?.role === "paired"
+      ? occurrenceById.get(collectionGroup.pairedOccurrenceId)
+      : undefined;
+    if (collectionGroup?.role === "paired" && !triggerOccurrence) {
+      throw new Error("test paired occurrence is missing its canonical trigger");
+    }
     rows.push({
       obligationId: target.projectionId,
       occurrenceId: target.occurrenceId,
       occurrenceLocalDate: target.occurrenceLocalDate,
       dueAt: target.dueAt,
-      effectiveCollectionAt: target.dueAt,
-      memberOrdinal: 0,
+      effectiveCollectionAt: triggerOccurrence ? new Date(triggerOccurrence.startAt).toISOString() : target.dueAt,
+      memberOrdinal: collectionGroup?.role === "trigger" ? 1 : collectionGroup?.role === "paired" ? 2 : 0,
       billingOrdinal: target.billingOrdinal,
       owner: { kind: "bowler", bowlerId: target.bowlerId },
       effectiveDebtorBowlerId: target.bowlerId,
@@ -962,6 +975,401 @@ describe("Manage Payments worksheet projection", () => {
     expect(buildManagePaymentsWorksheetSnapshot({ ...input, finalObligations: waiverOnly }).teams[0]?.rows[0]?.finalTwoWeeksPaid).toBe(false);
   });
 
+  it("doubles display fee terms only for a published canonical trigger occurrence", () => {
+    const triggerGroup = {
+      groupId: "published-trigger",
+      groupOrdinal: 0,
+      kind: "double_pay" as const,
+      role: "trigger" as const,
+      pairedOccurrenceId: "occ-3",
+      pairedLocalDate: "2026-09-28",
+      state: "published" as const,
+      currentRevision: 1,
+    };
+    const selectedWeeks = [
+      occurrence("occ-1", "2026-09-14", 1),
+      occurrence("occ-2", "2026-09-21", 2),
+      occurrence("occ-3", "2026-09-28", 3),
+      occurrence("occ-4", "2026-10-05", 4, { collectionGroups: [triggerGroup] }),
+    ];
+    const doubled = buildManagePaymentsWorksheetSnapshot(projectionInput({ schedule: schedule(selectedWeeks) }));
+    expect(doubled.league.feeTerms).toMatchObject({ fullMinor: 1_000, collectionMultiplier: 2 });
+    expect(doubled.teams[0]?.rows[0]).toMatchObject({ feeMinor: 1_000, pairedCollectionFeeMinor: 1_000 });
+
+    const paired = buildManagePaymentsWorksheetSnapshot(projectionInput({
+      schedule: schedule(selectedWeeks.map((week) => week.occurrenceId === "occ-4"
+        ? { ...week, collectionGroups: [{ ...triggerGroup, role: "paired" as const }] }
+        : week)),
+    }));
+    const revoked = buildManagePaymentsWorksheetSnapshot(projectionInput({
+      schedule: schedule(selectedWeeks.map((week) => week.occurrenceId === "occ-4"
+        ? { ...week, collectionGroups: [{ ...triggerGroup, state: "revoked" as const }] }
+        : week)),
+    }));
+    const regular = buildManagePaymentsWorksheetSnapshot(projectionInput());
+    expect(paired.league.feeTerms.collectionMultiplier).toBe(1);
+    expect(revoked.league.feeTerms.collectionMultiplier).toBe(1);
+    expect(regular.league.feeTerms.collectionMultiplier).toBe(1);
+    expect(paired.teams[0]?.rows[0]?.pairedCollectionFeeMinor).toBe(0);
+    expect(revoked.teams[0]?.rows[0]?.pairedCollectionFeeMinor).toBe(0);
+    expect(regular.teams[0]?.rows[0]?.pairedCollectionFeeMinor).toBe(0);
+  });
+
+  it("adds the actual paired responsibility to the display offset and deduplicates paired targets", () => {
+    const triggerGroup = {
+      groupId: "published-trigger",
+      groupOrdinal: 0,
+      kind: "double_pay" as const,
+      role: "trigger" as const,
+      pairedOccurrenceId: "occ-3",
+      pairedLocalDate: "2026-09-28",
+      state: "published" as const,
+      currentRevision: 1,
+    };
+    const weeks = [
+      occurrence("occ-1", "2026-09-14", 1),
+      occurrence("occ-2", "2026-09-21", 2),
+      occurrence("occ-3", "2026-09-28", 3),
+      occurrence("occ-4", "2026-10-05", 4, {
+        collectionGroups: [triggerGroup, { ...triggerGroup, groupId: "duplicate-link" }],
+      }),
+    ];
+    const input = projectionInput({
+      league: { id: 7, name: "Monday League", timeZone: "America/Chicago", weeklyFeeMinor: 2_000, lineageFeeMinor: 1_000, prizeFeeMinor: 500 },
+      schedule: schedule(weeks),
+      selectedOccurrenceId: "occ-4",
+      fullFeeMinorByOccurrence: new Map(weeks.map((week) => [week.occurrenceId, 2_000])),
+      responsibilitiesByOccurrence: new Map([
+        ["occ-3", [{
+          responsibilityId: "paired-full",
+          teamId: 31,
+          slotIndex: 0,
+          kind: "main" as const,
+          payerBowlerId: 501,
+          mainBowlerId: 501,
+          substituteBowlerId: null,
+          lineagePayerBowlerId: null,
+          prizePayerBowlerId: null,
+          worksheetFeeComponent: null,
+          amountMinor: 2_000,
+          lineageAmountMinor: null,
+          prizeAmountMinor: null,
+          version: 1,
+        }]],
+        ["occ-4", [{
+          responsibilityId: "trigger-lineage",
+          teamId: 31,
+          slotIndex: null,
+          kind: "worksheet" as const,
+          payerBowlerId: 501,
+          mainBowlerId: null,
+          substituteBowlerId: null,
+          lineagePayerBowlerId: null,
+          prizePayerBowlerId: null,
+          worksheetFeeComponent: "lineage" as const,
+          amountMinor: 1_000,
+          lineageAmountMinor: null,
+          prizeAmountMinor: null,
+          version: 1,
+        }]],
+      ]),
+      explicitConfirmationRevisions: new Map([["occ-4", 1]]),
+      confirmedOccurrenceIds: new Set(["occ-4"]),
+    });
+
+    const row = buildManagePaymentsWorksheetSnapshot(input).teams[0]?.rows[0];
+    expect(row).toMatchObject({ feeComponent: "lineage", feeMinor: 1_000, pairedCollectionFeeMinor: 2_000 });
+  });
+
+  it("uses an actual paired fee that differs from the current base fee and returns zero for no paired liability", () => {
+    const triggerGroup = {
+      groupId: "published-trigger",
+      groupOrdinal: 0,
+      kind: "double_pay" as const,
+      role: "trigger" as const,
+      pairedOccurrenceId: "occ-3",
+      pairedLocalDate: "2026-09-28",
+      state: "published" as const,
+      currentRevision: 1,
+    };
+    const weeks = [
+      occurrence("occ-1", "2026-09-14", 1),
+      occurrence("occ-2", "2026-09-21", 2),
+      occurrence("occ-3", "2026-09-28", 3),
+      occurrence("occ-4", "2026-10-05", 4, { collectionGroups: [triggerGroup] }),
+    ];
+    const base = projectionInput({
+      schedule: schedule(weeks),
+      selectedOccurrenceId: "occ-4",
+      fullFeeMinorByOccurrence: new Map(weeks.map((week) => [week.occurrenceId, 2_000])),
+      responsibilitiesByOccurrence: new Map([
+        ["occ-3", [{
+          responsibilityId: "paired-full-25",
+          teamId: 31,
+          slotIndex: 0,
+          kind: "main" as const,
+          payerBowlerId: 501,
+          mainBowlerId: 501,
+          substituteBowlerId: null,
+          lineagePayerBowlerId: null,
+          prizePayerBowlerId: null,
+          worksheetFeeComponent: null,
+          amountMinor: 2_500,
+          lineageAmountMinor: null,
+          prizeAmountMinor: null,
+          version: 1,
+        }]],
+        ["occ-4", [{
+          responsibilityId: "trigger-full-20",
+          teamId: 31,
+          slotIndex: null,
+          kind: "worksheet" as const,
+          payerBowlerId: 501,
+          mainBowlerId: null,
+          substituteBowlerId: null,
+          lineagePayerBowlerId: null,
+          prizePayerBowlerId: null,
+          worksheetFeeComponent: "full" as const,
+          amountMinor: 2_000,
+          lineageAmountMinor: null,
+          prizeAmountMinor: null,
+          version: 1,
+        }]],
+      ]),
+      explicitConfirmationRevisions: new Map([["occ-4", 1]]),
+      confirmedOccurrenceIds: new Set(["occ-4"]),
+    });
+    expect(buildManagePaymentsWorksheetSnapshot(base).teams[0]?.rows[0]).toMatchObject({
+      feeMinor: 2_000,
+      pairedCollectionFeeMinor: 2_500,
+    });
+
+    const noPairedResponsibilities = new Map<string, readonly ManagePaymentsProjectionResponsibility[]>(base.responsibilitiesByOccurrence);
+    noPairedResponsibilities.set("occ-3", [{
+      responsibilityId: "paired-vacant-main",
+      teamId: 31,
+      slotIndex: 0,
+      kind: "vacant",
+      payerBowlerId: null,
+      mainBowlerId: 501,
+      substituteBowlerId: null,
+      lineagePayerBowlerId: null,
+      prizePayerBowlerId: null,
+      worksheetFeeComponent: null,
+      amountMinor: 0,
+      lineageAmountMinor: null,
+      prizeAmountMinor: null,
+      version: 1,
+    }]);
+    noPairedResponsibilities.set("occ-4", (base.responsibilitiesByOccurrence.get("occ-4") ?? []).map((row) => ({
+      ...row,
+      worksheetFeeComponent: "lineage",
+      amountMinor: 1_000,
+    })));
+    const noPairedLiability = buildManagePaymentsWorksheetSnapshot({
+      ...base,
+      responsibilitiesByOccurrence: noPairedResponsibilities,
+    });
+    expect(noPairedLiability.teams[0]?.rows[0]).toMatchObject({
+      feeMinor: 1_000,
+      pairedCollectionFeeMinor: 0,
+    });
+  });
+
+  it("fails closed when a published paired target is invalid or has duplicate bowler rows", () => {
+    const triggerGroup = {
+      groupId: "published-trigger",
+      groupOrdinal: 0,
+      kind: "double_pay" as const,
+      role: "trigger" as const,
+      pairedOccurrenceId: "occ-3",
+      pairedLocalDate: "2026-09-28",
+      state: "published" as const,
+      currentRevision: 1,
+    };
+    const weeks = [
+      occurrence("occ-1", "2026-09-14", 1),
+      occurrence("occ-2", "2026-09-21", 2),
+      occurrence("occ-3", "2026-09-28", 3),
+      occurrence("occ-4", "2026-10-05", 4, { collectionGroups: [triggerGroup] }),
+    ];
+    const input = projectionInput({ schedule: schedule(weeks), selectedOccurrenceId: "occ-4" });
+    const duplicateResponsibilities = [1, 2].map((index) => ({
+      responsibilityId: `duplicate-${index}`,
+      teamId: 31,
+      slotIndex: index,
+      kind: "main" as const,
+      payerBowlerId: 501,
+      mainBowlerId: 501,
+      substituteBowlerId: null,
+      lineagePayerBowlerId: null,
+      prizePayerBowlerId: null,
+      worksheetFeeComponent: null,
+      amountMinor: 1_000,
+      lineageAmountMinor: null,
+      prizeAmountMinor: null,
+      version: 1,
+    }));
+
+    for (const invalidSchedule of [
+      schedule(weeks.filter((week) => week.occurrenceId !== "occ-3")),
+      schedule(weeks.map((week) => week.occurrenceId === "occ-3" ? { ...week, status: "cancelled" as const } : week)),
+    ]) {
+      let error: unknown;
+      try {
+        buildManagePaymentsWorksheetSnapshot({ ...input, schedule: invalidSchedule });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(ManagePaymentsWorksheetProjectionError);
+      expect(error).toMatchObject({ code: "invalid_occurrence" });
+    }
+
+    let duplicateError: unknown;
+    try {
+      buildManagePaymentsWorksheetSnapshot({
+        ...input,
+        responsibilitiesByOccurrence: new Map([["occ-3", duplicateResponsibilities]]),
+      });
+    } catch (caught) {
+      duplicateError = caught;
+    }
+    expect(duplicateError).toBeInstanceOf(ManagePaymentsWorksheetProjectionError);
+    expect(duplicateError).toMatchObject({ code: "duplicate_bowler_row" });
+  });
+
+  it("preserves Paid when the bowler has one fully covered applicable final-week target", () => {
+    const weeks = [
+      occurrence("occ-1", "2026-09-14", 1),
+      occurrence("occ-2", "2026-09-21", 2),
+      occurrence("occ-3", "2026-09-28", 3),
+      occurrence("occ-4", "2026-10-05", 4),
+    ];
+    const input = projectionInput({
+      schedule: schedule(weeks),
+      selectedOccurrenceId: "occ-4",
+      responsibilitiesByOccurrence: new Map([[
+        "occ-3",
+        [{
+          responsibilityId: "worksheet:occ-3",
+          teamId: 31,
+          slotIndex: null,
+          kind: "worksheet",
+          payerBowlerId: 501,
+          mainBowlerId: null,
+          substituteBowlerId: null,
+          lineagePayerBowlerId: null,
+          prizePayerBowlerId: null,
+          worksheetFeeComponent: "full",
+          amountMinor: 1_000,
+          lineageAmountMinor: null,
+          prizeAmountMinor: null,
+          version: 1,
+        }],
+      ]]),
+      explicitConfirmationRevisions: new Map([["occ-3", 1], ["occ-4", 1]]),
+      confirmedOccurrenceIds: new Set(["occ-3", "occ-4"]),
+      finalObligations: [{
+        obligationId: "obligation:occ-3",
+        responsibilityId: "worksheet:occ-3",
+        occurrenceId: "occ-3",
+        teamId: 31,
+        component: "full",
+        payerBowlerId: 501,
+        debtorBowlerId: 501,
+        amountMinor: 1_000,
+        paidMinor: 1_000,
+        waivedMinor: 0,
+        outstandingMinor: 0,
+        reviewRequired: false,
+      }],
+    });
+
+    expect(buildManagePaymentsFinalTwoWeeksCoverageByBowler(input).get(501)).toEqual({
+      paidCount: 1,
+      targetCount: 1,
+    });
+    expect(buildManagePaymentsWorksheetSnapshot(input).teams[0]?.rows[0]).toMatchObject({
+      finalTwoWeeksPaid: true,
+      finalTwoWeeksPaidCount: 1,
+    });
+  });
+
+  it("uses published paired collection order for one shared $90 credit budget", () => {
+    const firstPairTrigger = {
+      groupId: "double-pay-week-5-31",
+      groupOrdinal: 0,
+      kind: "double_pay" as const,
+      role: "trigger" as const,
+      pairedOccurrenceId: "occ-week-31",
+      pairedLocalDate: "2027-03-29",
+      state: "published" as const,
+      currentRevision: 1,
+    };
+    const firstPairMember = {
+      ...firstPairTrigger,
+      role: "paired" as const,
+      pairedOccurrenceId: "occ-week-5",
+      pairedLocalDate: "2026-09-28",
+    };
+    const secondPairTrigger = {
+      groupId: "double-pay-week-6-32",
+      groupOrdinal: 1,
+      kind: "double_pay" as const,
+      role: "trigger" as const,
+      pairedOccurrenceId: "occ-week-32",
+      pairedLocalDate: "2027-04-05",
+      state: "published" as const,
+      currentRevision: 1,
+    };
+    const secondPairMember = {
+      ...secondPairTrigger,
+      role: "paired" as const,
+      pairedOccurrenceId: "occ-week-6",
+      pairedLocalDate: "2026-10-05",
+    };
+    const weeks = [
+      occurrence("occ-week-3", "2026-09-14", 3),
+      occurrence("occ-week-4", "2026-09-21", 4),
+      occurrence("occ-week-5", "2026-09-28", 5, { collectionGroups: [firstPairTrigger] }),
+      occurrence("occ-week-6", "2026-10-05", 6, { collectionGroups: [secondPairTrigger] }),
+      occurrence("occ-week-31", "2027-03-29", 31, { collectionGroups: [firstPairMember] }),
+      occurrence("occ-week-32", "2027-04-05", 32, { collectionGroups: [secondPairMember] }),
+    ];
+    const input = withSharedAccountProjection(projectionInput({
+      schedule: schedule(weeks),
+      selectedOccurrenceId: "occ-week-5",
+      fullFeeMinorByOccurrence: new Map(weeks.map((week) => [week.occurrenceId, 2_000])),
+      balances: new Map([[501, { availableCreditMinor: 9_000, confirmedOwedMinor: 0, netBalanceMinor: 9_000 }]]),
+    }));
+    const forecastCreditByWeek = new Map(buildManagePaymentsForecastTargets(input).map((target) => [
+      target.occurrenceId,
+      input.finalAccountProjection.rowsByObligationId.get(target.projectionId)?.projectedCreditMinor ?? 0,
+    ]));
+    const coverage = buildManagePaymentsFinalTwoWeeksCoverageByBowler(input).get(501);
+    const snapshot = buildManagePaymentsWorksheetSnapshot(input);
+    const row = snapshot.teams[0]?.rows[0];
+
+    expect(forecastCreditByWeek).toEqual(new Map([
+      ["occ-week-3", 2_000],
+      ["occ-week-4", 2_000],
+      ["occ-week-5", 2_000],
+      ["occ-week-6", 1_000],
+      ["occ-week-31", 2_000],
+      ["occ-week-32", 0],
+    ]));
+    expect(coverage).toEqual({ paidCount: 1, targetCount: 2 });
+    expect(buildManagePaymentsFinalTwoWeeksPaidByBowler(input).get(501)).toBe(false);
+    expect(snapshot.selectedOccurrence.occurrenceId).toBe("occ-week-5");
+    expect(snapshot.league.feeTerms).toMatchObject({ fullMinor: 2_000, collectionMultiplier: 2 });
+    expect(row).toMatchObject({
+      feeMinor: 2_000,
+      pairedCollectionFeeMinor: 2_000,
+      finalTwoWeeksPaid: false,
+      finalTwoWeeksPaidCount: 1,
+    });
+  });
+
   it("uses available credit only after older confirmed debt and covers only positive forecast targets", () => {
     const input = withSharedAccountProjection(projectionInput({
       confirmedOccurrenceIds: new Set(["occ-1", "occ-2"]),
@@ -1052,6 +1460,8 @@ describe("Manage Payments worksheet projection", () => {
     };
     const fingerprint = fingerprintManagePaymentsWorksheet(base);
     expect(fingerprintManagePaymentsWorksheet({ ...base })).toBe(fingerprint);
+    const displayFeeTerms = { ...base.feeTerms, collectionMultiplier: 2 };
+    expect(fingerprintManagePaymentsWorksheet({ ...base, feeTerms: displayFeeTerms })).toBe(fingerprint);
     expect(fingerprintManagePaymentsWorksheet({
       ...base,
       feeTerms: { ...base.feeTerms, prizeMinor: 400 },
