@@ -747,7 +747,7 @@ export function AdminWeeklyPaymentsWorksheet({
       setSaveError(null);
     } catch {
       setSaveError({
-        message: "The latest saved week could not be loaded. Your entries are still here; retry after checking the current week.",
+        message: "The latest saved week could not be loaded. Try again after checking the current week.",
         recoveryAction: action,
       });
     } finally {

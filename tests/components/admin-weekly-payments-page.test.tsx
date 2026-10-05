@@ -547,6 +547,41 @@ describe("AdminWeeklyPaymentsPage", () => {
     expect(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" })).toHaveValue("5.50");
   });
 
+  it("pins a clean fallback after its prior week disappears before a later dirty refresh", async () => {
+    const user = userEvent.setup();
+    const { client, snapshots, seasons, seasonGetCounts } = setupPage();
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const weekSelect = screen.getByRole("combobox", { name: "Collection week" });
+    seasons.set(7, makeSeasonSnapshot(
+      snapshots,
+      secondOccurrenceId,
+      new Set(),
+      new Set([firstOccurrenceId]),
+    ));
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(2));
+    await waitFor(() => expect(client.getQueryState(["manage-payments-snapshot", 7])?.fetchStatus).toBe("idle"));
+    expect(weekSelect).toHaveTextContent("Mon Oct 5, 2026");
+
+    const amountInput = screen.getByRole("textbox", { name: "Amount received from Blair Quinn" });
+    await user.type(amountInput, "3.75");
+    seasons.set(7, makeSeasonSnapshot(
+      snapshots,
+      thirdOccurrenceId,
+      new Set(),
+      new Set([firstOccurrenceId]),
+    ));
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(3));
+    await waitFor(() => expect(client.getQueryState(["manage-payments-snapshot", 7])?.fetchStatus).toBe("idle"));
+
+    expect(weekSelect).toHaveTextContent("Mon Oct 5, 2026");
+    expect(amountInput).toHaveValue("3.75");
+  });
+
   it("keeps a removed dirty week in the picker as a read-only draft", async () => {
     const user = userEvent.setup();
     const { client, fetchMock, snapshots, seasons, seasonGetCounts } = setupPage();

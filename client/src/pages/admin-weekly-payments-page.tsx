@@ -322,6 +322,24 @@ export default function AdminWeeklyPaymentsPage() {
   const resolvedOccurrenceId = savedOccurrenceIsAvailable || savedOccurrenceHasDirtyBaseline
     ? savedOccurrenceId
     : season?.defaultOccurrenceId ?? null;
+  useEffect(() => {
+    if (
+      !season
+      || selectedLeagueId === null
+      || savedOccurrenceId === null
+      || savedOccurrenceIsAvailable
+      || savedOccurrenceHasDirtyBaseline
+    ) return;
+    setSelectedOccurrenceByLeague((current) => current[selectedLeagueId] === savedOccurrenceId
+      ? { ...current, [selectedLeagueId]: season.defaultOccurrenceId }
+      : current);
+  }, [
+    savedOccurrenceHasDirtyBaseline,
+    savedOccurrenceId,
+    savedOccurrenceIsAvailable,
+    season,
+    selectedLeagueId,
+  ]);
   const activeSelectionKey = selectedLeagueId !== null && resolvedOccurrenceId !== null
     ? selectionCacheKey(selectedLeagueId, resolvedOccurrenceId)
     : null;
