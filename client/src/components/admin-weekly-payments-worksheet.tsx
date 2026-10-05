@@ -125,6 +125,7 @@ export interface AdminWeeklyPaymentsWorksheetProps {
   feeOptions: readonly AdminWeeklyPaymentsFeeOption[];
   teams: readonly AdminWeeklyPaymentsTeam[];
   initialDrafts?: AdminWeeklyPaymentsWorksheetDraftState;
+  readOnly?: boolean;
   onSave: (input: AdminWeeklyPaymentsSaveInput) => Promise<void>;
   onDirtyChange?: (isDirty: boolean) => void;
   onDraftStateChange?: (drafts: AdminWeeklyPaymentsWorksheetDraftState) => void;
@@ -193,6 +194,7 @@ function TeamWorksheet({
   feeOptions,
   expanded,
   saving,
+  readOnly,
   responsibilityDrafts,
   newReceiptDrafts,
   manualReceiptDrafts,
@@ -210,6 +212,7 @@ function TeamWorksheet({
   feeOptions: readonly AdminWeeklyPaymentsFeeOption[];
   expanded: boolean;
   saving: boolean;
+  readOnly: boolean;
   responsibilityDrafts: Readonly<Record<string, AdminWeeklyPaymentsResponsibilityDraft>>;
   newReceiptDrafts: Readonly<Record<string, string>>;
   manualReceiptDrafts: Readonly<Record<string, string>>;
@@ -307,7 +310,7 @@ function TeamWorksheet({
                         <Checkbox
                           appearance="managePayments"
                           checked={decision.responsible}
-                          disabled={saving}
+                          disabled={saving || readOnly}
                           aria-label={`Responsible this week for ${row.displayName}`}
                           onCheckedChange={(checked) =>
                             onResponsibilityChange(row, checked === true)
@@ -336,7 +339,7 @@ function TeamWorksheet({
                       {decision.responsible ? (
                         <Select
                           value={decision.feeComponent}
-                          disabled={saving}
+                          disabled={saving || readOnly}
                           onValueChange={(value) => {
                             if (isFeeComponent(value)) onFeeComponentChange(row, value);
                           }}
@@ -407,7 +410,7 @@ function TeamWorksheet({
                                     size="icon"
                                     className="shrink-0"
                                     data-awpw="edit-recorded-button"
-                                    disabled={saving}
+                                    disabled={saving || readOnly}
                                     aria-label={`Edit recorded ${receipt.type} payment ${formatMoney(receipt.amountMinor)} received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                     onClick={() => onBeginManualReceiptEdit(manualKey, receipt)}
                                   >
@@ -425,7 +428,7 @@ function TeamWorksheet({
                                         appearance="managePayments"
                                         autoFocus
                                         value={manualDraft}
-                                        disabled={saving}
+                                        disabled={saving || readOnly}
                                         aria-label={`Correct recorded amount received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                         aria-invalid={manualDraftInvalid}
                                         onKeyDown={(event) => {
@@ -447,7 +450,7 @@ function TeamWorksheet({
                                       size="paymentsIcon"
                                       className="shrink-0"
                                       data-awpw="cancel-recorded-edit"
-                                      disabled={saving}
+                                      disabled={saving || readOnly}
                                       aria-label={`Cancel recorded payment edit received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                       onClick={() => onCancelManualReceiptEdit(manualKey)}
                                     >
@@ -477,7 +480,7 @@ function TeamWorksheet({
                                 appearance="managePayments"
                                 value={newReceiptDraft}
                                 placeholder="0.00"
-                                disabled={saving}
+                                disabled={saving || readOnly}
                                 aria-label={`Amount received from ${row.displayName}`}
                                 aria-invalid={newReceiptInvalid}
                                 onChange={(event) =>
@@ -524,6 +527,7 @@ export function AdminWeeklyPaymentsWorksheet({
   feeOptions,
   teams,
   initialDrafts,
+  readOnly = false,
   onSave,
   onDirtyChange,
   onDraftStateChange,
@@ -632,7 +636,8 @@ export function AdminWeeklyPaymentsWorksheet({
     || invalidRows.length > 0
     || Object.keys(manualReceiptDrafts).length > 0
     || Object.values(newReceiptDrafts).some((amount) => amount.trim() !== "");
-  const canSave = !saving
+  const canSave = !readOnly
+    && !saving
     && invalidRows.length === 0
     && (needsConfirmation || hasDraftChanges);
 
@@ -735,14 +740,14 @@ export function AdminWeeklyPaymentsWorksheet({
 
   async function runRecoveryAction() {
     const action = saveError?.recoveryAction;
-    if (!action || recovering) return;
+    if (!action || recovering || readOnly) return;
     setRecovering(true);
     try {
       await action.run();
       setSaveError(null);
     } catch {
       setSaveError({
-        message: "The latest saved week could not be loaded. This week’s unsaved edits were cleared as requested; retry the reload to continue.",
+        message: "The latest saved week could not be loaded. Try again after checking the current week.",
         recoveryAction: action,
       });
     } finally {
@@ -788,6 +793,7 @@ export function AdminWeeklyPaymentsWorksheet({
               feeOptions={feeOptions}
               expanded={expandedTeams[team.teamId] ?? index === 0}
               saving={saving}
+              readOnly={readOnly}
               responsibilityDrafts={responsibilityDrafts}
               newReceiptDrafts={newReceiptDrafts}
               manualReceiptDrafts={manualReceiptDrafts}
@@ -844,7 +850,7 @@ export function AdminWeeklyPaymentsWorksheet({
                   type="button"
                   variant="paymentsSecondary"
                   size="paymentsControl"
-                  disabled={saving || recovering}
+                  disabled={saving || recovering || readOnly}
                   onClick={() => { void runRecoveryAction(); }}
                 >
                   {recovering ? "Reloading…" : saveError.recoveryAction.label}

@@ -4,7 +4,9 @@ import {
   MANAGE_PAYMENTS_CHANGED_ROWS_MAX,
   managePaymentsApiPaths,
   managePaymentsSaveRequestSchema,
+  managePaymentsSeasonSnapshotSchema,
   managePaymentsSnapshotSchema,
+  rehydrateManagePaymentsSeasonWeekSnapshot,
 } from "../../shared/manage-payments-contract";
 
 const fingerprint = `lvmanagepayments:v1:${"a".repeat(64)}`;
@@ -84,7 +86,110 @@ describe("Manage Payments contract", () => {
 
   it("uses the same versioned endpoint for GET and POST", () => {
     expect(managePaymentsApiPaths.leagueSnapshot(9)).toBe("/api/financials/leagues/9/manage-payments/1");
+    expect(managePaymentsApiPaths.leagueSeasonSnapshot(9)).toBe("/api/financials/leagues/9/manage-payments/1/season");
     expect(managePaymentsApiPaths.saveWeek(9)).toBe(managePaymentsApiPaths.leagueSnapshot(9));
+  });
+
+  it("validates a deduplicated season response and rehydrates ready weeks to the unchanged snapshot contract", () => {
+    const season = managePaymentsSeasonSnapshotSchema.parse({
+      contractVersion: MANAGE_PAYMENTS_CONTRACT_VERSION,
+      league: {
+        leagueId: snapshot.league.leagueId,
+        name: snapshot.league.name,
+        timeZone: snapshot.league.timeZone,
+      },
+      weekOptions: snapshot.weekOptions,
+      defaultOccurrenceId: occurrenceId,
+      snapshotsByOccurrence: {
+        [occurrenceId]: {
+          status: "ready",
+          feeTerms: snapshot.league.feeTerms,
+          weekConfirmed: snapshot.weekConfirmed,
+          needsConfirmation: snapshot.needsConfirmation,
+          revision: snapshot.revision,
+          stateFingerprint: snapshot.stateFingerprint,
+          teams: snapshot.teams,
+        },
+      },
+    });
+
+    expect(rehydrateManagePaymentsSeasonWeekSnapshot(season, occurrenceId)).toEqual({ status: "ready", snapshot });
+    expect(rehydrateManagePaymentsSeasonWeekSnapshot(season, "forged-week")).toMatchObject({
+      status: "unavailable",
+      code: "invalid_occurrence",
+    });
+  });
+
+  it("keeps occurrence-local unavailability explicit and rejects incomplete or invalid ready rows", () => {
+    const base = {
+      contractVersion: MANAGE_PAYMENTS_CONTRACT_VERSION,
+      league: {
+        leagueId: snapshot.league.leagueId,
+        name: snapshot.league.name,
+        timeZone: snapshot.league.timeZone,
+      },
+      weekOptions: snapshot.weekOptions,
+      defaultOccurrenceId: occurrenceId,
+    };
+    const unavailable = managePaymentsSeasonSnapshotSchema.parse({
+      ...base,
+      snapshotsByOccurrence: {
+        [occurrenceId]: {
+          status: "unavailable",
+          code: "ambiguous_receipt_history",
+          message: "Receipt allocation history for this week needs review.",
+        },
+      },
+    });
+    expect(rehydrateManagePaymentsSeasonWeekSnapshot(unavailable, occurrenceId)).toMatchObject({
+      status: "unavailable",
+      code: "ambiguous_receipt_history",
+    });
+
+    expect(managePaymentsSeasonSnapshotSchema.safeParse({ ...base, snapshotsByOccurrence: {} }).success).toBe(false);
+    expect(managePaymentsSeasonSnapshotSchema.safeParse({
+      ...base,
+      snapshotsByOccurrence: {
+        [occurrenceId]: {
+          status: "ready",
+          feeTerms: snapshot.league.feeTerms,
+          weekConfirmed: snapshot.weekConfirmed,
+          needsConfirmation: snapshot.needsConfirmation,
+          revision: snapshot.revision,
+          stateFingerprint: snapshot.stateFingerprint,
+          teams: [snapshot.teams[0], { teamId: 5, teamName: "Splitters", rows: [snapshot.teams[0].rows[0]] }],
+        },
+      },
+    }).success).toBe(false);
+    expect(managePaymentsSeasonSnapshotSchema.safeParse({
+      ...base,
+      defaultOccurrenceId: "b8cc77db-79b5-4515-95c6-5482c56c3835",
+      snapshotsByOccurrence: {
+        [occurrenceId]: {
+          status: "ready",
+          feeTerms: snapshot.league.feeTerms,
+          weekConfirmed: snapshot.weekConfirmed,
+          needsConfirmation: snapshot.needsConfirmation,
+          revision: snapshot.revision,
+          stateFingerprint: snapshot.stateFingerprint,
+          teams: snapshot.teams,
+        },
+      },
+    }).success).toBe(false);
+    expect(managePaymentsSeasonSnapshotSchema.safeParse({
+      ...base,
+      snapshotsByOccurrence: {
+        [occurrenceId]: { status: "unavailable", code: "invalid_occurrence", message: "Unavailable." },
+        ["b8cc77db-79b5-4515-95c6-5482c56c3835"]: { status: "unavailable", code: "invalid_occurrence", message: "Unavailable." },
+      },
+    }).success).toBe(false);
+    expect(managePaymentsSeasonSnapshotSchema.safeParse({
+      ...base,
+      weekOptions: [...snapshot.weekOptions, ...snapshot.weekOptions],
+      snapshotsByOccurrence: {
+        [occurrenceId]: { status: "unavailable", code: "invalid_occurrence", message: "Unavailable." },
+      },
+    }).success).toBe(false);
   });
 
   it("accepts an empty save to confirm unconfirmed defaults and exact zero-clear edits", () => {

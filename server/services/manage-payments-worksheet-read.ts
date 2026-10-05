@@ -19,7 +19,14 @@ import {
   weeklyPaymentWorksheetReceiptRevisions,
   weeklyPaymentWorksheetReceipts,
 } from "@shared/schema";
-import type { ManagePaymentsSnapshot } from "@shared/manage-payments-contract";
+import {
+  MANAGE_PAYMENTS_CONTRACT_VERSION,
+  managePaymentsSeasonSnapshotSchema,
+  type ManagePaymentsSeasonSnapshot,
+  type ManagePaymentsSeasonWeekErrorCode,
+  type ManagePaymentsSeasonWeekSnapshotEntry,
+  type ManagePaymentsSnapshot,
+} from "@shared/manage-payments-contract";
 import { db } from "../db.js";
 import { LeagueOccurrenceScheduleError, loadLeagueOccurrenceScheduleSnapshot } from "./league-occurrence-schedule.js";
 import {
@@ -34,7 +41,9 @@ import {
 import { readCanonicalDuePastDueV3InTransaction } from "./roster-payment-core.js";
 import {
   buildManagePaymentsForecastTargets,
+  buildManagePaymentsFinalTwoWeeksPaidByBowler,
   buildManagePaymentsWorksheetSnapshot,
+  getManagePaymentsWeekOptions,
   localDateForInstant,
   ManagePaymentsWorksheetProjectionError,
   selectManagePaymentsOccurrence,
@@ -47,6 +56,7 @@ import {
   type ManagePaymentsProjectionResponsibility,
   type ManagePaymentsProjectionRotatingAssignment,
   type ManagePaymentsProjectionTeamInfo,
+  type ManagePaymentsProjectionInput,
 } from "./manage-payments-worksheet-projection.js";
 
 export type ManagePaymentsWorksheetReadErrorCode =
@@ -68,6 +78,21 @@ export interface ReadManagePaymentsWorksheetInput {
   leagueId: number;
   occurrenceId?: string;
   signal?: AbortSignal;
+}
+
+interface ManagePaymentsSeasonLocalError {
+  code: ManagePaymentsSeasonWeekErrorCode;
+  message: string;
+}
+
+interface ManagePaymentsWorksheetProjectionContext {
+  selectedOccurrenceId: string;
+  seasonBase: Pick<ManagePaymentsSeasonSnapshot, "league" | "weekOptions" | "defaultOccurrenceId">;
+  projectionInput: Omit<ManagePaymentsProjectionInput, "selectedOccurrenceId" | "manualReceipts" | "finalAccountProjection" | "finalTwoWeeksPaidByBowler">;
+  manualReceiptsByOccurrence: ReadonlyMap<string, readonly ManagePaymentsProjectionManualReceipt[]>;
+  localErrorsByOccurrence: ReadonlyMap<string, ManagePaymentsSeasonLocalError>;
+  finalAccountProjection: ManagePaymentsProjectionInput["finalAccountProjection"];
+  finalTwoWeeksPaidByBowler: ReadonlyMap<number, boolean>;
 }
 
 class ManagePaymentsWorksheetReadAborted extends Error {
@@ -139,6 +164,59 @@ function currentReceiptTeam(
     ?? null;
 }
 
+export interface ManagePaymentsManualReceiptHistoryEvidence {
+  occurrenceId: string;
+  paymentId: number;
+  bowlerId: number | null;
+  teamId: number;
+}
+
+export function indexManagePaymentsManualReceiptHistoryTeams(
+  parents: readonly { id: string; occurrenceId: string; payerBowlerId: number }[],
+  paymentIdByReceipt: ReadonlyMap<string, number | null>,
+  evidence: readonly ManagePaymentsManualReceiptHistoryEvidence[],
+): {
+  teamByOccurrence: ReadonlyMap<string, ReadonlyMap<number, number>>;
+  ambiguousOccurrenceIds: ReadonlySet<string>;
+} {
+  const receiptOwnerPaymentKeys = new Set<string>();
+  for (const parent of parents) {
+    const paymentId = paymentIdByReceipt.get(parent.id);
+    if (paymentId === undefined || paymentId === null) continue;
+    receiptOwnerPaymentKeys.add(JSON.stringify([parent.occurrenceId, parent.payerBowlerId, paymentId]));
+  }
+
+  const teamsByOccurrence = new Map<string, Map<number, Set<number>>>();
+  for (const row of evidence) {
+    if (row.bowlerId === null || !receiptOwnerPaymentKeys.has(JSON.stringify([
+      row.occurrenceId,
+      row.bowlerId,
+      row.paymentId,
+    ]))) continue;
+    const teamsByBowler = teamsByOccurrence.get(row.occurrenceId) ?? new Map<number, Set<number>>();
+    teamsByOccurrence.set(row.occurrenceId, teamsByBowler);
+    const teamIds = teamsByBowler.get(row.bowlerId) ?? new Set<number>();
+    teamIds.add(row.teamId);
+    teamsByBowler.set(row.bowlerId, teamIds);
+  }
+
+  const teamByOccurrence = new Map<string, ReadonlyMap<number, number>>();
+  const ambiguousOccurrenceIds = new Set<string>();
+  for (const [occurrenceId, teamsByBowler] of teamsByOccurrence) {
+    const resolved = new Map<number, number>();
+    for (const [bowlerId, teamIds] of teamsByBowler) {
+      if (teamIds.size > 1) {
+        ambiguousOccurrenceIds.add(occurrenceId);
+        continue;
+      }
+      const [teamId] = teamIds;
+      if (teamId !== undefined) resolved.set(bowlerId, teamId);
+    }
+    teamByOccurrence.set(occurrenceId, resolved);
+  }
+  return { teamByOccurrence, ambiguousOccurrenceIds };
+}
+
 function isCardPaymentType(value: string): value is "credit_card" | "square" {
   return value === "credit_card" || value === "square";
 }
@@ -150,10 +228,11 @@ function requireCardPaymentType(value: string): "credit_card" | "square" {
   return value;
 }
 
-export async function loadManagePaymentsWorksheetSnapshotInTransaction(
+async function loadManagePaymentsWorksheetProjectionContextInTransaction(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   input: ReadManagePaymentsWorksheetInput,
-): Promise<ManagePaymentsSnapshot> {
+  receiptScope: "selected" | "season",
+): Promise<ManagePaymentsWorksheetProjectionContext> {
   const [league] = await readWorksheetStage(input.signal, () => tx.select({
     id: leagues.id,
     organizationId: leagues.organizationId,
@@ -198,6 +277,7 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     databaseNow,
     input.occurrenceId,
   );
+  const weekOptions = getManagePaymentsWeekOptions(schedule);
   const billableOccurrences = schedule.occurrences.filter((occurrence) =>
     (occurrence.lifecycle === "published" || occurrence.lifecycle === "locked")
       && occurrence.status !== "cancelled"
@@ -362,10 +442,13 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     else if (currentTeamByBowler.get(member.bowlerId) !== member.teamId) currentTeamByBowler.delete(member.bowlerId);
   }
 
-  const selectedReceiptParents = await readWorksheetStage(input.signal, () => tx.select().from(weeklyPaymentWorksheetReceipts).where(and(
+  const receiptOccurrenceIds = receiptScope === "season"
+    ? occurrenceIds
+    : [selectedOccurrence.occurrenceId];
+  const manualReceiptParents = receiptOccurrenceIds.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select().from(weeklyPaymentWorksheetReceipts).where(and(
       eq(weeklyPaymentWorksheetReceipts.organizationId, input.organizationId),
       eq(weeklyPaymentWorksheetReceipts.leagueId, input.leagueId),
-      eq(weeklyPaymentWorksheetReceipts.occurrenceId, selectedOccurrence.occurrenceId),
+      inArray(weeklyPaymentWorksheetReceipts.occurrenceId, receiptOccurrenceIds),
       eq(weeklyPaymentWorksheetReceipts.receiptKind, "manual"),
     )).orderBy(asc(weeklyPaymentWorksheetReceipts.id)));
   const cardReceiptParents = await readWorksheetStage(input.signal, () => tx.select().from(weeklyPaymentWorksheetReceipts).where(and(
@@ -410,11 +493,11 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
         inArray(payments.type, ["credit_card", "square"]),
       )));
 
-  const latestReceiptRevisions = selectedReceiptParents.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select()
+  const latestReceiptRevisions = manualReceiptParents.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select()
     .from(weeklyPaymentWorksheetReceiptRevisions).where(and(
       eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, input.organizationId),
       eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, input.leagueId),
-      inArray(weeklyPaymentWorksheetReceiptRevisions.receiptId, selectedReceiptParents.map((row) => row.id)),
+      inArray(weeklyPaymentWorksheetReceiptRevisions.receiptId, manualReceiptParents.map((row) => row.id)),
     )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptId), desc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision)));
   const latestRevisionByReceipt = latestByReceipt(latestReceiptRevisions);
   const latestManualPaymentIds = [...new Set([...latestRevisionByReceipt.values()]
@@ -430,33 +513,34 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
   )));
   const manualPaymentById = new Map(manualPayments.map((row) => [row.id, row]));
 
-  const selectedResponsibilityTeams = new Map<number, number>();
-  const selectedResponsibilities = responsibilitiesByOccurrence.get(selectedOccurrence.occurrenceId) ?? [];
-  for (const row of selectedResponsibilities) {
-    for (const bowlerId of [row.mainBowlerId, row.substituteBowlerId, row.payerBowlerId, row.lineagePayerBowlerId, row.prizePayerBowlerId]) {
-      if (bowlerId !== null) selectedResponsibilityTeams.set(bowlerId, row.teamId);
+  const localErrorsByOccurrence = new Map<string, ManagePaymentsSeasonLocalError>();
+  const setLocalError = (occurrenceId: string, error: ManagePaymentsSeasonLocalError) => {
+    if (!localErrorsByOccurrence.has(occurrenceId)) localErrorsByOccurrence.set(occurrenceId, error);
+  };
+  const selectedResponsibilityTeamsByOccurrence = new Map<string, Map<number, number>>();
+  for (const occurrenceId of receiptOccurrenceIds) {
+    const selectedResponsibilityTeams = new Map<number, number>();
+    const selectedResponsibilities = responsibilitiesByOccurrence.get(occurrenceId) ?? [];
+    for (const row of selectedResponsibilities) {
+      for (const bowlerId of [row.mainBowlerId, row.substituteBowlerId, row.payerBowlerId, row.lineagePayerBowlerId, row.prizePayerBowlerId]) {
+        if (bowlerId !== null) selectedResponsibilityTeams.set(bowlerId, row.teamId);
+      }
+      const rotating = rotatingAssignmentsByResponsibility.get(row.responsibilityId);
+      if (rotating) selectedResponsibilityTeams.set(rotating.bowlerId, rotating.teamId);
     }
-    const rotating = rotatingAssignmentsByResponsibility.get(row.responsibilityId);
-    if (rotating) selectedResponsibilityTeams.set(rotating.bowlerId, rotating.teamId);
+    selectedResponsibilityTeamsByOccurrence.set(occurrenceId, selectedResponsibilityTeams);
   }
 
-  const selectedManualParentsById = new Map(selectedReceiptParents.map((row) => [row.id, row]));
-  const selectedManualParentByOwnerPayment = new Map<string, (typeof selectedReceiptParents)[number]>();
-  for (const parent of selectedManualParentsById.values()) {
-    const paymentId = latestRevisionByReceipt.get(parent.id)?.paymentId;
-    if (paymentId === undefined || paymentId === null) continue;
-    const key = `${parent.payerBowlerId}:${paymentId}`;
-    if (!selectedManualParentByOwnerPayment.has(key)) selectedManualParentByOwnerPayment.set(key, parent);
-  }
-  const manualHistoryTeamByBowler = new Map<number, number>();
+  let fundingApplications: ManagePaymentsManualReceiptHistoryEvidence[] = [];
+  let obligationAllocations: ManagePaymentsManualReceiptHistoryEvidence[] = [];
   if (latestManualPaymentIds.length > 0) {
-    const fundingApplications = await readWorksheetStage(input.signal, () => tx.select({ paymentId: paymentAllocationFundingApplications.paymentId, bowlerId: paymentAllocationFundingApplications.creditedBowlerId, teamId: paymentAllocationFundingApplications.teamId, occurrenceId: paymentAllocationFundingApplications.occurrenceId })
+    fundingApplications = await readWorksheetStage(input.signal, () => tx.select({ paymentId: paymentAllocationFundingApplications.paymentId, bowlerId: paymentAllocationFundingApplications.creditedBowlerId, teamId: paymentAllocationFundingApplications.teamId, occurrenceId: paymentAllocationFundingApplications.occurrenceId })
         .from(paymentAllocationFundingApplications).where(and(
           eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
           eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
           inArray(paymentAllocationFundingApplications.paymentId, latestManualPaymentIds),
         )));
-    const obligationAllocations = await readWorksheetStage(input.signal, () => tx.select({ paymentId: paymentAllocations.paymentId, bowlerId: paymentObligations.payerBowlerId, teamId: occurrencePaymentResponsibilities.teamId, occurrenceId: paymentObligations.occurrenceId })
+    obligationAllocations = await readWorksheetStage(input.signal, () => tx.select({ paymentId: paymentAllocations.paymentId, bowlerId: paymentObligations.payerBowlerId, teamId: occurrencePaymentResponsibilities.teamId, occurrenceId: paymentObligations.occurrenceId })
         .from(paymentAllocations)
         .innerJoin(paymentObligations, and(
           eq(paymentObligations.id, paymentAllocations.obligationId),
@@ -472,22 +556,19 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
           eq(paymentAllocations.leagueId, input.leagueId),
           inArray(paymentAllocations.paymentId, latestManualPaymentIds),
         )));
-    const historyTeamsByReceiptOwner = new Map<number, Set<number>>();
-    for (const evidence of [...fundingApplications, ...obligationAllocations]) {
-      if (evidence.bowlerId === null) continue;
-      const selectedParent = selectedManualParentByOwnerPayment.get(`${evidence.bowlerId}:${evidence.paymentId}`);
-      if (!selectedParent || evidence.occurrenceId !== selectedOccurrence.occurrenceId) continue;
-      const teamIds = historyTeamsByReceiptOwner.get(evidence.bowlerId);
-      if (teamIds) teamIds.add(evidence.teamId);
-      else historyTeamsByReceiptOwner.set(evidence.bowlerId, new Set([evidence.teamId]));
-    }
-    for (const [bowlerId, teamIds] of historyTeamsByReceiptOwner) {
-      if (teamIds.size > 1) {
-        throw new ManagePaymentsWorksheetReadError("ambiguous_receipt_history", "A manual receipt's selected-week allocation history resolves to multiple teams");
-      }
-      const teamId = [...teamIds][0];
-      if (teamId !== undefined) manualHistoryTeamByBowler.set(bowlerId, teamId);
-    }
+  }
+  const paymentIdByReceipt = new Map([...latestRevisionByReceipt].map(([receiptId, revision]) => [receiptId, revision.paymentId]));
+  const manualHistoryIndex = indexManagePaymentsManualReceiptHistoryTeams(
+    manualReceiptParents,
+    paymentIdByReceipt,
+    [...fundingApplications, ...obligationAllocations],
+  );
+  const manualHistoryTeamByBowlerByOccurrence = manualHistoryIndex.teamByOccurrence;
+  for (const occurrenceId of manualHistoryIndex.ambiguousOccurrenceIds) {
+    setLocalError(occurrenceId, {
+      code: "ambiguous_receipt_history",
+      message: "Receipt allocation history for this week needs review.",
+    });
   }
 
   const receiptOwnerHistoricalTeams = new Map<number, Set<number>>();
@@ -507,13 +588,15 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     if (teamId !== undefined) uniqueHistoricalTeamByBowler.set(bowlerId, teamId);
   }
 
-  const manualReceipts: ManagePaymentsProjectionManualReceipt[] = [];
+  const manualReceiptsByOccurrence = new Map<string, ManagePaymentsProjectionManualReceipt[]>();
   const leagueTeamIds = new Set(teamRows.map((team) => team.teamId));
-  for (const parent of selectedReceiptParents) {
+  for (const parent of manualReceiptParents) {
     const revision = latestRevisionByReceipt.get(parent.id);
     if (!revision || revision.paymentId === null || revision.amountMinor <= 0) continue;
     const payment = manualPaymentById.get(revision.paymentId);
     if (!payment || payment.status !== "paid" || (payment.type !== "cash" && payment.type !== "check")) continue;
+    const selectedResponsibilityTeams = selectedResponsibilityTeamsByOccurrence.get(parent.occurrenceId) ?? new Map();
+    const manualHistoryTeamByBowler = manualHistoryTeamByBowlerByOccurrence.get(parent.occurrenceId) ?? new Map();
     const teamId = currentReceiptTeam(
       parent.payerBowlerId,
       selectedResponsibilityTeams,
@@ -522,9 +605,14 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
       uniqueHistoricalTeamByBowler,
     );
     if (teamId === null || !leagueTeamIds.has(teamId)) {
-      throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "A manual receipt owner cannot be placed on a league team");
+      setLocalError(parent.occurrenceId, {
+        code: "receipt_owner_unresolved",
+        message: "A receipt owner cannot be placed on a team for this week.",
+      });
+      continue;
     }
-    manualReceipts.push({
+    const weekReceipts = manualReceiptsByOccurrence.get(parent.occurrenceId) ?? [];
+    weekReceipts.push({
       receiptId: parent.id,
       revision: revision.receiptRevision,
       paymentId: revision.paymentId,
@@ -535,8 +623,14 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
       teamId,
       occurrenceId: parent.occurrenceId,
     });
+    manualReceiptsByOccurrence.set(parent.occurrenceId, weekReceipts);
   }
 
+  const manualReceipts = [...manualReceiptsByOccurrence.values()].flat();
+  if (receiptScope === "selected") {
+    const selectedLocalError = localErrorsByOccurrence.get(selectedOccurrence.occurrenceId);
+    if (selectedLocalError) throwSelectedWeekReadError(selectedLocalError);
+  }
   const cardReceiptParentsById = new Map(cardReceiptParents.map((row) => [row.id, row]));
   const cardReceiptRevisions = cardReceiptParents.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select()
     .from(weeklyPaymentWorksheetReceiptRevisions).where(and(
@@ -545,12 +639,31 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
       inArray(weeklyPaymentWorksheetReceiptRevisions.receiptId, cardReceiptParents.map((row) => row.id)),
     )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptId), desc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision)));
   const explicitOccurrenceByPayment = new Map<number, string>();
+  const conflictedCardPaymentIds = new Set<number>();
+  const cardAssociationConflict = (occurrenceId: string) => {
+    if (!weekOptions.some((option) => option.occurrenceId === occurrenceId)) return;
+    setLocalError(occurrenceId, {
+      code: "receipt_association_conflict",
+      message: "A card receipt is linked to more than one collection week.",
+    });
+  };
   for (const revision of latestByReceipt(cardReceiptRevisions).values()) {
     const parent = cardReceiptParentsById.get(revision.receiptId);
     if (!parent || revision.revisionKind !== "card_association" || revision.paymentId === null) continue;
+    if (conflictedCardPaymentIds.has(revision.paymentId)) {
+      cardAssociationConflict(parent.occurrenceId);
+      continue;
+    }
     const previous = explicitOccurrenceByPayment.get(revision.paymentId);
     if (previous && previous !== parent.occurrenceId) {
-      throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "A card receipt is associated with multiple collection weeks");
+      if (receiptScope === "selected") {
+        throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "A card receipt is associated with multiple collection weeks");
+      }
+      cardAssociationConflict(previous);
+      cardAssociationConflict(parent.occurrenceId);
+      explicitOccurrenceByPayment.delete(revision.paymentId);
+      conflictedCardPaymentIds.add(revision.paymentId);
+      continue;
     }
     explicitOccurrenceByPayment.set(revision.paymentId, parent.occurrenceId);
   }
@@ -578,20 +691,22 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
       triggerOccurrenceId,
     })),
   ];
-  const cardReceipts: ManagePaymentsProjectionCardReceipt[] = cardFundingEvidence.map((row) => {
-    const recordedAt = new Date(row.createdAt).toISOString();
-    return {
-      paymentId: row.paymentId,
-      type: requireCardPaymentType(row.type),
-      amountMinor: row.amountMinor,
-      collectionLocalDate: localDateForInstant(recordedAt, timeZone),
-      recordedAt,
-      receiptNumber: row.receiptNumber,
-      bowlerId: row.bowlerId,
-      explicitCollectionOccurrenceId: explicitOccurrenceByPayment.get(row.paymentId) ?? null,
-      triggerOccurrenceId: row.triggerOccurrenceId,
-    };
-  });
+  const cardReceipts: ManagePaymentsProjectionCardReceipt[] = cardFundingEvidence
+    .filter((row) => !conflictedCardPaymentIds.has(row.paymentId))
+    .map((row) => {
+      const recordedAt = new Date(row.createdAt).toISOString();
+      return {
+        paymentId: row.paymentId,
+        type: requireCardPaymentType(row.type),
+        amountMinor: row.amountMinor,
+        collectionLocalDate: localDateForInstant(recordedAt, timeZone),
+        recordedAt,
+        receiptNumber: row.receiptNumber,
+        bowlerId: row.bowlerId,
+        explicitCollectionOccurrenceId: explicitOccurrenceByPayment.get(row.paymentId) ?? null,
+        triggerOccurrenceId: row.triggerOccurrenceId,
+      };
+    });
 
   const displayIds = new Set<number>([
     ...members.map((row) => row.bowlerId),
@@ -698,7 +813,6 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     league: projectionLeague,
     schedule,
     databaseNow,
-    selectedOccurrenceId: input.occurrenceId,
     teams,
     members,
     mainBowlerIdsByTeam,
@@ -711,13 +825,16 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     rotatingAssignmentsByResponsibility,
     explicitConfirmationRevisions,
     confirmedOccurrenceIds,
-    manualReceipts,
     cardReceipts,
     balances,
     finalObligations,
   };
   checkpointWorksheetRead(input.signal);
-  const forecastTargets = buildManagePaymentsForecastTargets(worksheetProjectionInput);
+  const forecastTargets = buildManagePaymentsForecastTargets({
+    ...worksheetProjectionInput,
+    selectedOccurrenceId: input.occurrenceId,
+    manualReceipts,
+  });
   const finalProjectionRead = await readWorksheetStage(input.signal, () => readCanonicalDuePastDueV3InTransaction(tx, {
     organizationId: input.organizationId,
     leagueId: input.leagueId,
@@ -733,11 +850,131 @@ export async function loadManagePaymentsWorksheetSnapshotInTransaction(
     reviewRequiredByObligationId: finalProjectionRead.accountProjectionResult.reviewRequiredByObligationId,
     forecastCoverageByTargetId: finalProjectionRead.forecastCoverageByTargetId,
   };
+  const finalTwoWeeksPaidByBowler = buildManagePaymentsFinalTwoWeeksPaidByBowler({
+    ...worksheetProjectionInput,
+    selectedOccurrenceId: input.occurrenceId,
+    manualReceipts,
+    finalAccountProjection,
+  });
 
   checkpointWorksheetRead(input.signal);
-  return buildManagePaymentsWorksheetSnapshot({
-    ...worksheetProjectionInput,
+  return {
+    selectedOccurrenceId: selectedOccurrence.occurrenceId,
+    seasonBase: {
+      league: { leagueId: league.id, name: league.name, timeZone },
+      weekOptions,
+      defaultOccurrenceId: selectedOccurrence.occurrenceId,
+    },
+    projectionInput: worksheetProjectionInput,
+    manualReceiptsByOccurrence,
+    localErrorsByOccurrence,
     finalAccountProjection,
+    finalTwoWeeksPaidByBowler,
+  };
+}
+
+function projectOccurrenceSnapshot(
+  context: ManagePaymentsWorksheetProjectionContext,
+  occurrenceId: string,
+): ManagePaymentsSnapshot {
+  return buildManagePaymentsWorksheetSnapshot({
+    ...context.projectionInput,
+    selectedOccurrenceId: occurrenceId,
+    manualReceipts: context.manualReceiptsByOccurrence.get(occurrenceId) ?? [],
+    finalAccountProjection: context.finalAccountProjection,
+    finalTwoWeeksPaidByBowler: context.finalTwoWeeksPaidByBowler,
+  });
+}
+
+function unavailableWeekEntry(
+  code: ManagePaymentsSeasonWeekErrorCode,
+  message?: string,
+): ManagePaymentsSeasonWeekSnapshotEntry {
+  const safeMessages: Record<ManagePaymentsSeasonWeekErrorCode, string> = {
+    ambiguous_receipt_history: "Receipt allocation history for this week needs review.",
+    receipt_association_conflict: "A card receipt is linked to more than one collection week.",
+    receipt_owner_unresolved: "A receipt owner cannot be placed on a team for this week.",
+    ambiguous_roster: "Roster evidence for this week needs review.",
+    missing_historical_team: "A team referenced by this week is unavailable.",
+    duplicate_bowler_row: "Responsibility evidence for this week has conflicting bowler rows.",
+    incompatible_responsibility: "Responsibility evidence for this week needs review.",
+    invalid_occurrence: "This week cannot be projected from canonical records.",
+  };
+  return { status: "unavailable", code, message: message ?? safeMessages[code] };
+}
+
+function seasonWeekEntryFromSnapshot(snapshot: ManagePaymentsSnapshot): ManagePaymentsSeasonWeekSnapshotEntry {
+  return {
+    status: "ready",
+    feeTerms: snapshot.league.feeTerms,
+    weekConfirmed: snapshot.weekConfirmed,
+    needsConfirmation: snapshot.needsConfirmation,
+    revision: snapshot.revision,
+    stateFingerprint: snapshot.stateFingerprint,
+    teams: snapshot.teams,
+  };
+}
+
+function throwSelectedWeekReadError(error: ManagePaymentsSeasonLocalError): never {
+  if (error.code === "ambiguous_receipt_history") {
+    throw new ManagePaymentsWorksheetReadError(
+      "ambiguous_receipt_history",
+      "A manual receipt's selected-week allocation history resolves to multiple teams",
+    );
+  }
+  if (error.code === "receipt_owner_unresolved") {
+    throw new ManagePaymentsWorksheetReadError(
+      "incompatible_canonical_state",
+      "A manual receipt owner cannot be placed on a league team",
+    );
+  }
+  if (error.code === "receipt_association_conflict") {
+    throw new ManagePaymentsWorksheetReadError(
+      "incompatible_canonical_state",
+      "A card receipt is associated with multiple collection weeks",
+    );
+  }
+  throw new ManagePaymentsWorksheetReadError(
+    "incompatible_canonical_state",
+    "The weekly payment evidence does not identify one safe worksheet row per bowler",
+  );
+}
+
+export async function loadManagePaymentsWorksheetSnapshotInTransaction(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  input: ReadManagePaymentsWorksheetInput,
+): Promise<ManagePaymentsSnapshot> {
+  const context = await loadManagePaymentsWorksheetProjectionContextInTransaction(tx, input, "selected");
+  const localError = context.localErrorsByOccurrence.get(context.selectedOccurrenceId);
+  if (localError) throwSelectedWeekReadError(localError);
+  return projectOccurrenceSnapshot(context, context.selectedOccurrenceId);
+}
+
+export async function loadManagePaymentsSeasonSnapshotInTransaction(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  input: ReadManagePaymentsWorksheetInput,
+): Promise<ManagePaymentsSeasonSnapshot> {
+  const context = await loadManagePaymentsWorksheetProjectionContextInTransaction(tx, input, "season");
+  const snapshotsByOccurrence: Record<string, ManagePaymentsSeasonWeekSnapshotEntry> = {};
+  for (const week of context.seasonBase.weekOptions) {
+    checkpointWorksheetRead(input.signal);
+    const localError = context.localErrorsByOccurrence.get(week.occurrenceId);
+    if (localError) {
+      snapshotsByOccurrence[week.occurrenceId] = unavailableWeekEntry(localError.code, localError.message);
+      continue;
+    }
+    try {
+      snapshotsByOccurrence[week.occurrenceId] = seasonWeekEntryFromSnapshot(projectOccurrenceSnapshot(context, week.occurrenceId));
+    } catch (caught) {
+      if (!(caught instanceof ManagePaymentsWorksheetProjectionError)) throw caught;
+      snapshotsByOccurrence[week.occurrenceId] = unavailableWeekEntry(caught.code);
+    }
+    checkpointWorksheetRead(input.signal);
+  }
+  return managePaymentsSeasonSnapshotSchema.parse({
+    contractVersion: MANAGE_PAYMENTS_CONTRACT_VERSION,
+    ...context.seasonBase,
+    snapshotsByOccurrence,
   });
 }
 
@@ -754,6 +991,35 @@ export async function readManagePaymentsWorksheetSnapshot(
     if (caught instanceof ManagePaymentsWorksheetProjectionError) {
       if (caught.code === "invalid_occurrence") {
       throw new ManagePaymentsWorksheetReadError("invalid_occurrence", "The requested week could not be projected from canonical league records");
+      }
+      throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "The weekly payment evidence does not identify one safe worksheet row per bowler");
+    }
+    if (caught instanceof LeagueOccurrenceScheduleError) {
+      throw new ManagePaymentsWorksheetReadError(
+        caught.code === "league_not_found" ? "league_not_found" : "incompatible_canonical_state",
+        "The canonical league schedule is unavailable for the weekly worksheet",
+      );
+    }
+    if (caught instanceof OwnedPaymentLedgerError) {
+      throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "Owned payment evidence requires review before the worksheet can be read");
+    }
+    throw caught;
+  }
+}
+
+export async function readManagePaymentsSeasonSnapshot(
+  input: ReadManagePaymentsWorksheetInput,
+): Promise<ManagePaymentsSeasonSnapshot> {
+  try {
+    return await db.transaction((tx) => loadManagePaymentsSeasonSnapshotInTransaction(tx, input), {
+      isolationLevel: "repeatable read",
+      accessMode: "read only",
+    });
+  } catch (caught) {
+    if (caught instanceof ManagePaymentsWorksheetReadError) throw caught;
+    if (caught instanceof ManagePaymentsWorksheetProjectionError) {
+      if (caught.code === "invalid_occurrence") {
+        throw new ManagePaymentsWorksheetReadError("invalid_occurrence", "The requested weeks could not be projected from canonical league records");
       }
       throw new ManagePaymentsWorksheetReadError("incompatible_canonical_state", "The weekly payment evidence does not identify one safe worksheet row per bowler");
     }

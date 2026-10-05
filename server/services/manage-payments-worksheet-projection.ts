@@ -140,6 +140,8 @@ export interface ManagePaymentsProjectionInput {
   /** Required shared whole-season credit result; final coverage must not run a second budget. */
   finalAccountProjection: Pick<OwnedAccountProjectionResult, "rowsByObligationId" | "reviewRequiredByObligationId">
     & { forecastCoverageByTargetId: ReadonlyMap<string, ManagePaymentsForecastCoverage> };
+  /** Optional season-wide result reused when projecting multiple weeks from one read. */
+  finalTwoWeeksPaidByBowler?: ReadonlyMap<number, boolean>;
 }
 
 export interface ManagePaymentsForecastTarget {
@@ -786,6 +788,10 @@ function buildFinalPaidByBowler(input: ManagePaymentsProjectionInput): Map<numbe
   return output;
 }
 
+export function buildManagePaymentsFinalTwoWeeksPaidByBowler(input: ManagePaymentsProjectionInput): ReadonlyMap<number, boolean> {
+  return buildFinalPaidByBowler(input);
+}
+
 export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjectionInput): ManagePaymentsSnapshot {
   const selectedOccurrence = selectManagePaymentsOccurrence(
     input.schedule,
@@ -994,7 +1000,7 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
     });
   }
 
-  const finalPaid = buildFinalPaidByBowler(input);
+  const finalPaid = input.finalTwoWeeksPaidByBowler ?? buildFinalPaidByBowler(input);
   const manualReceiptsByBowlerAndTeam = new Map<number, Map<number, ManagePaymentsProjectionManualReceipt[]>>();
   for (const receipt of input.manualReceipts) {
     if (receipt.occurrenceId !== selectedOccurrence.occurrenceId) continue;
