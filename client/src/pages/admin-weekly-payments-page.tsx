@@ -176,7 +176,12 @@ function canRebaseDirtySnapshot(
     revision: snapshot.revision,
     teams: snapshot.teams.map((team) => ({
       ...team,
-      rows: team.rows.map(({ balanceMinor: _balanceMinor, finalTwoWeeksPaid: _finalTwoWeeksPaid, ...row }) => row),
+      rows: team.rows.map(({
+        balanceMinor: _balanceMinor,
+        finalTwoWeeksPaid: _finalTwoWeeksPaid,
+        finalTwoWeeksPaidCount: _finalTwoWeeksPaidCount,
+        ...row
+      }) => row),
     })),
   });
 
@@ -688,6 +693,7 @@ export default function AdminWeeklyPaymentsPage() {
                     { feeComponent: "lineage", amountMinor: snapshot.league.feeTerms.lineageMinor },
                     { feeComponent: "prize", amountMinor: snapshot.league.feeTerms.prizeMinor },
                   ]}
+                  feeMultiplier={snapshot.league.feeTerms.collectionMultiplier ?? 1}
                   teams={snapshot.teams}
                   initialDrafts={activeCacheEntry?.drafts ?? EMPTY_DRAFTS}
                   readOnly={worksheetReadOnly}

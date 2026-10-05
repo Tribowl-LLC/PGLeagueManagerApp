@@ -124,12 +124,29 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
 
     expect(screen.getByText("$12.50 owed")).toBeVisible();
     expect(screen.getByText("$5.00 credit")).toBeVisible();
+    expect(screen.getByText("$12.50 owed")).toHaveClass("text-destructive");
+    expect(screen.getByText("$5.00 credit")).not.toHaveClass("text-destructive");
     const caseyRow = screen.getByRole("row", { name: /Casey Reese/ });
     expect(within(caseyRow).getByText("—")).toBeVisible();
     expect(screen.getByText("Paid")).toBeVisible();
     expect(screen.getAllByText("Unpaid")).toHaveLength(2);
     expect(screen.queryByText(/Paid|Unpaid/, { selector: "td:nth-child(4)" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Add bowler|Payment history|Record payment/i })).not.toBeInTheDocument();
+  });
+
+  it("shows a full-week partial count while preserving complete and zero states", () => {
+    const partialTeams = teams.map((team) => ({
+      ...team,
+      rows: team.rows.map((row) => ({
+        ...row,
+        ...(row.bowlerId === 501 || row.bowlerId === 503 ? { finalTwoWeeksPaidCount: 1 } : {}),
+      })),
+    }));
+    renderWorksheet({ teams: partialTeams });
+
+    expect(screen.getByText("1 of 2 Paid")).toBeVisible();
+    expect(screen.getByText("Paid")).toBeVisible();
+    expect(screen.getByText("Unpaid")).toBeVisible();
   });
 
   it("expands and collapses every team without changing the team header content", async () => {

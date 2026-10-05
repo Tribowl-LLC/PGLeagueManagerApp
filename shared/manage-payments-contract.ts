@@ -33,6 +33,7 @@ export const managePaymentsFeeTermsSchema = z.object({
   fullMinor: positiveMinor,
   lineageMinor: nonnegativeMinor,
   prizeMinor: nonnegativeMinor,
+  collectionMultiplier: z.union([z.literal(1), z.literal(2)]).optional(),
 });
 export type ManagePaymentsFeeTerms = z.infer<typeof managePaymentsFeeTermsSchema>;
 
@@ -68,6 +69,7 @@ export const managePaymentsRowSchema = z.object({
   cardReceipts: z.array(managePaymentsCardReceiptSchema),
   manualReceipts: z.array(managePaymentsManualReceiptSchema),
   finalTwoWeeksPaid: z.boolean(),
+  finalTwoWeeksPaidCount: z.number().int().min(0).max(2).optional(),
 });
 export type ManagePaymentsRow = z.infer<typeof managePaymentsRowSchema>;
 

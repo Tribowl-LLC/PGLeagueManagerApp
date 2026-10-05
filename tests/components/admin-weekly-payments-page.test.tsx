@@ -38,6 +38,7 @@ function makeSnapshot(
   occurrenceId = firstOccurrenceId,
   revision = 14,
   amountReceived: number | null = 0,
+  collectionMultiplier: 1 | 2 = 1,
 ): ManagePaymentsSnapshot {
   const isThirdWeek = occurrenceId === thirdOccurrenceId;
   const selectedLocalDate = occurrenceId === firstOccurrenceId
@@ -51,7 +52,12 @@ function makeSnapshot(
       leagueId: 7,
       name: "Monday Night League",
       timeZone: "America/Chicago",
-      feeTerms: { fullMinor: 2_500, lineageMinor: 1_000, prizeMinor: 500 },
+      feeTerms: {
+        fullMinor: 2_500,
+        lineageMinor: 1_000,
+        prizeMinor: 500,
+        ...(collectionMultiplier === 2 ? { collectionMultiplier } : {}),
+      },
     },
     weekOptions: [
       {
@@ -242,6 +248,7 @@ interface PageSetupOptions {
   strictMode?: boolean;
   unavailableOccurrences?: ReadonlySet<string>;
   changeSiblingFinancialMetadataOnSave?: boolean;
+  collectionMultiplier?: 1 | 2;
   delaySeason?: (
     leagueId: number,
     signal: AbortSignal | undefined,
@@ -271,7 +278,7 @@ function setupPage(options: PageSetupOptions = {}) {
   client.setQueryData(["/api/leagues"], activeLeagueEnvelope);
 
   const snapshots = new Map([
-    [firstOccurrenceId, makeSnapshot(firstOccurrenceId)],
+    [firstOccurrenceId, makeSnapshot(firstOccurrenceId, 14, 0, options.collectionMultiplier)],
     [secondOccurrenceId, makeSnapshot(secondOccurrenceId, 15)],
     [thirdOccurrenceId, makeSnapshot(thirdOccurrenceId, 16)],
   ]);
@@ -389,7 +396,7 @@ function setupPage(options: PageSetupOptions = {}) {
             teams: sibling.teams.map((team) => ({
               ...team,
               rows: team.rows.map((row) => row.bowlerId === 501
-                ? { ...row, balanceMinor: -500, finalTwoWeeksPaid: true }
+                ? { ...row, balanceMinor: -500, finalTwoWeeksPaid: true, finalTwoWeeksPaidCount: 1 }
                 : row),
             })),
           });
@@ -451,6 +458,30 @@ describe("AdminWeeklyPaymentsPage", () => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
       return url.pathname.endsWith("/manage-payments/1") && (init?.method ?? "GET") === "GET";
     })).toHaveLength(0);
+  });
+
+  it("uses the selected week’s published collection multiplier only in displayed fee choices", async () => {
+    const user = userEvent.setup();
+    const { posts } = setupPage({ collectionMultiplier: 2 });
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const fee = screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" });
+    expect(fee).toHaveTextContent("$50.00");
+    await user.click(fee);
+    expect(screen.getByRole("option", { name: "$50.00 · Full" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "$10.00 · Prize" })).toBeVisible();
+    await user.click(screen.getByRole("option", { name: "$20.00 · Lineage" }));
+    expect(fee).toHaveTextContent("$20.00");
+
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.parsed.changedRows).toEqual([{
+      teamId: 31,
+      bowlerId: 501,
+      responsible: true,
+      feeComponent: "lineage",
+      manualReceiptEdits: [],
+    }]);
   });
 
   it("uses canonical week options and preserves unsaved entries while navigating cached weeks", async () => {

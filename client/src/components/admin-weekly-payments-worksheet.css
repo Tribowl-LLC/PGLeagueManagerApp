@@ -625,6 +625,7 @@
 }
 
 [data-awpw="final-paid"],
+[data-awpw="final-partial"],
 [data-awpw="final-unpaid"] {
   font-size: 13px;
   line-height: 1.45;

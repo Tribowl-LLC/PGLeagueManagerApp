@@ -7,6 +7,8 @@ import {
 } from "@shared/league-occurrence-schedule";
 import {
   buildManagePaymentsForecastTargets,
+  buildManagePaymentsFinalTwoWeeksCoverageByBowler,
+  buildManagePaymentsFinalTwoWeeksPaidByBowler,
   buildManagePaymentsWorksheetSnapshot,
   createManagePaymentsCardReceiptOccurrenceIndex,
   fingerprintManagePaymentsWorksheet,
@@ -962,6 +964,130 @@ describe("Manage Payments worksheet projection", () => {
     expect(buildManagePaymentsWorksheetSnapshot({ ...input, finalObligations: waiverOnly }).teams[0]?.rows[0]?.finalTwoWeeksPaid).toBe(false);
   });
 
+  it("doubles display fee terms only for a published canonical trigger occurrence", () => {
+    const triggerGroup = {
+      groupId: "published-trigger",
+      groupOrdinal: 0,
+      kind: "double_pay" as const,
+      role: "trigger" as const,
+      pairedOccurrenceId: "occ-3",
+      pairedLocalDate: "2026-09-28",
+      state: "published" as const,
+      currentRevision: 1,
+    };
+    const selectedWeeks = [
+      occurrence("occ-1", "2026-09-14", 1),
+      occurrence("occ-2", "2026-09-21", 2),
+      occurrence("occ-3", "2026-09-28", 3),
+      occurrence("occ-4", "2026-10-05", 4, { collectionGroups: [triggerGroup] }),
+    ];
+    const doubled = buildManagePaymentsWorksheetSnapshot(projectionInput({ schedule: schedule(selectedWeeks) }));
+    expect(doubled.league.feeTerms).toMatchObject({ fullMinor: 1_000, collectionMultiplier: 2 });
+    expect(doubled.teams[0]?.rows[0]?.feeMinor).toBe(1_000);
+
+    const paired = buildManagePaymentsWorksheetSnapshot(projectionInput({
+      schedule: schedule(selectedWeeks.map((week) => week.occurrenceId === "occ-4"
+        ? { ...week, collectionGroups: [{ ...triggerGroup, role: "paired" as const }] }
+        : week)),
+    }));
+    const revoked = buildManagePaymentsWorksheetSnapshot(projectionInput({
+      schedule: schedule(selectedWeeks.map((week) => week.occurrenceId === "occ-4"
+        ? { ...week, collectionGroups: [{ ...triggerGroup, state: "revoked" as const }] }
+        : week)),
+    }));
+    const regular = buildManagePaymentsWorksheetSnapshot(projectionInput());
+    expect(paired.league.feeTerms.collectionMultiplier).toBe(1);
+    expect(revoked.league.feeTerms.collectionMultiplier).toBe(1);
+    expect(regular.league.feeTerms.collectionMultiplier).toBe(1);
+  });
+
+  it("preserves Paid when the bowler has one fully covered applicable final-week target", () => {
+    const weeks = [
+      occurrence("occ-1", "2026-09-14", 1),
+      occurrence("occ-2", "2026-09-21", 2),
+      occurrence("occ-3", "2026-09-28", 3),
+      occurrence("occ-4", "2026-10-05", 4),
+    ];
+    const input = projectionInput({
+      schedule: schedule(weeks),
+      selectedOccurrenceId: "occ-4",
+      responsibilitiesByOccurrence: new Map([[
+        "occ-3",
+        [{
+          responsibilityId: "worksheet:occ-3",
+          teamId: 31,
+          slotIndex: null,
+          kind: "worksheet",
+          payerBowlerId: 501,
+          mainBowlerId: null,
+          substituteBowlerId: null,
+          lineagePayerBowlerId: null,
+          prizePayerBowlerId: null,
+          worksheetFeeComponent: "full",
+          amountMinor: 1_000,
+          lineageAmountMinor: null,
+          prizeAmountMinor: null,
+          version: 1,
+        }],
+      ]]),
+      explicitConfirmationRevisions: new Map([["occ-3", 1], ["occ-4", 1]]),
+      confirmedOccurrenceIds: new Set(["occ-3", "occ-4"]),
+      finalObligations: [{
+        obligationId: "obligation:occ-3",
+        responsibilityId: "worksheet:occ-3",
+        occurrenceId: "occ-3",
+        teamId: 31,
+        component: "full",
+        payerBowlerId: 501,
+        debtorBowlerId: 501,
+        amountMinor: 1_000,
+        paidMinor: 1_000,
+        waivedMinor: 0,
+        outstandingMinor: 0,
+        reviewRequired: false,
+      }],
+    });
+
+    expect(buildManagePaymentsFinalTwoWeeksCoverageByBowler(input).get(501)).toEqual({
+      paidCount: 1,
+      targetCount: 1,
+    });
+    expect(buildManagePaymentsWorksheetSnapshot(input).teams[0]?.rows[0]).toMatchObject({
+      finalTwoWeeksPaid: true,
+      finalTwoWeeksPaidCount: 1,
+    });
+  });
+
+  it("counts only fully covered final weeks after one shared $90 credit budget", () => {
+    const weeks = [
+      occurrence("occ-1", "2026-09-14", 1),
+      occurrence("occ-2", "2026-09-21", 2),
+      occurrence("occ-3", "2026-09-28", 3),
+      occurrence("occ-4", "2026-10-05", 4),
+    ];
+    const input = withSharedAccountProjection(projectionInput({
+      schedule: schedule(weeks),
+      fullFeeMinorByOccurrence: new Map(weeks.map((week, index) => [week.occurrenceId, index < 2 ? 2_000 : 4_000])),
+      balances: new Map([[501, { availableCreditMinor: 9_000, confirmedOwedMinor: 0, netBalanceMinor: 9_000 }]]),
+    }));
+    const forecastCreditByWeek = new Map(buildManagePaymentsForecastTargets(input).map((target) => [
+      target.occurrenceId,
+      input.finalAccountProjection.rowsByObligationId.get(target.projectionId)?.projectedCreditMinor ?? 0,
+    ]));
+    const coverage = buildManagePaymentsFinalTwoWeeksCoverageByBowler(input).get(501);
+    const row = buildManagePaymentsWorksheetSnapshot(input).teams[0]?.rows[0];
+
+    expect(forecastCreditByWeek).toEqual(new Map([
+      ["occ-1", 2_000],
+      ["occ-2", 2_000],
+      ["occ-3", 4_000],
+      ["occ-4", 1_000],
+    ]));
+    expect(coverage).toEqual({ paidCount: 1, targetCount: 2 });
+    expect(buildManagePaymentsFinalTwoWeeksPaidByBowler(input).get(501)).toBe(false);
+    expect(row).toMatchObject({ finalTwoWeeksPaid: false, finalTwoWeeksPaidCount: 1 });
+  });
+
   it("uses available credit only after older confirmed debt and covers only positive forecast targets", () => {
     const input = withSharedAccountProjection(projectionInput({
       confirmedOccurrenceIds: new Set(["occ-1", "occ-2"]),
@@ -1052,6 +1178,8 @@ describe("Manage Payments worksheet projection", () => {
     };
     const fingerprint = fingerprintManagePaymentsWorksheet(base);
     expect(fingerprintManagePaymentsWorksheet({ ...base })).toBe(fingerprint);
+    const displayFeeTerms = { ...base.feeTerms, collectionMultiplier: 2 };
+    expect(fingerprintManagePaymentsWorksheet({ ...base, feeTerms: displayFeeTerms })).toBe(fingerprint);
     expect(fingerprintManagePaymentsWorksheet({
       ...base,
       feeTerms: { ...base.feeTerms, prizeMinor: 400 },
