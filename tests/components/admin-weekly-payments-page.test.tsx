@@ -40,6 +40,7 @@ function makeSnapshot(
   amountReceived: number | null = 0,
   collectionMultiplier: 1 | 2 = 1,
   baseFullFeeMinor?: number,
+  pairedCollectionFeeMinor?: number,
 ): ManagePaymentsSnapshot {
   const isThirdWeek = occurrenceId === thirdOccurrenceId;
   const fullFeeMinor = baseFullFeeMinor ?? (collectionMultiplier === 2 ? 2_000 : 2_500);
@@ -116,6 +117,7 @@ function makeSnapshot(
           }] : [],
           cardReceipts: [],
           finalTwoWeeksPaid: false,
+          ...(pairedCollectionFeeMinor === undefined ? {} : { pairedCollectionFeeMinor }),
         },
         {
           bowlerId: 502,
@@ -252,6 +254,7 @@ interface PageSetupOptions {
   changeSiblingFinancialMetadataOnSave?: boolean;
   collectionMultiplier?: 1 | 2;
   baseFullFeeMinor?: number;
+  pairedCollectionFeeMinor?: number;
   delaySeason?: (
     leagueId: number,
     signal: AbortSignal | undefined,
@@ -287,6 +290,7 @@ function setupPage(options: PageSetupOptions = {}) {
       0,
       options.collectionMultiplier,
       options.baseFullFeeMinor,
+      options.pairedCollectionFeeMinor,
     )],
     [secondOccurrenceId, makeSnapshot(secondOccurrenceId, 15)],
     [thirdOccurrenceId, makeSnapshot(thirdOccurrenceId, 16)],
@@ -516,6 +520,44 @@ describe("AdminWeeklyPaymentsPage", () => {
       },
     } satisfies ManagePaymentsSnapshot;
     snapshots.set(firstOccurrenceId, multiplierOnlyUpdate);
+    const season = seasons.get(7);
+    if (!season) throw new Error("The league season fixture is missing.");
+    seasons.set(7, makeSeasonSnapshot(snapshots, season.defaultOccurrenceId));
+
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await waitFor(() => expect(seasonGetCounts.get(7)).toBe(2));
+    await waitFor(() => expect(client.getQueryState(["manage-payments-snapshot", 7])?.fetchStatus).toBe("idle"));
+
+    expect(amountInput).toHaveValue("5.50");
+    expect(screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" })).toHaveTextContent("$40.00");
+  });
+
+  it("rebases a dirty snapshot when only the paired display fee changes", async () => {
+    const user = userEvent.setup();
+    const { client, snapshots, seasons, seasonGetCounts } = setupPage({
+      collectionMultiplier: 1,
+      baseFullFeeMinor: 2_000,
+      pairedCollectionFeeMinor: 0,
+    });
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    const amountInput = screen.getByRole("textbox", { name: "Amount received from Blair Quinn" });
+    expect(screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" })).toHaveTextContent("$20.00");
+    await user.type(amountInput, "5.50");
+
+    const current = snapshots.get(firstOccurrenceId);
+    if (!current) throw new Error("The first week fixture is missing.");
+    const pairedFeeOnlyUpdate = {
+      ...current,
+      teams: current.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map((row) => row.bowlerId === 501
+          ? { ...row, pairedCollectionFeeMinor: 2_000 }
+          : row),
+      })),
+    } satisfies ManagePaymentsSnapshot;
+    snapshots.set(firstOccurrenceId, pairedFeeOnlyUpdate);
     const season = seasons.get(7);
     if (!season) throw new Error("The league season fixture is missing.");
     seasons.set(7, makeSeasonSnapshot(snapshots, season.defaultOccurrenceId));

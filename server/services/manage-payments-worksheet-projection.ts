@@ -662,6 +662,51 @@ function selectedResponsibilitiesForOccurrence(
   };
 }
 
+function pairedCollectionFeesByBowler(
+  input: ManagePaymentsProjectionInput,
+  selectedOccurrence: LeagueOccurrenceScheduleOccurrence,
+): Map<number, number> {
+  const pairedOccurrenceIds = new Set((selectedOccurrence.collectionGroups ?? [])
+    .filter((group) => group.kind === "double_pay" && group.role === "trigger" && group.state === "published")
+    .map((group) => group.pairedOccurrenceId));
+  if (pairedOccurrenceIds.size === 0) return new Map();
+
+  const occurrenceById = new Map(input.schedule.occurrences.map((occurrence) => [occurrence.occurrenceId, occurrence]));
+  const feeByBowler = new Map<number, number>();
+  for (const pairedOccurrenceId of pairedOccurrenceIds) {
+    const pairedOccurrence = occurrenceById.get(pairedOccurrenceId);
+    if (!pairedOccurrence || !isBillableOccurrence(pairedOccurrence)) {
+      throw new ManagePaymentsWorksheetProjectionError(
+        "invalid_occurrence",
+        "A published double-pay group points to a missing or non-billable paired week",
+      );
+    }
+
+    const selected = selectedResponsibilitiesForOccurrence(input, pairedOccurrence);
+    const seenBowlerIds = new Set<number>();
+    for (const row of selected.rows) {
+      if (seenBowlerIds.has(row.bowlerId)) {
+        throw new ManagePaymentsWorksheetProjectionError(
+          "duplicate_bowler_row",
+          "A bowler has more than one active responsibility row for a paired week",
+        );
+      }
+      seenBowlerIds.add(row.bowlerId);
+      if (row.feeMinor <= 0) continue;
+
+      const nextFeeMinor = (feeByBowler.get(row.bowlerId) ?? 0) + row.feeMinor;
+      if (!Number.isSafeInteger(nextFeeMinor)) {
+        throw new ManagePaymentsWorksheetProjectionError(
+          "invalid_occurrence",
+          "The paired-week fee total exceeds the supported display amount",
+        );
+      }
+      feeByBowler.set(row.bowlerId, nextFeeMinor);
+    }
+  }
+  return feeByBowler;
+}
+
 /** Pure forecast targets use the exact responsibility/default-main source shown by the worksheet. */
 export function buildManagePaymentsForecastTargets(
   input: Omit<ManagePaymentsProjectionInput, "finalAccountProjection">,
@@ -837,6 +882,7 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
   const collectionMultiplier: 1 | 2 = selectedOccurrence.collectionGroups?.some((group) => (
     group.kind === "double_pay" && group.role === "trigger" && group.state === "published"
   )) ? 2 : 1;
+  const pairedCollectionFeeByBowler = pairedCollectionFeesByBowler(input, selectedOccurrence);
   const feeTerms = {
     fullMinor: fullFeeMinor,
     lineageMinor: input.league.lineageFeeMinor,
@@ -1089,6 +1135,7 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
       cardReceipts: cardReceiptsForBowler,
       finalTwoWeeksPaid: finalPaid.get(bowlerId) ?? false,
       finalTwoWeeksPaidCount: finalCoverageByBowler.get(bowlerId)?.paidCount ?? 0,
+      pairedCollectionFeeMinor: pairedCollectionFeeByBowler.get(bowlerId) ?? 0,
     };
     const stateRow: StateFingerprintRow = {
       teamId: seed.teamId,

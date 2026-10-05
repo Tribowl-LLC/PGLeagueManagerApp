@@ -189,6 +189,48 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
     expect(fee).not.toHaveTextContent("Lineage");
   });
 
+  it("adds the paired responsibility to each displayed fee choice without changing save amounts", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn<AdminWeeklyPaymentsWorksheetProps["onSave"]>(async () => undefined);
+    const pairedTeams = teams.map((team) => ({
+      ...team,
+      rows: team.rows.map((row) => row.bowlerId === 501
+        ? { ...row, feeMinor: 2_000, pairedCollectionFeeMinor: 2_000 }
+        : row),
+    }));
+    renderWorksheet({
+      teams: pairedTeams,
+      feeMultiplier: 2,
+      feeOptions: [
+        { feeComponent: "full", amountMinor: 2_000 },
+        { feeComponent: "lineage", amountMinor: 1_000 },
+        { feeComponent: "prize", amountMinor: 500 },
+      ],
+      onSave,
+    });
+
+    const fee = screen.getByRole("combobox", { name: "This week’s fee for Avery Lane" });
+    expect(fee).toHaveTextContent("$40.00");
+    await user.click(fee);
+    expect(screen.getByRole("option", { name: "$40.00 · Full" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "$30.00 · Lineage" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "$25.00 · Prize" })).toBeVisible();
+    await user.click(screen.getByRole("option", { name: "$30.00 · Lineage" }));
+    expect(fee).toHaveTextContent("$30.00");
+
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    const saveInput = onSave.mock.calls[0]?.[0];
+    expect(saveInput?.changedRows).toEqual([{
+      teamId: 31,
+      bowlerId: 501,
+      responsible: true,
+      feeComponent: "lineage",
+      manualReceiptEdits: [],
+    }]);
+    expect(JSON.stringify(saveInput)).not.toContain("pairedCollectionFeeMinor");
+  });
+
   it("opens the selected bowler account from the row name", async () => {
     const user = userEvent.setup();
     const onBowlerAccount = vi.fn();

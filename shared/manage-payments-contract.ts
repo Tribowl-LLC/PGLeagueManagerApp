@@ -70,6 +70,7 @@ export const managePaymentsRowSchema = z.object({
   manualReceipts: z.array(managePaymentsManualReceiptSchema),
   finalTwoWeeksPaid: z.boolean(),
   finalTwoWeeksPaidCount: z.number().int().min(0).max(2).optional(),
+  pairedCollectionFeeMinor: safeMinor.min(0).optional(),
 });
 export type ManagePaymentsRow = z.infer<typeof managePaymentsRowSchema>;
 

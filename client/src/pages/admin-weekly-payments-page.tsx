@@ -182,6 +182,7 @@ function canRebaseDirtySnapshot(
           balanceMinor: _balanceMinor,
           finalTwoWeeksPaid: _finalTwoWeeksPaid,
           finalTwoWeeksPaidCount: _finalTwoWeeksPaidCount,
+          pairedCollectionFeeMinor: _pairedCollectionFeeMinor,
           ...row
         }) => row),
       })),

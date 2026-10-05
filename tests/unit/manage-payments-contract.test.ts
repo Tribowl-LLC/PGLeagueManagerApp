@@ -93,12 +93,17 @@ describe("Manage Payments contract", () => {
       },
       teams: snapshot.teams.map((team) => ({
         ...team,
-        rows: team.rows.map((row) => ({ ...row, finalTwoWeeksPaidCount: 1 })),
+        rows: team.rows.map((row) => ({
+          ...row,
+          finalTwoWeeksPaidCount: 1,
+          pairedCollectionFeeMinor: 3_000_000_000,
+        })),
       })),
     });
 
     expect(parsed.league.feeTerms.collectionMultiplier).toBe(2);
     expect(parsed.teams[0]?.rows[0]?.finalTwoWeeksPaidCount).toBe(1);
+    expect(parsed.teams[0]?.rows[0]?.pairedCollectionFeeMinor).toBe(3_000_000_000);
     expect(managePaymentsSnapshotSchema.safeParse({
       ...parsed,
       league: { ...parsed.league, feeTerms: { ...parsed.league.feeTerms, collectionMultiplier: 3 } },
@@ -108,6 +113,20 @@ describe("Manage Payments contract", () => {
       teams: parsed.teams.map((team) => ({
         ...team,
         rows: team.rows.map((row) => ({ ...row, finalTwoWeeksPaidCount: 3 })),
+      })),
+    }).success).toBe(false);
+    expect(managePaymentsSnapshotSchema.safeParse({
+      ...parsed,
+      teams: parsed.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map((row) => ({ ...row, pairedCollectionFeeMinor: -1 })),
+      })),
+    }).success).toBe(false);
+    expect(managePaymentsSnapshotSchema.safeParse({
+      ...parsed,
+      teams: parsed.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map((row) => ({ ...row, pairedCollectionFeeMinor: Number.MAX_SAFE_INTEGER + 1 })),
       })),
     }).success).toBe(false);
   });

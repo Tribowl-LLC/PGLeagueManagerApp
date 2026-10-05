@@ -60,6 +60,7 @@ export interface AdminWeeklyPaymentsBowlerRow {
   cardReceipts: readonly AdminWeeklyPaymentsCardReceipt[];
   finalTwoWeeksPaid: boolean;
   finalTwoWeeksPaidCount?: number;
+  pairedCollectionFeeMinor?: number;
 }
 
 export interface AdminWeeklyPaymentsTeam {
@@ -178,13 +179,17 @@ function parseEditedReceiptAmount(value: string): number | null {
 function feeLabel(
   option: AdminWeeklyPaymentsFeeOption,
   feeMultiplier: 1 | 2,
+  pairedCollectionFeeMinor: number | undefined,
 ): string {
   const name = option.feeComponent === "lineage"
     ? "Lineage"
     : option.feeComponent === "prize"
       ? "Prize"
       : "Full";
-  return `${formatMoney(option.amountMinor * feeMultiplier)} · ${name}`;
+  const amountMinor = pairedCollectionFeeMinor === undefined
+    ? option.amountMinor * feeMultiplier
+    : option.amountMinor + pairedCollectionFeeMinor;
+  return `${formatMoney(amountMinor)} · ${name}`;
 }
 
 function isFeeComponent(value: string): value is AdminWeeklyPaymentsFeeComponent {
@@ -363,7 +368,9 @@ function TeamWorksheet({
                             aria-label={`This week’s fee for ${row.displayName}`}
                           >
                             <SelectValue>
-                              {formatMoney(selectedFeeMinor * feeMultiplier)}
+                              {formatMoney(row.pairedCollectionFeeMinor === undefined
+                                ? selectedFeeMinor * feeMultiplier
+                                : selectedFeeMinor + row.pairedCollectionFeeMinor)}
                             </SelectValue>
                           </SelectTrigger>
                           <SelectContent appearance="managePaymentsFee">
@@ -372,7 +379,7 @@ function TeamWorksheet({
                                 key={option.feeComponent}
                                 value={option.feeComponent}
                               >
-                                {feeLabel(option, feeMultiplier)}
+                                {feeLabel(option, feeMultiplier, row.pairedCollectionFeeMinor)}
                               </SelectItem>
                             ))}
                           </SelectContent>
