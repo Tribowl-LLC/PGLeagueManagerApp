@@ -19,6 +19,7 @@ import {
   ManagePaymentsWorksheetProjectionError,
   selectManagePaymentsOccurrence,
   type ManagePaymentsProjectionInput,
+  type ManagePaymentsProjectionResponsibility,
 } from "../../server/services/manage-payments-worksheet-projection.js";
 import {
   projectOwnedAccountCoverage,
@@ -1143,31 +1144,31 @@ describe("Manage Payments worksheet projection", () => {
       pairedCollectionFeeMinor: 2_500,
     });
 
+    const noPairedResponsibilities = new Map<string, readonly ManagePaymentsProjectionResponsibility[]>(base.responsibilitiesByOccurrence);
+    noPairedResponsibilities.set("occ-3", [{
+      responsibilityId: "paired-vacant-main",
+      teamId: 31,
+      slotIndex: 0,
+      kind: "vacant",
+      payerBowlerId: null,
+      mainBowlerId: 501,
+      substituteBowlerId: null,
+      lineagePayerBowlerId: null,
+      prizePayerBowlerId: null,
+      worksheetFeeComponent: null,
+      amountMinor: 0,
+      lineageAmountMinor: null,
+      prizeAmountMinor: null,
+      version: 1,
+    }]);
+    noPairedResponsibilities.set("occ-4", (base.responsibilitiesByOccurrence.get("occ-4") ?? []).map((row) => ({
+      ...row,
+      worksheetFeeComponent: "lineage",
+      amountMinor: 1_000,
+    })));
     const noPairedLiability = buildManagePaymentsWorksheetSnapshot({
       ...base,
-      responsibilitiesByOccurrence: new Map([
-        ["occ-3", [{
-          responsibilityId: "paired-vacant-main",
-          teamId: 31,
-          slotIndex: 0,
-          kind: "vacant" as const,
-          payerBowlerId: null,
-          mainBowlerId: 501,
-          substituteBowlerId: null,
-          lineagePayerBowlerId: null,
-          prizePayerBowlerId: null,
-          worksheetFeeComponent: null,
-          amountMinor: 0,
-          lineageAmountMinor: null,
-          prizeAmountMinor: null,
-          version: 1,
-        }]],
-        ["occ-4", (base.responsibilitiesByOccurrence.get("occ-4") ?? []).map((row) => ({
-          ...row,
-          worksheetFeeComponent: "lineage" as const,
-          amountMinor: 1_000,
-        }))],
-      ]),
+      responsibilitiesByOccurrence: noPairedResponsibilities,
     });
     expect(noPairedLiability.teams[0]?.rows[0]).toMatchObject({
       feeMinor: 1_000,
