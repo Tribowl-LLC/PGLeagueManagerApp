@@ -166,24 +166,27 @@ function canRebaseDirtySnapshot(
   baseline: ManagePaymentsSnapshot,
   latest: ManagePaymentsSnapshot,
 ) {
-  const editableEvidence = (snapshot: ManagePaymentsSnapshot) => JSON.stringify({
-    contractVersion: snapshot.contractVersion,
-    league: snapshot.league,
-    weekOptions: snapshot.weekOptions,
-    selectedOccurrence: snapshot.selectedOccurrence,
-    weekConfirmed: snapshot.weekConfirmed,
-    needsConfirmation: snapshot.needsConfirmation,
-    revision: snapshot.revision,
-    teams: snapshot.teams.map((team) => ({
-      ...team,
-      rows: team.rows.map(({
-        balanceMinor: _balanceMinor,
-        finalTwoWeeksPaid: _finalTwoWeeksPaid,
-        finalTwoWeeksPaidCount: _finalTwoWeeksPaidCount,
-        ...row
-      }) => row),
-    })),
-  });
+  const editableEvidence = (snapshot: ManagePaymentsSnapshot) => {
+    const { collectionMultiplier: _collectionMultiplier, ...editableFeeTerms } = snapshot.league.feeTerms;
+    return JSON.stringify({
+      contractVersion: snapshot.contractVersion,
+      league: { ...snapshot.league, feeTerms: editableFeeTerms },
+      weekOptions: snapshot.weekOptions,
+      selectedOccurrence: snapshot.selectedOccurrence,
+      weekConfirmed: snapshot.weekConfirmed,
+      needsConfirmation: snapshot.needsConfirmation,
+      revision: snapshot.revision,
+      teams: snapshot.teams.map((team) => ({
+        ...team,
+        rows: team.rows.map(({
+          balanceMinor: _balanceMinor,
+          finalTwoWeeksPaid: _finalTwoWeeksPaid,
+          finalTwoWeeksPaidCount: _finalTwoWeeksPaidCount,
+          ...row
+        }) => row),
+      })),
+    });
+  };
 
   return editableEvidence(baseline) === editableEvidence(latest);
 }
