@@ -443,7 +443,7 @@ async function loadManagePaymentsWorksheetProjectionContextInTransaction(
       activeProfile: row.activeProfile,
       rosterRole: mainBowlerPairs.has(`${row.teamId}:${row.bowlerId}`) ? "main" : "substitute",
     })));
-    members.push(...orderedMembers.filter((row) => row.activeProfile).map((row) => ({
+    members.push(...orderedMembers.filter((row) => row.activeProfile).map((row): ManagePaymentsProjectionMember => ({
       associationId: row.id,
       teamId: row.teamId,
       bowlerId: row.bowlerId,

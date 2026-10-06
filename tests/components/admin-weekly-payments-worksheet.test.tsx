@@ -103,6 +103,109 @@ function renderWorksheet(overrides: Partial<AdminWeeklyPaymentsWorksheetProps> =
 }
 
 describe("AdminWeeklyPaymentsWorksheet", () => {
+  it("shows VACANT slots and current members in roster order and excludes display-only rows from edits", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn<AdminWeeklyPaymentsWorksheetProps["onSave"]>(async () => undefined);
+    const onDirtyChange = vi.fn();
+    const inactiveReceipt = {
+      ...manualReceipt,
+      receiptId: "f2f99e3e-0b76-4b8f-b5f0-65a9b28c3109",
+      paymentId: 8105,
+      amountMinor: 4_000,
+    };
+    const rosterTeam: AdminWeeklyPaymentsTeam = {
+      teamId: 31,
+      teamName: "Monday Night",
+      vacantSlots: [{ slotIndex: 3 }, { slotIndex: 1 }],
+      rosterDisplayMembers: [
+        { bowlerId: 502, displayName: "Blair Quinn", activeProfile: true },
+        { bowlerId: 501, displayName: "Avery Lane", activeProfile: true },
+        { bowlerId: 505, displayName: "Inactive Financier", activeProfile: false },
+        { bowlerId: 506, displayName: "Static Inactive", activeProfile: false },
+      ],
+      rows: [
+        ...baseRows,
+        {
+          bowlerId: 505,
+          displayName: "Inactive Financier",
+          responsible: true,
+          feeComponent: "full",
+          feeMinor: 2_500,
+          balanceMinor: -500,
+          manualReceipts: [inactiveReceipt],
+          cardReceipts: [],
+          finalTwoWeeksPaid: false,
+        },
+      ],
+    };
+    const tuesdayTeam = teams[1];
+    if (!tuesdayTeam) throw new Error("Tuesday Mixed worksheet team is missing");
+    renderWorksheet({
+      teams: [rosterTeam, tuesdayTeam],
+      initialDrafts: {
+        responsibilityDrafts: {
+          "7:31:505": { responsible: false, feeComponent: "prize" },
+        },
+        newReceiptDrafts: {
+          "7:31:505": "not an amount",
+          "7:31:506": "99.00",
+        },
+        manualReceiptDrafts: {
+          [`7:31:505:${inactiveReceipt.receiptId}`]: "-",
+        },
+      },
+      onSave,
+      onDirtyChange,
+    });
+
+    const mondayTable = screen.getAllByRole("table")[0];
+    if (!mondayTable) throw new Error("Monday Night worksheet table is missing");
+    const rows = within(mondayTable).getAllByRole("row").filter((row) => (
+      row.querySelector("td") !== null && row.querySelector('[data-awpw="team-total-output"]') === null
+    ));
+    expect(rows).toHaveLength(7);
+    expect(rows[0]).toHaveTextContent("VACANT");
+    expect(rows[1]).toHaveTextContent("VACANT");
+    expect(rows[2]).toHaveTextContent("Blair Quinn");
+    expect(rows[3]).toHaveTextContent("Avery Lane");
+    expect(rows[4]).toHaveTextContent("Inactive Financier");
+    expect(rows[5]).toHaveTextContent("Static Inactive");
+    expect(rows[6]).toHaveTextContent("Casey Reese");
+
+    const firstVacantCheckbox = screen.getByRole("checkbox", { name: "Responsible this week for VACANT position 2" });
+    const secondVacantCheckbox = screen.getByRole("checkbox", { name: "Responsible this week for VACANT position 4" });
+    expect(firstVacantCheckbox).toBeDisabled();
+    expect(firstVacantCheckbox).not.toBeChecked();
+    expect(secondVacantCheckbox).toBeDisabled();
+    expect(secondVacantCheckbox).not.toBeChecked();
+    await user.click(firstVacantCheckbox);
+    fireEvent.keyDown(secondVacantCheckbox, { key: " ", code: "Space" });
+    expect(firstVacantCheckbox).not.toBeChecked();
+    expect(secondVacantCheckbox).not.toBeChecked();
+
+    const inactiveCheckbox = screen.getByRole("checkbox", { name: "Responsible this week for Inactive Financier" });
+    expect(inactiveCheckbox).toBeDisabled();
+    expect(inactiveCheckbox).toBeChecked();
+    expect(screen.getByLabelText("Monday Night total paid")).toHaveTextContent("$90.00");
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+    expect(screen.getByRole("button", { name: "Save week" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Static Inactive" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "Responsible this week for Avery Lane" }));
+    expect(screen.getByRole("button", { name: "Save week" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[0].changedRows).toEqual([{
+      teamId: 31,
+      bowlerId: 501,
+      responsible: false,
+      feeComponent: "full",
+      manualReceiptEdits: [],
+    }]);
+    expect(screen.getByLabelText("Monday Night total paid")).toHaveTextContent("$90.00");
+  });
+
   it("renders the approved six-column order and initially opens only the first team", () => {
     renderWorksheet();
 
