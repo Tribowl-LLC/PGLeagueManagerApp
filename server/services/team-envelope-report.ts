@@ -17,9 +17,10 @@ import { bowlers } from "@shared/schema";
 import { db } from "../db.js";
 import { storage } from "../storage/index.js";
 import { loadLeagueOccurrenceSchedule } from "./league-occurrence-schedule.js";
-import { readCanonicalDuePastDueV3, readRosterPaymentResponsibility, readRosterPaymentResponsibilityV2 } from "./roster-payment-core.js";
+import { readCanonicalDuePastDueV3, readRosterPaymentResponsibility, readTeamEnvelopeRosterReadContext } from "./roster-payment-core.js";
+import type { TeamEnvelopeRosterReadContext } from "./roster-payment-core.js";
 
-type RosterPaymentResponsibilityRead = Awaited<ReturnType<typeof readRosterPaymentResponsibility>> | Awaited<ReturnType<typeof readRosterPaymentResponsibilityV2>>;
+type RosterPaymentResponsibilityRead = Awaited<ReturnType<typeof readRosterPaymentResponsibility>> | TeamEnvelopeRosterReadContext;
 type FinancialReportRead = FinancialReadContract | FinancialReadContractV3;
 type FinancialReportRow = FinancialReadRowContract | FinancialReadRowContractV3;
 
@@ -575,7 +576,7 @@ export async function readTeamEnvelopeReport(input: { organizationId: number; le
   }
   const [schedule, roster, financial] = await Promise.all([
     loadLeagueOccurrenceSchedule({ ...input, includeAdministratorEvidence: false }),
-    readRosterPaymentResponsibilityV2(input),
+    readTeamEnvelopeRosterReadContext(input),
     readCanonicalDuePastDueV3(input),
   ]);
   let reportBowlerNames: Array<{ id: number; name: string }> = [];
