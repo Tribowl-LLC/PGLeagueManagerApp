@@ -90,6 +90,7 @@ export function ReorderBowlersDialog({
       queryClient.invalidateQueries({ queryKey: ["/api/bowlers"] });
       queryClient.invalidateQueries({ queryKey: [`/api/teams/${teamId}`] });
       queryClient.invalidateQueries({ queryKey: [`/api/teams/${teamId}/details`] });
+      queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", leagueId] });
 
       toast({
         title: "Success",

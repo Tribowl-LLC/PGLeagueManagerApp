@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
+import { orderTeamRosterAssociations } from "@shared/team-roster-presentation";
 import { db } from "../db.js";
 import {
   bowlers,
@@ -534,9 +535,21 @@ export async function readRosterPaymentResponsibility(input: { organizationId: n
   };
 }
 
+export interface TeamEnvelopeRosterDisplayMember {
+  bowlerId: number;
+  displayName: string;
+  activeProfile: boolean;
+}
+
 export type TeamEnvelopeRosterReadContext = Pick<RosterPaymentResponsibilityReadContractV2,
   "organizationId" | "leagueId" | "ready" | "teams" | "substituteBowlerOptions"
->;
+> & {
+  /** Report-only member order matching the team-view roster presentation. */
+  rosterDisplayMembersByTeam?: readonly {
+    teamId: number;
+    members: readonly TeamEnvelopeRosterDisplayMember[];
+  }[];
+};
 
 async function readRosterPaymentResponsibilityV2Metadata(input: { organizationId: number; leagueId: number }) {
   const legacy = await readRosterPaymentResponsibility(input);
@@ -582,13 +595,39 @@ async function readRosterPaymentResponsibilityV2Metadata(input: { organizationId
  * history is excluded; the report gets financial ownership and assignment
  * validation from the canonical financial read. */
 export async function readTeamEnvelopeRosterReadContext(input: { organizationId: number; leagueId: number }): Promise<TeamEnvelopeRosterReadContext> {
-  const { legacy, teams, incompleteTeamIds } = await readRosterPaymentResponsibilityV2Metadata(input);
+  const { legacy, teams: rosterTeams, incompleteTeamIds } = await readRosterPaymentResponsibilityV2Metadata(input);
+  const memberRows = rosterTeams.length === 0 ? [] : await db.select({
+    id: bowlerLeagues.id,
+    teamId: bowlerLeagues.teamId,
+    bowlerId: bowlers.id,
+    displayName: bowlers.name,
+    activeProfile: bowlers.active,
+    order: bowlerLeagues.order,
+    joinedAt: bowlerLeagues.joinedAt,
+  }).from(bowlerLeagues)
+    .innerJoin(bowlers, eq(bowlers.id, bowlerLeagues.bowlerId))
+    .innerJoin(teams, and(eq(teams.id, bowlerLeagues.teamId), eq(teams.leagueId, bowlerLeagues.leagueId)))
+    .where(and(
+      eq(bowlerLeagues.leagueId, input.leagueId),
+      eq(bowlerLeagues.active, true),
+      eq(bowlers.organizationId, input.organizationId),
+      inArray(bowlerLeagues.teamId, rosterTeams.map((team) => team.id)),
+    ));
+  const rosterDisplayMembersByTeam = rosterTeams.map((team) => ({
+    teamId: team.id,
+    members: orderTeamRosterAssociations(memberRows.filter((row) => row.teamId === team.id)).map((row) => ({
+      bowlerId: row.bowlerId,
+      displayName: row.displayName,
+      activeProfile: row.activeProfile,
+    })),
+  }));
   return {
     organizationId: legacy.organizationId,
     leagueId: legacy.leagueId,
     ready: legacy.payingLineupSize !== null && incompleteTeamIds.length === 0,
-    teams,
+    teams: rosterTeams,
     substituteBowlerOptions: legacy.substituteBowlerOptions,
+    rosterDisplayMembersByTeam,
   };
 }
 

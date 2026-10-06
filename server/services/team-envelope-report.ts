@@ -357,8 +357,12 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
     }),
   );
 
+  const rosterDisplayMembersByTeam = "rosterDisplayMembersByTeam" in roster
+    ? roster.rosterDisplayMembersByTeam ?? []
+    : [];
   const bowlerNames = new Map([
     ...roster.substituteBowlerOptions.map((bowler) => [bowler.id, bowler.name] as const),
+    ...rosterDisplayMembersByTeam.flatMap((team) => team.members.map((member) => [member.bowlerId, member.displayName] as const)),
     ...(input.reportBowlerNames ?? []).map((bowler) => [bowler.id, bowler.name] as const),
   ]);
   const reportTeamIds = new Set(roster.teams.map((team) => team.id));
@@ -440,10 +444,13 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
     );
   }
 
+  const rosterMembersByTeam = new Map(rosterDisplayMembersByTeam.map((team) => [team.teamId, team.members]));
   const teams = roster.teams.map<TeamEnvelopeReportTeam>((team) => {
     let hasFinalRequirement = false;
     let hasUnpaidFinalRequirement = false;
-    const rows = adoptedMode ? [] as TeamEnvelopeReportRow[] : team.slots.flatMap<TeamEnvelopeReportRow>((slot) => {
+    const legacyMainRowsByBowler = new Map<number, TeamEnvelopeReportRow>();
+    const rotatingRows: TeamEnvelopeReportRow[] = [];
+    if (!adoptedMode) team.slots.forEach((slot) => {
       if (slot.occupant === "main" && slot.mainBowlerId !== null) {
         const bowlerName = bowlerNames.get(slot.mainBowlerId);
         if (!bowlerName) {
@@ -459,12 +466,13 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
           selectedPosition,
           futurePairedOccurrenceIds,
         );
-        return [{
+        legacyMainRowsByBowler.set(slot.mainBowlerId, {
           bowlerId: slot.mainBowlerId,
           bowlerName,
           ...amounts,
           finalWeekPaid,
-        }];
+        });
+        return;
       }
       if (slot.occupant === "rotating") {
         const obligations = teamOwnedSlotRows(financial.rows, team.id, slot.slotIndex).filter((row) => row.state !== "voided");
@@ -483,52 +491,121 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
         if (actualBowlerId !== null && !actualBowlerName) {
           throw new TeamEnvelopeReportError("ROSTER_IDENTITY_MISSING", "A confirmed rotating participant is missing a bowler identity", 503);
         }
-        return [{
+        rotatingRows.push({
           bowlerId: null,
           bowlerName: actualBowlerName ? `Rotating slot ${slot.slotIndex + 1} · ${actualBowlerName}` : `Rotating slot ${slot.slotIndex + 1}`,
           ownerKind: "team",
           slotIndex: slot.slotIndex,
           ...amounts,
           finalWeekPaid,
-        }];
+        });
       }
-      return [];
     });
+
+    const teamRosterMembers = rosterMembersByTeam.get(team.id) ?? [];
+    const memberIds = new Set(teamRosterMembers.map((member) => member.bowlerId));
+    const currentRosterRows: TeamEnvelopeReportRow[] = [];
+    const makeBowlerRow = (bowlerId: number, bowlerName: string): TeamEnvelopeReportRow | null => {
+      const obligations = adoptedMode
+        ? bowlerAccountObligations(financial, bowlerId)
+        : financial.rows.filter((row) => effectiveBowlerOwnerId(row) === bowlerId && row.state !== "voided");
+      const account = adoptedMode ? accountForBowler(financial, bowlerId) : undefined;
+      if (adoptedMode && !account && (accountBowlerIds.has(bowlerId) || obligations.length > 0)) {
+        throw new TeamEnvelopeReportError("FINANCIAL_EVIDENCE_INVALID", "An active account holder is missing its account projection", 503);
+      }
+      const finalRows = adoptedMode
+        ? finalTargetRows(obligations.filter((row) => row.occurrenceId === finalOccurrence.occurrenceId))
+        : obligations.filter((row) => row.occurrenceId === finalOccurrence.occurrenceId);
+      const finalWeekPaid = finalRows.length === 0
+        ? true
+        : adoptedMode
+          ? finalCoverageIsPaid(finalRows)
+          : finalRows.every((row) => row.outstandingMinor === 0);
+      if (adoptedMode && finalRows.length > 0) {
+        hasFinalRequirement = true;
+        if (!finalWeekPaid) hasUnpaidFinalRequirement = true;
+      }
+      const amounts = envelopeAmounts(
+        obligations,
+        occurrencePosition,
+        selectedOccurrence.occurrenceId,
+        selectedPosition,
+        futurePairedOccurrenceIds,
+        account,
+        adoptedMode,
+      );
+      return { bowlerId, bowlerName, ...amounts, finalWeekPaid };
+    };
+
+    for (const member of teamRosterMembers) {
+      const existingLegacyMainRow = legacyMainRowsByBowler.get(member.bowlerId);
+      if (existingLegacyMainRow) {
+        currentRosterRows.push(existingLegacyMainRow);
+        continue;
+      }
+      if (adoptedMode && accountBowlerIds.has(member.bowlerId)
+        && accountTeamByBowler.get(member.bowlerId) !== team.id) {
+        currentRosterRows.push({
+          bowlerId: member.bowlerId,
+          bowlerName: member.displayName,
+          weeklyDueMinor: 0,
+          ytdDueMinor: 0,
+          ytdPaidMinor: 0,
+          remainingCreditMinor: 0,
+          pastDueMinor: 0,
+          dueTodayMinor: 0,
+          finalWeekPaid: true,
+        });
+        continue;
+      }
+      const row = makeBowlerRow(member.bowlerId, member.displayName);
+      if (row) currentRosterRows.push(row);
+    }
+
+    // Context-free callers retain their established Main slot presentation.
+    if (teamRosterMembers.length === 0 && !adoptedMode) {
+      currentRosterRows.push(...legacyMainRowsByBowler.values());
+    } else if (!adoptedMode) {
+      for (const [bowlerId, row] of legacyMainRowsByBowler) {
+        if (!memberIds.has(bowlerId)) currentRosterRows.push(row);
+      }
+    }
+
+    const vacantRows: TeamEnvelopeReportRow[] = team.slots
+      .filter((slot) => slot.occupant === "vacant")
+      .sort((left, right) => left.slotIndex - right.slotIndex)
+      .map((slot) => ({
+        bowlerId: null,
+        bowlerName: "VACANT",
+        slotIndex: slot.slotIndex,
+        weeklyDueMinor: 0,
+        ytdDueMinor: 0,
+        ytdPaidMinor: 0,
+        remainingCreditMinor: 0,
+        pastDueMinor: 0,
+        dueTodayMinor: 0,
+        finalWeekPaid: true,
+      }));
+
     if (adoptedMode) {
-      for (const bowlerId of [...accountBowlerIds].filter((id) => accountTeamByBowler.get(id) === team.id).sort((a, b) => a - b)) {
+      for (const bowlerId of [...accountBowlerIds]
+        .filter((id) => accountTeamByBowler.get(id) === team.id && !memberIds.has(id))
+        .sort((a, b) => a - b)) {
         const bowlerName = bowlerNames.get(bowlerId);
         if (!bowlerName) {
           throw new TeamEnvelopeReportError("ROSTER_IDENTITY_MISSING", "An active account holder is missing a bowler identity", 503);
         }
-        const obligations = bowlerAccountObligations(financial, bowlerId);
         const account = accountForBowler(financial, bowlerId);
+        const obligations = bowlerAccountObligations(financial, bowlerId);
         if (!account) {
           throw new TeamEnvelopeReportError("FINANCIAL_EVIDENCE_INVALID", "An active account holder is missing its account projection", 503);
         }
         if (!accountHasEnvelopeBalance(account) && obligations.length === 0) continue;
-        const finalRows = finalTargetRows(obligations.filter((row) => row.occurrenceId === finalOccurrence.occurrenceId));
-        const finalWeekPaid = finalCoverageIsPaid(finalRows);
-        if (finalRows.length > 0) {
-          hasFinalRequirement = true;
-          if (!finalWeekPaid) hasUnpaidFinalRequirement = true;
-        }
-        const amounts = envelopeAmounts(
-          obligations,
-          occurrencePosition,
-          selectedOccurrence.occurrenceId,
-          selectedPosition,
-          futurePairedOccurrenceIds,
-          account,
-          true,
-        );
-        rows.push({
-          bowlerId,
-          bowlerName,
-          ...amounts,
-          finalWeekPaid,
-        });
+        const row = makeBowlerRow(bowlerId, bowlerName);
+        if (row) currentRosterRows.push(row);
       }
     }
+    const rows = [...vacantRows, ...currentRosterRows, ...rotatingRows];
     return {
       teamId: team.id,
       teamName: team.name,

@@ -27,6 +27,7 @@ import {
   type ManagePaymentsSeasonWeekSnapshotEntry,
   type ManagePaymentsSnapshot,
 } from "@shared/manage-payments-contract";
+import { orderTeamRosterAssociations } from "@shared/team-roster-presentation";
 import { db } from "../db.js";
 import { LeagueOccurrenceScheduleError, loadLeagueOccurrenceScheduleSnapshot } from "./league-occurrence-schedule.js";
 import {
@@ -55,6 +56,7 @@ import {
   type ManagePaymentsProjectionMember,
   type ManagePaymentsProjectionResponsibility,
   type ManagePaymentsProjectionRotatingAssignment,
+  type ManagePaymentsProjectionRosterDisplayMember,
   type ManagePaymentsProjectionTeamInfo,
   type ManagePaymentsProjectionInput,
 } from "./manage-payments-worksheet-projection.js";
@@ -298,13 +300,16 @@ async function loadManagePaymentsWorksheetProjectionContextInTransaction(
       eq(leagueOccurrenceBillingTerms.state, "published"),
       inArray(leagueOccurrenceBillingTerms.occurrenceId, occurrenceIds),
     )));
-  const teamRows = await readWorksheetStage(input.signal, () => tx.select({ teamId: teamsTable.id, teamName: teamsTable.name, displayOrder: teamsTable.displayOrder, active: teamsTable.active })
-    .from(teamsTable).where(eq(teamsTable.leagueId, input.leagueId)).orderBy(asc(teamsTable.displayOrder), asc(teamsTable.id)));
+  const teamRows = await readWorksheetStage(input.signal, () => tx.select({ teamId: teamsTable.id, teamName: teamsTable.name, teamNumber: teamsTable.number, displayOrder: teamsTable.displayOrder, active: teamsTable.active })
+    .from(teamsTable).where(eq(teamsTable.leagueId, input.leagueId)).orderBy(asc(teamsTable.displayOrder), asc(teamsTable.number), asc(teamsTable.id)));
   const memberRows = await readWorksheetStage(input.signal, () => tx.select({
+      id: bowlerLeagues.id,
       teamId: bowlerLeagues.teamId,
       bowlerId: bowlers.id,
       displayName: bowlers.name,
+      activeProfile: bowlers.active,
       order: bowlerLeagues.order,
+      joinedAt: bowlerLeagues.joinedAt,
     }).from(bowlerLeagues)
       .innerJoin(bowlers, eq(bowlers.id, bowlerLeagues.bowlerId))
       .innerJoin(teamsTable, and(eq(teamsTable.id, bowlerLeagues.teamId), eq(teamsTable.leagueId, bowlerLeagues.leagueId)))
@@ -312,14 +317,12 @@ async function loadManagePaymentsWorksheetProjectionContextInTransaction(
         eq(bowlerLeagues.leagueId, input.leagueId),
         eq(bowlerLeagues.active, true),
         eq(bowlers.organizationId, input.organizationId),
-        eq(bowlers.active, true),
-      )).orderBy(asc(bowlerLeagues.order), asc(bowlers.name), asc(bowlers.id)));
-  const slotRows = await readWorksheetStage(input.signal, () => tx.select({ teamId: teamPaymentSlots.teamId, slotIndex: teamPaymentSlots.slotIndex, bowlerId: teamPaymentSlots.mainBowlerId })
+      )).orderBy(asc(bowlerLeagues.order), desc(bowlerLeagues.joinedAt), asc(bowlerLeagues.id)));
+  const slotRows = await readWorksheetStage(input.signal, () => tx.select({ teamId: teamPaymentSlots.teamId, slotIndex: teamPaymentSlots.slotIndex, occupant: teamPaymentSlots.occupant, bowlerId: teamPaymentSlots.mainBowlerId })
       .from(teamPaymentSlots).where(and(
         eq(teamPaymentSlots.organizationId, input.organizationId),
         eq(teamPaymentSlots.leagueId, input.leagueId),
-        eq(teamPaymentSlots.occupant, "main"),
-      )));
+      )).orderBy(asc(teamPaymentSlots.teamId), asc(teamPaymentSlots.slotIndex)));
   const responsibilityRows = occurrenceIds.length === 0 ? [] : await readWorksheetStage(input.signal, () => tx.select().from(occurrencePaymentResponsibilities).where(and(
       eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
       eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
@@ -419,21 +422,46 @@ async function loadManagePaymentsWorksheetProjectionContextInTransaction(
   const teams: ManagePaymentsProjectionTeamInfo[] = teamRows.map((row) => ({
     teamId: row.teamId,
     teamName: row.teamName,
+    teamNumber: row.teamNumber,
     displayOrder: row.displayOrder,
     active: row.active,
   }));
-  const mainBowlerPairs = new Set(slotRows.flatMap((slot) => slot.bowlerId === null ? [] : [`${slot.teamId}:${slot.bowlerId}`]));
-  const members: ManagePaymentsProjectionMember[] = memberRows.map((row) => ({
-    teamId: row.teamId,
-    bowlerId: row.bowlerId,
-    displayName: row.displayName,
-    order: row.order,
-    rosterRole: mainBowlerPairs.has(`${row.teamId}:${row.bowlerId}`) ? "main" : "substitute",
-  }));
+  const mainBowlerPairs = new Set(slotRows.flatMap((slot) => (
+    slot.occupant === "main" && slot.bowlerId !== null ? [`${slot.teamId}:${slot.bowlerId}`] : []
+  )));
+  const members: ManagePaymentsProjectionMember[] = [];
+  const rosterDisplayMembersByTeam = new Map<number, ManagePaymentsProjectionRosterDisplayMember[]>();
+  for (const team of teamRows) {
+    const orderedMembers = orderTeamRosterAssociations(memberRows.filter((row) => row.teamId === team.teamId));
+    rosterDisplayMembersByTeam.set(team.teamId, orderedMembers.map((row) => ({
+      associationId: row.id,
+      teamId: row.teamId,
+      bowlerId: row.bowlerId,
+      displayName: row.displayName,
+      order: row.order,
+      joinedAt: row.joinedAt,
+      activeProfile: row.activeProfile,
+      rosterRole: mainBowlerPairs.has(`${row.teamId}:${row.bowlerId}`) ? "main" : "substitute",
+    })));
+    members.push(...orderedMembers.filter((row) => row.activeProfile).map((row) => ({
+      associationId: row.id,
+      teamId: row.teamId,
+      bowlerId: row.bowlerId,
+      displayName: row.displayName,
+      order: row.order,
+      joinedAt: row.joinedAt,
+      rosterRole: mainBowlerPairs.has(`${row.teamId}:${row.bowlerId}`) ? "main" : "substitute",
+    })));
+  }
+  const vacantSlotIndexesByTeam = new Map<number, number[]>();
+  for (const slot of slotRows) {
+    if (slot.occupant !== "vacant") continue;
+    vacantSlotIndexesByTeam.set(slot.teamId, [...(vacantSlotIndexesByTeam.get(slot.teamId) ?? []), slot.slotIndex]);
+  }
   const mainBowlerIdsByTeam = new Map<number, Set<number>>();
   const mainBowlerIdsBySlot = new Map<number, Map<number, number>>();
   for (const row of slotRows) {
-    if (row.bowlerId === null) continue;
+    if (row.occupant !== "main" || row.bowlerId === null) continue;
     const teamBowlers = mainBowlerIdsByTeam.get(row.teamId);
     if (teamBowlers) teamBowlers.add(row.bowlerId);
     else mainBowlerIdsByTeam.set(row.teamId, new Set([row.bowlerId]));
@@ -821,6 +849,8 @@ async function loadManagePaymentsWorksheetProjectionContextInTransaction(
     databaseNow,
     teams,
     members,
+    vacantSlotIndexesByTeam,
+    rosterDisplayMembersByTeam,
     mainBowlerIdsByTeam,
     mainBowlerIdsBySlot,
     displayNamesByBowler,

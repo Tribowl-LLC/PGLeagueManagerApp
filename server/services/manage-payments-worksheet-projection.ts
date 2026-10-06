@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJsonStringify } from "@shared/canonical-json";
+import { compareTeamRosterPresentationOrder } from "@shared/team-roster-presentation";
 import {
   MANAGE_PAYMENTS_CONTRACT_VERSION,
   MANAGE_PAYMENTS_STATE_FINGERPRINT_PREFIX,
@@ -40,16 +41,23 @@ export interface ManagePaymentsProjectionLeague {
 export interface ManagePaymentsProjectionTeamInfo {
   teamId: number;
   teamName: string;
+  teamNumber?: number | null;
   displayOrder: number;
   active: boolean;
 }
 
 export interface ManagePaymentsProjectionMember {
+  associationId?: number;
   teamId: number;
   bowlerId: number;
   displayName: string;
   order: number;
+  joinedAt?: string;
   rosterRole: "main" | "substitute";
+}
+
+export interface ManagePaymentsProjectionRosterDisplayMember extends ManagePaymentsProjectionMember {
+  activeProfile: boolean;
 }
 
 export interface ManagePaymentsProjectionResponsibility {
@@ -128,6 +136,8 @@ export interface ManagePaymentsProjectionInput {
   selectedOccurrenceId?: string;
   teams: readonly ManagePaymentsProjectionTeamInfo[];
   members: readonly ManagePaymentsProjectionMember[];
+  vacantSlotIndexesByTeam?: ReadonlyMap<number, readonly number[]>;
+  rosterDisplayMembersByTeam?: ReadonlyMap<number, readonly ManagePaymentsProjectionRosterDisplayMember[]>;
   mainBowlerIdsByTeam: ReadonlyMap<number, ReadonlySet<number>>;
   mainBowlerIdsBySlot: ReadonlyMap<number, ReadonlyMap<number, number>>;
   displayNamesByBowler: ReadonlyMap<number, string>;
@@ -923,6 +933,12 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
   const teamById = new Map(input.teams.map((team) => [team.teamId, team]));
   const memberByBowler = new Map<number, ManagePaymentsProjectionMember>();
   const memberByBowlerAndTeam = new Map<string, ManagePaymentsProjectionMember>();
+  const rosterDisplayMemberByBowlerAndTeam = new Map<string, ManagePaymentsProjectionRosterDisplayMember>();
+  for (const [teamId, rosterMembers] of input.rosterDisplayMembersByTeam ?? []) {
+    for (const member of rosterMembers) {
+      rosterDisplayMemberByBowlerAndTeam.set(`${member.bowlerId}:${teamId}`, member);
+    }
+  }
   for (const member of input.members) {
     const existing = memberByBowler.get(member.bowlerId);
     if (existing && existing.teamId !== member.teamId) {
@@ -940,6 +956,8 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
     teamId: number;
     displayName: string;
     order: number;
+    associationId?: number;
+    joinedAt?: string;
     rosterRole: "main" | "substitute";
     currentMember: boolean;
   }>();
@@ -949,6 +967,8 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
       teamId: member.teamId,
       displayName: member.displayName,
       order: member.order,
+      associationId: member.associationId,
+      joinedAt: member.joinedAt,
       rosterRole: member.rosterRole,
       currentMember: true,
     });
@@ -962,14 +982,19 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
       throw new ManagePaymentsWorksheetProjectionError("missing_historical_team", "A saved responsibility references a team that cannot be resolved");
     }
     const mainBowlerId = mainBowlerByResponsibility.get(row.responsibilityId) ?? null;
+    const displayMember = rosterDisplayMemberByBowlerAndTeam.get(`${row.bowlerId}:${row.teamId}`);
     rowSeeds.set(row.bowlerId, {
       teamId: row.teamId,
-      displayName: exactMember?.displayName ?? existingSeed?.displayName ?? input.displayNamesByBowler.get(row.bowlerId) ?? "Former bowler",
-      order: exactMember?.order ?? existingSeed?.order ?? Number.MAX_SAFE_INTEGER,
+      displayName: exactMember?.displayName ?? displayMember?.displayName ?? existingSeed?.displayName ?? input.displayNamesByBowler.get(row.bowlerId) ?? "Former bowler",
+      order: exactMember?.order ?? displayMember?.order ?? existingSeed?.order ?? Number.MAX_SAFE_INTEGER,
+      associationId: exactMember?.associationId ?? displayMember?.associationId ?? existingSeed?.associationId,
+      joinedAt: exactMember?.joinedAt ?? displayMember?.joinedAt ?? existingSeed?.joinedAt,
       rosterRole: mainBowlerId === row.bowlerId || input.mainBowlerIdsByTeam.get(row.teamId)?.has(row.bowlerId) === true
         ? "main"
         : "substitute",
-      currentMember: exactMember !== undefined || existingSeed?.currentMember === true,
+      currentMember: exactMember !== undefined
+        || rosterDisplayMemberByBowlerAndTeam.has(`${row.bowlerId}:${row.teamId}`)
+        || existingSeed?.currentMember === true,
     });
   }
   const responsibilityTeamByBowler = new Map<number, number>();
@@ -1005,13 +1030,16 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
     }
     const current = rowSeeds.get(bowlerId);
     const exactMember = memberByBowlerAndTeam.get(`${bowlerId}:${teamId}`);
+    const displayMember = rosterDisplayMemberByBowlerAndTeam.get(`${bowlerId}:${teamId}`);
     rowSeeds.set(bowlerId, {
       teamId,
-      displayName: exactMember?.displayName ?? current?.displayName ?? input.displayNamesByBowler.get(bowlerId) ?? "Former bowler",
-      order: exactMember?.order ?? current?.order ?? Number.MAX_SAFE_INTEGER,
+      displayName: exactMember?.displayName ?? displayMember?.displayName ?? current?.displayName ?? input.displayNamesByBowler.get(bowlerId) ?? "Former bowler",
+      order: exactMember?.order ?? displayMember?.order ?? current?.order ?? Number.MAX_SAFE_INTEGER,
+      associationId: exactMember?.associationId ?? displayMember?.associationId ?? current?.associationId,
+      joinedAt: exactMember?.joinedAt ?? displayMember?.joinedAt ?? current?.joinedAt,
       rosterRole: responsibilityRoleByBowler.get(bowlerId)
         ?? (input.mainBowlerIdsByTeam.get(teamId)?.has(bowlerId) === true ? "main" : "substitute"),
-      currentMember: exactMember !== undefined || current?.currentMember === true,
+      currentMember: exactMember !== undefined || displayMember !== undefined || current?.currentMember === true,
     });
   }
   for (const receipt of input.manualReceipts) {
@@ -1037,11 +1065,14 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
       }
       rowSeeds.set(receipt.bowlerId, {
         teamId: receipt.teamId,
-        displayName: existingSeed?.displayName ?? input.displayNamesByBowler.get(receipt.bowlerId) ?? "Former bowler",
-        order: existingSeed?.order ?? Number.MAX_SAFE_INTEGER,
+        displayName: existingSeed?.displayName ?? rosterDisplayMemberByBowlerAndTeam.get(`${receipt.bowlerId}:${receipt.teamId}`)?.displayName ?? input.displayNamesByBowler.get(receipt.bowlerId) ?? "Former bowler",
+        order: existingSeed?.order ?? rosterDisplayMemberByBowlerAndTeam.get(`${receipt.bowlerId}:${receipt.teamId}`)?.order ?? Number.MAX_SAFE_INTEGER,
+        associationId: existingSeed?.associationId ?? rosterDisplayMemberByBowlerAndTeam.get(`${receipt.bowlerId}:${receipt.teamId}`)?.associationId,
+        joinedAt: existingSeed?.joinedAt ?? rosterDisplayMemberByBowlerAndTeam.get(`${receipt.bowlerId}:${receipt.teamId}`)?.joinedAt,
         rosterRole: input.historicalRoleByBowler.get(receipt.bowlerId)
           ?? (input.mainBowlerIdsByTeam.get(receipt.teamId)?.has(receipt.bowlerId) === true ? "main" : existingSeed?.rosterRole ?? "substitute"),
-        currentMember: existingSeed?.currentMember ?? false,
+        currentMember: existingSeed?.currentMember
+          ?? rosterDisplayMemberByBowlerAndTeam.has(`${receipt.bowlerId}:${receipt.teamId}`),
       });
     }
   }
@@ -1063,11 +1094,13 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
     }
     rowSeeds.set(receipt.bowlerId, {
       teamId,
-      displayName: member?.displayName ?? input.displayNamesByBowler.get(receipt.bowlerId) ?? "Former bowler",
-      order: member?.order ?? Number.MAX_SAFE_INTEGER,
+      displayName: member?.displayName ?? rosterDisplayMemberByBowlerAndTeam.get(`${receipt.bowlerId}:${teamId}`)?.displayName ?? input.displayNamesByBowler.get(receipt.bowlerId) ?? "Former bowler",
+      order: member?.order ?? rosterDisplayMemberByBowlerAndTeam.get(`${receipt.bowlerId}:${teamId}`)?.order ?? Number.MAX_SAFE_INTEGER,
+      associationId: member?.associationId ?? rosterDisplayMemberByBowlerAndTeam.get(`${receipt.bowlerId}:${teamId}`)?.associationId,
+      joinedAt: member?.joinedAt ?? rosterDisplayMemberByBowlerAndTeam.get(`${receipt.bowlerId}:${teamId}`)?.joinedAt,
       rosterRole: input.historicalRoleByBowler.get(receipt.bowlerId)
         ?? (input.mainBowlerIdsByTeam.get(teamId)?.has(receipt.bowlerId) === true ? "main" : "substitute"),
-      currentMember: member !== undefined,
+      currentMember: member !== undefined || rosterDisplayMemberByBowlerAndTeam.has(`${receipt.bowlerId}:${teamId}`),
     });
   }
 
@@ -1095,7 +1128,16 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
     defaultMainKeys.add(key);
     if (!defaultsByBowlerAndTeam.has(key)) defaultsByBowlerAndTeam.set(key, row);
   }
-  const teamRows = new Map<number, Array<{ bowlerId: number; order: number; displayName: string; row: ManagePaymentsSnapshot["teams"][number]["rows"][number]; stateRow: StateFingerprintRow }>>();
+  const teamRows = new Map<number, Array<{
+    bowlerId: number;
+    order: number;
+    displayName: string;
+    associationId?: number;
+    joinedAt?: string;
+    currentMember: boolean;
+    row: ManagePaymentsSnapshot["teams"][number]["rows"][number];
+    stateRow: StateFingerprintRow;
+  }>>();
   for (const [bowlerId, seed] of rowSeeds) {
     const exact = exactByBowler.get(bowlerId);
     const defaultKey = `${bowlerId}:${seed.teamId}`;
@@ -1154,22 +1196,63 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
     };
     teamRows.set(seed.teamId, [
       ...(teamRows.get(seed.teamId) ?? []),
-      { bowlerId, order: seed.order, displayName: seed.displayName, row, stateRow },
+      {
+        bowlerId,
+        order: seed.order,
+        displayName: seed.displayName,
+        associationId: seed.associationId,
+        joinedAt: seed.joinedAt,
+        currentMember: seed.currentMember,
+        row,
+        stateRow,
+      },
     ]);
   }
 
   const stateRows: StateFingerprintRow[] = [];
   const teams: ManagePaymentsTeam[] = input.teams
     .filter((team) => team.active || (teamRows.get(team.teamId)?.length ?? 0) > 0)
-    .sort((left, right) => left.displayOrder - right.displayOrder || left.teamId - right.teamId)
+    .sort((left, right) => Number(right.active) - Number(left.active)
+      || left.displayOrder - right.displayOrder
+      || (left.teamNumber ?? Number.MAX_SAFE_INTEGER) - (right.teamNumber ?? Number.MAX_SAFE_INTEGER)
+      || left.teamId - right.teamId)
     .flatMap((team) => {
       const rows = (teamRows.get(team.teamId) ?? [])
-        .sort((left, right) => left.order - right.order || left.displayName.localeCompare(right.displayName) || left.bowlerId - right.bowlerId);
+        .sort((left, right) => Number(right.currentMember) - Number(left.currentMember)
+          || compareTeamRosterPresentationOrder(
+            {
+              id: left.associationId ?? Number.MAX_SAFE_INTEGER,
+              bowlerId: left.bowlerId,
+              order: left.order,
+              joinedAt: left.joinedAt ?? "",
+            },
+            {
+              id: right.associationId ?? Number.MAX_SAFE_INTEGER,
+              bowlerId: right.bowlerId,
+              order: right.order,
+              joinedAt: right.joinedAt ?? "",
+            },
+          )
+          || left.displayName.localeCompare(right.displayName)
+          || left.bowlerId - right.bowlerId);
       for (const row of rows) stateRows.push(row.stateRow);
       if (rows.length === 0 && !team.active) return [];
       return [{
         teamId: team.teamId,
         teamName: team.teamName,
+        ...(input.vacantSlotIndexesByTeam?.has(team.teamId)
+          ? {
+            vacantSlots: (input.vacantSlotIndexesByTeam.get(team.teamId) ?? [])
+              .map((slotIndex) => ({ slotIndex }))
+              .sort((left, right) => left.slotIndex - right.slotIndex),
+          }
+          : {}),
+        ...(input.rosterDisplayMembersByTeam?.has(team.teamId)
+          ? {
+            rosterDisplayMembers: (input.rosterDisplayMembersByTeam.get(team.teamId) ?? [])
+              .map(({ bowlerId, displayName, activeProfile }) => ({ bowlerId, displayName, activeProfile })),
+          }
+          : {}),
         rows: rows.map((entry) => entry.row),
       }];
     });
