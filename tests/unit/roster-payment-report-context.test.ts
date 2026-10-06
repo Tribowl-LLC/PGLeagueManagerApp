@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { rotatingOccurrenceAssignments } from "@shared/schema";
 
 const queryState = vi.hoisted(() => ({
   rows: [] as unknown[][],
   fromTables: [] as unknown[],
+  whereConditions: [] as SQL[],
 }));
 vi.hoisted(() => {
   process.env.DATABASE_URL = "postgres://unit.test/leaguevault";
@@ -22,7 +25,7 @@ vi.mock("../../server/db.js", () => ({
         },
         innerJoin() { return builder; },
         leftJoin() { return builder; },
-        where() { return builder; },
+        where(condition: SQL) { queryState.whereConditions.push(condition); return builder; },
         orderBy() { return builder; },
         limit() { return builder; },
         for() { return builder; },
@@ -48,12 +51,12 @@ const leagueId = 19075;
 const teamId = 20425;
 const occurrenceId = "00000000-0000-4000-8000-000000000029";
 
-function metadataRows(): unknown[][] {
+function metadataRows(slotIndexes: readonly number[] = [0, 1, 2, 3]): unknown[][] {
   const mainBowlerIds = [100, 101, 102];
   const slots = [
     ...mainBowlerIds.map((mainBowlerId, slotIndex) => ({ teamId, slotIndex, occupant: "main", mainBowlerId })),
     { teamId, slotIndex: 3, occupant: "rotating", mainBowlerId: null },
-  ];
+  ].filter((slot) => slotIndexes.includes(slot.slotIndex));
   return [
     [{ id: leagueId, organizationId, locationId: 1, payingLineupSize: 4, paymentMode: "weekly", weeklyFee: 2_000, substituteAccess: "team_only", substitutePaymentRegime: "team_choice", lineageFee: null, prizeFundFee: null }],
     [{ id: teamId, name: "Tuesday Team", number: 1 }],
@@ -68,16 +71,27 @@ function metadataRows(): unknown[][] {
   ];
 }
 
+function rosterDisplayRows(): unknown[] {
+  return [
+    { id: 40, teamId, bowlerId: 100, displayName: "Zoe Lane", activeProfile: true, order: 0, joinedAt: "2026-09-01T00:00:00.000Z" },
+    { id: 10, teamId, bowlerId: 101, displayName: "Mina Quinn", activeProfile: true, order: 1, joinedAt: "2026-09-03T00:00:00.000Z" },
+    { id: 20, teamId, bowlerId: 102, displayName: "Aaron Park", activeProfile: true, order: 1, joinedAt: "2026-09-03T00:00:00.000Z" },
+    { id: 30, teamId, bowlerId: 110, displayName: "Inactive Member", activeProfile: false, order: 2, joinedAt: "2026-09-01T00:00:00.000Z" },
+    { id: 90, teamId, bowlerId: 101, displayName: "Old Mina Association", activeProfile: true, order: 0, joinedAt: "2026-08-01T00:00:00.000Z" },
+  ];
+}
+
 function setQueryRows(rows: unknown[][]): void {
   queryState.rows = rows;
   queryState.fromTables = [];
+  queryState.whereConditions = [];
 }
 
 describe("team envelope roster read context", () => {
   afterEach(() => setQueryRows([]));
 
-  it("reads V2 lineup and pool metadata without querying assignment history", async () => {
-    setQueryRows(metadataRows());
+  it("reads ordered current roster display metadata within organization scope without querying assignment history", async () => {
+    setQueryRows([...metadataRows(), rosterDisplayRows()]);
 
     const context = await readTeamEnvelopeRosterReadContext({ organizationId, leagueId });
 
@@ -85,8 +99,51 @@ describe("team envelope roster read context", () => {
     expect(context.teams[0]).toMatchObject({ id: teamId, eligibleRotatingBowlerIds: [103] });
     expect(context.teams[0]?.slots[3]).toMatchObject({ slotIndex: 3, occupant: "rotating", currentRevision: 1 });
     expect(context).not.toHaveProperty("rotationAssignments");
+    expect(context.rosterDisplayMembersByTeam).toEqual([{
+      teamId,
+      members: [
+        { bowlerId: 100, displayName: "Zoe Lane", activeProfile: true },
+        { bowlerId: 101, displayName: "Mina Quinn", activeProfile: true },
+        { bowlerId: 102, displayName: "Aaron Park", activeProfile: true },
+        { bowlerId: 110, displayName: "Inactive Member", activeProfile: false },
+      ],
+    }]);
     expect(queryState.fromTables).not.toContain(rotatingOccurrenceAssignments);
+    const rosterScopeCondition = queryState.whereConditions.at(-1);
+    if (!rosterScopeCondition) throw new Error("missing roster metadata query scope");
+    const rosterScope = new PgDialect().sqlToQuery(rosterScopeCondition);
+    expect(rosterScope.sql).toContain('"bowlers"."organization_id"');
+    expect(rosterScope.sql).toContain('"bowler_leagues"."league_id"');
+    expect(rosterScope.sql).toContain('"bowler_leagues"."team_id"');
+    expect(rosterScope.params).toEqual(expect.arrayContaining([organizationId, leagueId, teamId]));
     expect(queryState.rows).toEqual([]);
+  });
+
+  it("fills missing fixed positions only for the envelope report context", async () => {
+    setQueryRows([...metadataRows([0, 2]), rosterDisplayRows()]);
+
+    const reportContext = await readTeamEnvelopeRosterReadContext({ organizationId, leagueId });
+
+    expect(reportContext.ready).toBe(false);
+    expect(reportContext.teams[0]?.slots.map((slot) => slot.slotIndex)).toEqual([0, 1, 2, 3]);
+    expect(reportContext.teams[0]?.slots.find((slot) => slot.slotIndex === 1)).toMatchObject({
+      teamId,
+      slotIndex: 1,
+      occupant: "unassigned",
+      mainBowlerId: null,
+    });
+    expect(reportContext.teams[0]?.slots.find((slot) => slot.slotIndex === 3)).toMatchObject({
+      teamId,
+      slotIndex: 3,
+      occupant: "unassigned",
+      mainBowlerId: null,
+    });
+
+    setQueryRows([...metadataRows([0, 2]), []]);
+    const standardV2Read = await readRosterPaymentResponsibilityV2({ organizationId, leagueId });
+
+    expect(standardV2Read.ready).toBe(false);
+    expect(standardV2Read.teams[0]?.slots.map((slot) => slot.slotIndex)).toEqual([0, 2]);
   });
 
   it("keeps the standard V2 read fail-closed for an assignment without an active responsibility", async () => {

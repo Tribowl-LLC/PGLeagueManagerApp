@@ -624,17 +624,180 @@ describe("team envelope report", () => {
     });
     expect(team?.rows.some((row) => row.bowlerId === 106)).toBe(false);
     expect(team?.showFinalWeekPaid).toBe(true);
-    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows).toMatchObject([{
+    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows.find((row) => row.bowlerId === 107)).toMatchObject({
       bowlerId: 107,
       bowlerName: "Taylor Rotation",
       weeklyDueMinor: 2_000,
       ytdPaidMinor: 1_000,
       remainingCreditMinor: 1_000,
       dueTodayMinor: 1_000,
-    }]);
-    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows).toHaveLength(1);
+    });
+    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows).toHaveLength(2);
     expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows.every((row) => row.ownerKind !== "team")).toBe(true);
     expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows.some((row) => row.bowlerId === 108)).toBe(false);
+  });
+
+  it("shows legacy roster members in official order, keeps legacy Main rows as extras, and places vacancies first", async () => {
+    const input = reportInput();
+    Object.assign(input.roster, {
+      rosterDisplayMembersByTeam: [
+        {
+          teamId: 10,
+          members: [
+            { bowlerId: 102, displayName: "Laurie Example", activeProfile: true },
+            { bowlerId: 103, displayName: "Zero Balance Member", activeProfile: true },
+            { bowlerId: 104, displayName: "Inactive Display Member", activeProfile: false },
+          ],
+        },
+        {
+          teamId: 20,
+          members: [
+            { bowlerId: 201, displayName: "Morgan Example", activeProfile: true },
+            { bowlerId: 202, displayName: "No Account Member", activeProfile: true },
+          ],
+        },
+      ],
+    });
+
+    const report = buildTeamEnvelopeReport(input);
+    const teamOne = report.teams.find((team) => team.teamId === 10);
+    const teamTwo = report.teams.find((team) => team.teamId === 20);
+
+    expect(teamOne?.rows.map((row) => row.bowlerId)).toEqual([102, 103, 104, 101]);
+    expect(teamOne?.rows[1]).toMatchObject({
+      bowlerName: "Zero Balance Member",
+      weeklyDueMinor: 0,
+      ytdDueMinor: 0,
+      ytdPaidMinor: 0,
+      remainingCreditMinor: 0,
+      pastDueMinor: 0,
+      dueTodayMinor: 0,
+    });
+    expect(teamTwo?.rows.map((row) => [row.bowlerId, row.bowlerName, row.slotIndex])).toEqual([
+      [null, "VACANT", 1],
+      [201, "Morgan Example", undefined],
+      [202, "No Account Member", undefined],
+    ]);
+    expect(teamTwo?.rows[0]).toMatchObject({
+      weeklyDueMinor: 0,
+      ytdDueMinor: 0,
+      ytdPaidMinor: 0,
+      remainingCreditMinor: 0,
+      pastDueMinor: 0,
+      dueTodayMinor: 0,
+      finalWeekPaid: true,
+    });
+    const bytes = await renderTeamEnvelopePdf(report);
+    expect(Buffer.from(bytes.subarray(0, 4)).toString("ascii")).toBe("%PDF");
+  });
+
+  it("keeps adopted money on its resolved team and renders current roster placeholders without expanding financial membership", async () => {
+    const input = adoptedEnvelopeInput();
+    expect(input.roster.teams.find((team) => team.id === 10)?.slots).toContainEqual({
+      teamId: 10,
+      slotIndex: 0,
+      occupant: "unassigned",
+      mainBowlerId: null,
+    });
+    expect(input.roster.teams.find((team) => team.id === 10)?.slots).toContainEqual({
+      teamId: 10,
+      slotIndex: 1,
+      occupant: "vacant",
+      mainBowlerId: null,
+    });
+    const movedSubstitute = input.roster.substituteBowlerOptions.find((bowler) => bowler.id === 103);
+    if (!movedSubstitute) throw new Error("missing transferred bowler fixture");
+    movedSubstitute.teamId = 20;
+    Object.assign(input.roster, {
+      rosterDisplayMembersByTeam: [
+        {
+          teamId: 10,
+          members: [
+            { bowlerId: 104, displayName: "Avery Credit", activeProfile: true },
+            { bowlerId: 105, displayName: "Riley Partial Waiver", activeProfile: true },
+            { bowlerId: 106, displayName: "Casey Waived Only", activeProfile: false },
+          ],
+        },
+        {
+          teamId: 20,
+          members: [
+            { bowlerId: 107, displayName: "Taylor Rotation", activeProfile: true },
+            { bowlerId: 103, displayName: "Sam's Current Team", activeProfile: true },
+          ],
+        },
+      ],
+    });
+
+    const report = buildTeamEnvelopeReport(input);
+    const historicalTeam = report.teams.find((team) => team.teamId === 10);
+    const currentTeam = report.teams.find((team) => team.teamId === 20);
+    const waivedOnlyPlaceholder = historicalTeam?.rows.find((row) => row.bowlerId === 106);
+    const transferredRows = report.teams.flatMap((team) => team.rows
+      .filter((row) => row.bowlerId === 103)
+      .map((row) => ({ teamId: team.teamId, row })));
+
+    expect(historicalTeam?.rows.map((row) => row.bowlerName)).toEqual([
+      "Unassigned",
+      "VACANT",
+      "Avery Credit",
+      "Riley Partial Waiver",
+      "Casey Waived Only",
+      "Sam's Current Team",
+    ]);
+    expect(historicalTeam?.rows.slice(0, 2)).toMatchObject([
+      {
+        bowlerName: "Unassigned",
+        slotIndex: 0,
+        weeklyDueMinor: 0,
+        ytdDueMinor: 0,
+        ytdPaidMinor: 0,
+        remainingCreditMinor: 0,
+        pastDueMinor: 0,
+        dueTodayMinor: 0,
+        finalWeekPaid: true,
+      },
+      {
+        bowlerName: "VACANT",
+        slotIndex: 1,
+        weeklyDueMinor: 0,
+        ytdDueMinor: 0,
+        ytdPaidMinor: 0,
+        remainingCreditMinor: 0,
+        pastDueMinor: 0,
+        dueTodayMinor: 0,
+        finalWeekPaid: true,
+      },
+    ]);
+    expect(waivedOnlyPlaceholder).toMatchObject({
+      weeklyDueMinor: 0,
+      ytdDueMinor: 0,
+      ytdPaidMinor: 0,
+      remainingCreditMinor: 0,
+      pastDueMinor: 0,
+      dueTodayMinor: 0,
+      finalWeekPaid: true,
+    });
+    expect(currentTeam?.rows.map((row) => row.bowlerName)).toEqual([
+      "VACANT",
+      "Taylor Rotation",
+      "Sam's Current Team",
+    ]);
+    expect(transferredRows).toHaveLength(2);
+    expect(transferredRows
+      .filter(({ row }) => row.ytdDueMinor > 0 || row.ytdPaidMinor > 0 || row.dueTodayMinor > 0)
+      .map(({ teamId }) => teamId)).toEqual([10]);
+    expect(transferredRows.find(({ teamId }) => teamId === 20)?.row).toMatchObject({
+      weeklyDueMinor: 0,
+      ytdDueMinor: 0,
+      ytdPaidMinor: 0,
+      remainingCreditMinor: 0,
+      pastDueMinor: 0,
+      dueTodayMinor: 0,
+      finalWeekPaid: true,
+    });
+
+    const bytes = await renderTeamEnvelopePdf(report);
+    expect(Buffer.from(bytes.subarray(0, 4)).toString("ascii")).toBe("%PDF");
   });
 
   it("uses the selected week's fees, prior YTD due, all effective payments, and due-through-today balance", () => {
@@ -766,7 +929,8 @@ describe("team envelope report", () => {
       rows,
     };
 
-    const row = buildTeamEnvelopeReport(input).teams.find((candidate) => candidate.teamId === 20)?.rows[0];
+    const row = buildTeamEnvelopeReport(input).teams.find((candidate) => candidate.teamId === 20)?.rows
+      .find((candidate) => candidate.ownerKind === "team");
     expect(row).toMatchObject({
       bowlerName: "Rotating slot 1 · Morgan Example",
       weeklyDueMinor: 2_000,
