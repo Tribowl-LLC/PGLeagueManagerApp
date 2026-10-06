@@ -1,4 +1,4 @@
-.manage-payments-layout-main {
+main[data-manage-payments-main] {
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
