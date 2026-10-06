@@ -265,6 +265,9 @@ flat white save dock stays at the bottom of the worksheet scroll area. When a
 positive new manual payment is present, the dock shows a Received date beside
 the week status, defaulted to the selected occurrence’s local calendar date;
 on phones the date remains above a full-width Save week button.
+The page title, subtitle, league and collection-week controls, and divider stay
+together in an opaque sticky header within the Manage Payments scroll pane,
+below the shared application header; team rosters scroll beneath it.
 
 **Key Characteristics:**
 
