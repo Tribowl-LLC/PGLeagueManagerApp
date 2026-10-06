@@ -4496,6 +4496,9 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         eq(occurrencePaymentResponsibilities.organizationId, organizationId),
         eq(occurrencePaymentResponsibilities.leagueId, leagueId),
         eq(occurrencePaymentResponsibilities.occurrenceId, septemberDate.occurrence.id),
+        eq(occurrencePaymentResponsibilities.teamId, teamId),
+        eq(occurrencePaymentResponsibilities.slotIndex, 0),
+        eq(occurrencePaymentResponsibilities.positionIndex, 0),
         eq(occurrencePaymentResponsibilities.state, "active"),
       ));
       expect(activeResponsibility).toMatchObject({ responsibilityKind: "substitute", substituteBowlerId: substitute.id, payerBowlerId: substitute.id, policy: "sub_pays_full" });
