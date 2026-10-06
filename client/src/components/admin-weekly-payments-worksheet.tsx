@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, CreditCard, Pencil, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -67,8 +67,21 @@ export interface AdminWeeklyPaymentsBowlerRow {
 export interface AdminWeeklyPaymentsTeam {
   teamId: number;
   teamName: string;
+  vacantSlots?: readonly { slotIndex: number }[];
+  unassignedSlots?: readonly { slotIndex: number }[];
+  rosterDisplayMembers?: readonly {
+    bowlerId: number;
+    displayName: string;
+    activeProfile: boolean;
+  }[];
   rows: readonly AdminWeeklyPaymentsBowlerRow[];
 }
+
+type AdminWeeklyPaymentsDisplayRow =
+  | { kind: "vacant"; slotIndex: number }
+  | { kind: "unassigned"; slotIndex: number }
+  | { kind: "staticMember"; bowlerId: number; displayName: string }
+  | { kind: "bowler"; row: AdminWeeklyPaymentsBowlerRow; readOnly: boolean };
 
 export interface AdminWeeklyPaymentsRowChange {
   teamId: number;
@@ -244,14 +257,40 @@ function TeamWorksheet({
 }) {
   let teamTotalMinor = 0;
   let hasInvalidTotalAmount = false;
+  const currentRosterByBowlerId = new Map(
+    (team.rosterDisplayMembers ?? []).map((member) => [member.bowlerId, member]),
+  );
+
+  const financialRowsByBowlerId = new Map(team.rows.map((row) => [row.bowlerId, row]));
+  const displayedBowlerIds = new Set<number>();
+  const displayRows: AdminWeeklyPaymentsDisplayRow[] = [
+    ...[
+      ...(team.vacantSlots ?? []).map(({ slotIndex }) => ({ kind: "vacant" as const, slotIndex })),
+      ...(team.unassignedSlots ?? []).map(({ slotIndex }) => ({ kind: "unassigned" as const, slotIndex })),
+    ].sort((left, right) => left.slotIndex - right.slotIndex),
+    ...(team.rosterDisplayMembers ?? []).filter((member) => member.activeProfile).map((member): AdminWeeklyPaymentsDisplayRow => {
+      displayedBowlerIds.add(member.bowlerId);
+      const row = financialRowsByBowlerId.get(member.bowlerId);
+      return row
+        ? { kind: "bowler", row, readOnly: false }
+        : { kind: "staticMember", bowlerId: member.bowlerId, displayName: member.displayName };
+    }),
+    ...team.rows.flatMap((row): AdminWeeklyPaymentsDisplayRow[] => (
+      displayedBowlerIds.has(row.bowlerId)
+        || currentRosterByBowlerId.get(row.bowlerId)?.activeProfile === false
+        ? []
+        : [{ kind: "bowler", row, readOnly: false }]
+    )),
+  ];
 
   for (const row of team.rows) {
+    const rowReadOnly = currentRosterByBowlerId.get(row.bowlerId)?.activeProfile === false;
     const hasSavedReceipt = row.manualReceipts.length > 0 || row.cardReceipts.length > 0;
     for (const receipt of row.cardReceipts) teamTotalMinor += receipt.amountMinor;
 
     for (const receipt of row.manualReceipts) {
       const key = receiptKey(leagueId, team.teamId, row.bowlerId, receipt.receiptId);
-      const draft = manualReceiptDrafts[key];
+      const draft = rowReadOnly ? undefined : manualReceiptDrafts[key];
       if (draft === undefined) {
         teamTotalMinor += receipt.amountMinor;
         continue;
@@ -265,7 +304,7 @@ function TeamWorksheet({
       teamTotalMinor += amount;
     }
 
-    if (!hasSavedReceipt) {
+    if (!hasSavedReceipt && !rowReadOnly) {
       const draft = newReceiptDrafts[rowKey(leagueId, team.teamId, row.bowlerId)] ?? "";
       if (draft.trim() !== "") {
         const amount = parseAmount(draft);
@@ -326,9 +365,54 @@ function TeamWorksheet({
               </TableRow>
             </TableHeader>
             <TableBody appearance="managePayments">
-              {team.rows.map((row) => {
+              {displayRows.map((displayRow) => {
+                if (displayRow.kind !== "bowler") {
+                  const isVacant = displayRow.kind === "vacant";
+                  const key = displayRow.kind === "staticMember"
+                    ? `${team.teamId}:inactive:${displayRow.bowlerId}`
+                    : `${team.teamId}:${displayRow.kind}:${displayRow.slotIndex}`;
+                  const displayName = isVacant
+                    ? "VACANT"
+                    : displayRow.kind === "unassigned"
+                      ? "Unassigned"
+                      : displayRow.displayName;
+                  const checkboxLabel = displayRow.kind === "staticMember"
+                    ? `Responsible this week for ${displayName}`
+                    : `Responsible this week for ${displayName} position ${displayRow.slotIndex + 1}`;
+                  return (
+                    <TableRow key={key} variant="plain" hover="none" appearance="managePayments">
+                      <TableCell appearance="managePaymentsResponsible">
+                        <span data-awpw="mobile-label">Responsible this week</span>
+                        <span data-awpw="responsible-control">
+                          <Checkbox appearance="managePayments" checked={false} disabled aria-label={checkboxLabel} />
+                        </span>
+                      </TableCell>
+                      <TableCell appearance="managePaymentsBowler" weight="medium">
+                        <span data-awpw="mobile-label">Bowler</span>
+                        <span data-awpw="bowler-name">{displayName}</span>
+                      </TableCell>
+                      <TableCell appearance="managePaymentsBalance">
+                        <span data-awpw="mobile-label">Account balance</span>
+                        <span>—</span>
+                      </TableCell>
+                      <TableCell appearance="managePaymentsFee">
+                        <span data-awpw="mobile-label">This week’s fee</span>
+                        <span>—</span>
+                      </TableCell>
+                      <TableCell appearance="managePaymentsReceived">
+                        <span data-awpw="mobile-label" className="manage-payments-received-mobile-label">Received</span>
+                        <span data-awpw="received-content">—</span>
+                      </TableCell>
+                      <TableCell appearance="managePaymentsFinal">
+                        <span data-awpw="mobile-label">Final two weeks</span>
+                        <span>—</span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                }
+                const { row, readOnly: rowReadOnly } = displayRow;
                 const key = rowKey(leagueId, team.teamId, row.bowlerId);
-                const decision = responsibilityDrafts[key] ?? {
+                const decision = (rowReadOnly ? undefined : responsibilityDrafts[key]) ?? {
                   responsible: row.responsible,
                   feeComponent: row.feeComponent,
                 };
@@ -337,7 +421,7 @@ function TeamWorksheet({
                 const selectedFeeMinor = responsibilityChanged
                   ? feeOptions.find((option) => option.feeComponent === decision.feeComponent)?.amountMinor ?? row.feeMinor
                   : row.feeMinor;
-                const newReceiptDraft = newReceiptDrafts[key] ?? "";
+                const newReceiptDraft = rowReadOnly ? "" : newReceiptDrafts[key] ?? "";
                 const newReceiptAmount = newReceiptDraft.trim() === ""
                   ? null
                   : parseAmount(newReceiptDraft);
@@ -360,7 +444,7 @@ function TeamWorksheet({
                         <Checkbox
                           appearance="managePayments"
                           checked={decision.responsible}
-                          disabled={saving || readOnly}
+                          disabled={saving || readOnly || rowReadOnly}
                           aria-label={`Responsible this week for ${row.displayName}`}
                           onCheckedChange={(checked) =>
                             onResponsibilityChange(row, checked === true)
@@ -396,7 +480,7 @@ function TeamWorksheet({
                       {decision.responsible ? (
                         <Select
                           value={decision.feeComponent}
-                          disabled={saving || readOnly}
+                          disabled={saving || readOnly || rowReadOnly}
                           onValueChange={(value) => {
                             if (isFeeComponent(value)) onFeeComponentChange(row, value);
                           }}
@@ -449,7 +533,7 @@ function TeamWorksheet({
                             row.bowlerId,
                             receipt.receiptId,
                           );
-                          const manualDraft = manualReceiptDrafts[manualKey];
+                          const manualDraft = rowReadOnly ? undefined : manualReceiptDrafts[manualKey];
                           const manualDraftAmount = manualDraft === undefined
                             ? null
                             : parseEditedReceiptAmount(manualDraft);
@@ -469,7 +553,7 @@ function TeamWorksheet({
                                     size="icon"
                                     className="shrink-0"
                                     data-awpw="edit-recorded-button"
-                                    disabled={saving || readOnly}
+                                    disabled={saving || readOnly || rowReadOnly}
                                     aria-label={`Edit recorded ${receipt.type} payment ${formatMoney(receipt.amountMinor)} received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                     onClick={() => onBeginManualReceiptEdit(manualKey, receipt)}
                                   >
@@ -487,7 +571,7 @@ function TeamWorksheet({
                                         appearance="managePayments"
                                         autoFocus
                                         value={manualDraft}
-                                        disabled={saving || readOnly}
+                                        disabled={saving || readOnly || rowReadOnly}
                                         aria-label={`Correct recorded amount received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                         aria-invalid={manualDraftInvalid}
                                         onKeyDown={(event) => {
@@ -509,7 +593,7 @@ function TeamWorksheet({
                                       size="paymentsIcon"
                                       className="shrink-0"
                                       data-awpw="cancel-recorded-edit"
-                                      disabled={saving || readOnly}
+                                      disabled={saving || readOnly || rowReadOnly}
                                       aria-label={`Cancel recorded payment edit received ${receipt.businessCollectionLocalDate} for ${row.displayName}`}
                                       onClick={() => onCancelManualReceiptEdit(manualKey)}
                                     >
@@ -529,7 +613,7 @@ function TeamWorksheet({
                             </div>
                           );
                         })}
-                        {!hasReceiptEvidence && (
+                        {!hasReceiptEvidence && !rowReadOnly && (
                           <div className="flex min-w-0 flex-col gap-1">
                             <div data-awpw="amount-input">
                               <span data-awpw="receipt-currency-prefix" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
@@ -539,7 +623,7 @@ function TeamWorksheet({
                                 appearance="managePayments"
                                 value={newReceiptDraft}
                                 placeholder="0.00"
-                                disabled={saving || readOnly}
+                                disabled={saving || readOnly || rowReadOnly}
                                 aria-label={`Amount received from ${row.displayName}`}
                                 aria-invalid={newReceiptInvalid}
                                 onChange={(event) =>
@@ -652,9 +736,18 @@ export function AdminWeeklyPaymentsWorksheet({
   const [recovering, setRecovering] = useState(false);
   const saveInFlight = useRef(false);
 
-  const allRows = teams.flatMap((team) =>
-    team.rows.map((row) => ({ team, row, key: rowKey(leagueId, team.teamId, row.bowlerId) })),
-  );
+  const allRows = useMemo(() => teams.flatMap((team) => {
+    const currentRosterByBowlerId = new Map(
+      (team.rosterDisplayMembers ?? []).map((member) => [member.bowlerId, member]),
+    );
+    return team.rows.map((row) => ({
+      team,
+      row,
+      key: rowKey(leagueId, team.teamId, row.bowlerId),
+      readOnly: currentRosterByBowlerId.get(row.bowlerId)?.activeProfile === false,
+    }));
+  }), [leagueId, teams]);
+  const editableRows = useMemo(() => allRows.filter(({ readOnly: rowReadOnly }) => !rowReadOnly), [allRows]);
 
   function currentDecision(row: AdminWeeklyPaymentsBowlerRow, key: string): AdminWeeklyPaymentsResponsibilityDraft {
     return responsibilityDrafts[key] ?? {
@@ -672,7 +765,7 @@ export function AdminWeeklyPaymentsWorksheet({
       && (draft.responsible !== row.responsible || draft.feeComponent !== row.feeComponent);
   }
 
-  const invalidRows = allRows.filter(({ team, row, key }) => {
+  const invalidRows = editableRows.filter(({ team, row, key }) => {
     const newAmount = newReceiptDrafts[key] ?? "";
     const canEnterNewReceipt = row.manualReceipts.length === 0 && row.cardReceipts.length === 0;
     const paymentInvalid = canEnterNewReceipt
@@ -687,7 +780,7 @@ export function AdminWeeklyPaymentsWorksheet({
   });
 
   const rowChanges: AdminWeeklyPaymentsRowChange[] = [];
-  for (const { team, row, key } of allRows) {
+  for (const { team, row, key } of editableRows) {
     const decision = currentDecision(row, key);
     const manualReceiptEdits: AdminWeeklyPaymentsRowChange["manualReceiptEdits"][number][] = [];
     let newManualReceiptAmountMinor: number | undefined;
@@ -734,10 +827,14 @@ export function AdminWeeklyPaymentsWorksheet({
   const hasNewPayments = rowChanges.some((row) => row.newManualReceiptAmountMinor !== undefined);
   const invalidReceivedDate = hasNewPayments
     && !managePaymentsReceivedDateSchema.safeParse(receivedDate).success;
+  const editableRowKeys = new Set(editableRows.map(({ key }) => key));
+  const editableManualReceiptKeys = new Set(editableRows.flatMap(({ team, row }) => row.manualReceipts.map((receipt) => (
+    receiptKey(leagueId, team.teamId, row.bowlerId, receipt.receiptId)
+  ))));
   const hasLocalDrafts = hasDraftChanges
     || invalidRows.length > 0
-    || Object.keys(manualReceiptDrafts).length > 0
-    || Object.values(newReceiptDrafts).some((amount) => amount.trim() !== "");
+    || Object.keys(manualReceiptDrafts).some((key) => editableManualReceiptKeys.has(key))
+    || Object.entries(newReceiptDrafts).some(([key, amount]) => editableRowKeys.has(key) && amount.trim() !== "");
   const canSave = !readOnly
     && !saving
     && invalidRows.length === 0

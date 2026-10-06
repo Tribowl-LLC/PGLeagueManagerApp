@@ -921,6 +921,92 @@ describe("Manage Payments worksheet projection", () => {
     expect(snapshot.teams.find((team) => team.teamId === 32)?.rows).toHaveLength(0);
   });
 
+  it("projects the official active roster order and vacant positions without creating financial rows for display-only members", () => {
+    const presentationMembers = [
+      { associationId: 40, teamId: 17, bowlerId: 501, displayName: "Zoe Lane", order: 0, joinedAt: "2026-09-01T00:00:00.000Z", activeProfile: true, rosterRole: "main" as const },
+      { associationId: 10, teamId: 17, bowlerId: 2, displayName: "Mina Quinn", order: 1, joinedAt: "2026-09-03T00:00:00.000Z", activeProfile: true, rosterRole: "substitute" as const },
+      { associationId: 20, teamId: 17, bowlerId: 1, displayName: "Aaron Park", order: 1, joinedAt: "2026-09-03T00:00:00.000Z", activeProfile: true, rosterRole: "substitute" as const },
+      { associationId: 30, teamId: 17, bowlerId: 99, displayName: "Casey Reed", order: 1, joinedAt: "2026-09-02T00:00:00.000Z", activeProfile: true, rosterRole: "substitute" as const },
+      { associationId: 50, teamId: 17, bowlerId: 700, displayName: "Inactive Member", order: 2, joinedAt: "2026-09-01T00:00:00.000Z", activeProfile: false, rosterRole: "substitute" as const },
+    ];
+    const input = projectionInput({
+      teams: [
+        { teamId: 93, teamName: "Archived Team", teamNumber: 1, displayOrder: 0, active: false },
+        { teamId: 42, teamName: "Team Four", teamNumber: 4, displayOrder: 1, active: true },
+        { teamId: 51, teamName: "Team Two B", teamNumber: 2, displayOrder: 1, active: true },
+        { teamId: 17, teamName: "Team Two A", teamNumber: 2, displayOrder: 1, active: true },
+      ],
+      members: [
+        { associationId: 30, teamId: 17, bowlerId: 99, displayName: "Casey Reed", order: 1, joinedAt: "2026-09-02T00:00:00.000Z", rosterRole: "substitute" },
+        { associationId: 40, teamId: 17, bowlerId: 501, displayName: "Zoe Lane", order: 0, joinedAt: "2026-09-01T00:00:00.000Z", rosterRole: "main" },
+        { associationId: 20, teamId: 17, bowlerId: 1, displayName: "Aaron Park", order: 1, joinedAt: "2026-09-03T00:00:00.000Z", rosterRole: "substitute" },
+        { associationId: 10, teamId: 17, bowlerId: 2, displayName: "Mina Quinn", order: 1, joinedAt: "2026-09-03T00:00:00.000Z", rosterRole: "substitute" },
+      ],
+      displayNamesByBowler: new Map([
+        [1, "Aaron Park"], [2, "Mina Quinn"], [99, "Casey Reed"], [501, "Zoe Lane"],
+        [880, "Historical Payment"], [881, "Archived Payment"],
+      ]),
+      historicalTeamByBowler: new Map([[880, 17], [881, 93]]),
+      vacantSlotIndexesByTeam: new Map([[17, [3, 0]]]),
+      unassignedSlotIndexesByTeam: new Map([[17, [2, 1]]]),
+      rosterDisplayMembersByTeam: new Map([[17, presentationMembers]]),
+      manualReceipts: [
+        {
+          receiptId: "30000000-0000-4000-8000-000000000001",
+          revision: 1,
+          paymentId: 91,
+          type: "cash",
+          amountMinor: 700,
+          businessCollectionLocalDate: "2026-10-05",
+          bowlerId: 880,
+          teamId: 17,
+          occurrenceId: "occ-4",
+        },
+        {
+          receiptId: "30000000-0000-4000-8000-000000000002",
+          revision: 1,
+          paymentId: 92,
+          type: "check",
+          amountMinor: 500,
+          businessCollectionLocalDate: "2026-10-05",
+          bowlerId: 881,
+          teamId: 93,
+          occurrenceId: "occ-4",
+        },
+      ],
+    });
+
+    const snapshot = buildManagePaymentsWorksheetSnapshot(input);
+    const activeTeam = snapshot.teams.find((team) => team.teamId === 17);
+
+    expect(snapshot.teams.map((team) => team.teamId)).toEqual([17, 51, 42, 93]);
+    expect(activeTeam?.vacantSlots).toEqual([{ slotIndex: 0 }, { slotIndex: 3 }]);
+    expect(activeTeam?.unassignedSlots).toEqual([{ slotIndex: 1 }, { slotIndex: 2 }]);
+    expect(activeTeam?.rosterDisplayMembers).toEqual(presentationMembers.map(({ bowlerId, displayName, activeProfile }) => ({
+      bowlerId,
+      displayName,
+      activeProfile,
+    })));
+    expect(activeTeam?.rows.map((row) => row.bowlerId)).toEqual([501, 2, 1, 99, 880]);
+    expect(activeTeam?.rows.at(-1)).toMatchObject({ bowlerId: 880, manualReceipts: [{ paymentId: 91 }] });
+    expect(activeTeam?.rows.some((row) => row.bowlerId === 700)).toBe(false);
+    expect(activeTeam?.rows.some((row) => row.bowlerId === 0)).toBe(false);
+    expect(snapshot.teams.find((team) => team.teamId === 93)?.rows.map((row) => row.bowlerId)).toEqual([881]);
+
+    const changedPresentationOnly = buildManagePaymentsWorksheetSnapshot({
+      ...input,
+      vacantSlotIndexesByTeam: new Map([[17, [2]]]),
+      unassignedSlotIndexesByTeam: new Map([[17, [0]]]),
+      rosterDisplayMembersByTeam: new Map([[17, presentationMembers.map((member) => ({
+        ...member,
+        displayName: `${member.displayName} changed`,
+      }))]]),
+    });
+    expect(changedPresentationOnly.stateFingerprint).toBe(snapshot.stateFingerprint);
+    expect(changedPresentationOnly.teams.find((team) => team.teamId === 17)?.rows.map((row) => row.bowlerId))
+      .toEqual(activeTeam?.rows.map((row) => row.bowlerId));
+  });
+
   it("uses final billable weeks in billing order and requires money coverage, not waivers", () => {
     const weeks = [
       occurrence("occ-1", "2026-09-14", 1),
