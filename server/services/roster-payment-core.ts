@@ -596,6 +596,25 @@ async function readRosterPaymentResponsibilityV2Metadata(input: { organizationId
  * validation from the canonical financial read. */
 export async function readTeamEnvelopeRosterReadContext(input: { organizationId: number; leagueId: number }): Promise<TeamEnvelopeRosterReadContext> {
   const { legacy, teams: rosterTeams, incompleteTeamIds } = await readRosterPaymentResponsibilityV2Metadata(input);
+  const reportTeams = rosterTeams.map((team) => {
+    const lineupSize = legacy.payingLineupSize;
+    if (lineupSize === null || team.slots.some((slot) => slot.occupant === "rotating")) return team;
+
+    const savedSlotIndexes = new Set(team.slots.map((slot) => slot.slotIndex));
+    const missingSlots = Array.from({ length: lineupSize }, (_, slotIndex) => slotIndex)
+      .filter((slotIndex) => !savedSlotIndexes.has(slotIndex))
+      .map((slotIndex) => ({
+        teamId: team.id,
+        slotIndex,
+        occupant: "unassigned" as const,
+        mainBowlerId: null,
+        currentRevision: 1,
+      }));
+    return {
+      ...team,
+      slots: [...team.slots, ...missingSlots].sort((left, right) => left.slotIndex - right.slotIndex),
+    };
+  });
   const memberRows = rosterTeams.length === 0 ? [] : await db.select({
     id: bowlerLeagues.id,
     teamId: bowlerLeagues.teamId,
@@ -613,7 +632,7 @@ export async function readTeamEnvelopeRosterReadContext(input: { organizationId:
       eq(bowlers.organizationId, input.organizationId),
       inArray(bowlerLeagues.teamId, rosterTeams.map((team) => team.id)),
     ));
-  const rosterDisplayMembersByTeam = rosterTeams.map((team) => ({
+  const rosterDisplayMembersByTeam = reportTeams.map((team) => ({
     teamId: team.id,
     members: orderTeamRosterAssociations(memberRows.filter((row) => row.teamId === team.id)).map((row) => ({
       bowlerId: row.bowlerId,
@@ -625,7 +644,7 @@ export async function readTeamEnvelopeRosterReadContext(input: { organizationId:
     organizationId: legacy.organizationId,
     leagueId: legacy.leagueId,
     ready: legacy.payingLineupSize !== null && incompleteTeamIds.length === 0,
-    teams: rosterTeams,
+    teams: reportTeams,
     substituteBowlerOptions: legacy.substituteBowlerOptions,
     rosterDisplayMembersByTeam,
   };

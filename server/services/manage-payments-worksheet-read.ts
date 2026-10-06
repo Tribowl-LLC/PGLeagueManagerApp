@@ -249,6 +249,7 @@ async function loadManagePaymentsWorksheetProjectionContextInTransaction(
     weeklyFee: leagues.weeklyFee,
     lineageFee: leagues.lineageFee,
     prizeFundFee: leagues.prizeFundFee,
+    payingLineupSize: leagues.payingLineupSize,
   }).from(leagues).where(and(
     eq(leagues.id, input.leagueId),
     eq(leagues.organizationId, input.organizationId),
@@ -454,9 +455,30 @@ async function loadManagePaymentsWorksheetProjectionContextInTransaction(
     })));
   }
   const vacantSlotIndexesByTeam = new Map<number, number[]>();
+  const unassignedSlotIndexesByTeam = new Map<number, number[]>();
+  const rotatingTeamIds = new Set<number>();
+  const slotIndexesByTeam = new Map<number, Set<number>>();
   for (const slot of slotRows) {
-    if (slot.occupant !== "vacant") continue;
-    vacantSlotIndexesByTeam.set(slot.teamId, [...(vacantSlotIndexesByTeam.get(slot.teamId) ?? []), slot.slotIndex]);
+    slotIndexesByTeam.set(slot.teamId, new Set([...(slotIndexesByTeam.get(slot.teamId) ?? []), slot.slotIndex]));
+    if (slot.occupant === "rotating") rotatingTeamIds.add(slot.teamId);
+    if (slot.occupant === "vacant") {
+      vacantSlotIndexesByTeam.set(slot.teamId, [...(vacantSlotIndexesByTeam.get(slot.teamId) ?? []), slot.slotIndex]);
+    }
+    if (slot.occupant === "unassigned") {
+      unassignedSlotIndexesByTeam.set(slot.teamId, [...(unassignedSlotIndexesByTeam.get(slot.teamId) ?? []), slot.slotIndex]);
+    }
+  }
+  if (league.payingLineupSize !== null) {
+    for (const team of teamRows) {
+      if (!team.active || rotatingTeamIds.has(team.teamId)) continue;
+      for (let slotIndex = 0; slotIndex < league.payingLineupSize; slotIndex += 1) {
+        if (slotIndexesByTeam.get(team.teamId)?.has(slotIndex)) continue;
+        unassignedSlotIndexesByTeam.set(team.teamId, [
+          ...(unassignedSlotIndexesByTeam.get(team.teamId) ?? []),
+          slotIndex,
+        ]);
+      }
+    }
   }
   const mainBowlerIdsByTeam = new Map<number, Set<number>>();
   const mainBowlerIdsBySlot = new Map<number, Map<number, number>>();
@@ -850,6 +872,7 @@ async function loadManagePaymentsWorksheetProjectionContextInTransaction(
     teams,
     members,
     vacantSlotIndexesByTeam,
+    unassignedSlotIndexesByTeam,
     rosterDisplayMembersByTeam,
     mainBowlerIdsByTeam,
     mainBowlerIdsBySlot,

@@ -137,6 +137,7 @@ export interface ManagePaymentsProjectionInput {
   teams: readonly ManagePaymentsProjectionTeamInfo[];
   members: readonly ManagePaymentsProjectionMember[];
   vacantSlotIndexesByTeam?: ReadonlyMap<number, readonly number[]>;
+  unassignedSlotIndexesByTeam?: ReadonlyMap<number, readonly number[]>;
   rosterDisplayMembersByTeam?: ReadonlyMap<number, readonly ManagePaymentsProjectionRosterDisplayMember[]>;
   mainBowlerIdsByTeam: ReadonlyMap<number, ReadonlySet<number>>;
   mainBowlerIdsBySlot: ReadonlyMap<number, ReadonlyMap<number, number>>;
@@ -1243,6 +1244,13 @@ export function buildManagePaymentsWorksheetSnapshot(input: ManagePaymentsProjec
         ...(input.vacantSlotIndexesByTeam?.has(team.teamId)
           ? {
             vacantSlots: (input.vacantSlotIndexesByTeam.get(team.teamId) ?? [])
+              .map((slotIndex) => ({ slotIndex }))
+              .sort((left, right) => left.slotIndex - right.slotIndex),
+          }
+          : {}),
+        ...(input.unassignedSlotIndexesByTeam?.has(team.teamId)
+          ? {
+            unassignedSlots: (input.unassignedSlotIndexesByTeam.get(team.teamId) ?? [])
               .map((slotIndex) => ({ slotIndex }))
               .sort((left, right) => left.slotIndex - right.slotIndex),
           }

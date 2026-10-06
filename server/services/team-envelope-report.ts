@@ -505,6 +505,17 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
     const teamRosterMembers = rosterMembersByTeam.get(team.id) ?? [];
     const memberIds = new Set(teamRosterMembers.map((member) => member.bowlerId));
     const currentRosterRows: TeamEnvelopeReportRow[] = [];
+    const zeroRosterRow = (bowlerId: number, bowlerName: string): TeamEnvelopeReportRow => ({
+      bowlerId,
+      bowlerName,
+      weeklyDueMinor: 0,
+      ytdDueMinor: 0,
+      ytdPaidMinor: 0,
+      remainingCreditMinor: 0,
+      pastDueMinor: 0,
+      dueTodayMinor: 0,
+      finalWeekPaid: true,
+    });
     const makeBowlerRow = (bowlerId: number, bowlerName: string): TeamEnvelopeReportRow | null => {
       const obligations = adoptedMode
         ? bowlerAccountObligations(financial, bowlerId)
@@ -543,19 +554,9 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
         currentRosterRows.push(existingLegacyMainRow);
         continue;
       }
-      if (adoptedMode && accountBowlerIds.has(member.bowlerId)
-        && accountTeamByBowler.get(member.bowlerId) !== team.id) {
-        currentRosterRows.push({
-          bowlerId: member.bowlerId,
-          bowlerName: member.displayName,
-          weeklyDueMinor: 0,
-          ytdDueMinor: 0,
-          ytdPaidMinor: 0,
-          remainingCreditMinor: 0,
-          pastDueMinor: 0,
-          dueTodayMinor: 0,
-          finalWeekPaid: true,
-        });
+      if (adoptedMode && (!accountBowlerIds.has(member.bowlerId)
+        || accountTeamByBowler.get(member.bowlerId) !== team.id)) {
+        currentRosterRows.push(zeroRosterRow(member.bowlerId, member.displayName));
         continue;
       }
       const row = makeBowlerRow(member.bowlerId, member.displayName);
@@ -571,12 +572,12 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
       }
     }
 
-    const vacantRows: TeamEnvelopeReportRow[] = team.slots
-      .filter((slot) => slot.occupant === "vacant")
+    const displayOnlySlotRows: TeamEnvelopeReportRow[] = team.slots
+      .filter((slot) => slot.occupant === "vacant" || slot.occupant === "unassigned")
       .sort((left, right) => left.slotIndex - right.slotIndex)
       .map((slot) => ({
         bowlerId: null,
-        bowlerName: "VACANT",
+        bowlerName: slot.occupant === "vacant" ? "VACANT" : "Unassigned",
         slotIndex: slot.slotIndex,
         weeklyDueMinor: 0,
         ytdDueMinor: 0,
@@ -605,7 +606,7 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
         if (row) currentRosterRows.push(row);
       }
     }
-    const rows = [...vacantRows, ...currentRosterRows, ...rotatingRows];
+    const rows = [...displayOnlySlotRows, ...currentRosterRows, ...rotatingRows];
     return {
       teamId: team.id,
       teamName: team.name,

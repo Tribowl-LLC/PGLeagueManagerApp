@@ -68,6 +68,7 @@ export interface AdminWeeklyPaymentsTeam {
   teamId: number;
   teamName: string;
   vacantSlots?: readonly { slotIndex: number }[];
+  unassignedSlots?: readonly { slotIndex: number }[];
   rosterDisplayMembers?: readonly {
     bowlerId: number;
     displayName: string;
@@ -78,6 +79,7 @@ export interface AdminWeeklyPaymentsTeam {
 
 type AdminWeeklyPaymentsDisplayRow =
   | { kind: "vacant"; slotIndex: number }
+  | { kind: "unassigned"; slotIndex: number }
   | { kind: "staticMember"; bowlerId: number; displayName: string }
   | { kind: "bowler"; row: AdminWeeklyPaymentsBowlerRow; readOnly: boolean };
 
@@ -262,9 +264,10 @@ function TeamWorksheet({
   const financialRowsByBowlerId = new Map(team.rows.map((row) => [row.bowlerId, row]));
   const displayedBowlerIds = new Set<number>();
   const displayRows: AdminWeeklyPaymentsDisplayRow[] = [
-    ...[...(team.vacantSlots ?? [])]
-      .sort((left, right) => left.slotIndex - right.slotIndex)
-      .map(({ slotIndex }) => ({ kind: "vacant" as const, slotIndex })),
+    ...[
+      ...(team.vacantSlots ?? []).map(({ slotIndex }) => ({ kind: "vacant" as const, slotIndex })),
+      ...(team.unassignedSlots ?? []).map(({ slotIndex }) => ({ kind: "unassigned" as const, slotIndex })),
+    ].sort((left, right) => left.slotIndex - right.slotIndex),
     ...(team.rosterDisplayMembers ?? []).map((member): AdminWeeklyPaymentsDisplayRow => {
       displayedBowlerIds.add(member.bowlerId);
       const row = financialRowsByBowlerId.get(member.bowlerId);
@@ -364,13 +367,17 @@ function TeamWorksheet({
               {displayRows.map((displayRow) => {
                 if (displayRow.kind !== "bowler") {
                   const isVacant = displayRow.kind === "vacant";
-                  const key = isVacant
-                    ? `${team.teamId}:vacant:${displayRow.slotIndex}`
-                    : `${team.teamId}:inactive:${displayRow.bowlerId}`;
-                  const displayName = isVacant ? "VACANT" : displayRow.displayName;
-                  const checkboxLabel = isVacant
-                    ? `Responsible this week for VACANT position ${displayRow.slotIndex + 1}`
-                    : `Responsible this week for ${displayName}`;
+                  const key = displayRow.kind === "staticMember"
+                    ? `${team.teamId}:inactive:${displayRow.bowlerId}`
+                    : `${team.teamId}:${displayRow.kind}:${displayRow.slotIndex}`;
+                  const displayName = isVacant
+                    ? "VACANT"
+                    : displayRow.kind === "unassigned"
+                      ? "Unassigned"
+                      : displayRow.displayName;
+                  const checkboxLabel = displayRow.kind === "staticMember"
+                    ? `Responsible this week for ${displayName}`
+                    : `Responsible this week for ${displayName} position ${displayRow.slotIndex + 1}`;
                   return (
                     <TableRow key={key} variant="plain" hover="none" appearance="managePayments">
                       <TableCell appearance="managePaymentsResponsible">

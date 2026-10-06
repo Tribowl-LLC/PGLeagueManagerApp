@@ -103,7 +103,7 @@ function renderWorksheet(overrides: Partial<AdminWeeklyPaymentsWorksheetProps> =
 }
 
 describe("AdminWeeklyPaymentsWorksheet", () => {
-  it("shows VACANT slots and current members in roster order and excludes display-only rows from edits", async () => {
+  it("shows VACANT and Unassigned slots before current members and excludes display-only rows from edits", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn<AdminWeeklyPaymentsWorksheetProps["onSave"]>(async () => undefined);
     const onDirtyChange = vi.fn();
@@ -117,6 +117,7 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
       teamId: 31,
       teamName: "Monday Night",
       vacantSlots: [{ slotIndex: 3 }, { slotIndex: 1 }],
+      unassignedSlots: [{ slotIndex: 2 }, { slotIndex: 0 }],
       rosterDisplayMembers: [
         { bowlerId: 502, displayName: "Blair Quinn", activeProfile: true },
         { bowlerId: 501, displayName: "Avery Lane", activeProfile: true },
@@ -163,21 +164,28 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
     const rows = within(mondayTable).getAllByRole("row").filter((row) => (
       row.querySelector("td") !== null && row.querySelector('[data-awpw="team-total-output"]') === null
     ));
-    expect(rows).toHaveLength(7);
-    expect(rows[0]).toHaveTextContent("VACANT");
+    expect(rows).toHaveLength(9);
+    expect(rows[0]).toHaveTextContent("Unassigned");
     expect(rows[1]).toHaveTextContent("VACANT");
-    expect(rows[2]).toHaveTextContent("Blair Quinn");
-    expect(rows[3]).toHaveTextContent("Avery Lane");
-    expect(rows[4]).toHaveTextContent("Inactive Financier");
-    expect(rows[5]).toHaveTextContent("Static Inactive");
-    expect(rows[6]).toHaveTextContent("Casey Reese");
+    expect(rows[2]).toHaveTextContent("Unassigned");
+    expect(rows[3]).toHaveTextContent("VACANT");
+    expect(rows[4]).toHaveTextContent("Blair Quinn");
+    expect(rows[5]).toHaveTextContent("Avery Lane");
+    expect(rows[6]).toHaveTextContent("Inactive Financier");
+    expect(rows[7]).toHaveTextContent("Static Inactive");
+    expect(rows[8]).toHaveTextContent("Casey Reese");
 
     const firstVacantCheckbox = screen.getByRole("checkbox", { name: "Responsible this week for VACANT position 2" });
     const secondVacantCheckbox = screen.getByRole("checkbox", { name: "Responsible this week for VACANT position 4" });
-    expect(firstVacantCheckbox).toBeDisabled();
-    expect(firstVacantCheckbox).not.toBeChecked();
-    expect(secondVacantCheckbox).toBeDisabled();
-    expect(secondVacantCheckbox).not.toBeChecked();
+    const firstUnassignedCheckbox = screen.getByRole("checkbox", { name: "Responsible this week for Unassigned position 1" });
+    const secondUnassignedCheckbox = screen.getByRole("checkbox", { name: "Responsible this week for Unassigned position 3" });
+    for (const checkbox of [firstUnassignedCheckbox, firstVacantCheckbox, secondUnassignedCheckbox, secondVacantCheckbox]) {
+      expect(checkbox).toBeDisabled();
+      expect(checkbox).not.toBeChecked();
+    }
+    for (const row of rows.slice(0, 4)) {
+      expect(within(row).getAllByText("—")).toHaveLength(4);
+    }
     await user.click(firstVacantCheckbox);
     fireEvent.keyDown(secondVacantCheckbox, { key: " ", code: "Space" });
     expect(firstVacantCheckbox).not.toBeChecked();
