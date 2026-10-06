@@ -512,6 +512,10 @@ main[data-manage-payments-main] {
   padding-left: 22px;
 }
 
+.manage-payments-table {
+  --manage-payments-received-cell-padding-left: 22px;
+}
+
 [data-awpw="team-total-footer"] {
   font-family: var(--familiar-font);
 }
@@ -529,6 +533,7 @@ main[data-manage-payments-main] {
 
 [data-awpw="team-total-footer"] [data-awpw="team-total-cell"] {
   padding: 10px;
+  padding-left: calc(var(--manage-payments-received-cell-padding-left) + 9px);
   color: var(--familiar-navy);
   text-align: left;
 }
@@ -807,10 +812,11 @@ main[data-manage-payments-main] {
 }
 
 [data-awpw="received-date"] .manage-payments-input {
-  width: 144px;
+  width: 148px;
   min-height: 38px;
   height: 38px;
   padding: 6px 8px;
+  border-radius: 5px;
   font-size: 14px;
 }
 
@@ -930,6 +936,10 @@ main[data-manage-payments-main] {
 
   .manage-payments-received-cell {
     padding-left: 16px;
+  }
+
+  .manage-payments-table {
+    --manage-payments-received-cell-padding-left: 16px;
   }
 }
 
@@ -1265,7 +1275,7 @@ main[data-manage-payments-main] {
   }
 
   [data-awpw="save-dock"][data-has-received-date] [data-awpw="received-date"] .manage-payments-input {
-    width: min(150px, 52vw);
+    width: min(165px, 58vw);
     min-height: 40px;
     height: 40px;
     font-size: 16px;
