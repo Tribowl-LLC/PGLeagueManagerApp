@@ -7,6 +7,9 @@ export const MANAGE_PAYMENTS_STATE_FINGERPRINT_PREFIX = "lvmanagepayments:v1:";
 export const MANAGE_PAYMENT_FEE_COMPONENTS = ["full", "lineage", "prize"] as const;
 export type ManagePaymentFeeComponent = (typeof MANAGE_PAYMENT_FEE_COMPONENTS)[number];
 
+/** ISO YYYY-MM-DD calendar date selected for newly recorded manual receipts. */
+export const managePaymentsReceivedDateSchema = z.iso.date();
+
 const positiveId = z.number().int().positive().max(2_147_483_647);
 const safeMinor = z.number().int().safe();
 const nonnegativeMinor = safeMinor.min(0).max(2_147_483_647);
@@ -288,6 +291,8 @@ export const managePaymentsSaveRequestSchema = z.object({
   /** Returned by GET; clients must echo it verbatim and never compute it. */
   expectedStateFingerprint: stateFingerprint,
   idempotencyKey,
+  /** Business date for new manual receipts; omission keeps the selected occurrence date. */
+  receivedDate: managePaymentsReceivedDateSchema.optional(),
   /** Empty is valid to confirm the server's unconfirmed defaults for a week. */
   changedRows: z.array(managePaymentsChangedRowSchema).max(MANAGE_PAYMENTS_CHANGED_ROWS_MAX),
 }).strict().superRefine((request, context) => {

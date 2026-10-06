@@ -3,6 +3,7 @@ import {
   MANAGE_PAYMENTS_CONTRACT_VERSION,
   MANAGE_PAYMENTS_CHANGED_ROWS_MAX,
   managePaymentsApiPaths,
+  managePaymentsReceivedDateSchema,
   managePaymentsSaveRequestSchema,
   managePaymentsSeasonSnapshotSchema,
   managePaymentsSnapshotSchema,
@@ -257,6 +258,23 @@ describe("Manage Payments contract", () => {
         manualReceiptEdits: [{ receiptId, expectedRevision: 1, amountMinor: 0 }],
       }],
     }).changedRows[0]?.manualReceiptEdits[0]?.amountMinor).toBe(0);
+  });
+
+  it("accepts only real ISO calendar dates for an optional received date", () => {
+    const common = {
+      occurrenceId,
+      expectedRevision: 0,
+      expectedStateFingerprint: fingerprint,
+      idempotencyKey: "manage-payments-save-received-date",
+      changedRows: [],
+    };
+
+    expect(managePaymentsReceivedDateSchema.parse("2024-02-29")).toBe("2024-02-29");
+    expect(managePaymentsSaveRequestSchema.parse(common).receivedDate).toBeUndefined();
+    expect(managePaymentsSaveRequestSchema.parse({ ...common, receivedDate: "2024-02-29" }).receivedDate).toBe("2024-02-29");
+    for (const invalidDate of ["2025-02-29", "2026-04-31", "2026-13-01", "2026-2-01"]) {
+      expect(managePaymentsSaveRequestSchema.safeParse({ ...common, receivedDate: invalidDate }).success).toBe(false);
+    }
   });
 
   it("rejects client-selected balances, amounts, or any other unknown financial field", () => {

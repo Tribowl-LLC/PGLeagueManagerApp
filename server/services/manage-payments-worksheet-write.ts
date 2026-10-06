@@ -550,6 +550,7 @@ async function saveManualReceiptEdits(
   now: string,
 ): Promise<Set<number>> {
   const affectedOwners = new Set<number>();
+  const newReceiptBusinessDate = input.request.receivedDate ?? snapshot.selectedOccurrence.localDate;
   for (const change of changedRows) {
     const found = sheetRow(snapshot, change.bowlerId);
     if (!found || found.teamId !== change.teamId) throw new ManagePaymentsWorksheetWriteError("state_conflict", "The roster changed; reload this week before saving");
@@ -657,7 +658,7 @@ async function saveManualReceiptEdits(
         receiptId,
         bowlerId: change.bowlerId,
         amountMinor: newAmount,
-        businessDate: snapshot.selectedOccurrence.localDate,
+        businessDate: newReceiptBusinessDate,
       }, now);
       await appendWorksheetManualReceiptRevisionInTransaction(tx, {
         organizationId: input.organizationId,
@@ -667,7 +668,7 @@ async function saveManualReceiptEdits(
         revision: 1,
         paymentId,
         amountMinor: newAmount,
-        businessCollectionLocalDate: snapshot.selectedOccurrence.localDate,
+        businessCollectionLocalDate: newReceiptBusinessDate,
         revisionKind: "manual_record",
         now,
       });
