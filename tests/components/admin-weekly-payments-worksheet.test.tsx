@@ -103,7 +103,7 @@ function renderWorksheet(overrides: Partial<AdminWeeklyPaymentsWorksheetProps> =
 }
 
 describe("AdminWeeklyPaymentsWorksheet", () => {
-  it("shows VACANT and Unassigned slots before current members and excludes display-only rows from edits", async () => {
+  it("shows VACANT and Unassigned slots before active members and hides inactive roster members without dropping their totals", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn<AdminWeeklyPaymentsWorksheetProps["onSave"]>(async () => undefined);
     const onDirtyChange = vi.fn();
@@ -164,16 +164,14 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
     const rows = within(mondayTable).getAllByRole("row").filter((row) => (
       row.querySelector("td") !== null && row.querySelector('[data-awpw="team-total-output"]') === null
     ));
-    expect(rows).toHaveLength(9);
+    expect(rows).toHaveLength(7);
     expect(rows[0]).toHaveTextContent("Unassigned");
     expect(rows[1]).toHaveTextContent("VACANT");
     expect(rows[2]).toHaveTextContent("Unassigned");
     expect(rows[3]).toHaveTextContent("VACANT");
     expect(rows[4]).toHaveTextContent("Blair Quinn");
     expect(rows[5]).toHaveTextContent("Avery Lane");
-    expect(rows[6]).toHaveTextContent("Inactive Financier");
-    expect(rows[7]).toHaveTextContent("Static Inactive");
-    expect(rows[8]).toHaveTextContent("Casey Reese");
+    expect(rows[6]).toHaveTextContent("Casey Reese");
 
     const firstVacantCheckbox = screen.getByRole("checkbox", { name: "Responsible this week for VACANT position 2" });
     const secondVacantCheckbox = screen.getByRole("checkbox", { name: "Responsible this week for VACANT position 4" });
@@ -191,9 +189,9 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
     expect(firstVacantCheckbox).not.toBeChecked();
     expect(secondVacantCheckbox).not.toBeChecked();
 
-    const inactiveCheckbox = screen.getByRole("checkbox", { name: "Responsible this week for Inactive Financier" });
-    expect(inactiveCheckbox).toBeDisabled();
-    expect(inactiveCheckbox).toBeChecked();
+    expect(screen.queryByText("Inactive Financier")).not.toBeInTheDocument();
+    expect(screen.queryByText("Static Inactive")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Responsible this week for Inactive Financier" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Monday Night total paid")).toHaveTextContent("$90.00");
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
     expect(screen.getByRole("button", { name: "Save week" })).toBeDisabled();

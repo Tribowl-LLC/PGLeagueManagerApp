@@ -268,15 +268,16 @@ function TeamWorksheet({
       ...(team.vacantSlots ?? []).map(({ slotIndex }) => ({ kind: "vacant" as const, slotIndex })),
       ...(team.unassignedSlots ?? []).map(({ slotIndex }) => ({ kind: "unassigned" as const, slotIndex })),
     ].sort((left, right) => left.slotIndex - right.slotIndex),
-    ...(team.rosterDisplayMembers ?? []).map((member): AdminWeeklyPaymentsDisplayRow => {
+    ...(team.rosterDisplayMembers ?? []).filter((member) => member.activeProfile).map((member): AdminWeeklyPaymentsDisplayRow => {
       displayedBowlerIds.add(member.bowlerId);
       const row = financialRowsByBowlerId.get(member.bowlerId);
       return row
-        ? { kind: "bowler", row, readOnly: !member.activeProfile }
+        ? { kind: "bowler", row, readOnly: false }
         : { kind: "staticMember", bowlerId: member.bowlerId, displayName: member.displayName };
     }),
     ...team.rows.flatMap((row): AdminWeeklyPaymentsDisplayRow[] => (
       displayedBowlerIds.has(row.bowlerId)
+        || currentRosterByBowlerId.get(row.bowlerId)?.activeProfile === false
         ? []
         : [{ kind: "bowler", row, readOnly: false }]
     )),
