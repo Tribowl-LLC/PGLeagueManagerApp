@@ -302,6 +302,7 @@ export function RotatingPaymentsPanel({
         queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/2`] }),
         queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }),
         queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/3`] }),
+        queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", leagueId] }),
       ]);
       setSlotDraft(null);
       setEligibleDraft(null);

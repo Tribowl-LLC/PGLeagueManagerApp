@@ -80,7 +80,45 @@ export type ManagePaymentsRow = z.infer<typeof managePaymentsRowSchema>;
 export const managePaymentsTeamSchema = z.object({
   teamId: positiveId,
   teamName: z.string().min(1).max(200),
+  /** Display-only stable vacancies; they never represent a bowler/account. */
+  vacantSlots: z.array(z.object({ slotIndex: z.number().int().min(0).max(3) }).strict()).max(4).optional(),
+  /** Display-only incomplete positions; they never represent a bowler/account. */
+  unassignedSlots: z.array(z.object({ slotIndex: z.number().int().min(0).max(3) }).strict()).max(4).optional(),
+  /** Current team-view member order, including inactive profiles for display. */
+  rosterDisplayMembers: z.array(z.object({
+    bowlerId: positiveId,
+    displayName: z.string().min(1).max(200),
+    activeProfile: z.boolean(),
+  }).strict()).optional(),
   rows: z.array(managePaymentsRowSchema),
+}).superRefine((team, context) => {
+  const seenSlots = new Set<number>();
+  for (const [field, slots] of [
+    ["vacantSlots", team.vacantSlots ?? []],
+    ["unassignedSlots", team.unassignedSlots ?? []],
+  ] as const) {
+    for (const [index, slot] of slots.entries()) {
+      if (seenSlots.has(slot.slotIndex)) {
+        context.addIssue({
+          code: "custom",
+          path: [field, index, "slotIndex"],
+          message: "A team cannot list the same payment slot more than once.",
+        });
+      }
+      seenSlots.add(slot.slotIndex);
+    }
+  }
+  const seenRosterIds = new Set<number>();
+  for (const [index, member] of (team.rosterDisplayMembers ?? []).entries()) {
+    if (seenRosterIds.has(member.bowlerId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["rosterDisplayMembers", index, "bowlerId"],
+        message: "A team cannot list the same current roster member more than once.",
+      });
+    }
+    seenRosterIds.add(member.bowlerId);
+  }
 });
 export type ManagePaymentsTeam = z.infer<typeof managePaymentsTeamSchema>;
 

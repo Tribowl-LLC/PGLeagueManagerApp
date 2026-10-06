@@ -4492,7 +4492,7 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         eq(paymentVoids.paymentId, source.payment.id),
       ))).toMatchObject([{ reason: request.reason }]);
 
-      const [activeResponsibility] = await db.select({ id: occurrencePaymentResponsibilities.id, responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind, substituteBowlerId: occurrencePaymentResponsibilities.substituteBowlerId, payerBowlerId: occurrencePaymentResponsibilities.payerBowlerId, policy: occurrencePaymentResponsibilities.policy }).from(occurrencePaymentResponsibilities).where(and(
+      const activeResponsibilities = await db.select({ id: occurrencePaymentResponsibilities.id, responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind, substituteBowlerId: occurrencePaymentResponsibilities.substituteBowlerId, payerBowlerId: occurrencePaymentResponsibilities.payerBowlerId, policy: occurrencePaymentResponsibilities.policy }).from(occurrencePaymentResponsibilities).where(and(
         eq(occurrencePaymentResponsibilities.organizationId, organizationId),
         eq(occurrencePaymentResponsibilities.leagueId, leagueId),
         eq(occurrencePaymentResponsibilities.occurrenceId, septemberDate.occurrence.id),
@@ -4501,6 +4501,8 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
         eq(occurrencePaymentResponsibilities.positionIndex, 0),
         eq(occurrencePaymentResponsibilities.state, "active"),
       ));
+      expect(activeResponsibilities).toHaveLength(1);
+      const [activeResponsibility] = activeResponsibilities;
       expect(activeResponsibility).toMatchObject({ responsibilityKind: "substitute", substituteBowlerId: substitute.id, payerBowlerId: substitute.id, policy: "sub_pays_full" });
       const [substituteObligation] = await db.select({ payerBowlerId: paymentObligations.payerBowlerId, amountMinor: paymentObligations.amountMinor, state: paymentObligations.state }).from(paymentObligations).where(and(
         eq(paymentObligations.organizationId, organizationId),

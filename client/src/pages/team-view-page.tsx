@@ -149,6 +149,7 @@ export default function TeamViewPage() {
         ...(leagueId === undefined ? [] : [
           queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }),
           queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }),
+          queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", leagueId] }),
         ]),
         queryClient.invalidateQueries({ predicate: ({ queryKey }) => typeof queryKey[0] === "string" && queryKey[0].startsWith("/api/financials/due-past-due") }),
       ]);

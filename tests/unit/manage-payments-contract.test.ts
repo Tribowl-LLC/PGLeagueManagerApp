@@ -132,6 +132,85 @@ describe("Manage Payments contract", () => {
     }).success).toBe(false);
   });
 
+  it("accepts only unique vacant lineup positions and unique display members", () => {
+    const baseTeam = snapshot.teams[0];
+    expect(baseTeam).toBeDefined();
+    if (!baseTeam) throw new Error("missing contract fixture team");
+
+    const teamWithAllVacancies = {
+      ...baseTeam,
+      vacantSlots: [0, 1, 2, 3].map((slotIndex) => ({ slotIndex })),
+      rosterDisplayMembers: [{ bowlerId: 13, displayName: "Ada Bowler", activeProfile: true }],
+    };
+    expect(managePaymentsSnapshotSchema.parse({ ...snapshot, teams: [teamWithAllVacancies] }).teams[0])
+      .toMatchObject({
+        vacantSlots: [{ slotIndex: 0 }, { slotIndex: 1 }, { slotIndex: 2 }, { slotIndex: 3 }],
+        rosterDisplayMembers: [{ bowlerId: 13, displayName: "Ada Bowler", activeProfile: true }],
+      });
+
+    for (const vacantSlots of [
+      [{ slotIndex: -1 }],
+      [{ slotIndex: 4 }],
+      Array.from({ length: 5 }, (_, slotIndex) => ({ slotIndex: slotIndex % 4 })),
+      [{ slotIndex: 1 }, { slotIndex: 1 }],
+    ]) {
+      expect(managePaymentsSnapshotSchema.safeParse({
+        ...snapshot,
+        teams: [{ ...baseTeam, vacantSlots }],
+      }).success).toBe(false);
+    }
+
+    expect(managePaymentsSnapshotSchema.safeParse({
+      ...snapshot,
+      teams: [{
+        ...baseTeam,
+        rosterDisplayMembers: [
+          { bowlerId: 13, displayName: "Ada Bowler", activeProfile: true },
+          { bowlerId: 13, displayName: "Duplicate Ada", activeProfile: false },
+        ],
+      }],
+    }).success).toBe(false);
+  });
+
+  it("accepts a complete split of vacant and unassigned positions and rejects invalid slot metadata", () => {
+    const baseTeam = snapshot.teams[0];
+    expect(baseTeam).toBeDefined();
+    if (!baseTeam) throw new Error("missing contract fixture team");
+
+    expect(managePaymentsSnapshotSchema.parse({
+      ...snapshot,
+      teams: [{
+        ...baseTeam,
+        vacantSlots: [{ slotIndex: 0 }, { slotIndex: 3 }],
+        unassignedSlots: [{ slotIndex: 1 }, { slotIndex: 2 }],
+      }],
+    }).teams[0]).toMatchObject({
+      vacantSlots: [{ slotIndex: 0 }, { slotIndex: 3 }],
+      unassignedSlots: [{ slotIndex: 1 }, { slotIndex: 2 }],
+    });
+
+    for (const unassignedSlots of [
+      [{ slotIndex: -1 }],
+      [{ slotIndex: 4 }],
+      Array.from({ length: 5 }, (_, slotIndex) => ({ slotIndex })),
+      [{ slotIndex: 1 }, { slotIndex: 1 }],
+    ]) {
+      expect(managePaymentsSnapshotSchema.safeParse({
+        ...snapshot,
+        teams: [{ ...baseTeam, unassignedSlots }],
+      }).success).toBe(false);
+    }
+
+    expect(managePaymentsSnapshotSchema.safeParse({
+      ...snapshot,
+      teams: [{
+        ...baseTeam,
+        vacantSlots: [{ slotIndex: 1 }],
+        unassignedSlots: [{ slotIndex: 1 }],
+      }],
+    }).success).toBe(false);
+  });
+
   it("uses the same versioned endpoint for GET and POST", () => {
     expect(managePaymentsApiPaths.leagueSnapshot(9)).toBe("/api/financials/leagues/9/manage-payments/1");
     expect(managePaymentsApiPaths.leagueSeasonSnapshot(9)).toBe("/api/financials/leagues/9/manage-payments/1/season");
@@ -165,6 +244,51 @@ describe("Manage Payments contract", () => {
     expect(rehydrateManagePaymentsSeasonWeekSnapshot(season, "forged-week")).toMatchObject({
       status: "unavailable",
       code: "invalid_occurrence",
+    });
+  });
+
+  it("preserves roster and vacant-position presentation metadata when rehydrating a season week", () => {
+    const team = {
+      ...snapshot.teams[0],
+      vacantSlots: [{ slotIndex: 0 }, { slotIndex: 3 }],
+      unassignedSlots: [{ slotIndex: 1 }, { slotIndex: 2 }],
+      rosterDisplayMembers: [
+        { bowlerId: 13, displayName: "Ada Bowler", activeProfile: true },
+        { bowlerId: 17, displayName: "Retired Bowler", activeProfile: false },
+      ],
+    };
+    const season = managePaymentsSeasonSnapshotSchema.parse({
+      contractVersion: MANAGE_PAYMENTS_CONTRACT_VERSION,
+      league: {
+        leagueId: snapshot.league.leagueId,
+        name: snapshot.league.name,
+        timeZone: snapshot.league.timeZone,
+      },
+      weekOptions: snapshot.weekOptions,
+      defaultOccurrenceId: occurrenceId,
+      snapshotsByOccurrence: {
+        [occurrenceId]: {
+          status: "ready",
+          feeTerms: snapshot.league.feeTerms,
+          weekConfirmed: snapshot.weekConfirmed,
+          needsConfirmation: snapshot.needsConfirmation,
+          revision: snapshot.revision,
+          stateFingerprint: snapshot.stateFingerprint,
+          teams: [team],
+        },
+      },
+    });
+
+    const rehydrated = rehydrateManagePaymentsSeasonWeekSnapshot(season, occurrenceId);
+    expect(rehydrated.status).toBe("ready");
+    if (rehydrated.status !== "ready") throw new Error("expected ready season week");
+    expect(rehydrated.snapshot.teams[0]).toMatchObject({
+      vacantSlots: [{ slotIndex: 0 }, { slotIndex: 3 }],
+      unassignedSlots: [{ slotIndex: 1 }, { slotIndex: 2 }],
+      rosterDisplayMembers: [
+        { bowlerId: 13, displayName: "Ada Bowler", activeProfile: true },
+        { bowlerId: 17, displayName: "Retired Bowler", activeProfile: false },
+      ],
     });
   });
 
