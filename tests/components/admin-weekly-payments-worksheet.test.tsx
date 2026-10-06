@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -81,6 +81,7 @@ function props(
   return {
     leagueId: 7,
     occurrenceId: "b8cc77db-79b5-4515-95c6-5482c56c3835",
+    collectionLocalDate: "2026-09-28",
     expectedRevision: 14,
     expectedStateFingerprint: `lvmanagepayments:v1:${"a".repeat(64)}`,
     weekConfirmed: true,
@@ -132,6 +133,94 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
     expect(screen.getAllByText("Unpaid")).toHaveLength(2);
     expect(screen.queryByText(/Paid|Unpaid/, { selector: "td:nth-child(4)" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Add bowler|Payment history|Record payment/i })).not.toBeInTheDocument();
+  });
+
+  it("derives the team total from saved receipts and live drafts for every member", async () => {
+    const user = userEvent.setup();
+    renderWorksheet();
+
+    const total = screen.getByLabelText("Monday Night total paid");
+    expect(total).toHaveTextContent("$50.00");
+
+    const uncheckedMemberPayment = screen.getByRole("textbox", { name: "Amount received from Blair Quinn" });
+    await user.type(uncheckedMemberPayment, "7.25");
+    expect(total).toHaveTextContent("$57.25");
+
+    await user.clear(uncheckedMemberPayment);
+    await user.type(uncheckedMemberPayment, "-");
+    expect(total).toHaveTextContent("$50.00");
+    expect(screen.getByText("Total excludes invalid amounts")).toBeVisible();
+  });
+
+  it("replaces recorded manual amounts in the total and excludes invalid corrections", async () => {
+    const user = userEvent.setup();
+    renderWorksheet();
+
+    const total = screen.getByLabelText("Monday Night total paid");
+    await user.click(screen.getByRole("button", { name: /Edit recorded cash payment .*Avery Lane/ }));
+    const correction = screen.getByRole("textbox", {
+      name: "Correct recorded amount received 2026-09-28 for Avery Lane",
+    });
+
+    await user.clear(correction);
+    await user.type(correction, "5.00");
+    expect(total).toHaveTextContent("$35.00");
+
+    await user.clear(correction);
+    expect(total).toHaveTextContent("$30.00");
+
+    await user.type(correction, "5.00");
+    await user.clear(correction);
+    await user.type(correction, "-");
+    expect(total).toHaveTextContent("$30.00");
+    expect(screen.getByText("Total excludes invalid amounts")).toBeVisible();
+  });
+
+  it("defaults the received date, validates it for new payments, and does not save a date alone", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn<AdminWeeklyPaymentsWorksheetProps["onSave"]>(async () => undefined);
+    const onDraftStateChange = vi.fn();
+    renderWorksheet({ onSave, onDraftStateChange });
+
+    const amount = screen.getByRole("textbox", { name: "Amount received from Blair Quinn" });
+    await user.type(amount, "12.34");
+    const receivedDate = screen.getByLabelText("Received date for these payments");
+    expect(receivedDate).toHaveValue("2026-09-28");
+
+    await user.clear(receivedDate);
+    expect(screen.getByText("Enter a valid received date before saving.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save week" })).toBeDisabled();
+
+    fireEvent.change(receivedDate, { target: { value: "2026-09-30" } });
+    expect(receivedDate).toHaveValue("2026-09-30");
+    expect(screen.queryByText("Enter a valid received date before saving.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save week" })).toBeEnabled();
+
+    await user.clear(amount);
+    expect(screen.queryByLabelText("Received date for these payments")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save week" })).toBeDisabled();
+    await waitFor(() => expect(onDraftStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      receivedDate: "2026-09-30",
+      newReceiptDrafts: {},
+    })));
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("includes the selected received date when saving a valid new payment", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn<AdminWeeklyPaymentsWorksheetProps["onSave"]>(async () => undefined);
+    renderWorksheet({ onSave });
+
+    await user.type(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" }), "12.34");
+    const receivedDate = screen.getByLabelText("Received date for these payments");
+    fireEvent.change(receivedDate, { target: { value: "2026-09-30" } });
+
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[0]).toMatchObject({
+      receivedDate: "2026-09-30",
+      changedRows: [{ bowlerId: 502, newManualReceiptAmountMinor: 1_234 }],
+    });
   });
 
   it("shows a full-week partial count while preserving complete and zero states", () => {

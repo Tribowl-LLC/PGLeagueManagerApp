@@ -1,5 +1,5 @@
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -919,6 +919,27 @@ describe("AdminWeeklyPaymentsPage", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Avery Lane account" })).not.toBeInTheDocument());
   });
 
+  it("defaults and retains the received date with each league-week draft", async () => {
+    const user = userEvent.setup();
+    setupPage();
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    await user.type(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" }), "5.50");
+    const firstReceivedDate = screen.getByLabelText("Received date for these payments");
+    expect(firstReceivedDate).toHaveValue("2026-09-28");
+    fireEvent.change(firstReceivedDate, { target: { value: "2026-09-27" } });
+
+    await user.click(screen.getByRole("button", { name: "Next week" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Collection week" })).toHaveTextContent("Mon Oct 5, 2026"));
+    await user.type(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" }), "4.00");
+    expect(screen.getByLabelText("Received date for these payments")).toHaveValue("2026-10-05");
+
+    await user.click(screen.getByRole("button", { name: "Previous week" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Collection week" })).toHaveTextContent("Mon Sep 28, 2026"));
+    expect(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" })).toHaveValue("5.50");
+    expect(screen.getByLabelText("Received date for these payments")).toHaveValue("2026-09-27");
+  });
+
   it("submits a responsibility change without cash and renders the authoritative receipt after save", async () => {
     const user = userEvent.setup();
     const delayedRefresh = createDeferred<Response>();
@@ -944,6 +965,7 @@ describe("AdminWeeklyPaymentsPage", () => {
     expect(posts[0]?.parsed).toEqual(expect.objectContaining({
       occurrenceId: firstOccurrenceId,
       expectedRevision: 14,
+      receivedDate: "2026-09-28",
       changedRows: [expect.objectContaining({
         bowlerId: 502,
         responsible: true,
@@ -1089,6 +1111,26 @@ describe("AdminWeeklyPaymentsPage", () => {
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[0]?.body).toBe(posts[1]?.body);
     expect((posts[0]?.parsed.idempotencyKey)).toEqual((posts[1]?.parsed.idempotencyKey));
+  });
+
+  it("uses a new idempotency key when a new payment retry changes its received date", async () => {
+    const user = userEvent.setup();
+    const { posts } = setupPage({ failFirstPost: 1 });
+
+    await screen.findByRole("textbox", { name: "Amount received from Blair Quinn" });
+    await user.type(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" }), "9.25");
+    const receivedDate = screen.getByLabelText("Received date for these payments");
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("temporarily unavailable");
+    expect(posts).toHaveLength(1);
+
+    fireEvent.change(receivedDate, { target: { value: "2026-09-29" } });
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[0]?.parsed.receivedDate).toBe("2026-09-28");
+    expect(posts[1]?.parsed.receivedDate).toBe("2026-09-29");
+    expect(posts[0]?.parsed.idempotencyKey).not.toBe(posts[1]?.parsed.idempotencyKey);
   });
 
   it("offers explicit week reload after a conflict and clears only that week’s drafts", async () => {

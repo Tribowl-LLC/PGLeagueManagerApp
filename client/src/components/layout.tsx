@@ -816,6 +816,7 @@ export function Layout({
 
       <main className={cn(
         "flex-1 min-w-0 flex flex-col min-h-screen transition-all duration-300",
+        appearance === "weekly-payments" && "manage-payments-layout-main",
         isCollapsed
           ? "md:ml-20"
           : appearance === "weekly-payments"

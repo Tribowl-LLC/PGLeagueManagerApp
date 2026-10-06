@@ -8,6 +8,7 @@ import {
   CollapsibleContent,
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import { managePaymentsReceivedDateSchema } from "@shared/manage-payments-contract";
 import {
   Select,
   SelectContent,
@@ -87,6 +88,7 @@ export interface AdminWeeklyPaymentsSaveInput {
   expectedRevision: number;
   /** Opaque canonical fingerprint supplied by the server. */
   expectedStateFingerprint: string;
+  receivedDate?: string;
   changedRows: readonly AdminWeeklyPaymentsRowChange[];
 }
 
@@ -99,6 +101,7 @@ export interface AdminWeeklyPaymentsWorksheetDraftState {
   responsibilityDrafts: Readonly<Record<string, AdminWeeklyPaymentsResponsibilityDraft>>;
   newReceiptDrafts: Readonly<Record<string, string>>;
   manualReceiptDrafts: Readonly<Record<string, string>>;
+  receivedDate?: string;
 }
 
 export interface AdminWeeklyPaymentsRecoveryAction {
@@ -120,6 +123,7 @@ export class AdminWeeklyPaymentsSaveError extends Error {
 export interface AdminWeeklyPaymentsWorksheetProps {
   leagueId: number;
   occurrenceId: string;
+  collectionLocalDate: string;
   expectedRevision: number;
   expectedStateFingerprint: string;
   weekConfirmed: boolean;
@@ -238,6 +242,41 @@ function TeamWorksheet({
   onCancelManualReceiptEdit: (key: string) => void;
   onBowlerAccount: (row: AdminWeeklyPaymentsBowlerRow) => void;
 }) {
+  let teamTotalMinor = 0;
+  let hasInvalidTotalAmount = false;
+
+  for (const row of team.rows) {
+    const hasSavedReceipt = row.manualReceipts.length > 0 || row.cardReceipts.length > 0;
+    for (const receipt of row.cardReceipts) teamTotalMinor += receipt.amountMinor;
+
+    for (const receipt of row.manualReceipts) {
+      const key = receiptKey(leagueId, team.teamId, row.bowlerId, receipt.receiptId);
+      const draft = manualReceiptDrafts[key];
+      if (draft === undefined) {
+        teamTotalMinor += receipt.amountMinor;
+        continue;
+      }
+
+      const amount = parseEditedReceiptAmount(draft);
+      if (amount === null) {
+        hasInvalidTotalAmount = true;
+        continue;
+      }
+      teamTotalMinor += amount;
+    }
+
+    if (!hasSavedReceipt) {
+      const draft = newReceiptDrafts[rowKey(leagueId, team.teamId, row.bowlerId)] ?? "";
+      if (draft.trim() !== "") {
+        const amount = parseAmount(draft);
+        if (amount === null) hasInvalidTotalAmount = true;
+        else teamTotalMinor += amount;
+      }
+    }
+  }
+
+  const formattedTeamTotalAmount = formatMoney(teamTotalMinor).replace(/^\$/, "");
+
   return (
     <div data-awpw="team-card">
       <Collapsible open={expanded} onOpenChange={onExpandedChange}>
@@ -538,6 +577,31 @@ function TeamWorksheet({
                 );
               })}
             </TableBody>
+            <tfoot data-awpw="team-total-footer">
+              <tr>
+                <td colSpan={4} data-awpw="team-total-empty" aria-hidden="true" />
+                <td data-awpw="team-total-cell">
+                  <div data-awpw="team-total-group">
+                    <div data-awpw="team-total-main">
+                      <span data-awpw="team-total-label">Team total paid:</span>
+                      <output
+                        aria-label={`${team.teamName} total paid`}
+                        data-awpw="team-total-output"
+                      >
+                        <span data-awpw="team-total-currency-slot" aria-hidden="true">
+                          <span data-awpw="team-total-currency">$</span>
+                        </span>
+                        <span data-awpw="team-total-digits">{formattedTeamTotalAmount}</span>
+                      </output>
+                    </div>
+                    {hasInvalidTotalAmount && (
+                      <small data-awpw="team-total-notice">Total excludes invalid amounts</small>
+                    )}
+                  </div>
+                </td>
+                <td data-awpw="team-total-empty" aria-hidden="true" />
+              </tr>
+            </tfoot>
           </Table>
         </div>
         </CollapsibleContent>
@@ -549,6 +613,7 @@ function TeamWorksheet({
 export function AdminWeeklyPaymentsWorksheet({
   leagueId,
   occurrenceId,
+  collectionLocalDate,
   expectedRevision,
   expectedStateFingerprint,
   weekConfirmed,
@@ -574,6 +639,9 @@ export function AdminWeeklyPaymentsWorksheet({
   );
   const [manualReceiptDrafts, setManualReceiptDrafts] = useState<Readonly<Record<string, string>>>(
     () => initialDrafts?.manualReceiptDrafts ?? {},
+  );
+  const [receivedDate, setReceivedDate] = useState(
+    () => initialDrafts?.receivedDate ?? collectionLocalDate,
   );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<{
@@ -662,6 +730,9 @@ export function AdminWeeklyPaymentsWorksheet({
   }
 
   const hasDraftChanges = rowChanges.length > 0;
+  const hasNewPayments = rowChanges.some((row) => row.newManualReceiptAmountMinor !== undefined);
+  const invalidReceivedDate = hasNewPayments
+    && !managePaymentsReceivedDateSchema.safeParse(receivedDate).success;
   const hasLocalDrafts = hasDraftChanges
     || invalidRows.length > 0
     || Object.keys(manualReceiptDrafts).length > 0
@@ -669,6 +740,7 @@ export function AdminWeeklyPaymentsWorksheet({
   const canSave = !readOnly
     && !saving
     && invalidRows.length === 0
+    && !invalidReceivedDate
     && (needsConfirmation || hasDraftChanges);
 
   useEffect(() => {
@@ -676,8 +748,8 @@ export function AdminWeeklyPaymentsWorksheet({
   }, [hasLocalDrafts, onDirtyChange]);
 
   useEffect(() => {
-    onDraftStateChange?.({ responsibilityDrafts, newReceiptDrafts, manualReceiptDrafts });
-  }, [manualReceiptDrafts, newReceiptDrafts, onDraftStateChange, responsibilityDrafts]);
+    onDraftStateChange?.({ responsibilityDrafts, newReceiptDrafts, manualReceiptDrafts, receivedDate });
+  }, [manualReceiptDrafts, newReceiptDrafts, onDraftStateChange, receivedDate, responsibilityDrafts]);
 
   function clearSaveError() {
     setSaveError(null);
@@ -752,12 +824,14 @@ export function AdminWeeklyPaymentsWorksheet({
         occurrenceId,
         expectedRevision,
         expectedStateFingerprint,
+        ...(hasNewPayments ? { receivedDate } : {}),
         changedRows: rowChanges,
       });
 
       setResponsibilityDrafts({});
       setNewReceiptDrafts({});
       setManualReceiptDrafts({});
+      setReceivedDate(collectionLocalDate);
     } catch (error) {
       setSaveError(error instanceof AdminWeeklyPaymentsSaveError
         ? { message: error.message, recoveryAction: error.recoveryAction }
@@ -857,7 +931,7 @@ export function AdminWeeklyPaymentsWorksheet({
 
       <p data-awpw="receipt-note">Receipts stay with the named bowler and cover their oldest confirmed fees first.</p>
 
-      <div data-awpw="save-dock">
+      <div data-awpw="save-dock" data-has-received-date={hasNewPayments || undefined}>
         <div data-awpw="save-status">
           <p>
             {needsConfirmation
@@ -872,6 +946,35 @@ export function AdminWeeklyPaymentsWorksheet({
             <p data-awpw="invalid-notice" role="alert">
               Fix invalid amounts before saving.
             </p>
+          )}
+          {hasNewPayments && (
+            <label data-awpw="received-date">
+              <span>Received date</span>
+              <Input
+                type="date"
+                appearance="managePayments"
+                value={receivedDate}
+                disabled={saving || readOnly}
+                required
+                aria-label="Received date for these payments"
+                aria-invalid={invalidReceivedDate}
+                aria-describedby={invalidReceivedDate ? "manage-payments-received-date-error" : undefined}
+                onChange={(event) => {
+                  setReceivedDate(event.currentTarget.value);
+                  clearSaveError();
+                }}
+                className="w-auto"
+              />
+              {invalidReceivedDate && (
+                <span
+                  id="manage-payments-received-date-error"
+                  data-awpw="received-date-error"
+                  role="alert"
+                >
+                  Enter a valid received date before saving.
+                </span>
+              )}
+            </label>
           )}
           {saveError && (
             <div data-awpw="save-error" role="alert">

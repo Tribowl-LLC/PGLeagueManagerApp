@@ -500,10 +500,12 @@ export default function AdminWeeklyPaymentsPage() {
       );
     }
 
+    const hasNewPayments = input.changedRows.some((row) => row.newManualReceiptAmountMinor !== undefined);
     const requestCore = {
       occurrenceId: input.occurrenceId,
       expectedRevision: input.expectedRevision,
       expectedStateFingerprint: input.expectedStateFingerprint,
+      ...(hasNewPayments && input.receivedDate ? { receivedDate: input.receivedDate } : {}),
       changedRows: input.changedRows.map((row) => ({
         ...row,
         manualReceiptEdits: row.manualReceiptEdits.map((edit) => ({ ...edit })),
@@ -688,6 +690,7 @@ export default function AdminWeeklyPaymentsPage() {
                   key={`${activeSelectionKey ?? `${selectedLeagueId}:${snapshot.selectedOccurrence.occurrenceId}`}:${worksheetGeneration}`}
                   leagueId={snapshot.league.leagueId}
                   occurrenceId={snapshot.selectedOccurrence.occurrenceId}
+                  collectionLocalDate={snapshot.selectedOccurrence.localDate}
                   expectedRevision={snapshot.revision}
                   expectedStateFingerprint={snapshot.stateFingerprint}
                   weekConfirmed={snapshot.weekConfirmed}

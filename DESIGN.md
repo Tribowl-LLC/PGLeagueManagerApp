@@ -259,6 +259,13 @@ white ledger panels, compact table rows, and a white active Manage Payments
 navigation item. The app header, search, organization identity, authorization,
 and every other admin route retain their existing behavior and visual system.
 
+The weekly worksheet places a regular-weight team paid total in the Received
+column footer and updates it from saved receipts and valid current drafts. A
+flat white save dock stays at the bottom of the worksheet scroll area. When a
+positive new manual payment is present, the dock shows a Received date beside
+the week status, defaulted to the selected occurrence’s local calendar date;
+on phones the date remains above a full-width Save week button.
+
 **Key Characteristics:**
 
 - Familiar A uses Instrument Sans, navy structure, cool-gray surfaces, and
