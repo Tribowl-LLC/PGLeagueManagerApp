@@ -223,6 +223,42 @@ describe("AdminWeeklyPaymentsWorksheet", () => {
     });
   });
 
+  it("refreshes the untouched date default for the same occurrence and retains explicit overrides", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn<AdminWeeklyPaymentsWorksheetProps["onSave"]>(async () => undefined);
+    const onDraftStateChange = vi.fn();
+    const initialProps = props({ onSave, onDraftStateChange });
+    const view = render(<AdminWeeklyPaymentsWorksheet {...initialProps} />);
+
+    view.rerender(
+      <AdminWeeklyPaymentsWorksheet {...initialProps} collectionLocalDate="2026-10-06" />,
+    );
+    await user.type(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" }), "10.00");
+
+    expect(screen.getByLabelText("Received date for these payments")).toHaveValue("2026-10-06");
+    await waitFor(() => {
+      const latestDraftState = onDraftStateChange.mock.calls.at(-1)?.[0];
+      expect(latestDraftState?.newReceiptDrafts["7:31:502"]).toBe("10.00");
+      expect(latestDraftState).not.toHaveProperty("receivedDate");
+    });
+
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[0]).toMatchObject({ receivedDate: "2026-10-06" });
+
+    await user.type(screen.getByRole("textbox", { name: "Amount received from Blair Quinn" }), "5.00");
+    const receivedDate = screen.getByLabelText("Received date for these payments");
+    fireEvent.change(receivedDate, { target: { value: "2026-10-04" } });
+    view.rerender(
+      <AdminWeeklyPaymentsWorksheet {...initialProps} collectionLocalDate="2026-10-07" />,
+    );
+
+    expect(receivedDate).toHaveValue("2026-10-04");
+    await user.click(screen.getByRole("button", { name: "Save week" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+    expect(onSave.mock.calls[1]?.[0]).toMatchObject({ receivedDate: "2026-10-04" });
+  });
+
   it("shows a full-week partial count while preserving complete and zero states", () => {
     const partialTeams = teams.map((team) => ({
       ...team,

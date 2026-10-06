@@ -640,9 +640,10 @@ export function AdminWeeklyPaymentsWorksheet({
   const [manualReceiptDrafts, setManualReceiptDrafts] = useState<Readonly<Record<string, string>>>(
     () => initialDrafts?.manualReceiptDrafts ?? {},
   );
-  const [receivedDate, setReceivedDate] = useState(
-    () => initialDrafts?.receivedDate ?? collectionLocalDate,
+  const [receivedDateOverride, setReceivedDateOverride] = useState<string | undefined>(
+    () => initialDrafts?.receivedDate,
   );
+  const receivedDate = receivedDateOverride ?? collectionLocalDate;
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<{
     message: string;
@@ -748,8 +749,13 @@ export function AdminWeeklyPaymentsWorksheet({
   }, [hasLocalDrafts, onDirtyChange]);
 
   useEffect(() => {
-    onDraftStateChange?.({ responsibilityDrafts, newReceiptDrafts, manualReceiptDrafts, receivedDate });
-  }, [manualReceiptDrafts, newReceiptDrafts, onDraftStateChange, receivedDate, responsibilityDrafts]);
+    onDraftStateChange?.({
+      responsibilityDrafts,
+      newReceiptDrafts,
+      manualReceiptDrafts,
+      ...(receivedDateOverride === undefined ? {} : { receivedDate: receivedDateOverride }),
+    });
+  }, [manualReceiptDrafts, newReceiptDrafts, onDraftStateChange, receivedDateOverride, responsibilityDrafts]);
 
   function clearSaveError() {
     setSaveError(null);
@@ -831,7 +837,7 @@ export function AdminWeeklyPaymentsWorksheet({
       setResponsibilityDrafts({});
       setNewReceiptDrafts({});
       setManualReceiptDrafts({});
-      setReceivedDate(collectionLocalDate);
+      setReceivedDateOverride(undefined);
     } catch (error) {
       setSaveError(error instanceof AdminWeeklyPaymentsSaveError
         ? { message: error.message, recoveryAction: error.recoveryAction }
@@ -960,7 +966,7 @@ export function AdminWeeklyPaymentsWorksheet({
                 aria-invalid={invalidReceivedDate}
                 aria-describedby={invalidReceivedDate ? "manage-payments-received-date-error" : undefined}
                 onChange={(event) => {
-                  setReceivedDate(event.currentTarget.value);
+                  setReceivedDateOverride(event.currentTarget.value);
                   clearSaveError();
                 }}
                 className="w-auto"
