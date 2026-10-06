@@ -10,12 +10,12 @@ vi.mock("../../server/services/roster-payment-core.js", () => ({
   readCanonicalDuePastDue: vi.fn(),
   readCanonicalDuePastDueV3: vi.fn(),
   readRosterPaymentResponsibility: vi.fn(),
-  readRosterPaymentResponsibilityV2: vi.fn(),
+  readTeamEnvelopeRosterReadContext: vi.fn(),
 }));
 
 import { db } from "../../server/db.js";
 import { loadLeagueOccurrenceSchedule } from "../../server/services/league-occurrence-schedule.js";
-import { readCanonicalDuePastDueV3, readRosterPaymentResponsibilityV2 } from "../../server/services/roster-payment-core.js";
+import { readCanonicalDuePastDueV3, readRosterPaymentResponsibility, readTeamEnvelopeRosterReadContext } from "../../server/services/roster-payment-core.js";
 import { storage } from "../../server/storage/index.js";
 
 import {
@@ -25,7 +25,9 @@ import {
   TeamEnvelopeReportError,
 } from "../../server/services/team-envelope-report";
 
-type BuildInput = Parameters<typeof buildTeamEnvelopeReport>[0];
+type BuildInput = Omit<Parameters<typeof buildTeamEnvelopeReport>[0], "roster"> & {
+  roster: Awaited<ReturnType<typeof readRosterPaymentResponsibility>>;
+};
 
 function occurrence(id: string, localDate: string, ordinal: number): LeagueOccurrenceScheduleOccurrence {
   return {
@@ -548,7 +550,7 @@ describe("team envelope report", () => {
     input.roster.substituteBowlerOptions = input.roster.substituteBowlerOptions.filter((bowler) => bowler.id !== 103);
     vi.mocked(storage.getLeague).mockResolvedValue(input.league as never);
     vi.mocked(loadLeagueOccurrenceSchedule).mockResolvedValue(input.schedule);
-    vi.mocked(readRosterPaymentResponsibilityV2).mockResolvedValue(input.roster as never);
+    vi.mocked(readTeamEnvelopeRosterReadContext).mockResolvedValue(input.roster as never);
     vi.mocked(readCanonicalDuePastDueV3).mockResolvedValue(input.financial as never);
 
     const where = vi.fn().mockResolvedValue([{ id: 103, name: "Former Sam" }]);
@@ -567,6 +569,26 @@ describe("team envelope report", () => {
       bowlerId: 103,
       bowlerName: "Former Sam",
     }));
+  });
+
+  it("builds an adopted worksheet report from roster context without assignment projection", async () => {
+    const input = adoptedEnvelopeInput();
+    const worksheetRow = input.financial.rows.find((row) => row.occurrenceId === "week-2" && row.payerBowlerId === 101);
+    if (!worksheetRow || !("owner" in worksheetRow)) throw new Error("missing worksheet-owned account row");
+    worksheetRow.responsibilityKind = "worksheet";
+    worksheetRow.slotIndex = null;
+    worksheetRow.actualBowlerId = null;
+
+    vi.mocked(storage.getLeague).mockResolvedValue(input.league as never);
+    vi.mocked(loadLeagueOccurrenceSchedule).mockResolvedValue(input.schedule);
+    vi.mocked(readTeamEnvelopeRosterReadContext).mockResolvedValue(input.roster as never);
+    vi.mocked(readCanonicalDuePastDueV3).mockResolvedValue(input.financial as never);
+
+    const report = await readTeamEnvelopeReport({ organizationId: 11, leagueId: 7 });
+
+    expect(readTeamEnvelopeRosterReadContext).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7 });
+    expect(report.ownedAccountProjection).toBe(true);
+    expect(report.teams.find((team) => team.teamId === 10)?.rows).toContainEqual(expect.objectContaining({ bowlerId: 103 }));
   });
 
   it("projects owned credit for responsible substitutes without requiring a filled legacy lineup", () => {
@@ -788,6 +810,38 @@ describe("team envelope report", () => {
     expect(() => buildTeamEnvelopeReport(input)).toThrowError(
       expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "FINANCIAL_REVIEW_REQUIRED", status: 409 }),
     );
+  });
+
+  it("fails closed on review for a current rotating team obligation", () => {
+    const input = adoptedEnvelopeInput();
+    const row = input.financial.rows.find((candidate) => "owner" in candidate && candidate.owner.kind === "team" && candidate.actualBowlerId === null);
+    if (!row || !("owner" in row)) throw new Error("missing unassigned rotating obligation fixture");
+    row.slotIndex = 0;
+    row.reviewRequired = true;
+
+    expect(() => buildTeamEnvelopeReport(input)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "FINANCIAL_REVIEW_REQUIRED", status: 409 }),
+    );
+  });
+
+  it("rejects roster and financial evidence from different league scopes", () => {
+    const input = reportInput();
+    input.financial.leagueId = 8;
+
+    expect(() => buildTeamEnvelopeReport(input)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "REPORT_SCOPE_INVALID", status: 503 }),
+    );
+  });
+
+  it("propagates failures from the canonical financial read", async () => {
+    const input = adoptedEnvelopeInput();
+    const failure = new Error("financial evidence read failed");
+    vi.mocked(storage.getLeague).mockResolvedValue(input.league as never);
+    vi.mocked(loadLeagueOccurrenceSchedule).mockResolvedValue(input.schedule);
+    vi.mocked(readTeamEnvelopeRosterReadContext).mockResolvedValue(input.roster as never);
+    vi.mocked(readCanonicalDuePastDueV3).mockRejectedValue(failure);
+
+    await expect(readTeamEnvelopeReport({ organizationId: 11, leagueId: 7 })).rejects.toBe(failure);
   });
 
   it("requires a complete active paying lineup", () => {
