@@ -1,4 +1,11 @@
+main[data-manage-payments-main] {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .manage-payments-layout-content {
+  min-height: 0;
   padding: 0;
   background: var(--familiar-canvas);
   color: var(--familiar-ink);
@@ -276,18 +283,29 @@
 }
 
 [data-awpw="page"] {
+  --manage-payments-page-gutter: var(--manage-payments-desktop-gutter);
   display: flex;
   width: 100%;
   min-height: 100%;
   flex-direction: column;
   overflow-x: clip;
-  padding: 24px var(--manage-payments-desktop-gutter) 0;
+  padding: 0 var(--manage-payments-page-gutter);
   background: var(--familiar-canvas);
   color: var(--familiar-ink);
   font-family: var(--familiar-font);
   font-size: 14px;
   font-weight: 400;
   line-height: 1.45;
+}
+
+[data-awpw="sticky-header"] {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin-right: calc(0px - var(--manage-payments-page-gutter));
+  margin-left: calc(0px - var(--manage-payments-page-gutter));
+  padding: 24px var(--manage-payments-page-gutter) 0;
+  background: var(--familiar-canvas);
 }
 
 [data-awpw="page-heading"] h1 {
@@ -505,6 +523,115 @@
   padding-left: 22px;
 }
 
+.manage-payments-table {
+  --manage-payments-received-cell-padding-left: 22px;
+}
+
+[data-awpw="team-total-footer"] {
+  font-family: var(--familiar-font);
+}
+
+[data-awpw="team-total-footer"] [data-awpw="team-total-empty"],
+[data-awpw="team-total-footer"] [data-awpw="team-total-cell"] {
+  border-top: 1px solid rgb(100 116 139 / 0.2);
+  border-bottom: 0;
+  background: var(--familiar-table-header);
+}
+
+[data-awpw="team-total-footer"] [data-awpw="team-total-empty"] {
+  padding: 10px;
+}
+
+[data-awpw="team-total-footer"] [data-awpw="team-total-cell"] {
+  padding: 10px;
+  padding-left: calc(var(--manage-payments-received-cell-padding-left) + 9px);
+  color: var(--familiar-navy);
+  text-align: left;
+}
+
+[data-awpw="team-total-group"] {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-left: 11px;
+}
+
+[data-awpw="team-total-main"] {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 6px;
+  color: var(--familiar-navy);
+  font-size: 15px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+[data-awpw="team-total-label"] {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 6px);
+  transform: translateY(-50%);
+  color: var(--familiar-navy);
+  font-size: 15px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+[data-awpw="team-total-output"] {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--familiar-navy);
+  font-size: 15px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-awpw="team-total-currency-slot"] {
+  position: relative;
+  display: inline-block;
+  flex: 0 0 auto;
+  font-size: 15px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+[data-awpw="team-total-currency-slot"]::before {
+  display: inline-block;
+  visibility: hidden;
+  content: "$";
+  font-size: 13px;
+  line-height: 1;
+}
+
+[data-awpw="team-total-currency"] {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+[data-awpw="team-total-digits"] {
+  font-size: 15px;
+  font-weight: 400;
+}
+
+[data-awpw="team-total-notice"] {
+  max-width: 100%;
+  color: var(--color-warning-800);
+  font-size: 11px;
+  font-weight: 450;
+  line-height: 1.3;
+  text-align: left;
+}
+
 [data-awpw="received-content"] {
   display: flex;
   width: 100%;
@@ -665,7 +792,11 @@
 }
 
 [data-awpw="save-status"] {
+  display: flex;
   min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
   color: var(--familiar-ink);
   font-size: 14px;
 }
@@ -678,6 +809,36 @@
   font-size: 14px;
   font-weight: 680;
   line-height: 1.45;
+}
+
+[data-awpw="received-date"] {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--familiar-muted);
+  font-size: 12px;
+  font-weight: 620;
+  white-space: nowrap;
+}
+
+[data-awpw="received-date"] .manage-payments-input {
+  width: 148px;
+  min-height: 38px;
+  height: 38px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-size: 14px;
+  font-weight: 620;
+}
+
+[data-awpw="received-date-error"] {
+  flex-basis: 100%;
+  color: hsl(var(--destructive));
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
 }
 
 [data-awpw="save-status"] [data-awpw="invalid-notice"],
@@ -745,8 +906,9 @@
   }
 
   [data-awpw="page"] {
-    padding-right: 22px;
-    padding-left: 22px;
+    --manage-payments-page-gutter: 22px;
+    padding-right: var(--manage-payments-page-gutter);
+    padding-left: var(--manage-payments-page-gutter);
   }
 
   [data-awpw="save-dock"] {
@@ -788,6 +950,10 @@
   .manage-payments-received-cell {
     padding-left: 16px;
   }
+
+  .manage-payments-table {
+    --manage-payments-received-cell-padding-left: 16px;
+  }
 }
 
 @media (max-width: 760px) {
@@ -801,7 +967,12 @@
 
   [data-awpw="page"] {
     min-height: calc(100dvh - 64px);
-    padding: 18px var(--manage-payments-mobile-gutter) 0;
+    --manage-payments-page-gutter: var(--manage-payments-mobile-gutter);
+    padding: 0 var(--manage-payments-page-gutter);
+  }
+
+  [data-awpw="sticky-header"] {
+    padding-top: 18px;
   }
 
   [data-awpw="page-heading"] h1 {
@@ -919,6 +1090,51 @@
   .manage-payments-table-body {
     display: flex;
     flex-direction: column;
+  }
+
+  .manage-payments-table tfoot {
+    display: block;
+    width: 100%;
+    border-top: 1px solid rgb(100 116 139 / 0.2);
+    background: var(--familiar-table-header);
+  }
+
+  .manage-payments-table tfoot tr {
+    display: block;
+    width: 100%;
+    padding: 10px 12px;
+  }
+
+  .manage-payments-table tfoot [data-awpw="team-total-empty"] {
+    display: none;
+  }
+
+  .manage-payments-table tfoot [data-awpw="team-total-cell"] {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: right;
+  }
+
+  [data-awpw="team-total-group"] {
+    align-items: flex-end;
+    margin-left: 0;
+  }
+
+  [data-awpw="team-total-main"] {
+    justify-content: flex-end;
+  }
+
+  [data-awpw="team-total-label"] {
+    position: static;
+    transform: none;
+  }
+
+  [data-awpw="team-total-notice"] {
+    text-align: right;
   }
 
   .manage-payments-table-row {
@@ -1056,6 +1272,37 @@
 
   [data-awpw="save-status"] > p:first-child {
     font-size: 12px;
+  }
+
+  [data-awpw="save-dock"][data-has-received-date] {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  [data-awpw="save-dock"][data-has-received-date] [data-awpw="save-status"] {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+  }
+
+  [data-awpw="save-dock"][data-has-received-date] [data-awpw="received-date"] {
+    width: 100%;
+    justify-content: space-between;
+    font-size: 12px;
+  }
+
+  [data-awpw="save-dock"][data-has-received-date] [data-awpw="received-date"] .manage-payments-input {
+    width: min(165px, 58vw);
+    min-height: 40px;
+    height: 40px;
+    font-size: 16px;
+  }
+
+  [data-awpw="save-dock"][data-has-received-date] > button {
+    width: 100%;
+    min-width: 0;
+    min-height: 48px;
   }
 
   [data-awpw="save-dock"] > button {

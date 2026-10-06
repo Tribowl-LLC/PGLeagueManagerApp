@@ -821,7 +821,7 @@ export function Layout({
           : appearance === "weekly-payments"
             ? "manage-payments-main-expanded"
             : "md:ml-64"
-      )}>
+      )} data-manage-payments-main={appearance === "weekly-payments" || undefined}>
         <header className={cn(
           "h-16 bg-white border-b border-navigation-200 flex items-center justify-between px-4 md:px-8 shrink-0 app-header-shadow z-10 sticky top-0",
           appearance === "weekly-payments" && "font-familiar manage-payments-global-header",

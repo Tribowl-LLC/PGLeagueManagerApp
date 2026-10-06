@@ -45,11 +45,11 @@
     "snapshot:failures": "bash scripts/snapshot-failures.sh"
   },
   "dependencies": {
-    "@capacitor/android": "^8.5.0",
+    "@capacitor/android": "^8.5.1",
     "@capacitor/camera": "^8.2.3",
     "@capacitor/cli": "^8.5.0",
     "@capacitor/core": "^8.4.2",
-    "@capacitor/ios": "^8.5.0",
+    "@capacitor/ios": "^8.5.1",
     "@capacitor/preferences": "^8.0.1",
     "@capacitor/splash-screen": "^8.0.2",
     "@capacitor/status-bar": "^8.0.3",
@@ -76,7 +76,7 @@
     "@tanstack/react-query": "^5.102.8",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "compression": "^1.8.1",
+    "compression": "^1.8.2",
     "connect-pg-simple": "^10.0.0",
     "date-fns": "^4.4.0",
     "date-fns-tz": "^3.2.0",
@@ -94,7 +94,7 @@
     "passport": "^0.7.0",
     "passport-local": "^1.0.0",
     "pg": "^8.22.0",
-    "proxy-addr": "^2.0.7",
+    "proxy-addr": "^2.0.8",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-hook-form": "^7.86.0",
@@ -174,6 +174,9 @@
     "form-data": "^4.0.6",
     "postcss": {
       "nanoid": "3.3.18"
+    },
+    "@tailwindcss/typography": {
+      "postcss-selector-parser": "7.1.6"
     }
   }
 }

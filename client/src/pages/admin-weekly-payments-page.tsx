@@ -500,10 +500,12 @@ export default function AdminWeeklyPaymentsPage() {
       );
     }
 
+    const hasNewPayments = input.changedRows.some((row) => row.newManualReceiptAmountMinor !== undefined);
     const requestCore = {
       occurrenceId: input.occurrenceId,
       expectedRevision: input.expectedRevision,
       expectedStateFingerprint: input.expectedStateFingerprint,
+      ...(hasNewPayments && input.receivedDate ? { receivedDate: input.receivedDate } : {}),
       changedRows: input.changedRows.map((row) => ({
         ...row,
         manualReceiptEdits: row.manualReceiptEdits.map((edit) => ({ ...edit })),
@@ -583,13 +585,74 @@ export default function AdminWeeklyPaymentsPage() {
     if (nextWeek) chooseOccurrence(nextWeek.occurrenceId);
   }
 
+  const leagueToolbar = !leaguesLoading && !leaguesErrorMessage && leagues.length > 0 ? (
+    <div data-awpw="toolbar">
+      <div data-awpw="league-picker">
+        <Label className="sr-only" htmlFor="manage-payments-league">League</Label>
+        <Select value={selectedLeagueId === null ? "" : String(selectedLeagueId)} onValueChange={chooseLeague}>
+          <SelectTrigger appearance="managePaymentsControl" id="manage-payments-league" aria-label="League">
+            <SelectValue placeholder="Select a league" />
+          </SelectTrigger>
+          <SelectContent appearance="managePaymentsControl">
+            {leagues.map((league) => (
+              <SelectItem key={league.id} value={String(league.id)}>{league.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div data-awpw="week-picker">
+        <Label className="sr-only" htmlFor="manage-payments-week">Collection week</Label>
+        <div data-awpw="week-controls">
+          <Button
+            type="button"
+            variant="paymentsSecondary"
+            size="paymentsIcon"
+            aria-label="Previous week"
+            disabled={selectedWeekIndex <= 0 || saving || activeReloadState?.status === "loading"}
+            onClick={() => moveWeek(-1)}
+          >
+            <ChevronLeft aria-hidden="true" className="size-4" />
+          </Button>
+          <Select
+            value={resolvedOccurrenceId ?? ""}
+            onValueChange={chooseOccurrence}
+            disabled={weekOptions.length === 0 || saving || activeReloadState?.status === "loading"}
+          >
+            <SelectTrigger appearance="managePaymentsWeekPicker" id="manage-payments-week" aria-label="Collection week" className="min-w-0 flex-1">
+              <SelectValue placeholder="Choose a collection week" />
+            </SelectTrigger>
+            <SelectContent appearance="managePaymentsControl">
+              {weekOptions.map((week) => (
+                <SelectItem key={week.occurrenceId} value={week.occurrenceId}>{week.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            type="button"
+            variant="paymentsSecondary"
+            size="paymentsIcon"
+            aria-label="Next week"
+            disabled={selectedWeekIndex < 0 || selectedWeekIndex >= weekOptions.length - 1 || saving || activeReloadState?.status === "loading"}
+            onClick={() => moveWeek(1)}
+          >
+            <ChevronRight aria-hidden="true" className="size-4" />
+          </Button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   return (
     <Layout appearance="weekly-payments">
       <div data-awpw="page">
-        <header data-awpw="page-heading">
-          <h1>Weekly payments</h1>
-          <p>Set responsibility and enter receipts, then save once.</p>
-        </header>
+        <div data-awpw="sticky-header">
+          <header data-awpw="page-heading">
+            <h1>Weekly payments</h1>
+            <p>Set responsibility and enter receipts, then save once.</p>
+          </header>
+          {leagueToolbar}
+        </div>
 
         {leaguesLoading ? (
           <PageLoadingState message="Loading leagues…" fullPage={false} />
@@ -601,62 +664,6 @@ export default function AdminWeeklyPaymentsPage() {
           </div>
         ) : (
           <>
-            <div data-awpw="toolbar">
-              <div data-awpw="league-picker">
-                <Label className="sr-only" htmlFor="manage-payments-league">League</Label>
-                <Select value={selectedLeagueId === null ? "" : String(selectedLeagueId)} onValueChange={chooseLeague}>
-                  <SelectTrigger appearance="managePaymentsControl" id="manage-payments-league" aria-label="League">
-                    <SelectValue placeholder="Select a league" />
-                  </SelectTrigger>
-                  <SelectContent appearance="managePaymentsControl">
-                    {leagues.map((league) => (
-                      <SelectItem key={league.id} value={String(league.id)}>{league.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div data-awpw="week-picker">
-                <Label className="sr-only" htmlFor="manage-payments-week">Collection week</Label>
-                <div data-awpw="week-controls">
-                  <Button
-                    type="button"
-                    variant="paymentsSecondary"
-                    size="paymentsIcon"
-                    aria-label="Previous week"
-                    disabled={selectedWeekIndex <= 0 || saving || activeReloadState?.status === "loading"}
-                    onClick={() => moveWeek(-1)}
-                  >
-                    <ChevronLeft aria-hidden="true" className="size-4" />
-                  </Button>
-                  <Select
-                    value={resolvedOccurrenceId ?? ""}
-                    onValueChange={chooseOccurrence}
-                    disabled={weekOptions.length === 0 || saving || activeReloadState?.status === "loading"}
-                  >
-                    <SelectTrigger appearance="managePaymentsWeekPicker" id="manage-payments-week" aria-label="Collection week" className="min-w-0 flex-1">
-                      <SelectValue placeholder="Choose a collection week" />
-                    </SelectTrigger>
-                    <SelectContent appearance="managePaymentsControl">
-                      {weekOptions.map((week) => (
-                        <SelectItem key={week.occurrenceId} value={week.occurrenceId}>{week.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    type="button"
-                    variant="paymentsSecondary"
-                    size="paymentsIcon"
-                    aria-label="Next week"
-                    disabled={selectedWeekIndex < 0 || selectedWeekIndex >= weekOptions.length - 1 || saving || activeReloadState?.status === "loading"}
-                    onClick={() => moveWeek(1)}
-                  >
-                    <ChevronRight aria-hidden="true" className="size-4" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-
             {activeReloadState?.status === "loading" ? (
               <PageLoadingState message="Loading the latest saved week…" fullPage={false} />
             ) : activeReloadState?.status === "error" ? (
@@ -688,6 +695,7 @@ export default function AdminWeeklyPaymentsPage() {
                   key={`${activeSelectionKey ?? `${selectedLeagueId}:${snapshot.selectedOccurrence.occurrenceId}`}:${worksheetGeneration}`}
                   leagueId={snapshot.league.leagueId}
                   occurrenceId={snapshot.selectedOccurrence.occurrenceId}
+                  collectionLocalDate={snapshot.selectedOccurrence.localDate}
                   expectedRevision={snapshot.revision}
                   expectedStateFingerprint={snapshot.stateFingerprint}
                   weekConfirmed={snapshot.weekConfirmed}

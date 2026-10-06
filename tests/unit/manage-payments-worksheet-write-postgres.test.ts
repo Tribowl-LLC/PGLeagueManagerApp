@@ -53,7 +53,7 @@ import { historicalCashAllocationFingerprint } from "@shared/historical-payment-
 import { calculateRosterPaymentTiming } from "@shared/roster-payment-contract";
 import { readOwnedAccountBalancesInTransaction } from "../../server/services/owned-payment-ledger.js";
 import { readManagePaymentsSeasonSnapshot, readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read.js";
-import { saveManagePaymentsWorksheet, ManagePaymentsWorksheetWriteError } from "../../server/services/manage-payments-worksheet-write.js";
+import { managePaymentsSaveRequestFingerprint, saveManagePaymentsWorksheet, ManagePaymentsWorksheetWriteError } from "../../server/services/manage-payments-worksheet-write.js";
 import { readCanonicalPaymentReport, readPaymentReceiptProjection } from "../../server/services/canonical-payment-report.js";
 import { getPaymentsPaginated, getVisiblePaymentByIdForOrganization } from "../../server/storage/payments.js";
 import { getTestDb } from "../setup/test-db.js";
@@ -223,6 +223,87 @@ function rowChange(snapshot: ManagePaymentsSnapshot, bowlerId: number, overrides
 }
 
 describe("Manage Payments worksheet atomic writer", () => {
+  it("records only new manual receipts at receivedDate, preserves existing dates, and keeps the selected occurrence owner", async () => {
+    const initial = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    const selectedLocalDate = initial.selectedOccurrence.localDate;
+    const receivedDate = "2032-09-01";
+    const secondReceivedDate = "2032-09-02";
+
+    const firstRequest = saveInput(initial, [
+      rowChange(initial, mainBowlerId, { newManualReceiptAmountMinor: 321 }),
+    ], `worksheet-received-date-${suffix}`);
+    const customDateRequest = {
+      ...firstRequest,
+      request: { ...firstRequest.request, receivedDate },
+    };
+    expect(managePaymentsSaveRequestFingerprint(customDateRequest.request)).not.toBe(
+      managePaymentsSaveRequestFingerprint({ ...customDateRequest.request, receivedDate: secondReceivedDate }),
+    );
+
+    const firstSave = await saveManagePaymentsWorksheet(customDateRequest);
+    expect(firstSave.snapshot.selectedOccurrence).toMatchObject({
+      occurrenceId: selectedOccurrenceId,
+      localDate: selectedLocalDate,
+    });
+    const firstMainReceipt = firstSave.snapshot.teams.flatMap((team) => team.rows)
+      .find((row) => row.bowlerId === mainBowlerId)?.manualReceipts[0];
+    if (!firstMainReceipt) throw new Error("newly recorded manual receipt is missing");
+    expect(firstMainReceipt).toMatchObject({
+      amountMinor: 321,
+      businessCollectionLocalDate: receivedDate,
+    });
+    const firstReport = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: firstMainReceipt.paymentId });
+    expect(firstReport.rows).toHaveLength(1);
+    expect(firstReport.rows[0]).toMatchObject({
+      paymentId: firstMainReceipt.paymentId,
+      amountMinor: 321,
+      businessDate: receivedDate,
+    });
+    const firstDateList = await getPaymentsPaginated({
+      organizationId,
+      leagueId,
+      bowlerId: mainBowlerId,
+      createdAt: new Date(`${receivedDate}T12:00:00.000Z`),
+    }, 1, 100);
+    expect(firstDateList.items.map((payment) => payment.id)).toContain(firstMainReceipt.paymentId);
+
+    await expect(saveManagePaymentsWorksheet({
+      ...customDateRequest,
+      request: { ...customDateRequest.request, receivedDate: secondReceivedDate },
+    })).rejects.toMatchObject({ code: "idempotency_conflict" });
+
+    const editAndRecordRequest = saveInput(firstSave.snapshot, [
+      rowChange(firstSave.snapshot, mainBowlerId, {
+        manualReceiptEdits: [{ receiptId: firstMainReceipt.receiptId, expectedRevision: firstMainReceipt.revision, amountMinor: 500 }],
+      }),
+      rowChange(firstSave.snapshot, thirdBowlerId, { newManualReceiptAmountMinor: 123 }),
+    ], `worksheet-received-date-edit-${suffix}`);
+    const editAndRecordSave = await saveManagePaymentsWorksheet({
+      ...editAndRecordRequest,
+      request: { ...editAndRecordRequest.request, receivedDate: secondReceivedDate },
+    });
+    expect(editAndRecordSave.snapshot.selectedOccurrence).toMatchObject({ occurrenceId: selectedOccurrenceId, localDate: selectedLocalDate });
+    const editedMainReceipt = editAndRecordSave.snapshot.teams.flatMap((team) => team.rows)
+      .find((row) => row.bowlerId === mainBowlerId)?.manualReceipts[0];
+    const secondNewReceipt = editAndRecordSave.snapshot.teams.flatMap((team) => team.rows)
+      .find((row) => row.bowlerId === thirdBowlerId)?.manualReceipts[0];
+    expect(editedMainReceipt).toMatchObject({
+      receiptId: firstMainReceipt.receiptId,
+      amountMinor: 500,
+      revision: 2,
+      businessCollectionLocalDate: receivedDate,
+    });
+    expect(secondNewReceipt).toMatchObject({ amountMinor: 123, businessCollectionLocalDate: secondReceivedDate });
+
+    const defaultDateSave = await saveManagePaymentsWorksheet(saveInput(editAndRecordSave.snapshot, [
+      rowChange(editAndRecordSave.snapshot, substituteBowlerId, { newManualReceiptAmountMinor: 77 }),
+    ], `worksheet-received-date-omitted-${suffix}`));
+    expect(defaultDateSave.snapshot.selectedOccurrence).toMatchObject({ occurrenceId: selectedOccurrenceId, localDate: selectedLocalDate });
+    expect(defaultDateSave.snapshot.teams.flatMap((team) => team.rows)
+      .find((row) => row.bowlerId === substituteBowlerId)?.manualReceipts[0])
+      .toMatchObject({ amountMinor: 77, businessCollectionLocalDate: selectedLocalDate });
+  });
+
   it("reads every week from one shared owned-ledger projection and refreshes the selected week after a save", async () => {
     const serviceDb = (await import("../../server/db.js")).db;
     const ownedLedger = await import("../../server/services/owned-payment-ledger.js");
