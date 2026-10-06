@@ -534,7 +534,11 @@ export async function readRosterPaymentResponsibility(input: { organizationId: n
   };
 }
 
-export async function readRosterPaymentResponsibilityV2(input: { organizationId: number; leagueId: number }): Promise<RosterPaymentResponsibilityReadContractV2> {
+export type TeamEnvelopeRosterReadContext = Pick<RosterPaymentResponsibilityReadContractV2,
+  "organizationId" | "leagueId" | "ready" | "teams" | "substituteBowlerOptions"
+>;
+
+async function readRosterPaymentResponsibilityV2Metadata(input: { organizationId: number; leagueId: number }) {
   const legacy = await readRosterPaymentResponsibility(input);
   const slots = await db.select({
     id: teamPaymentSlots.id,
@@ -559,6 +563,37 @@ export async function readRosterPaymentResponsibilityV2(input: { organizationId:
     )).orderBy(asc(teamPaymentRotationMembers.teamId), asc(teamPaymentRotationMembers.bowlerId));
   const eligibleIdsByTeam = new Map<number, number[]>();
   for (const row of poolRows) eligibleIdsByTeam.set(row.teamId, [...(eligibleIdsByTeam.get(row.teamId) ?? []), row.bowlerId]);
+  const teams = legacy.teams.map((team) => ({
+    ...team,
+    eligibleRotatingBowlerIds: eligibleIdsByTeam.get(team.id) ?? [],
+    slots: team.slots.map((slot) => ({
+      ...slot,
+      currentRevision: slotByKey.get(`${team.id}:${slot.slotIndex}`)?.currentRevision ?? 1,
+    })),
+  }));
+  const incompleteTeamIds = [...new Set([
+    ...legacy.incompleteTeamIds,
+    ...teams.filter((team) => team.slots.some((slot) => slot.occupant === "rotating") && team.eligibleRotatingBowlerIds.length === 0).map((team) => team.id),
+  ])];
+  return { legacy, slots, teams, incompleteTeamIds };
+}
+
+/** Read the lineup and pool metadata used by the envelope report. Assignment
+ * history is excluded; the report gets financial ownership and assignment
+ * validation from the canonical financial read. */
+export async function readTeamEnvelopeRosterReadContext(input: { organizationId: number; leagueId: number }): Promise<TeamEnvelopeRosterReadContext> {
+  const { legacy, teams, incompleteTeamIds } = await readRosterPaymentResponsibilityV2Metadata(input);
+  return {
+    organizationId: legacy.organizationId,
+    leagueId: legacy.leagueId,
+    ready: legacy.payingLineupSize !== null && incompleteTeamIds.length === 0,
+    teams,
+    substituteBowlerOptions: legacy.substituteBowlerOptions,
+  };
+}
+
+export async function readRosterPaymentResponsibilityV2(input: { organizationId: number; leagueId: number }): Promise<RosterPaymentResponsibilityReadContractV2> {
+  const { legacy, slots, teams, incompleteTeamIds } = await readRosterPaymentResponsibilityV2Metadata(input);
   const rawOccurrenceRows = await db.select({
     id: leagueOccurrences.id,
     startAt: leagueOccurrences.startAt,
@@ -652,18 +687,6 @@ export async function readRosterPaymentResponsibilityV2(input: { organizationId:
       recordedByUserId: assignment?.recordedByUserId ?? null,
     };
   }));
-  const teams = legacy.teams.map((team) => ({
-    ...team,
-    eligibleRotatingBowlerIds: eligibleIdsByTeam.get(team.id) ?? [],
-    slots: team.slots.map((slot) => ({
-      ...slot,
-      currentRevision: slotByKey.get(`${team.id}:${slot.slotIndex}`)?.currentRevision ?? 1,
-    })),
-  }));
-  const incompleteTeamIds = [...new Set([
-    ...legacy.incompleteTeamIds,
-    ...teams.filter((team) => team.slots.some((slot) => slot.occupant === "rotating") && team.eligibleRotatingBowlerIds.length === 0).map((team) => team.id),
-  ])];
   return {
     ...legacy,
     contractVersion: "roster-payment-responsibility/2" as const,
