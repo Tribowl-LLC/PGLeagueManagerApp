@@ -369,6 +369,9 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
   const mainBowlerIds = new Set(
     roster.teams.flatMap((team) => team.slots.flatMap((slot) => slot.occupant === "main" && slot.mainBowlerId !== null ? [slot.mainBowlerId] : [])),
   );
+  const legacyRosterBowlerIds = new Set(rosterDisplayMembersByTeam
+    .filter((team) => reportTeamIds.has(team.teamId))
+    .flatMap((team) => team.members.map((member) => member.bowlerId)));
   const membershipTeamsByBowler = new Map<number, Set<number>>();
   for (const bowler of roster.substituteBowlerOptions) {
     if (bowler.teamId === null || !reportTeamIds.has(bowler.teamId)) continue;
@@ -432,7 +435,10 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
   if (financial.rows.some((row) => {
     if (!row.reviewRequired) return false;
     const ownerBowlerId = adoptedMode ? effectiveDebtorBowlerId(row) : effectiveBowlerOwnerId(row);
-    if (ownerBowlerId !== null && (adoptedMode ? accountTeamByBowler.has(ownerBowlerId) : mainBowlerIds.has(ownerBowlerId))) return true;
+    if (ownerBowlerId !== null && (adoptedMode
+      ? accountTeamByBowler.has(ownerBowlerId)
+      : mainBowlerIds.has(ownerBowlerId)
+        || (legacyRosterBowlerIds.has(ownerBowlerId) && row.state !== "voided"))) return true;
     if (!("owner" in row) || row.owner.kind !== "team") return false;
     const ownerTeamId = row.owner.teamId;
     return currentRotatingSlots.some((slot) => slot.teamId === ownerTeamId && slot.slotIndex === row.slotIndex);

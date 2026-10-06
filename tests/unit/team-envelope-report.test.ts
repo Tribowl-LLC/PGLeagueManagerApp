@@ -976,6 +976,38 @@ describe("team envelope report", () => {
     );
   });
 
+  it("fails closed when a displayed legacy roster substitute has unresolved financial review", () => {
+    const input = reportInput();
+    Object.assign(input.roster, {
+      rosterDisplayMembersByTeam: [{
+        teamId: 10,
+        members: [{ bowlerId: 103, displayName: "Substitute Example", activeProfile: true }],
+      }],
+    });
+    const obligation = financialRow(103, "week-1", "2026-09-09T22:30:00.000Z", 0, 10);
+    obligation.reviewRequired = true;
+    Object.assign(input.financial, { rows: [...input.financial.rows, obligation] });
+
+    expect(() => buildTeamEnvelopeReport(input)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "FINANCIAL_REVIEW_REQUIRED", status: 409 }),
+    );
+  });
+
+  it("does not fail closed for review rows tied only to roster metadata outside report teams", () => {
+    const input = reportInput();
+    Object.assign(input.roster, {
+      rosterDisplayMembersByTeam: [{
+        teamId: 999,
+        members: [{ bowlerId: 999, displayName: "Unreported Team Member", activeProfile: true }],
+      }],
+    });
+    const obligation = financialRow(999, "week-1", "2026-09-09T22:30:00.000Z", 0, 999);
+    obligation.reviewRequired = true;
+    Object.assign(input.financial, { rows: [...input.financial.rows, obligation] });
+
+    expect(() => buildTeamEnvelopeReport(input)).not.toThrow();
+  });
+
   it("fails closed on review for a current rotating team obligation", () => {
     const input = adoptedEnvelopeInput();
     const row = input.financial.rows.find((candidate) => "owner" in candidate && candidate.owner.kind === "team" && candidate.actualBowlerId === null);
