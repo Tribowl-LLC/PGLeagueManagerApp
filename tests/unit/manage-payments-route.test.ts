@@ -10,9 +10,20 @@ const mocks = vi.hoisted(() => ({
   readSnapshot: vi.fn(),
   readSeasonSnapshot: vi.fn(),
   saveWorksheet: vi.fn(),
+  captureException: vi.fn(),
+  logError: vi.fn(),
   adminWriteLimiter: vi.fn((_req: unknown, _res: unknown, next: () => void) => next()),
 }));
 
+vi.mock("../../server/logger.js", () => ({
+  createLogger: () => ({
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: (...args: unknown[]) => mocks.logError(...args),
+    debug: vi.fn(),
+    captureException: (...args: unknown[]) => mocks.captureException(...args),
+  }),
+}));
 vi.mock("../../server/utils/access-control.js", () => ({
   hasAdminAccessToLeague: (...args: unknown[]) => mocks.hasAdmin(...args),
   hasAccessToLeague: vi.fn(),
@@ -50,6 +61,7 @@ vi.mock("../../server/services/manage-payments-worksheet-write.js", () => ({
 
 const { default: router } = await import("../../server/routes/manage-payments.js");
 const { ManagePaymentsWorksheetReadError } = await import("../../server/services/manage-payments-worksheet-read.js");
+const { ManagePaymentsWorksheetWriteError } = await import("../../server/services/manage-payments-worksheet-write.js");
 let server: Server;
 let baseUrl: string;
 
@@ -84,6 +96,8 @@ beforeEach(() => {
   mocks.readSnapshot.mockResolvedValue({ contractVersion: 1, teams: [] });
   mocks.readSeasonSnapshot.mockResolvedValue({ contractVersion: 1, snapshotsByOccurrence: {} });
   mocks.saveWorksheet.mockResolvedValue({ snapshot: { contractVersion: 1, teams: [] }, replayed: false });
+  mocks.captureException.mockReset();
+  mocks.logError.mockReset();
 });
 
 function user(role: string, organizationId: number | null) {
@@ -284,5 +298,196 @@ describe("Manage Payments worksheet save route", () => {
 
     expect(response.status).toBe(400);
     expect(mocks.saveWorksheet).not.toHaveBeenCalled();
+  });
+
+  it("captures unexpected wrapped database errors without exposing SQL or request details", async () => {
+    const wrapped = Object.assign(new Error("Failed query: UPDATE payments SET amount = 27000 WHERE id = 20429; params: private@example.test"), {
+      name: "DrizzleQueryError",
+    });
+    wrapped.cause = Object.assign(new Error("LV_WEEKLY_LEDGER_INVARIANT: funding_application_identity"), {
+      name: "DatabaseError",
+      code: "PWL01",
+      constraint: "owned_payment_funding_ledger_guard",
+    });
+    mocks.saveWorksheet.mockRejectedValue(wrapped);
+
+    const response = await post("/leagues/7/manage-payments/1", saveRequest, user("org_admin", 12), 12);
+    const body = await response.json() as { success: boolean; error: { code: string; message: string } };
+    const reported = mocks.captureException.mock.calls[0]?.[0] as Error;
+    const diagnosticOutput = `${reported?.message}\n${reported?.stack}\n${JSON.stringify(mocks.logError.mock.calls)}\n${JSON.stringify(body)}`;
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Unable to save weekly payments" },
+    });
+    expect(mocks.captureException).toHaveBeenCalledTimes(1);
+    expect(reported).toBeInstanceOf(Error);
+    expect(reported.name).toBe("ManagePaymentsSaveError");
+    expect(reported.message).toBe("Unexpected weekly payment worksheet save failure");
+    expect(reported.cause).toBeUndefined();
+    expect(diagnosticOutput).not.toContain("Failed query:");
+    expect(diagnosticOutput).not.toContain("private@example.test");
+    expect(diagnosticOutput).not.toContain("27000");
+    expect(diagnosticOutput).not.toContain("20429");
+    expect(mocks.logError).toHaveBeenCalledWith("Unexpected weekly payment worksheet save failure", {
+      operation: "manage_payments_save",
+      errorCode: "PWL01",
+      errorConstraint: "owned_payment_funding_ledger_guard",
+      errorKind: "DrizzleQueryError",
+      invariant: "funding_application_identity",
+    });
+  });
+
+  it("bounds diagnostic traversal when each cause access creates a fresh object", async () => {
+    let causeReads = 0;
+    const makeFreshCause = (): object => {
+      const next = {};
+      Object.defineProperty(next, "cause", {
+        get: () => {
+          causeReads += 1;
+          if (causeReads > 64) throw new Error("diagnostic traversal did not stop");
+          return makeFreshCause();
+        },
+      });
+      return next;
+    };
+    const wrapped = Object.assign(new Error("private failure detail"), {
+      name: "DatabaseError",
+      code: "PWL01",
+      constraint: "owned_payment_funding_ledger_guard",
+    });
+    Object.defineProperty(wrapped, "cause", { get: makeFreshCause });
+    mocks.saveWorksheet.mockRejectedValue(wrapped);
+
+    const response = await post("/leagues/7/manage-payments/1", saveRequest, user("org_admin", 12), 12);
+    const body = await response.json() as { success: boolean; error: { code: string; message: string } };
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Unable to save weekly payments" },
+    });
+    expect(causeReads).toBeLessThan(32);
+    expect(mocks.logError).toHaveBeenCalledWith("Unexpected weekly payment worksheet save failure", {
+      operation: "manage_payments_save",
+      errorCode: "PWL01",
+      errorConstraint: "owned_payment_funding_ledger_guard",
+      errorKind: "DatabaseError",
+      invariant: "unknown",
+    });
+  });
+
+  it("does not read a cause beyond the diagnostic depth limit", async () => {
+    const chain = Array.from({ length: 40 }, (_, index) => {
+      const entry: Record<string, unknown> = {};
+      if (index === 0) Object.assign(entry, { name: "PostgresError", message: "private failure detail" });
+      if (index === 32) Object.assign(entry, { code: "PWL01", constraint: "owned_payment_funding_ledger_guard" });
+      return entry;
+    });
+    let causeReads = 0;
+    chain.forEach((entry, index) => {
+      Object.defineProperty(entry, "cause", {
+        get: () => {
+          causeReads += 1;
+          return chain[index + 1];
+        },
+      });
+    });
+    const rootCause = chain[0];
+    if (rootCause === undefined) throw new Error("Expected a synthetic error chain root");
+    mocks.saveWorksheet.mockRejectedValue(rootCause);
+
+    const response = await post("/leagues/7/manage-payments/1", saveRequest, user("org_admin", 12), 12);
+    const body = await response.json() as { success: boolean; error: { code: string; message: string } };
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Unable to save weekly payments" },
+    });
+    expect(causeReads).toBe(31);
+    expect(mocks.logError).toHaveBeenCalledWith("Unexpected weekly payment worksheet save failure", {
+      operation: "manage_payments_save",
+      errorCode: "unknown",
+      errorConstraint: "unknown",
+      errorKind: "PostgresError",
+      invariant: "unknown",
+    });
+  });
+
+  it("omits malformed database diagnostics and keeps handled conflicts out of error reporting", async () => {
+    const malformedInvariant = Object.assign(new Error("LV_WEEKLY_LEDGER_INVARIANT: invalid_token with extra detail"), {
+      name: "ZodError",
+      code: "PWL01; SELECT secret",
+      constraint: "bad constraint with details",
+    });
+    malformedInvariant.cause = malformedInvariant;
+    mocks.saveWorksheet.mockRejectedValueOnce(malformedInvariant);
+
+    const unexpected = await post("/leagues/7/manage-payments/1", saveRequest, user("org_admin", 12), 12);
+    const unexpectedBody = await unexpected.json() as { error: { message: string } };
+
+    expect(unexpected.status).toBe(500);
+    expect(unexpectedBody.error.message).toBe("Unable to save weekly payments");
+    expect(mocks.logError).toHaveBeenCalledWith("Unexpected weekly payment worksheet save failure", {
+      operation: "manage_payments_save",
+      errorCode: "unknown",
+      errorConstraint: "unknown",
+      errorKind: "ZodError",
+      invariant: "unknown",
+    });
+    expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain("invalid_token");
+
+    mocks.captureException.mockClear();
+    mocks.logError.mockClear();
+    const inaccessible = new Error();
+    Object.defineProperties(inaccessible, {
+      name: { get: () => { throw new Error("raw name getter detail"); } },
+      message: { get: () => { throw new Error("raw message getter detail"); } },
+      code: { get: () => { throw new Error("raw code getter detail"); } },
+      constraint: { get: () => { throw new Error("raw constraint getter detail"); } },
+      cause: { get: () => { throw new Error("raw cause getter detail"); } },
+    });
+    mocks.saveWorksheet.mockRejectedValueOnce(inaccessible);
+
+    const inaccessibleFailure = await post("/leagues/7/manage-payments/1", saveRequest, user("org_admin", 12), 12);
+
+    expect(inaccessibleFailure.status).toBe(500);
+    expect(mocks.logError).toHaveBeenCalledWith("Unexpected weekly payment worksheet save failure", {
+      operation: "manage_payments_save",
+      errorCode: "unknown",
+      errorConstraint: "unknown",
+      errorKind: "unknown",
+      invariant: "unknown",
+    });
+    expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain("getter detail");
+
+    mocks.captureException.mockClear();
+    mocks.logError.mockClear();
+    mocks.saveWorksheet.mockRejectedValueOnce(new ManagePaymentsWorksheetWriteError("manual_receipt_conflict", "Receipt changed"));
+
+    const conflict = await post("/leagues/7/manage-payments/1", saveRequest, user("org_admin", 12), 12);
+    const conflictBody = await conflict.json() as { error: { code: string } };
+
+    expect(conflict.status).toBe(409);
+    expect(conflictBody.error.code).toBe("MANUAL_RECEIPT_CONFLICT");
+    expect(mocks.captureException).not.toHaveBeenCalled();
+    expect(mocks.logError).not.toHaveBeenCalled();
+  });
+
+  it("preserves the generic 500 response if server error reporting itself throws", async () => {
+    mocks.saveWorksheet.mockRejectedValue(new Error("secret raw exception"));
+    mocks.captureException.mockImplementation(() => { throw new Error("reporter failure"); });
+    mocks.logError.mockImplementation(() => { throw new Error("logger failure"); });
+
+    const response = await post("/leagues/7/manage-payments/1", saveRequest, user("org_admin", 12), 12);
+    const body = await response.json() as { success: boolean; error: { code: string; message: string } };
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Unable to save weekly payments" },
+    });
   });
 });
