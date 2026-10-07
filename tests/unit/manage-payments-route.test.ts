@@ -339,6 +339,83 @@ describe("Manage Payments worksheet save route", () => {
     });
   });
 
+  it("bounds diagnostic traversal when each cause access creates a fresh object", async () => {
+    let causeReads = 0;
+    const makeFreshCause = (): object => {
+      const next = {};
+      Object.defineProperty(next, "cause", {
+        get: () => {
+          causeReads += 1;
+          if (causeReads > 64) throw new Error("diagnostic traversal did not stop");
+          return makeFreshCause();
+        },
+      });
+      return next;
+    };
+    const wrapped = Object.assign(new Error("private failure detail"), {
+      name: "DatabaseError",
+      code: "PWL01",
+      constraint: "owned_payment_funding_ledger_guard",
+    });
+    Object.defineProperty(wrapped, "cause", { get: makeFreshCause });
+    mocks.saveWorksheet.mockRejectedValue(wrapped);
+
+    const response = await post("/leagues/7/manage-payments/1", saveRequest, user("org_admin", 12), 12);
+    const body = await response.json() as { success: boolean; error: { code: string; message: string } };
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Unable to save weekly payments" },
+    });
+    expect(causeReads).toBeLessThan(32);
+    expect(mocks.logError).toHaveBeenCalledWith("Unexpected weekly payment worksheet save failure", {
+      operation: "manage_payments_save",
+      errorCode: "PWL01",
+      errorConstraint: "owned_payment_funding_ledger_guard",
+      errorKind: "DatabaseError",
+      invariant: "unknown",
+    });
+  });
+
+  it("does not read a cause beyond the diagnostic depth limit", async () => {
+    const chain = Array.from({ length: 40 }, (_, index) => {
+      const entry: Record<string, unknown> = {};
+      if (index === 0) Object.assign(entry, { name: "PostgresError", message: "private failure detail" });
+      if (index === 32) Object.assign(entry, { code: "PWL01", constraint: "owned_payment_funding_ledger_guard" });
+      return entry;
+    });
+    let causeReads = 0;
+    chain.forEach((entry, index) => {
+      Object.defineProperty(entry, "cause", {
+        get: () => {
+          causeReads += 1;
+          return chain[index + 1];
+        },
+      });
+    });
+    const rootCause = chain[0];
+    if (rootCause === undefined) throw new Error("Expected a synthetic error chain root");
+    mocks.saveWorksheet.mockRejectedValue(rootCause);
+
+    const response = await post("/leagues/7/manage-payments/1", saveRequest, user("org_admin", 12), 12);
+    const body = await response.json() as { success: boolean; error: { code: string; message: string } };
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Unable to save weekly payments" },
+    });
+    expect(causeReads).toBe(31);
+    expect(mocks.logError).toHaveBeenCalledWith("Unexpected weekly payment worksheet save failure", {
+      operation: "manage_payments_save",
+      errorCode: "unknown",
+      errorConstraint: "unknown",
+      errorKind: "PostgresError",
+      invariant: "unknown",
+    });
+  });
+
   it("omits malformed database diagnostics and keeps handled conflicts out of error reporting", async () => {
     const malformedInvariant = Object.assign(new Error("LV_WEEKLY_LEDGER_INVARIANT: invalid_token with extra detail"), {
       name: "ZodError",

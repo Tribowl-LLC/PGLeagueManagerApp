@@ -2,7 +2,6 @@ import { z } from "zod";
 import { Router } from "express";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { createLogger } from "../logger.js";
-import { getPgErrorCode, getPgErrorConstraint } from "../utils/db-errors.js";
 import { positiveId } from "./games-scores-scope.js";
 import { hasAdminAccessToLeague } from "../utils/access-control.js";
 import { hasConfiguredOrganizationMembership } from "../middleware/organization.js";
@@ -26,6 +25,7 @@ const occurrenceQuerySchema = z.string().uuid();
 
 const POSTGRES_CODE_PATTERN = /^[0-9A-Z]{5}$/;
 const POSTGRES_CONSTRAINT_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/;
+const MAX_ERROR_DIAGNOSTIC_DEPTH = 32;
 const SAFE_ERROR_KIND_NAMES = new Set([
   "Error",
   "TypeError",
@@ -47,23 +47,44 @@ const SAFE_ERROR_KIND_NAMES = new Set([
 ]);
 const WEEKLY_LEDGER_INVARIANT_PATTERN = /^LV_WEEKLY_LEDGER_INVARIANT: ([a-z_]{1,80})$/;
 
-function readErrorProperty(error: object, key: "name" | "message" | "cause"): unknown {
+function readErrorProperty(error: object, key: "name" | "message" | "cause" | "code" | "constraint"): unknown {
   try {
-    return (error as Record<typeof key, unknown>)[key];
+    return (error as Record<string, unknown>)[key];
   } catch {
     return undefined;
   }
 }
 
-function safeErrorClassification(error: unknown): { errorKind: string; invariant: string } {
+function collectSafeErrorDiagnostics(error: unknown): {
+  errorCode: string;
+  errorConstraint: string;
+  errorKind: string;
+  invariant: string;
+} {
   const seen = new Set<object>();
   let current = error;
+  let errorCode = "unknown";
+  let errorConstraint = "unknown";
   let errorKind = "unknown";
   let genericErrorKind = "unknown";
   let invariant = "unknown";
 
-  while (typeof current === "object" && current !== null && !seen.has(current)) {
+  for (let depth = 0; depth < MAX_ERROR_DIAGNOSTIC_DEPTH; depth += 1) {
+    if (typeof current !== "object" || current === null || seen.has(current)) break;
     seen.add(current);
+
+    const code = readErrorProperty(current, "code");
+    if (errorCode === "unknown" && typeof code === "string" && POSTGRES_CODE_PATTERN.test(code)) {
+      errorCode = code;
+    }
+
+    const constraint = readErrorProperty(current, "constraint");
+    if (errorConstraint === "unknown"
+      && typeof constraint === "string"
+      && POSTGRES_CONSTRAINT_PATTERN.test(constraint)) {
+      errorConstraint = constraint;
+    }
+
     const name = readErrorProperty(current, "name");
     if (typeof name === "string" && SAFE_ERROR_KIND_NAMES.has(name)) {
       if (name === "Error") genericErrorKind = name;
@@ -76,30 +97,28 @@ function safeErrorClassification(error: unknown): { errorKind: string; invariant
       if (match?.[1]) invariant = match[1];
     }
 
+    // Do not evaluate a getter on the final object at the depth limit.
+    if (depth + 1 === MAX_ERROR_DIAGNOSTIC_DEPTH) break;
     current = readErrorProperty(current, "cause");
   }
 
-  return { errorKind: errorKind === "unknown" ? genericErrorKind : errorKind, invariant };
+  return {
+    errorCode,
+    errorConstraint,
+    errorKind: errorKind === "unknown" ? genericErrorKind : errorKind,
+    invariant,
+  };
 }
 
 function reportUnexpectedSaveFailure(error: unknown): void {
-  let errorCode = "unknown";
-  let errorConstraint = "unknown";
+  let diagnostics = {
+    errorCode: "unknown",
+    errorConstraint: "unknown",
+    errorKind: "unknown",
+    invariant: "unknown",
+  };
   try {
-    const candidateCode = getPgErrorCode(error);
-    if (candidateCode && POSTGRES_CODE_PATTERN.test(candidateCode)) errorCode = candidateCode;
-  } catch {
-    // A malformed error object must not block the 500 response.
-  }
-  try {
-    const candidateConstraint = getPgErrorConstraint(error);
-    if (candidateConstraint && POSTGRES_CONSTRAINT_PATTERN.test(candidateConstraint)) errorConstraint = candidateConstraint;
-  } catch {
-    // A malformed error object must not block the 500 response.
-  }
-  let errorClassification = { errorKind: "unknown", invariant: "unknown" };
-  try {
-    errorClassification = safeErrorClassification(error);
+    diagnostics = collectSafeErrorDiagnostics(error);
   } catch {
     // Error causes and accessors are untrusted diagnostic input.
   }
@@ -116,10 +135,10 @@ function reportUnexpectedSaveFailure(error: unknown): void {
   try {
     log.error("Unexpected weekly payment worksheet save failure", {
       operation: "manage_payments_save",
-      errorCode,
-      errorConstraint,
-      errorKind: errorClassification.errorKind,
-      invariant: errorClassification.invariant,
+      errorCode: diagnostics.errorCode,
+      errorConstraint: diagnostics.errorConstraint,
+      errorKind: diagnostics.errorKind,
+      invariant: diagnostics.invariant,
     });
   } catch {
     // Server logging must not change the client response.
