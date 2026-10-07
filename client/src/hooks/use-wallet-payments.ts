@@ -1,7 +1,65 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import * as Sentry from "@sentry/react";
 import { initializeSquare } from "@/lib/square";
 import { logger } from "@/lib/logger";
 import type { SquarePaymentRequest, SquareWalletPayment, TokenizeError } from "@/lib/square";
+
+type ApplePayDiagnosticStage = "tokenize_started" | "token_received" | "dismissed" | "tokenize_failed";
+type ApplePayErrorName = "TokenizationError" | "UnexpectedError" | "unknown";
+type ApplePayErrorType = "INVALID_APPLE_PAY_SESSION_CONTEXT" | "TOKENIZATION_IN_PROCESS" | "unknown";
+
+function getOwnStringProperty(value: unknown, propertyName: string): string | undefined {
+  const property = getOwnPropertyValue(value, propertyName);
+  return typeof property === "string" ? property : undefined;
+}
+
+function getApplePayErrorName(error: unknown): ApplePayErrorName {
+  const name = getOwnStringProperty(error, "name");
+  if (name === "TokenizationError" || name === "UnexpectedError") return name;
+  return "unknown";
+}
+
+function getApplePayErrorType(errors: unknown): ApplePayErrorType {
+  if (!Array.isArray(errors)) return "unknown";
+  const type = getOwnStringProperty(errors[0], "type");
+  if (type === "INVALID_APPLE_PAY_SESSION_CONTEXT" || type === "TOKENIZATION_IN_PROCESS") return type;
+  return "unknown";
+}
+
+function getThrownApplePayErrorType(error: unknown): ApplePayErrorType {
+  return getApplePayErrorType(getOwnPropertyValue(error, "errors"));
+}
+
+function getOwnPropertyValue(value: unknown, propertyName: string): unknown {
+  if (!value || typeof value !== "object") return undefined;
+  try {
+    const property = Object.getOwnPropertyDescriptor(value, propertyName);
+    return property && "value" in property ? property.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function reportApplePayOutcome(
+  stage: ApplePayDiagnosticStage,
+  classification?: { name: ApplePayErrorName; type: ApplePayErrorType },
+): void {
+  try {
+    Sentry.withScope((scope) => {
+      scope.setUser(null);
+      scope.setLevel(stage === "tokenize_failed" ? "warning" : "info");
+      scope.setTag("wallet_payment_method", "apple_pay");
+      scope.setTag("wallet_payment_stage", stage);
+      if (classification) {
+        scope.setTag("wallet_error_name", classification.name);
+        scope.setTag("wallet_error_type", classification.type);
+      }
+      Sentry.captureMessage("Apple Pay wallet outcome");
+    });
+  } catch {
+    // Wallet reporting must never interrupt tokenization or replace its outcome.
+  }
+}
 
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -324,27 +382,54 @@ export function useWalletPayments({
   }, [enabled, locationId, destroyInstances]);
 
   const handleApplePayClick = useCallback(async () => {
-    if (!applePayInstanceRef.current || isProcessing) return;
+    const applePayInstance = applePayInstanceRef.current;
+    if (!applePayInstance || isProcessing) return;
     if (amountCents <= 0) {
       onErrorRef.current('Please enter a valid payment amount');
       return;
     }
     setIsProcessing(true);
+    let tokenizationInvoked = false;
+    let tokenizationResolved = false;
     try {
       if (onPaymentStarted && onPaymentStarted() === false) return;
-      const result = await applePayInstanceRef.current.tokenize();
+      tokenizationInvoked = true;
+      const tokenizationPromise = applePayInstance.tokenize();
+      reportApplePayOutcome("tokenize_started");
+      const result = await tokenizationPromise;
+      tokenizationResolved = true;
       if (result.status === 'OK' && result.token) {
+        reportApplePayOutcome("token_received");
         await onTokenReceivedRef.current(result.token, 'apple_pay');
       } else if (result.status === 'CANCEL' || result.status === 'Cancel') {
+        reportApplePayOutcome("dismissed");
       } else {
-        if (!isCancelError(result.errors)) {
+        if (isCancelError(result.errors)) {
+          reportApplePayOutcome("dismissed");
+        } else {
+          reportApplePayOutcome("tokenize_failed", {
+            name: "unknown",
+            type: getApplePayErrorType(result.errors),
+          });
           const errorMsg = result.errors?.map((e) => e.message).join(', ') || 'Apple Pay payment was not completed';
           onErrorRef.current(errorMsg);
         }
       }
     } catch (err: unknown) {
       const msg = errorMessage(err);
-      if (!msg.toLowerCase().includes('cancel') && !msg.toLowerCase().includes('abort')) {
+      const normalizedMessage = msg.toLowerCase();
+      const isAmbiguousDismissal = normalizedMessage.includes('cancel') || normalizedMessage.includes('abort');
+      if (tokenizationInvoked && !tokenizationResolved) {
+        if (isAmbiguousDismissal) {
+          reportApplePayOutcome("dismissed");
+        } else {
+          reportApplePayOutcome("tokenize_failed", {
+            name: getApplePayErrorName(err),
+            type: getThrownApplePayErrorType(err),
+          });
+        }
+      }
+      if (!isAmbiguousDismissal) {
         onErrorRef.current(msg || 'Apple Pay failed');
       }
     } finally {
