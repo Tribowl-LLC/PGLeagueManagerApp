@@ -235,6 +235,140 @@ function twoFuturePairedWeeksInput(): BuildInput {
   return input;
 }
 
+function twoPublishedDoublePayGroupsInput(feeMinor: number): BuildInput {
+  const input = reportInput();
+  const localDates = [
+    "2026-09-02",
+    "2026-09-09",
+    "2026-09-16",
+    "2026-09-23",
+    "2026-09-30",
+    "2026-10-07",
+  ];
+  const occurrences = localDates.map((localDate, index) => occurrence(`week-${index + 1}`, localDate, index + 1));
+  const groups = [
+    { groupId: "double-pay-trigger-1", triggerIndex: 1, pairedIndex: 4 },
+    { groupId: "double-pay-trigger-2", triggerIndex: 2, pairedIndex: 5 },
+  ];
+  for (const group of groups) {
+    occurrences[group.triggerIndex].collectionGroups = [{
+      groupId: group.groupId,
+      groupOrdinal: group.triggerIndex,
+      kind: "double_pay",
+      role: "trigger",
+      pairedOccurrenceId: occurrences[group.pairedIndex].occurrenceId,
+      pairedLocalDate: occurrences[group.pairedIndex].authoritativeLocalDate,
+      state: "published",
+      currentRevision: 1,
+    }];
+    occurrences[group.pairedIndex].collectionGroups = [{
+      groupId: group.groupId,
+      groupOrdinal: group.triggerIndex,
+      kind: "double_pay",
+      role: "paired",
+      pairedOccurrenceId: occurrences[group.triggerIndex].occurrenceId,
+      pairedLocalDate: occurrences[group.triggerIndex].authoritativeLocalDate,
+      state: "published",
+      currentRevision: 1,
+    }];
+  }
+  const rows = occurrences.map((item) => financialRow(
+    101,
+    item.occurrenceId,
+    `${item.authoritativeLocalDate}T22:30:00.000Z`,
+    0,
+    10,
+    feeMinor,
+  ));
+  input.schedule.occurrences = occurrences;
+  input.roster.occurrences = occurrences.map((item) => ({ id: item.occurrenceId, startAt: item.startAt, status: item.status }));
+  input.financial.asOf = "2026-09-09T16:00:00.000Z";
+  input.financial.rows = rows;
+  input.financial.totals = {
+    amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+    allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+    outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+    collectiblePastDueMinor: 0,
+    reviewCount: 0,
+    settledCount: 0,
+    voidedCount: 0,
+  };
+  return input;
+}
+
+function adoptedTwoPublishedDoublePayGroupsInput(feeMinor: number): BuildInput {
+  const input = twoPublishedDoublePayGroupsInput(feeMinor);
+  const rows: FinancialReadRowContractV3[] = input.financial.rows.map((sourceRow) => {
+    const weekIndex = Number(sourceRow.occurrenceId.slice("week-".length)) - 1;
+    const week = input.schedule.occurrences[weekIndex];
+    if (!week) throw new Error(`missing adopted double-pay fixture ${sourceRow.occurrenceId}`);
+    const isSettledTrigger = weekIndex === 1;
+    const isConfirmedPrior = weekIndex === 0 || isSettledTrigger;
+    const outstandingMinor = isSettledTrigger ? 0 : feeMinor;
+    const allocatedMinor = isSettledTrigger ? feeMinor : 0;
+    const projectedCreditMinor = weekIndex === 0 || weekIndex === 2 || weekIndex === 4 ? feeMinor : 0;
+    const state = outstandingMinor === 0 ? "settled" : "open";
+    return {
+      ...sourceRow,
+      state,
+      allocatedMinor,
+      grossAllocatedMinor: allocatedMinor,
+      outstandingMinor,
+      stillOwed: outstandingMinor > 0,
+      classification: isConfirmedPrior
+        ? weekIndex === 0 ? "past_due" : "settled"
+        : weekIndex === 2 ? "due" : "future",
+      owner: { kind: "bowler", bowlerId: 101 },
+      slotIndex: null,
+      responsibilityKind: "worksheet",
+      actualBowlerId: null,
+      occurrenceLocalDate: week.authoritativeLocalDate,
+      plannedOrdinal: week.plannedOrdinal ?? weekIndex + 1,
+      billingOrdinal: week.billing?.billingOrdinal ?? week.plannedOrdinal ?? weekIndex + 1,
+      accountProjection: {
+        owner: { kind: "bowler", bowlerId: 101 },
+        effectiveDebtorBowlerId: 101,
+        confirmationStatus: isConfirmedPrior ? "confirmed" : "forecast",
+        projectedCreditMinor,
+      },
+    };
+  });
+  input.roster.ready = false;
+  input.roster.incompleteTeamIds = [10];
+  input.financial = {
+    contractVersion: "canonical-due-past-due/3",
+    orderVersion: "due-at,owner,occurrence,obligation/3",
+    organizationId: 11,
+    leagueId: 7,
+    authoritativeSource: "payment_obligations",
+    asOf: "2026-09-16T16:00:00.000Z",
+    rows,
+    totals: {
+      amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+      allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+      outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+      collectiblePastDueMinor: 0,
+      reviewCount: 0,
+      settledCount: rows.filter((row) => row.state === "settled").length,
+      voidedCount: 0,
+    },
+    accountProjection: {
+      contractVersion: "owned-account-projection/1",
+      accounts: [{
+        bowlerId: 101,
+        amountPaidMinor: feeMinor * 4,
+        availableCreditMinor: feeMinor * 3,
+        confirmedDebtMinor: feeMinor,
+        netBalanceMinor: feeMinor * 2,
+        confirmedPastDueMinor: 0,
+        seasonRemainingMinor: feeMinor * 2,
+        reviewRequired: false,
+      }],
+    },
+  };
+  return input;
+}
+
 function reportInput(): BuildInput {
   const occurrences = [
     occurrence("week-1", "2026-09-09", 1),
@@ -601,19 +735,19 @@ describe("team envelope report", () => {
     expect(report.ownedAccountProjection).toBe(true);
     expect(substitute).toMatchObject({
       bowlerName: "Sam Substitute",
-      weeklyDueMinor: 2_000,
+      weeklyDueMinor: 4_000,
       ytdDueMinor: 1_000,
       ytdPaidMinor: 1_500,
       remainingCreditMinor: 500,
       pastDueMinor: 0,
-      dueTodayMinor: 1_500,
+      dueTodayMinor: 3_500,
       finalWeekPaid: false,
     });
     expect(creditHolder).toMatchObject({
       bowlerName: "Avery Credit",
       ytdPaidMinor: 5_000,
       remainingCreditMinor: 5_000,
-      weeklyDueMinor: 2_000,
+      weeklyDueMinor: 4_000,
       dueTodayMinor: 0,
       finalWeekPaid: true,
     });
@@ -809,18 +943,18 @@ describe("team envelope report", () => {
     expect(report.teams[0]).toMatchObject({ teamNumber: 1, showFinalWeekPaid: true });
     expect(report.teams[0].rows[0]).toMatchObject({
       bowlerName: "Jillian Example",
-      weeklyDueMinor: 2_000,
+      weeklyDueMinor: 4_000,
       ytdDueMinor: 2_000,
       ytdPaidMinor: 0,
       remainingCreditMinor: 0,
       pastDueMinor: 2_000,
-      dueTodayMinor: 4_000,
+      dueTodayMinor: 6_000,
       finalWeekPaid: false,
     });
     expect(report.teams[0].rows[1]).toMatchObject({
       ytdDueMinor: 2_000,
       ytdPaidMinor: 6_000,
-      remainingCreditMinor: 2_000,
+      remainingCreditMinor: 4_000,
       pastDueMinor: 0,
       dueTodayMinor: 0,
       finalWeekPaid: true,
@@ -844,12 +978,267 @@ describe("team envelope report", () => {
     input.financial.asOf = "2026-09-30T16:00:00.000Z";
     const week4 = buildTeamEnvelopeReport(input).teams[0].rows[0];
     expect(week4).toMatchObject({
-      weeklyDueMinor: 2_000,
+      weeklyDueMinor: 4_000,
       ytdDueMinor: 6_000,
       ytdPaidMinor: 7_000,
       remainingCreditMinor: 1_000,
       pastDueMinor: 0,
-      dueTodayMinor: 1_000,
+      dueTodayMinor: 3_000,
+    });
+  });
+
+  it.each([2_000, 2_500, 3_000])("moves both published double-pay pairs to their trigger collection weeks for %d-minor fees", (feeMinor) => {
+    const input = twoPublishedDoublePayGroupsInput(feeMinor);
+
+    const trigger1 = buildTeamEnvelopeReport(input);
+    expect(trigger1).toMatchObject({ occurrenceId: "week-2", weekLabel: "2" });
+    expect(trigger1.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: feeMinor * 2,
+      ytdDueMinor: feeMinor,
+      pastDueMinor: feeMinor,
+      dueTodayMinor: feeMinor * 3,
+    });
+
+    input.financial.asOf = "2026-09-16T16:00:00.000Z";
+    const trigger2 = buildTeamEnvelopeReport(input);
+    expect(trigger2).toMatchObject({ occurrenceId: "week-3", weekLabel: "3" });
+    expect(trigger2.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: feeMinor * 2,
+      ytdDueMinor: feeMinor * 3,
+      pastDueMinor: feeMinor * 3,
+      dueTodayMinor: feeMinor * 5,
+    });
+
+    input.financial.asOf = "2026-09-23T16:00:00.000Z";
+    const afterTrigger2 = buildTeamEnvelopeReport(input);
+    expect(afterTrigger2).toMatchObject({ occurrenceId: "week-4", weekLabel: "4" });
+    expect(afterTrigger2.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: feeMinor,
+      ytdDueMinor: feeMinor * 5,
+      pastDueMinor: feeMinor * 5,
+      dueTodayMinor: feeMinor * 6,
+    });
+
+    input.financial.asOf = "2026-09-30T16:00:00.000Z";
+    const paired1 = buildTeamEnvelopeReport(input);
+    expect(paired1).toMatchObject({ occurrenceId: "week-5", weekLabel: "5" });
+    expect(paired1.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: 0,
+      ytdDueMinor: feeMinor * 6,
+      pastDueMinor: feeMinor * 6,
+      dueTodayMinor: feeMinor * 6,
+    });
+
+    input.financial.asOf = "2026-10-07T16:00:00.000Z";
+    const paired2 = buildTeamEnvelopeReport(input);
+    expect(paired2).toMatchObject({ occurrenceId: "week-6", weekLabel: "6" });
+    expect(paired2.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: 0,
+      ytdDueMinor: feeMinor * 6,
+      pastDueMinor: feeMinor * 6,
+      dueTodayMinor: feeMinor * 6,
+    });
+  });
+
+  it("reserves legacy allocations on paired weeks until their trigger positions", () => {
+    const input = twoPublishedDoublePayGroupsInput(2_000);
+    input.financial.asOf = "2026-09-02T16:00:00.000Z";
+    for (const occurrenceId of ["week-5", "week-6"]) {
+      const row = input.financial.rows.find((candidate) => candidate.occurrenceId === occurrenceId);
+      if (!row) throw new Error("missing future paired allocation fixture");
+      row.allocatedMinor = row.amountMinor;
+      row.grossAllocatedMinor = row.amountMinor;
+      row.outstandingMinor = 0;
+      row.stillOwed = false;
+      row.state = "settled";
+      row.classification = "settled";
+    }
+
+    const report = buildTeamEnvelopeReport(input);
+    expect(report).toMatchObject({ occurrenceId: "week-1", weekLabel: "1" });
+    expect(report.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: 2_000,
+      ytdDueMinor: 0,
+      ytdPaidMinor: 4_000,
+      remainingCreditMinor: 0,
+      dueTodayMinor: 2_000,
+    });
+  });
+
+  it.each([
+    ["paid", 2_000, 2_000, 0, false, 2, 3],
+    ["partial credit", 1_000, 1_000, 0, false, 2, 4],
+    ["waived", 0, 0, 1_000, false, 1.5, 4.5],
+    ["voided", 0, 0, 0, true, 1, 4],
+  ] as const)("keeps %s group obligations in weekly and due amounts", (_label, triggerAllocatedMinor, pairedAllocatedMinor, waivedMinor, voided, expectedWeeklyMultiplier, expectedDueMultiplier) => {
+    const feeMinor = 2_000;
+    const input = twoPublishedDoublePayGroupsInput(feeMinor);
+    input.financial.asOf = "2026-09-16T16:00:00.000Z";
+    const triggerRow = input.financial.rows.find((row) => row.occurrenceId === "week-3");
+    const pairedRow = input.financial.rows.find((row) => row.occurrenceId === "week-6");
+    if (!triggerRow || !pairedRow) throw new Error("missing second double-pay group fixtures");
+
+    for (const [row, allocatedMinor] of [[triggerRow, triggerAllocatedMinor], [pairedRow, pairedAllocatedMinor]] as const) {
+      row.allocatedMinor = allocatedMinor;
+      row.grossAllocatedMinor = allocatedMinor;
+      row.outstandingMinor = feeMinor - allocatedMinor;
+      row.stillOwed = row.outstandingMinor > 0;
+      row.state = row.outstandingMinor === 0 ? "settled" : allocatedMinor > 0 ? "partially_settled" : "open";
+      row.classification = row.outstandingMinor === 0 ? "settled" : "due";
+    }
+    if (voided) {
+      pairedRow.state = "voided";
+      pairedRow.outstandingMinor = 0;
+      pairedRow.stillOwed = false;
+    } else if (waivedMinor > 0) {
+      pairedRow.waivedMinor = waivedMinor;
+      pairedRow.outstandingMinor -= waivedMinor;
+      pairedRow.stillOwed = pairedRow.outstandingMinor > 0;
+    }
+
+    const row = buildTeamEnvelopeReport(input).teams[0].rows[0];
+    expect(row.weeklyDueMinor).toBe(feeMinor * expectedWeeklyMultiplier);
+    expect(row.dueTodayMinor).toBe(feeMinor * expectedDueMultiplier);
+  });
+
+  it.each([2_000, 2_500, 3_000])("includes a forecast paired obligation in YTD when its trigger is already due at fee %d", (feeMinor) => {
+    const report = buildTeamEnvelopeReport(adoptedTwoPublishedDoublePayGroupsInput(feeMinor));
+    const row = report.teams[0].rows.find((candidate) => candidate.bowlerId === 101);
+
+    expect(report).toMatchObject({ occurrenceId: "week-3", weekLabel: "3", ownedAccountProjection: true });
+    expect(row).toMatchObject({
+      weeklyDueMinor: feeMinor * 2,
+      ytdDueMinor: feeMinor * 3,
+      ytdPaidMinor: feeMinor * 4,
+      // netBalance (2 fees) reserves the pulled-forward pair's gross
+      // outstanding (1 fee); confirmed debt is already excluded from netBalance.
+      remainingCreditMinor: feeMinor,
+      pastDueMinor: 0,
+      dueTodayMinor: feeMinor,
+    });
+  });
+
+  it("keeps partially projected forecast debt collectible after its published trigger", () => {
+    const input = adoptedTwoPublishedDoublePayGroupsInput(2_000);
+    const pair1 = input.financial.rows.find((row) => row.occurrenceId === "week-5");
+    const trigger2 = input.financial.rows.find((row) => row.occurrenceId === "week-3");
+    const account = input.financial.accountProjection?.accounts[0];
+    if (!pair1?.accountProjection || !trigger2?.accountProjection || !account) {
+      throw new Error("missing partial forecast projection fixtures");
+    }
+    pair1.accountProjection.projectedCreditMinor = 1_000;
+    trigger2.accountProjection.projectedCreditMinor = 0;
+    Object.assign(account, {
+      amountPaidMinor: 5_000,
+      availableCreditMinor: 3_000,
+      confirmedDebtMinor: 2_000,
+      netBalanceMinor: 1_000,
+      confirmedPastDueMinor: 0,
+      seasonRemainingMinor: 7_000,
+    });
+
+    const report = buildTeamEnvelopeReport(input);
+    const row = report.teams[0].rows.find((candidate) => candidate.bowlerId === 101);
+    expect(row).toMatchObject({
+      weeklyDueMinor: 4_000,
+      ytdDueMinor: 6_000,
+      ytdPaidMinor: 5_000,
+      remainingCreditMinor: 0,
+      pastDueMinor: 1_000,
+      dueTodayMinor: 5_000,
+    });
+  });
+
+  it("rejects published double-pay evidence whose paired target is missing or not billable", () => {
+    const missingTarget = twoPublishedDoublePayGroupsInput(2_000);
+    missingTarget.schedule.occurrences = missingTarget.schedule.occurrences.filter((item) => item.occurrenceId !== "week-6");
+    expect(() => buildTeamEnvelopeReport(missingTarget)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "COLLECTION_GROUP_INVALID", status: 503 }),
+    );
+
+    const nonbillableTarget = twoPublishedDoublePayGroupsInput(2_000);
+    const pairedWeek = nonbillableTarget.schedule.occurrences.find((item) => item.occurrenceId === "week-6");
+    if (!pairedWeek?.billing) throw new Error("missing paired target billing fixture");
+    pairedWeek.billing.obligationPolicy = "none";
+    expect(() => buildTeamEnvelopeReport(nonbillableTarget)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "COLLECTION_GROUP_INVALID", status: 503 }),
+    );
+  });
+
+  it("rejects conflicting published reciprocal double-pay evidence", () => {
+    const input = twoPublishedDoublePayGroupsInput(2_000);
+    const pairedWeek = input.schedule.occurrences.find((item) => item.occurrenceId === "week-5");
+    if (!pairedWeek?.collectionGroups?.[0]) throw new Error("missing reciprocal paired evidence fixture");
+    pairedWeek.collectionGroups[0].pairedOccurrenceId = "week-3";
+
+    expect(() => buildTeamEnvelopeReport(input)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "COLLECTION_GROUP_INVALID", status: 503 }),
+    );
+  });
+
+  it.each(["paired date", "collection order"] as const)("rejects published double-pay evidence with invalid %s", (invalidEvidence) => {
+    const input = twoPublishedDoublePayGroupsInput(2_000);
+    const triggerWeek = input.schedule.occurrences.find((item) => item.occurrenceId === "week-2");
+    const triggerGroup = triggerWeek?.collectionGroups?.[0];
+    if (!triggerGroup) throw new Error("missing first trigger evidence fixture");
+    if (invalidEvidence === "paired date") {
+      triggerGroup.pairedLocalDate = "2026-10-01";
+    } else {
+      triggerGroup.pairedOccurrenceId = "week-1";
+      triggerGroup.pairedLocalDate = "2026-09-02";
+    }
+
+    expect(() => buildTeamEnvelopeReport(input)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "COLLECTION_GROUP_INVALID", status: 503 }),
+    );
+  });
+
+  it("ignores revoked double-pay evidence when assigning collection positions", () => {
+    const input = twoPublishedDoublePayGroupsInput(2_000);
+    for (const occurrenceId of ["week-2", "week-5"]) {
+      const occurrence = input.schedule.occurrences.find((item) => item.occurrenceId === occurrenceId);
+      if (!occurrence?.collectionGroups?.[0]) throw new Error("missing revoked double-pay group fixture");
+      occurrence.collectionGroups[0].state = "revoked";
+    }
+
+    const report = buildTeamEnvelopeReport(input);
+    expect(report).toMatchObject({ occurrenceId: "week-2", weekLabel: "2" });
+    expect(report.teams[0].rows[0]).toMatchObject({ weeklyDueMinor: 2_000, ytdDueMinor: 2_000, dueTodayMinor: 4_000 });
+  });
+
+  it("applies collection positions to legacy rotating slots", () => {
+    const input = twoPublishedDoublePayGroupsInput(2_000);
+    input.financial.asOf = "2026-09-16T16:00:00.000Z";
+    const team = input.roster.teams.find((candidate) => candidate.id === 20);
+    if (!team) throw new Error("missing rotating team fixture");
+    team.slots[0] = { teamId: 20, slotIndex: 0, occupant: "rotating", mainBowlerId: null };
+    Object.assign(team, { eligibleRotatingBowlerIds: [201] });
+    const rows: FinancialReadRowContractV3[] = input.financial.rows.map((row, index) => ({
+      ...row,
+      teamId: 20,
+      payerBowlerId: null,
+      owner: { kind: "team", teamId: 20 },
+      slotIndex: 0,
+      responsibilityKind: "rotating",
+      actualBowlerId: 201,
+      occurrenceLocalDate: input.schedule.occurrences[index]?.authoritativeLocalDate ?? "",
+      plannedOrdinal: index + 1,
+      billingOrdinal: index + 1,
+    }));
+    input.financial = {
+      ...input.financial,
+      contractVersion: "canonical-due-past-due/3",
+      orderVersion: "due-at,owner,occurrence,obligation/3",
+      rows,
+    };
+
+    const rotatingRow = buildTeamEnvelopeReport(input).teams[1].rows.find((row) => row.ownerKind === "team");
+    expect(rotatingRow).toMatchObject({
+      bowlerName: "Rotating slot 1 · Morgan Example",
+      weeklyDueMinor: 4_000,
+      ytdDueMinor: 6_000,
+      pastDueMinor: 6_000,
+      dueTodayMinor: 10_000,
     });
   });
 
@@ -941,28 +1330,28 @@ describe("team envelope report", () => {
     });
   });
 
-  it("keeps a full payment toward a future final week out of remaining credit", () => {
+  it("makes the full paired payment available at its trigger week", () => {
     const input = futureFinalPartialPaymentInput();
     const row = buildTeamEnvelopeReport(input).teams[0].rows[0];
 
     expect(row).toMatchObject({
-      weeklyDueMinor: 2_000,
+      weeklyDueMinor: 4_000,
       ytdDueMinor: 8_000,
       ytdPaidMinor: 10_000,
-      remainingCreditMinor: 0,
+      remainingCreditMinor: 2_000,
       pastDueMinor: 0,
       dueTodayMinor: 2_000,
     });
   });
 
-  it("excludes allocations reserved for more than one future paired week", () => {
+  it("includes an earlier triggered pair in YTD while the second pair is current", () => {
     const row = buildTeamEnvelopeReport(twoFuturePairedWeeksInput()).teams[0].rows[0];
 
     expect(row).toMatchObject({
-      ytdDueMinor: 8_000,
+      ytdDueMinor: 10_000,
       ytdPaidMinor: 12_000,
-      remainingCreditMinor: 0,
-      weeklyDueMinor: 2_000,
+      remainingCreditMinor: 2_000,
+      weeklyDueMinor: 4_000,
       dueTodayMinor: 2_000,
     });
   });

@@ -181,16 +181,98 @@ function finalDoublePayEvidence(
   return evidence;
 }
 
-function publishedPairedOccurrenceIds(schedule: LeagueOccurrenceScheduleReadContract): Set<string> {
-  const pairedOccurrenceIds = new Set<string>();
+interface EffectiveCollectionPositions {
+  bowlingPositionByOccurrenceId: ReadonlyMap<string, number>;
+  positionByOccurrenceId: ReadonlyMap<string, number>;
+  pairedOccurrenceIds: ReadonlySet<string>;
+}
+
+interface PublishedDoublePayPair {
+  groupId: string;
+  groupOrdinal: number;
+  currentRevision: number;
+  triggerOccurrenceId: string;
+  pairedOccurrenceId: string;
+  roles: Set<"trigger" | "paired">;
+}
+
+function invalidPublishedDoublePayEvidence(): never {
+  throw new TeamEnvelopeReportError(
+    "COLLECTION_GROUP_INVALID",
+    "Published double-pay evidence does not match the billed occurrence order",
+    503,
+  );
+}
+
+function effectiveCollectionPositions(
+  schedule: LeagueOccurrenceScheduleReadContract,
+  billed: readonly LeagueOccurrenceScheduleOccurrence[],
+): EffectiveCollectionPositions {
+  const bowlingPositionByOccurrenceId = new Map(billed.map((occurrence, index) => [occurrence.occurrenceId, index]));
+  const occurrenceById = new Map(schedule.occurrences.map((occurrence) => [occurrence.occurrenceId, occurrence]));
+  const pairByGroupId = new Map<string, PublishedDoublePayPair>();
   for (const occurrence of schedule.occurrences) {
     for (const group of occurrence.collectionGroups ?? []) {
       if (group.kind !== "double_pay" || group.state !== "published") continue;
-      if (group.role === "trigger") pairedOccurrenceIds.add(group.pairedOccurrenceId);
-      if (group.role === "paired") pairedOccurrenceIds.add(occurrence.occurrenceId);
+      const triggerOccurrenceId = group.role === "trigger" ? occurrence.occurrenceId : group.pairedOccurrenceId;
+      const pairedOccurrenceId = group.role === "trigger" ? group.pairedOccurrenceId : occurrence.occurrenceId;
+      const trigger = occurrenceById.get(triggerOccurrenceId);
+      const paired = occurrenceById.get(pairedOccurrenceId);
+      const triggerPosition = bowlingPositionByOccurrenceId.get(triggerOccurrenceId);
+      const pairedPosition = bowlingPositionByOccurrenceId.get(pairedOccurrenceId);
+      if (!trigger || !paired || triggerPosition === undefined || pairedPosition === undefined
+        || trigger.billing?.obligationPolicy !== "eligible_bowlers"
+        || paired.billing?.obligationPolicy !== "eligible_bowlers"
+        || trigger.authoritativeLocalDate >= paired.authoritativeLocalDate
+        || triggerPosition >= pairedPosition
+        || group.pairedLocalDate !== (group.role === "trigger"
+          ? paired.authoritativeLocalDate
+          : trigger.authoritativeLocalDate)) {
+        invalidPublishedDoublePayEvidence();
+      }
+
+      const existing = pairByGroupId.get(group.groupId);
+      if (existing) {
+        if (existing.triggerOccurrenceId !== triggerOccurrenceId
+          || existing.pairedOccurrenceId !== pairedOccurrenceId
+          || existing.groupOrdinal !== group.groupOrdinal
+          || existing.currentRevision !== group.currentRevision
+          || existing.roles.has(group.role)) {
+          invalidPublishedDoublePayEvidence();
+        }
+        existing.roles.add(group.role);
+      } else {
+        pairByGroupId.set(group.groupId, {
+          groupId: group.groupId,
+          groupOrdinal: group.groupOrdinal,
+          currentRevision: group.currentRevision,
+          triggerOccurrenceId,
+          pairedOccurrenceId,
+          roles: new Set([group.role]),
+        });
+      }
     }
   }
-  return pairedOccurrenceIds;
+
+  const groupIdByOccurrenceId = new Map<string, string>();
+  const positionByOccurrenceId = new Map(bowlingPositionByOccurrenceId);
+  const pairedOccurrenceIds = new Set<string>();
+  for (const pair of pairByGroupId.values()) {
+    for (const occurrenceId of [pair.triggerOccurrenceId, pair.pairedOccurrenceId]) {
+      const existingGroupId = groupIdByOccurrenceId.get(occurrenceId);
+      if (existingGroupId && existingGroupId !== pair.groupId) invalidPublishedDoublePayEvidence();
+      groupIdByOccurrenceId.set(occurrenceId, pair.groupId);
+    }
+    const triggerPosition = bowlingPositionByOccurrenceId.get(pair.triggerOccurrenceId);
+    if (triggerPosition === undefined) invalidPublishedDoublePayEvidence();
+    positionByOccurrenceId.set(pair.pairedOccurrenceId, triggerPosition);
+    pairedOccurrenceIds.add(pair.pairedOccurrenceId);
+  }
+  return {
+    bowlingPositionByOccurrenceId,
+    positionByOccurrenceId,
+    pairedOccurrenceIds,
+  };
 }
 
 function effectiveAmountMinor(row: FinancialReportRow): number {
@@ -245,8 +327,8 @@ function teamOwnedSlotRows(rows: FinancialReportRow[], teamId: number, slotIndex
 
 function envelopeAmounts(
   obligations: FinancialReportRow[],
-  occurrencePosition: ReadonlyMap<string, number>,
-  selectedOccurrenceId: string,
+  bowlingPositionByOccurrenceId: ReadonlyMap<string, number>,
+  effectiveCollectionPosition: ReadonlyMap<string, number>,
   selectedPosition: number,
   futurePairedOccurrenceIds: ReadonlySet<string>,
   ownedAccount?: FinancialReadAccountProjectionRow,
@@ -254,14 +336,21 @@ function envelopeAmounts(
 ): Pick<TeamEnvelopeReportRow, "weeklyDueMinor" | "ytdDueMinor" | "ytdPaidMinor" | "remainingCreditMinor" | "pastDueMinor" | "dueTodayMinor"> {
   // Canonical occurrence order is authoritative here. Due timestamps can be
   // shared by upfront obligations and do not express the league's week order.
-  const selectedRows = obligations.filter((row) => row.occurrenceId === selectedOccurrenceId);
+  const selectedRows = obligations.filter((row) => effectiveCollectionPosition.get(row.occurrenceId) === selectedPosition);
   const priorRows = obligations.filter((row) => {
-    const position = occurrencePosition.get(row.occurrenceId);
+    const position = effectiveCollectionPosition.get(row.occurrenceId);
     return position !== undefined && position < selectedPosition;
   });
   const weeklyDueMinor = selectedRows.reduce((sum, row) => sum + effectiveAmountMinor(row), 0);
+  const pulledForwardPairedPriorRows = priorRows.filter((row) => {
+    const bowlingPosition = bowlingPositionByOccurrenceId.get(row.occurrenceId);
+    const collectionPosition = effectiveCollectionPosition.get(row.occurrenceId);
+    return bowlingPosition !== undefined && collectionPosition !== undefined && bowlingPosition > collectionPosition;
+  });
+  const pulledForwardPairedPriorRowIds = new Set(pulledForwardPairedPriorRows.map((row) => row.id));
   const ownedPriorRows = adoptedMode
-    ? priorRows.filter((row) => row.accountProjection?.confirmationStatus === "confirmed")
+    ? priorRows.filter((row) => row.accountProjection?.confirmationStatus === "confirmed"
+      || pulledForwardPairedPriorRowIds.has(row.id))
     : priorRows;
   const ytdDueMinor = ownedPriorRows.reduce((sum, row) => sum + effectiveAmountMinor(row), 0);
   const ytdPaidMinor = adoptedMode
@@ -273,11 +362,14 @@ function envelopeAmounts(
     .filter((row) => futurePairedOccurrenceIds.has(row.occurrenceId))
     .reduce((sum, row) => sum + Math.max(0, row.allocatedMinor), 0);
   const remainingCreditMinor = adoptedMode
-    ? Math.max(0, ownedAccount?.netBalanceMinor ?? 0)
+    ? Math.max(0, (ownedAccount?.netBalanceMinor ?? 0) - pulledForwardPairedPriorRows
+      .filter((row) => row.accountProjection?.confirmationStatus === "forecast")
+      .reduce((sum, row) => sum + Math.max(0, row.outstandingMinor), 0))
     : Math.max(0, ytdPaidMinor - futurePairedReservedMinor - ytdDueMinor);
   const collectiblePriorRows = adoptedMode
-    ? priorRows.filter((row) => row.accountProjection?.confirmationStatus === "confirmed"
-      && row.classification === "past_due" && !row.reviewRequired)
+    ? priorRows.filter((row) => !row.reviewRequired
+      && (row.accountProjection?.confirmationStatus === "confirmed" && row.classification === "past_due"
+        || pulledForwardPairedPriorRowIds.has(row.id)))
     : priorRows;
   const pastDueMinor = collectiblePriorRows.reduce((sum, row) => sum + (adoptedMode
     ? projectedOutstandingMinor(row)
@@ -350,9 +442,10 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
   if (selectedPosition === undefined || occurrencePosition.get(finalOccurrence.occurrenceId) === undefined) {
     throw new TeamEnvelopeReportError("REPORT_DATE_INVALID", "The selected bowling week has invalid canonical order evidence", 503);
   }
+  const collectionOrder = effectiveCollectionPositions(schedule, occurrences);
   const futurePairedOccurrenceIds = new Set(
-    [...publishedPairedOccurrenceIds(schedule)].filter((occurrenceId) => {
-      const position = occurrencePosition.get(occurrenceId);
+    [...collectionOrder.pairedOccurrenceIds].filter((occurrenceId) => {
+      const position = collectionOrder.positionByOccurrenceId.get(occurrenceId);
       return position !== undefined && position > selectedPosition;
     }),
   );
@@ -467,8 +560,8 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
         const finalWeekPaid = finalRows.every((row) => row.outstandingMinor === 0);
         const amounts = envelopeAmounts(
           obligations,
-          occurrencePosition,
-          selectedOccurrence.occurrenceId,
+          collectionOrder.bowlingPositionByOccurrenceId,
+          collectionOrder.positionByOccurrenceId,
           selectedPosition,
           futurePairedOccurrenceIds,
         );
@@ -487,8 +580,8 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
         const finalWeekPaid = finalRows.length > 0 && finalRows.every((row) => row.outstandingMinor === 0);
         const amounts = envelopeAmounts(
           obligations,
-          occurrencePosition,
-          selectedOccurrence.occurrenceId,
+          collectionOrder.bowlingPositionByOccurrenceId,
+          collectionOrder.positionByOccurrenceId,
           selectedPosition,
           futurePairedOccurrenceIds,
         );
@@ -544,8 +637,8 @@ export function buildTeamEnvelopeReport(input: TeamEnvelopeReportInput): TeamEnv
       }
       const amounts = envelopeAmounts(
         obligations,
-        occurrencePosition,
-        selectedOccurrence.occurrenceId,
+        collectionOrder.bowlingPositionByOccurrenceId,
+        collectionOrder.positionByOccurrenceId,
         selectedPosition,
         futurePairedOccurrenceIds,
         account,
