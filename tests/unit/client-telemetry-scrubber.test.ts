@@ -8,6 +8,7 @@
  * client unscrubbed, while benign diagnostics survive intact.
  */
 import { describe, it, expect } from "vitest";
+import { TRACEPARENT_REGEXP } from "@sentry/core";
 import {
   scrubString,
   scrubDeep,
@@ -232,5 +233,97 @@ describe("scrubSentryEvent backstop", () => {
     expect(scrubbed.transaction).toBe("GET /api/account/reset");
     expect(scrubbed.spans[0].description).toBe("GET /api/account/reset");
     expect(scrubbed.spans[0].data["url.query"]).toBeUndefined();
+  });
+
+  it("preserves only valid trace identities in the dedicated transaction context", () => {
+    const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const spanId = "00f067aa0ba902b7";
+    const parentSpanId = "b7ad6b7169203331";
+    const transaction = {
+      type: "transaction" as const,
+      transaction: "POST /api/payments",
+      contexts: {
+        trace: {
+          trace_id: traceId,
+          span_id: spanId,
+          parent_span_id: parentSpanId,
+          description: "POST /api/payments",
+          data: {
+            email: "private@example.com",
+            providerToken: "sq0atp-test-only",
+          },
+        },
+        app: {
+          trace_id: traceId,
+          description: "email private@example.com",
+        },
+      },
+      extra: {
+        trace_id: traceId,
+        detail: "Bearer private-extra-token",
+      },
+    };
+
+    const scrubbed = scrubSentryEvent(transaction);
+    const trace = scrubbed.contexts.trace as {
+      trace_id: string;
+      span_id: string;
+      parent_span_id: string;
+      data: Record<string, string>;
+    };
+    const app = scrubbed.contexts.app;
+
+    expect(trace.trace_id).toBe(traceId);
+    expect(trace.span_id).toBe(spanId);
+    expect(trace.parent_span_id).toBe(parentSpanId);
+    expect(TRACEPARENT_REGEXP.test(`${trace.trace_id}-${trace.span_id}`)).toBe(true);
+    expect(trace.data.email).toBe("[redacted-email]");
+    expect(trace.data.providerToken).toBe("[redacted-token]");
+    expect(app.trace_id).toBe("[redacted-token]");
+    expect(app.description).toBe("email [redacted-email]");
+    expect(scrubbed.extra.trace_id).toBe("[redacted-token]");
+    expect(scrubbed.extra.detail).toBe("[redacted-token]");
+    expect(JSON.stringify(scrubbed)).not.toContain("private@example.com");
+    expect(JSON.stringify(scrubbed)).not.toContain("sq0atp-test-only");
+  });
+
+  it("redacts malformed and all-zero trace identifiers", () => {
+    const transaction = {
+      type: "transaction" as const,
+      contexts: {
+        trace: {
+          trace_id: "0".repeat(32),
+          span_id: "not-a-valid-span",
+          parent_span_id: "0".repeat(16),
+        },
+      },
+    };
+
+    const scrubbed = scrubSentryEvent(transaction);
+    const trace = scrubbed.contexts.trace as Record<string, unknown>;
+
+    expect(trace.trace_id).toBe("[redacted-token]");
+    expect(trace.span_id).toBe("[redacted-token]");
+    expect(trace.parent_span_id).toBe("[redacted-token]");
+  });
+
+  it("preserves an absent parent and a null optional parent without weakening other scrubbing", () => {
+    const transaction = {
+      type: "transaction" as const,
+      contexts: {
+        trace: {
+          trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
+          span_id: "00f067aa0ba902b7",
+          parent_span_id: null,
+          arbitrary: "contact private@example.com",
+        },
+      },
+    };
+
+    const scrubbed = scrubSentryEvent(transaction);
+    const trace = scrubbed.contexts.trace as Record<string, unknown>;
+
+    expect(trace.parent_span_id).toBeNull();
+    expect(trace.arbitrary).toBe("contact [redacted-email]");
   });
 });
