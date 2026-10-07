@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { Router } from "express";
 import { sendError, sendSuccess } from "../utils/api.js";
+import { createLogger } from "../logger.js";
+import { getPgErrorCode, getPgErrorConstraint } from "../utils/db-errors.js";
 import { positiveId } from "./games-scores-scope.js";
 import { hasAdminAccessToLeague } from "../utils/access-control.js";
 import { hasConfiguredOrganizationMembership } from "../middleware/organization.js";
@@ -19,7 +21,110 @@ import {
 import { managePaymentsSaveRequestSchema } from "@shared/manage-payments-contract";
 
 const router = Router();
+const log = createLogger("ManagePayments");
 const occurrenceQuerySchema = z.string().uuid();
+
+const POSTGRES_CODE_PATTERN = /^[0-9A-Z]{5}$/;
+const POSTGRES_CONSTRAINT_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/;
+const SAFE_ERROR_KIND_NAMES = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "AggregateError",
+  "ZodError",
+  "DrizzleQueryError",
+  "DatabaseError",
+  "PostgresError",
+  "ManagePaymentsWorksheetReadError",
+  "ManagePaymentsWorksheetWriteError",
+  "ManagePaymentsReconciliationError",
+  "OwnedPaymentLedgerError",
+  "PaymentObligationOwnerError",
+  "RotatingCreditLedgerError",
+  "ManualPaymentReceiptError",
+]);
+const WEEKLY_LEDGER_INVARIANT_PATTERN = /^LV_WEEKLY_LEDGER_INVARIANT: ([a-z_]{1,80})$/;
+
+function readErrorProperty(error: object, key: "name" | "message" | "cause"): unknown {
+  try {
+    return (error as Record<typeof key, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+function safeErrorClassification(error: unknown): { errorKind: string; invariant: string } {
+  const seen = new Set<object>();
+  let current = error;
+  let errorKind = "unknown";
+  let genericErrorKind = "unknown";
+  let invariant = "unknown";
+
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const name = readErrorProperty(current, "name");
+    if (typeof name === "string" && SAFE_ERROR_KIND_NAMES.has(name)) {
+      if (name === "Error") genericErrorKind = name;
+      else if (errorKind === "unknown") errorKind = name;
+    }
+
+    const message = readErrorProperty(current, "message");
+    if (invariant === "unknown" && typeof message === "string") {
+      const match = WEEKLY_LEDGER_INVARIANT_PATTERN.exec(message);
+      if (match?.[1]) invariant = match[1];
+    }
+
+    current = readErrorProperty(current, "cause");
+  }
+
+  return { errorKind: errorKind === "unknown" ? genericErrorKind : errorKind, invariant };
+}
+
+function reportUnexpectedSaveFailure(error: unknown): void {
+  let errorCode = "unknown";
+  let errorConstraint = "unknown";
+  try {
+    const candidateCode = getPgErrorCode(error);
+    if (candidateCode && POSTGRES_CODE_PATTERN.test(candidateCode)) errorCode = candidateCode;
+  } catch {
+    // A malformed error object must not block the 500 response.
+  }
+  try {
+    const candidateConstraint = getPgErrorConstraint(error);
+    if (candidateConstraint && POSTGRES_CONSTRAINT_PATTERN.test(candidateConstraint)) errorConstraint = candidateConstraint;
+  } catch {
+    // A malformed error object must not block the 500 response.
+  }
+  let errorClassification = { errorKind: "unknown", invariant: "unknown" };
+  try {
+    errorClassification = safeErrorClassification(error);
+  } catch {
+    // Error causes and accessors are untrusted diagnostic input.
+  }
+
+  // Drizzle errors can include SQL and query parameters in their message/cause.
+  // Report a new error with a fresh stack instead of forwarding that chain.
+  const safeError = new Error("Unexpected weekly payment worksheet save failure");
+  safeError.name = "ManagePaymentsSaveError";
+  try {
+    log.captureException(safeError);
+  } catch {
+    // Error capture must not change the client response.
+  }
+  try {
+    log.error("Unexpected weekly payment worksheet save failure", {
+      operation: "manage_payments_save",
+      errorCode,
+      errorConstraint,
+      errorKind: errorClassification.errorKind,
+      invariant: errorClassification.invariant,
+    });
+  } catch {
+    // Server logging must not change the client response.
+  }
+}
 
 router.get("/leagues/:leagueId/manage-payments/1", async (req, res) => {
   if (!req.user) return sendError(res, "Authentication required", 401, "AUTH_REQUIRED");
@@ -180,9 +285,12 @@ router.post("/leagues/:leagueId/manage-payments/1", adminWriteLimiter, async (re
         case "manual_receipt_conflict": return sendError(res, caught.message, 409, "MANUAL_RECEIPT_CONFLICT");
         case "incompatible_evidence": return sendError(res, caught.message, 409, "WEEKLY_PAYMENT_EVIDENCE_INCOMPATIBLE");
         case "league_not_found": return sendError(res, "Not found", 404, "NOT_FOUND");
-        default: return sendError(res, "Unable to save weekly payments", 500, "INTERNAL_ERROR");
+        default:
+          reportUnexpectedSaveFailure(caught);
+          return sendError(res, "Unable to save weekly payments", 500, "INTERNAL_ERROR");
       }
     }
+    reportUnexpectedSaveFailure(caught);
     return sendError(res, "Unable to save weekly payments", 500, "INTERNAL_ERROR");
   }
 });
