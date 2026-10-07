@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   bowlerLeagues,
@@ -20,6 +20,8 @@ import {
   teamPaymentSlots,
   users,
   weeklyPaymentAllocationReleases,
+  weeklyPaymentFundings,
+  weeklyPaymentLedgerAdoptions,
   weeklyPaymentWeekConfirmations,
   weeklyPaymentWorksheetReceiptRevisions,
   weeklyPaymentWorksheetReceipts,
@@ -48,10 +50,14 @@ import {
   repairHistoricalCashPaymentAllocation,
   saveRotatingOccurrenceAssignments,
 } from "../../server/services/roster-payment-core.js";
-import { canonicalManualReceiptQuoteFingerprint } from "../../server/services/manual-payment-receipts.js";
+import {
+  appendManualReceiptRevisionInTransaction,
+  canonicalManualReceiptQuoteFingerprint,
+  createManualReceiptHeadInTransaction,
+} from "../../server/services/manual-payment-receipts.js";
 import { historicalCashAllocationFingerprint } from "@shared/historical-payment-repair";
 import { calculateRosterPaymentTiming } from "@shared/roster-payment-contract";
-import { readOwnedAccountBalancesInTransaction } from "../../server/services/owned-payment-ledger.js";
+import { readOwnedAccountBalancesInTransaction, recordOwnedFundingInTransaction } from "../../server/services/owned-payment-ledger.js";
 import { readManagePaymentsSeasonSnapshot, readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read.js";
 import { managePaymentsSaveRequestFingerprint, saveManagePaymentsWorksheet, ManagePaymentsWorksheetWriteError } from "../../server/services/manage-payments-worksheet-write.js";
 import { readCanonicalPaymentReport, readPaymentReceiptProjection } from "../../server/services/canonical-payment-report.js";
@@ -80,7 +86,15 @@ async function addBowler(name: string, order: number): Promise<number> {
   return bowler.id;
 }
 
-beforeEach(async () => {
+async function setupWorksheetFixture(options: {
+  weeklyFeeMinor?: number;
+  allMain?: boolean;
+} = {}): Promise<void> {
+  const weeklyFeeMinor = options.weeklyFeeMinor ?? 2_500;
+  const lineageFeeMinor = Math.round(weeklyFeeMinor * 0.72);
+  const seasonStart = "2032-09-05";
+  const seasonEnd = "2032-09-26";
+  const weekDay = "Sunday";
   suffix = `${process.env.VITEST_POOL_ID ?? "0"}-${randomUUID()}`;
   const [organization] = await db.insert(organizations).values({ name: `Worksheet ${suffix}`, slug: `worksheet-${suffix}` }).returning({ id: organizations.id });
   if (!organization) throw new Error("worksheet organization fixture was not created");
@@ -105,18 +119,18 @@ beforeEach(async () => {
       organizationId,
       locationId: location.id,
       active: true,
-      seasonStart: "2032-09-05",
-      seasonEnd: "2032-09-26",
-      weekDay: "Sunday",
+      seasonStart,
+      seasonEnd,
+      weekDay,
       totalBowlingWeeks: 4,
       skipDates: [],
       cancelledDates: [],
       doublePayDates: [],
       competitionStartTime: "19:00",
       timezone: "America/New_York",
-      weeklyFee: 2_500,
-      lineageFee: 1_800,
-      prizeFundFee: 700,
+      weeklyFee: weeklyFeeMinor,
+      lineageFee: lineageFeeMinor,
+      prizeFundFee: weeklyFeeMinor - lineageFeeMinor,
       paymentMode: "weekly",
       payingLineupSize: 3,
       seasonNumber: 1,
@@ -130,15 +144,16 @@ beforeEach(async () => {
   mainBowlerId = await addBowler("Worksheet Main", 0);
   substituteBowlerId = await addBowler("Worksheet Substitute", 1);
   thirdBowlerId = await addBowler("Worksheet Other Substitute", 2);
+  const mainBowlerBySlot = [mainBowlerId, substituteBowlerId, thirdBowlerId];
   const createdSlots = await db.insert(teamPaymentSlots).values([
     { organizationId, leagueId, teamId, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId, recordedByUserId: actorUserId },
-    { organizationId, leagueId, teamId, slotIndex: 1, lineupSize: 3, occupant: "unassigned", mainBowlerId: null, recordedByUserId: actorUserId },
-    { organizationId, leagueId, teamId, slotIndex: 2, lineupSize: 3, occupant: "unassigned", mainBowlerId: null, recordedByUserId: actorUserId },
+    { organizationId, leagueId, teamId, slotIndex: 1, lineupSize: 3, occupant: options.allMain ? "main" : "unassigned", mainBowlerId: options.allMain ? mainBowlerBySlot[1] ?? null : null, recordedByUserId: actorUserId },
+    { organizationId, leagueId, teamId, slotIndex: 2, lineupSize: 3, occupant: options.allMain ? "main" : "unassigned", mainBowlerId: options.allMain ? mainBowlerBySlot[2] ?? null : null, recordedByUserId: actorUserId },
   ]).returning({ id: teamPaymentSlots.id, slotIndex: teamPaymentSlots.slotIndex });
   const mainSlot = createdSlots.find((slot) => slot.slotIndex === 0);
   if (!mainSlot) throw new Error("worksheet main slot fixture was not created");
   const unassignedSlot = createdSlots.find((slot) => slot.slotIndex === 1);
-  if (!unassignedSlot) throw new Error("worksheet unassigned slot fixture was not created");
+  if (!unassignedSlot) throw new Error("worksheet slot fixture was not created");
   unassignedSlotId = unassignedSlot.id;
   const [occurrence] = await db.select().from(leagueOccurrences).where(and(
     eq(leagueOccurrences.organizationId, organizationId),
@@ -165,7 +180,7 @@ beforeEach(async () => {
     prizePayerBowlerId: null,
     policy: "main_pays_full",
     worksheetFeeComponent: null,
-    amountMinor: 2_500,
+    amountMinor: weeklyFeeMinor,
     lineageAmountMinor: null,
     prizeFundAmountMinor: null,
     currency: "USD",
@@ -182,7 +197,7 @@ beforeEach(async () => {
     responsibilityId: legacy.id,
     component: "full",
     payerBowlerId: mainBowlerId,
-    amountMinor: 2_500,
+    amountMinor: weeklyFeeMinor,
     currency: "USD",
     dueAt: startAt,
     pastDueAt: startAt,
@@ -191,7 +206,9 @@ beforeEach(async () => {
   }).returning({ id: paymentObligations.id });
   if (!obligation) throw new Error("worksheet legacy obligation fixture was not created");
   mainLegacyObligationId = obligation.id;
-});
+}
+
+beforeEach(() => setupWorksheetFixture());
 
 function saveInput(snapshot: ManagePaymentsSnapshot, changedRows: ManagePaymentsChangedRow[], idempotencyKey: string) {
   return {
@@ -223,6 +240,514 @@ function rowChange(snapshot: ManagePaymentsSnapshot, bowlerId: number, overrides
 }
 
 describe("Manage Payments worksheet atomic writer", () => {
+  it("confirms an unconfirmed week while increasing three adopted cash receipts with allocations across four weeks", async () => {
+    const adoptionService = await import("../../server/services/owned-payment-ledger-adoption.js");
+    const pristineInitializer = vi.spyOn(adoptionService, "initializePristineOwnedPaymentLedgerInTransaction")
+      .mockResolvedValue(undefined);
+    try {
+      await setupWorksheetFixture({ weeklyFeeMinor: 2_000, allMain: true });
+    } finally {
+      pristineInitializer.mockRestore();
+    }
+    const occurrences = await db.select().from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, organizationId),
+      eq(leagueOccurrences.leagueId, leagueId),
+    )).orderBy(asc(leagueOccurrences.plannedOrdinal));
+    expect(occurrences).toHaveLength(4);
+    const firstOccurrence = occurrences[0];
+    if (!firstOccurrence?.authoritativeLocalDate) throw new Error("first synthetic occurrence is missing");
+    const throughOccurrence = occurrences[1];
+    if (!throughOccurrence?.authoritativeLocalDate) throw new Error("synthetic adoption cutoff occurrence is missing");
+    const [adoption] = await db.insert(weeklyPaymentLedgerAdoptions).values({
+      organizationId,
+      leagueId,
+      adoptedThroughLocalDate: throughOccurrence.authoritativeLocalDate,
+      preflightFingerprint: `lvweeklyadoptpre:v1:${"a".repeat(64)}`,
+      resultFingerprint: `lvweeklyadopt:v1:${"b".repeat(64)}`,
+      grandfatheredAllocationCount: 0,
+      recordedByUserId: actorUserId,
+    }).returning({ id: weeklyPaymentLedgerAdoptions.id });
+    if (!adoption) throw new Error("synthetic legacy adoption marker was not created");
+    const slots = await db.select().from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, teamId),
+    )).orderBy(asc(teamPaymentSlots.slotIndex));
+    const slotByIndex = new Map(slots.map((slot) => [slot.slotIndex, slot]));
+    const owners = [
+      { bowlerId: mainBowlerId, slotIndex: 0, originalMinor: 17_000, correctedMinor: 20_000, applications: [2_000, 2_000, 2_000, 2_000] },
+      { bowlerId: substituteBowlerId, slotIndex: 1, originalMinor: 27_000, correctedMinor: 30_000, applications: [2_000, 2_000, 2_000, 2_000] },
+      { bowlerId: thirdBowlerId, slotIndex: 2, originalMinor: 7_000, correctedMinor: 10_000, applications: [2_000, 2_000, 2_000, 1_000] },
+    ];
+    const obligations = new Map<string, { obligationId: string; responsibilityId: string; amountMinor: number }>();
+    obligations.set(`${selectedOccurrenceId}:${mainBowlerId}`, {
+      obligationId: mainLegacyObligationId,
+      responsibilityId: mainLegacyResponsibilityId,
+      amountMinor: 2_000,
+    });
+    for (const owner of owners) {
+      for (const occurrence of occurrences) {
+        if (occurrence.id === selectedOccurrenceId && owner.bowlerId === mainBowlerId) continue;
+        const slot = slotByIndex.get(owner.slotIndex);
+        if (!slot) throw new Error(`synthetic slot ${owner.slotIndex} is missing`);
+        const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
+          organizationId,
+          leagueId,
+          occurrenceId: occurrence.id,
+          teamId,
+          slotId: slot.id,
+          slotIndex: owner.slotIndex,
+          positionIndex: owner.slotIndex,
+          version: 1,
+          state: "active",
+          responsibilityKind: "main",
+          mainBowlerId: owner.bowlerId,
+          substituteBowlerId: null,
+          payerBowlerId: owner.bowlerId,
+          lineagePayerBowlerId: null,
+          prizePayerBowlerId: null,
+          policy: "main_pays_full",
+          worksheetFeeComponent: null,
+          amountMinor: 2_000,
+          lineageAmountMinor: null,
+          prizeFundAmountMinor: null,
+          currency: "USD",
+          dueAt: occurrence.startAt,
+          pastDueAt: occurrence.startAt,
+          recordedByUserId: actorUserId,
+        }).returning({ id: occurrencePaymentResponsibilities.id });
+        if (!responsibility) throw new Error("synthetic legacy responsibility was not created");
+        const [obligation] = await db.insert(paymentObligations).values({
+          organizationId,
+          leagueId,
+          occurrenceId: occurrence.id,
+          responsibilityId: responsibility.id,
+          component: "full",
+          payerBowlerId: owner.bowlerId,
+          amountMinor: 2_000,
+          currency: "USD",
+          dueAt: occurrence.startAt,
+          pastDueAt: occurrence.startAt,
+          state: "open",
+          createdByUserId: actorUserId,
+        }).returning({ id: paymentObligations.id });
+        if (!obligation) throw new Error("synthetic legacy obligation was not created");
+        obligations.set(`${occurrence.id}:${owner.bowlerId}`, {
+          obligationId: obligation.id,
+          responsibilityId: responsibility.id,
+          amountMinor: 2_000,
+        });
+      }
+    }
+
+    for (const occurrence of occurrences.slice(2)) {
+      const week = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: occurrence.id });
+      const confirmed = await saveManagePaymentsWorksheet(saveInput(week, [], `adopted-receipt-confirm-${occurrence.plannedOrdinal}-${suffix}`));
+      expect(confirmed.snapshot.weekConfirmed).toBe(true);
+    }
+
+    const originalPaymentIds: number[] = [];
+    const receiptIdByOwner = new Map<number, string>();
+    const oldReceiptRecordedAt = new Date(Date.now() - 60_000).toISOString();
+    const extraReceiptRecordedAt = new Date(Date.now() - 30_000).toISOString();
+    let extraCashPaymentId: number | undefined;
+    let extraCashReceiptId: string | undefined;
+    let extraCashFundingId: string | undefined;
+    let extraCashAllocationId: string | undefined;
+    let extraCashApplicationId: string | undefined;
+    await db.transaction(async (tx) => {
+      const [adoption] = await tx.select().from(weeklyPaymentLedgerAdoptions).where(and(
+        eq(weeklyPaymentLedgerAdoptions.organizationId, organizationId),
+        eq(weeklyPaymentLedgerAdoptions.leagueId, leagueId),
+      )).limit(1);
+      if (!adoption) throw new Error("synthetic league adoption marker is missing");
+      const allocatedByObligation = new Map<string, number>();
+      for (const owner of owners) {
+        const receiptId = await createManualReceiptHeadInTransaction(tx, {
+          organizationId,
+          leagueId,
+          occurrenceId: selectedOccurrenceId,
+          bowlerId: owner.bowlerId,
+          now: oldReceiptRecordedAt,
+        });
+        const [payment] = await tx.insert(payments).values({
+          organizationId,
+          leagueId,
+          bowlerId: owner.bowlerId,
+          amount: owner.originalMinor,
+          currency: "USD",
+          status: "paid",
+          type: "cash",
+          notes: "adopted cash receipt fixture",
+          paidByUserId: actorUserId,
+          createdAt: oldReceiptRecordedAt,
+        }).returning({ id: payments.id });
+        if (!payment) throw new Error("synthetic adopted cash payment was not created");
+        originalPaymentIds.push(payment.id);
+        receiptIdByOwner.set(owner.bowlerId, receiptId);
+        const funding = await recordOwnedFundingInTransaction(tx, {
+          organizationId,
+          leagueId,
+          creditedBowlerId: owner.bowlerId,
+          paymentId: payment.id,
+          portionIndex: 0,
+          amountMinor: owner.originalMinor,
+          currency: "USD",
+          source: "legacy_adoption",
+          authorizationKind: "legacy_payment",
+          authorizationOperationId: null,
+          authorizationItemCount: 0,
+          authorizationFingerprint: `lvweeklyadopt:v1:${"a".repeat(64)}`,
+          adoptionId: adoption.id,
+          recordedByUserId: actorUserId,
+          now: oldReceiptRecordedAt,
+        });
+        await appendManualReceiptRevisionInTransaction(tx, {
+          organizationId,
+          leagueId,
+          actorUserId,
+          receiptId,
+          revision: 1,
+          paymentId: payment.id,
+          amountMinor: owner.originalMinor,
+          businessCollectionLocalDate: firstOccurrence.authoritativeLocalDate,
+          revisionKind: "manual_record",
+          now: oldReceiptRecordedAt,
+        });
+        for (const [weekIndex, occurrence] of occurrences.entries()) {
+          const target = obligations.get(`${occurrence.id}:${owner.bowlerId}`);
+          const allocationAmountMinor = owner.applications[weekIndex];
+          if (!target || !allocationAmountMinor || allocationAmountMinor > target.amountMinor) {
+            throw new Error(`synthetic allocation for payer ${owner.bowlerId}, week ${weekIndex + 1} is invalid`);
+          }
+          const [allocation] = await tx.insert(paymentAllocations).values({
+            organizationId,
+            leagueId,
+            paymentId: payment.id,
+            obligationId: target.obligationId,
+            amountMinor: allocationAmountMinor,
+            currency: "USD",
+            state: "active",
+            allocationKind: "ordinary",
+            recordedByUserId: actorUserId,
+          }).returning({ id: paymentAllocations.id });
+          if (!allocation) throw new Error("synthetic adopted allocation was not created");
+          await tx.insert(paymentAllocationFundingApplications).values({
+            organizationId,
+            leagueId,
+            allocationId: allocation.id,
+            paymentId: payment.id,
+            creditedBowlerId: owner.bowlerId,
+            genericFundingId: funding.id,
+            rotatingFundingId: null,
+            sourceAmountMinor: owner.originalMinor,
+            amountMinor: allocationAmountMinor,
+            currency: "USD",
+            obligationId: target.obligationId,
+            responsibilityId: target.responsibilityId,
+            occurrenceId: occurrence.id,
+            teamId,
+            targetKind: "bowler_responsibility",
+            targetPayerBowlerId: owner.bowlerId,
+            assignmentId: null,
+            appliedByUserId: actorUserId,
+          });
+          const key = target.obligationId;
+          allocatedByObligation.set(key, (allocatedByObligation.get(key) ?? 0) + allocationAmountMinor);
+        }
+      }
+
+      const weekFour = occurrences[3];
+      const weekFourTarget = weekFour ? obligations.get(`${weekFour.id}:${thirdBowlerId}`) : undefined;
+      if (!weekFour || !weekFourTarget) throw new Error("synthetic fourth-week obligation is missing");
+      const extraReceiptDate = extraReceiptRecordedAt;
+      const extraReceiptId = await createManualReceiptHeadInTransaction(tx, {
+        organizationId,
+        leagueId,
+        occurrenceId: selectedOccurrenceId,
+        bowlerId: thirdBowlerId,
+        now: extraReceiptDate,
+      });
+      extraCashReceiptId = extraReceiptId;
+      const [extraPayment] = await tx.insert(payments).values({
+        organizationId,
+        leagueId,
+        bowlerId: thirdBowlerId,
+        amount: 10_000,
+        currency: "USD",
+        status: "paid",
+        type: "cash",
+        notes: "synthetic earlier receipt with partial fourth-week allocation",
+        paidByUserId: actorUserId,
+        createdAt: extraReceiptDate,
+      }).returning({ id: payments.id });
+      if (!extraPayment) throw new Error("synthetic extra cash payment was not created");
+      extraCashPaymentId = extraPayment.id;
+      const extraFunding = await recordOwnedFundingInTransaction(tx, {
+        organizationId,
+        leagueId,
+        creditedBowlerId: thirdBowlerId,
+        paymentId: extraPayment.id,
+        portionIndex: 0,
+        amountMinor: 10_000,
+        currency: "USD",
+        source: "legacy_adoption",
+        authorizationKind: "legacy_payment",
+        authorizationOperationId: null,
+        authorizationItemCount: 0,
+        authorizationFingerprint: `lvweeklyadopt:v1:${"c".repeat(64)}`,
+        adoptionId: adoption.id,
+        recordedByUserId: actorUserId,
+        now: extraReceiptDate,
+      });
+      extraCashFundingId = extraFunding.id;
+      await appendManualReceiptRevisionInTransaction(tx, {
+        organizationId,
+        leagueId,
+        actorUserId,
+        receiptId: extraReceiptId,
+        revision: 1,
+        paymentId: extraPayment.id,
+        amountMinor: 10_000,
+        businessCollectionLocalDate: firstOccurrence.authoritativeLocalDate,
+        revisionKind: "manual_record",
+        now: extraReceiptDate,
+      });
+      const [extraAllocation] = await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId,
+        paymentId: extraPayment.id,
+        obligationId: weekFourTarget.obligationId,
+        amountMinor: 1_000,
+        currency: "USD",
+        state: "active",
+        allocationKind: "ordinary",
+        recordedByUserId: actorUserId,
+        createdAt: extraReceiptDate,
+      }).returning({ id: paymentAllocations.id });
+      if (!extraAllocation) throw new Error("synthetic extra receipt allocation was not created");
+      extraCashAllocationId = extraAllocation.id;
+      const [extraApplication] = await tx.insert(paymentAllocationFundingApplications).values({
+        organizationId,
+        leagueId,
+        allocationId: extraAllocation.id,
+        paymentId: extraPayment.id,
+        creditedBowlerId: thirdBowlerId,
+        genericFundingId: extraFunding.id,
+        rotatingFundingId: null,
+        sourceAmountMinor: 10_000,
+        amountMinor: 1_000,
+        currency: "USD",
+        obligationId: weekFourTarget.obligationId,
+        responsibilityId: weekFourTarget.responsibilityId,
+        occurrenceId: weekFour.id,
+        teamId,
+        targetKind: "bowler_responsibility",
+        targetPayerBowlerId: thirdBowlerId,
+        assignmentId: null,
+        appliedByUserId: actorUserId,
+        createdAt: extraReceiptDate,
+      }).returning({ id: paymentAllocationFundingApplications.id });
+      if (!extraApplication) throw new Error("synthetic extra receipt funding application was not created");
+      extraCashApplicationId = extraApplication.id;
+      allocatedByObligation.set(
+        weekFourTarget.obligationId,
+        (allocatedByObligation.get(weekFourTarget.obligationId) ?? 0) + 1_000,
+      );
+
+      for (const target of obligations.values()) {
+        await tx.update(paymentObligations).set({
+          state: allocatedByObligation.get(target.obligationId) === target.amountMinor ? "settled" : "partially_settled",
+        }).where(eq(paymentObligations.id, target.obligationId));
+      }
+    });
+
+    const initial = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    expect(await db.select().from(weeklyPaymentWeekConfirmations).where(and(
+      eq(weeklyPaymentWeekConfirmations.organizationId, organizationId),
+      eq(weeklyPaymentWeekConfirmations.leagueId, leagueId),
+      eq(weeklyPaymentWeekConfirmations.occurrenceId, selectedOccurrenceId),
+    ))).toHaveLength(0);
+    const initialRows = new Map(initial.teams.flatMap((team) => team.rows).map((row) => [row.bowlerId, row]));
+    if (!extraCashPaymentId || !extraCashReceiptId) throw new Error("synthetic extra receipt is missing");
+    expect(initialRows.get(thirdBowlerId)?.manualReceipts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ receiptId: extraCashReceiptId, paymentId: extraCashPaymentId, amountMinor: 10_000 }),
+    ]));
+    const changedRows = owners.map((owner) => {
+      const row = initialRows.get(owner.bowlerId);
+      const receiptId = receiptIdByOwner.get(owner.bowlerId);
+      const receipt = row?.manualReceipts.find((candidate) => candidate.receiptId === receiptId);
+      if (!row || !receipt) throw new Error(`adopted receipt for payer ${owner.bowlerId} is missing`);
+      return rowChange(initial, owner.bowlerId, {
+        manualReceiptEdits: [{ receiptId: receipt.receiptId, expectedRevision: receipt.revision, amountMinor: owner.correctedMinor }],
+      });
+    });
+    const request = saveInput(initial, changedRows, `adopted-receipt-first-confirm-${suffix}`);
+    const saved = await saveManagePaymentsWorksheet(request);
+    expect(saved.snapshot).toMatchObject({ weekConfirmed: true, revision: 1 });
+    const savedRows = new Map(saved.snapshot.teams.flatMap((team) => team.rows).map((row) => [row.bowlerId, row]));
+    for (const owner of owners) {
+      const before = initialRows.get(owner.bowlerId);
+      const after = savedRows.get(owner.bowlerId);
+      const receiptId = receiptIdByOwner.get(owner.bowlerId);
+      const receipt = after?.manualReceipts.find((candidate) => candidate.receiptId === receiptId);
+      expect(after).toMatchObject({ responsible: before?.responsible, feeMinor: before?.feeMinor });
+      expect(receipt).toMatchObject({
+        receiptId,
+        amountMinor: owner.correctedMinor,
+        revision: 2,
+        businessCollectionLocalDate: initial.selectedOccurrence.localDate,
+      });
+    }
+    const savedExtraReceipt = savedRows.get(thirdBowlerId)?.manualReceipts.find((candidate) => candidate.receiptId === extraCashReceiptId);
+    expect(savedExtraReceipt).toMatchObject({
+      receiptId: extraCashReceiptId,
+      paymentId: extraCashPaymentId,
+      amountMinor: 10_000,
+      revision: 1,
+      businessCollectionLocalDate: initial.selectedOccurrence.localDate,
+    });
+
+    const oldPayments = await db.select().from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+      inArray(payments.id, originalPaymentIds),
+    ));
+    expect(oldPayments).toHaveLength(3);
+    expect(oldPayments.every((payment) => payment.status === "voided")).toBe(true);
+    expect(await db.select().from(paymentVoids).where(and(
+      eq(paymentVoids.organizationId, organizationId),
+      eq(paymentVoids.leagueId, leagueId),
+      inArray(paymentVoids.paymentId, originalPaymentIds),
+    ))).toHaveLength(3);
+    const oldAllocations = await db.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, leagueId),
+      inArray(paymentAllocations.paymentId, originalPaymentIds),
+    ));
+    expect(oldAllocations).toHaveLength(12);
+    expect(oldAllocations.every((allocation) => allocation.state === "voided")).toBe(true);
+    const oldReleases = await db.select().from(weeklyPaymentAllocationReleases).where(and(
+      eq(weeklyPaymentAllocationReleases.organizationId, organizationId),
+      eq(weeklyPaymentAllocationReleases.leagueId, leagueId),
+      inArray(weeklyPaymentAllocationReleases.paymentId, originalPaymentIds),
+    ));
+    expect(oldReleases).toHaveLength(12);
+    expect(oldReleases.reduce((sum, release) => sum + release.releasedAmountMinor, 0)).toBe(23_000);
+    expect(oldReleases.every((release) => release.retainedAmountMinor === 0 && release.replacementAllocationId === null)).toBe(true);
+
+    const replacementPaymentIds = owners.map((owner) => {
+      const receiptId = receiptIdByOwner.get(owner.bowlerId);
+      const receipt = savedRows.get(owner.bowlerId)?.manualReceipts.find((candidate) => candidate.receiptId === receiptId);
+      if (!receipt) throw new Error(`replacement receipt for payer ${owner.bowlerId} is missing`);
+      return receipt.paymentId;
+    });
+    const replacementFundings = await db.select().from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, organizationId),
+      eq(weeklyPaymentFundings.leagueId, leagueId),
+      inArray(weeklyPaymentFundings.paymentId, replacementPaymentIds),
+    ));
+    expect(replacementFundings.reduce((sum, funding) => sum + funding.amountMinor, 0)).toBe(60_000);
+    const activeReplacementAllocations = await db.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, leagueId),
+      inArray(paymentAllocations.paymentId, replacementPaymentIds),
+      eq(paymentAllocations.state, "active"),
+    ));
+    expect(activeReplacementAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0)).toBe(16_000);
+
+    if (!extraCashPaymentId || !extraCashFundingId || !extraCashAllocationId || !extraCashApplicationId) {
+      throw new Error("synthetic extra receipt funding evidence is missing");
+    }
+    const weekFour = occurrences[3];
+    const weekFourTarget = weekFour ? obligations.get(`${weekFour.id}:${thirdBowlerId}`) : undefined;
+    if (!weekFourTarget) throw new Error("synthetic fourth-week obligation is missing");
+    const extraReceiptAllocations = await db.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, leagueId),
+      eq(paymentAllocations.paymentId, extraCashPaymentId),
+      eq(paymentAllocations.obligationId, weekFourTarget.obligationId),
+    ));
+    expect(extraReceiptAllocations).toHaveLength(2);
+    expect(extraReceiptAllocations.find((allocation) => allocation.id === extraCashAllocationId)).toMatchObject({
+      amountMinor: 1_000,
+      state: "voided",
+      allocationKind: "ordinary",
+    });
+    const mergedAllocation = extraReceiptAllocations.find((allocation) => allocation.state === "active");
+    if (!mergedAllocation) throw new Error("merged week-four allocation is missing");
+    expect(mergedAllocation).toMatchObject({ amountMinor: 2_000, allocationKind: "ordinary", reviewRequired: false });
+    const mergedApplications = await db.select().from(paymentAllocationFundingApplications).where(and(
+      eq(paymentAllocationFundingApplications.organizationId, organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, leagueId),
+      eq(paymentAllocationFundingApplications.allocationId, mergedAllocation.id),
+    ));
+    expect(mergedApplications).toHaveLength(1);
+    expect(mergedApplications[0]).toMatchObject({
+      paymentId: extraCashPaymentId,
+      creditedBowlerId: thirdBowlerId,
+      genericFundingId: extraCashFundingId,
+      rotatingFundingId: null,
+      sourceAmountMinor: 10_000,
+      amountMinor: 2_000,
+      currency: "USD",
+      obligationId: weekFourTarget.obligationId,
+      responsibilityId: weekFourTarget.responsibilityId,
+      occurrenceId: weekFour.id,
+      teamId,
+      targetKind: "bowler_responsibility",
+      targetPayerBowlerId: thirdBowlerId,
+      assignmentId: null,
+    });
+    const releasedExtraApplication = await db.select().from(paymentAllocationFundingApplications).where(and(
+      eq(paymentAllocationFundingApplications.organizationId, organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, leagueId),
+      eq(paymentAllocationFundingApplications.id, extraCashApplicationId),
+    ));
+    expect(releasedExtraApplication).toHaveLength(1);
+    expect(releasedExtraApplication[0]).toMatchObject({ amountMinor: 1_000, allocationId: extraCashAllocationId });
+    const extraReceiptReleases = await db.select().from(weeklyPaymentAllocationReleases).where(and(
+      eq(weeklyPaymentAllocationReleases.organizationId, organizationId),
+      eq(weeklyPaymentAllocationReleases.leagueId, leagueId),
+      eq(weeklyPaymentAllocationReleases.fundingApplicationId, extraCashApplicationId),
+    ));
+    expect(extraReceiptReleases).toHaveLength(1);
+    expect(extraReceiptReleases[0]).toMatchObject({
+      paymentId: extraCashPaymentId,
+      creditedBowlerId: thirdBowlerId,
+      sourceAllocationId: extraCashAllocationId,
+      sourceApplicationAmountMinor: 1_000,
+      releasedAmountMinor: 1_000,
+      retainedAmountMinor: 0,
+      replacementAllocationId: null,
+      reason: "worksheet_correction",
+    });
+    expect(extraReceiptReleases[0]?.idempotencyKey).toMatch(/^mprel_[0-9a-f]{64}$/);
+
+    const balances = await db.transaction(async (tx) => readOwnedAccountBalancesInTransaction(tx, {
+      organizationId,
+      leagueId,
+      bowlerIds: owners.map((owner) => owner.bowlerId),
+    }));
+    expect(owners.map((owner) => balances.get(owner.bowlerId)?.availableCreditMinor)).toEqual([12_000, 22_000, 12_000]);
+    expect([...balances.values()].every((balance) => balance.confirmedOwedMinor === 0)).toBe(true);
+    const replay = await saveManagePaymentsWorksheet(request);
+    expect(replay).toMatchObject({ replayed: true, snapshot: { revision: 1, weekConfirmed: true } });
+    const replayAllocations = await db.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, leagueId),
+      eq(paymentAllocations.paymentId, extraCashPaymentId),
+      eq(paymentAllocations.obligationId, weekFourTarget.obligationId),
+    ));
+    expect(replayAllocations).toHaveLength(2);
+    expect(replayAllocations.filter((allocation) => allocation.state === "active")).toHaveLength(1);
+    expect(await db.select().from(weeklyPaymentAllocationReleases).where(and(
+      eq(weeklyPaymentAllocationReleases.organizationId, organizationId),
+      eq(weeklyPaymentAllocationReleases.leagueId, leagueId),
+      eq(weeklyPaymentAllocationReleases.fundingApplicationId, extraCashApplicationId),
+    ))).toHaveLength(1);
+  });
+
   it("records only new manual receipts at receivedDate, preserves existing dates, and keeps the selected occurrence owner", async () => {
     const initial = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
     const selectedLocalDate = initial.selectedOccurrence.localDate;
