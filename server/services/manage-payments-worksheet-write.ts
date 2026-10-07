@@ -873,6 +873,7 @@ export async function saveManagePaymentsWorksheet(input: SaveManagePaymentsWorks
           bowlerId,
           actorUserId: input.actorUserId,
           now,
+          worksheetCorrectionIdempotencyKey: input.request.idempotencyKey,
         });
       }
       const authoritativeSnapshot = await loadManagePaymentsWorksheetSnapshotInTransaction(tx, {

@@ -1910,7 +1910,12 @@ export async function recordOwnedFundingInTransaction(
 
 export async function applyOwnedFundingFifoInTransaction(
   tx: PaymentOperationTransaction,
-  input: OwnedLedgerScope & { bowlerId: number; actorUserId: number; now?: string },
+  input: OwnedLedgerScope & {
+    bowlerId: number;
+    actorUserId: number;
+    now?: string;
+    worksheetCorrectionIdempotencyKey?: string;
+  },
 ): Promise<string[]> {
   const adoption = await readOwnedLedgerAdoptionInTransaction(tx, input);
   if (!adoption) throw new OwnedPaymentLedgerError("LEDGER_NOT_ADOPTED");
@@ -1952,12 +1957,92 @@ export async function applyOwnedFundingFifoInTransaction(
   const appliedByObligation = new Map<string, number>();
   for (const { lot, obligation: debt, amountMinor } of applicationPlan) {
     const allocationKind = lot.sourceKind === "rotating" ? "rotating_credit" as const : "ordinary" as const;
+    let replacementAmountMinor = amountMinor;
+    if (input.worksheetCorrectionIdempotencyKey && lot.sourceKind === "generic") {
+      const existingAllocations = await tx.select().from(paymentAllocations).where(and(
+        eq(paymentAllocations.organizationId, input.organizationId),
+        eq(paymentAllocations.leagueId, input.leagueId),
+        eq(paymentAllocations.paymentId, lot.paymentId),
+        eq(paymentAllocations.obligationId, debt.obligationId),
+        eq(paymentAllocations.state, "active"),
+        eq(paymentAllocations.allocationKind, "ordinary"),
+      )).orderBy(asc(paymentAllocations.id)).for("update");
+      if (existingAllocations.length > 1) throw new OwnedPaymentLedgerError("FUNDING_APPLICATION_NOT_RELEASABLE");
+      const existingAllocation = existingAllocations[0];
+      if (existingAllocation) {
+        if (existingAllocation.reviewRequired || existingAllocation.reviewReason !== null
+          || existingAllocation.amountMinor <= 0 || existingAllocation.paymentId !== lot.paymentId
+          || existingAllocation.obligationId !== debt.obligationId) {
+          throw new OwnedPaymentLedgerError("FUNDING_APPLICATION_NOT_RELEASABLE");
+        }
+
+        const [funding] = await tx.select().from(weeklyPaymentFundings).where(and(
+          eq(weeklyPaymentFundings.organizationId, input.organizationId),
+          eq(weeklyPaymentFundings.leagueId, input.leagueId),
+          eq(weeklyPaymentFundings.id, lot.fundingId),
+        )).limit(1);
+        const existingApplications = await tx.select().from(paymentAllocationFundingApplications).where(and(
+          eq(paymentAllocationFundingApplications.organizationId, input.organizationId),
+          eq(paymentAllocationFundingApplications.leagueId, input.leagueId),
+          eq(paymentAllocationFundingApplications.allocationId, existingAllocation.id),
+        )).orderBy(asc(paymentAllocationFundingApplications.id)).for("update");
+        if (!funding || existingApplications.length !== 1) {
+          throw new OwnedPaymentLedgerError("FUNDING_APPLICATION_NOT_RELEASABLE");
+        }
+        const existingApplication = existingApplications[0];
+        if (!existingApplication
+          || existingApplication.genericFundingId !== funding.id
+          || existingApplication.rotatingFundingId !== null
+          || funding.paymentId !== lot.paymentId
+          || funding.creditedBowlerId !== lot.bowlerId
+          || funding.amountMinor !== lot.amountMinor
+          || existingApplication.paymentId !== lot.paymentId
+          || existingApplication.creditedBowlerId !== lot.bowlerId
+          || existingApplication.sourceAmountMinor !== funding.amountMinor
+          || existingApplication.amountMinor !== existingAllocation.amountMinor
+          || existingApplication.amountMinor <= 0
+          || existingApplication.currency !== funding.currency
+          || existingAllocation.currency !== funding.currency
+          || existingApplication.obligationId !== debt.obligationId
+          || existingApplication.responsibilityId !== debt.responsibilityId
+          || existingApplication.occurrenceId !== debt.occurrenceId
+          || existingApplication.teamId !== debt.teamId
+          || existingApplication.targetKind !== debt.targetKind
+          || existingApplication.targetPayerBowlerId !== (debt.targetKind === "bowler_responsibility" ? debt.payerBowlerId : null)
+          || existingApplication.assignmentId !== (debt.targetKind === "legacy_team_assignment" ? debt.assignmentId : null)) {
+          throw new OwnedPaymentLedgerError("FUNDING_APPLICATION_NOT_RELEASABLE");
+        }
+        const refundAdjustments = await tx.select({ id: refundAllocationAdjustments.id }).from(refundAllocationAdjustments).where(and(
+          eq(refundAllocationAdjustments.organizationId, input.organizationId),
+          eq(refundAllocationAdjustments.leagueId, input.leagueId),
+          eq(refundAllocationAdjustments.sourceAllocationId, existingAllocation.id),
+        )).limit(1);
+        if (refundAdjustments.length > 0) throw new OwnedPaymentLedgerError("FUNDING_APPLICATION_NOT_RELEASABLE");
+
+        replacementAmountMinor = existingApplication.amountMinor + amountMinor;
+        if (replacementAmountMinor > lot.amountMinor || replacementAmountMinor > existingApplication.sourceAmountMinor) {
+          throw new OwnedPaymentLedgerError("FUNDING_APPLICATION_NOT_RELEASABLE");
+        }
+        const releaseIdempotencyKey = `mprel_${createHash("sha256")
+          .update(`${input.worksheetCorrectionIdempotencyKey}:${existingApplication.id}`)
+          .digest("hex")}`;
+        await releaseOwnedFundingApplicationInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          applicationId: existingApplication.id,
+          actorUserId: input.actorUserId,
+          reason: "worksheet_correction",
+          idempotencyKey: releaseIdempotencyKey,
+          now,
+        });
+      }
+    }
     const [allocation] = await tx.insert(paymentAllocations).values({
       organizationId: input.organizationId,
       leagueId: input.leagueId,
       paymentId: lot.paymentId,
       obligationId: debt.obligationId,
-      amountMinor,
+      amountMinor: replacementAmountMinor,
       currency: "USD",
       state: "active",
       allocationKind,
@@ -1974,7 +2059,7 @@ export async function applyOwnedFundingFifoInTransaction(
       genericFundingId: lot.sourceKind === "generic" ? lot.fundingId : null,
       rotatingFundingId: lot.sourceKind === "rotating" ? lot.fundingId : null,
       sourceAmountMinor: lot.amountMinor,
-      amountMinor,
+      amountMinor: replacementAmountMinor,
       currency: "USD",
       obligationId: debt.obligationId,
       responsibilityId: debt.responsibilityId,
@@ -1988,6 +2073,8 @@ export async function applyOwnedFundingFifoInTransaction(
     }).returning({ id: paymentAllocationFundingApplications.id });
     if (!application) throw new OwnedPaymentLedgerError("FUNDING_APPLICATION_CREATE_FAILED");
     createdIds.push(application.id);
+    // The debt snapshot already excludes any allocation that was released and reissued above.
+    // Count only this FIFO top-up, not the combined replacement amount, toward that outstanding debt.
     appliedByObligation.set(debt.obligationId, (appliedByObligation.get(debt.obligationId) ?? 0) + amountMinor);
   }
 
