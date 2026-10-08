@@ -34,7 +34,7 @@ describe("dedicated make-payment guards", () => {
     invalidatePaymentViews(17, 42, [42, 84]);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/17/standing-autopay/1"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/17/standing-autopay/1/quote"] });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 17, "interactive-payment-participants/4"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 17, "interactive-payment-participants/4"], refetchType: "none" });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 17, "interactive-payment-quote/4"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/payments", { bowlerId: 84, leagueId: 17 }] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/bowlers/84/details"] });
