@@ -126,6 +126,11 @@ const EXPLICIT_NON_API_ALLOWLIST: readonly string[] = [
   // coverage added in #471 surfaces this mount as a state-changing
   // handler shape, so it has to be allowlisted here.
   '/uploads/avatars',
+  // `app.use('/assets', express.static(...))` in `server/app.ts` — the
+  // fingerprinted production build output, mounted ahead of the session
+  // store. Same read-only `express.static` shape as `/uploads/avatars`:
+  // GET/HEAD only, everything else falls through to the normal chain.
+  '/assets',
   // `app.use("/{*splat}", ...)` in `server/vite.ts` — the dev SPA catchall and
   // the prod static-fallback. Both handlers respond with HTML for
   // unknown paths and don't mutate any server state. `server/vite.ts`
