@@ -4,7 +4,6 @@ import type {
 } from "@shared/account-payment-v4-contract";
 import { accountPaymentParticipantsResponseV4Schema } from "@shared/account-payment-v4-contract";
 import { makeApiError } from "@/lib/api-error";
-import type { InteractivePaymentParticipant, InteractivePaymentMode } from "@/lib/interactive-payment-v3";
 
 export type ConfirmedAccountPaymentParticipantsV4 = Extract<
   AccountPaymentParticipantsResponseV4,
@@ -14,6 +13,31 @@ export type ConfirmedAccountPaymentParticipantsV4 = Extract<
 export interface AccountPaymentRecipientSelectionV4 {
   bowlerId: number;
   selection: AccountPaymentFundingSelectionV4;
+}
+
+export type AccountPaymentMode = ConfirmedAccountPaymentParticipantsV4["paymentMode"];
+
+export interface AccountPaymentWeeklyOption {
+  weeks: number;
+  amountMinor: number;
+}
+
+/** One recipient as the bowler payment chooser displays it. */
+export interface AccountPaymentChooserParticipant {
+  bowlerId: number;
+  name: string;
+  role: "self" | "partner";
+  remainingMinor: number;
+  pastDueMinor: number;
+  weeklyOptions: AccountPaymentWeeklyOption[];
+  eligible: boolean;
+  reason: string | null;
+  /** Exact amount currently due before standing automatic payments can start. */
+  dueNowMinor?: number;
+  /** Number of weeks represented by the due-now amount. */
+  catchUpWeeks?: number;
+  /** Server-authoritative amount required to bring the payer current. */
+  catchUpAmountMinor?: number;
 }
 
 export function accountPaymentParticipantsQueryKey(leagueId: number, payerBowlerId: number) {
@@ -75,12 +99,12 @@ function pricedAccountWeeklyOptions(recipient: AccountPaymentRecipientV4): Price
     .map((option, index) => ({ ...option, weeks: index + 1 }));
 }
 
-/** Adapt only for the existing recipient chooser and balance labels. Every
- * amount remains sourced from the V4 participant response; quotes still come
+/** Shape the V4 participant response for the recipient chooser and balance
+ * labels. Every amount remains sourced from that response; quotes still come
  * from the V4 server endpoint. */
 export function accountParticipantsForPaymentChooser(
   response: ConfirmedAccountPaymentParticipantsV4,
-): InteractivePaymentParticipant[] {
+): AccountPaymentChooserParticipant[] {
   return response.recipients.map((recipient) => {
     const creditMinor = recipient.availableCreditMinor;
     const fullBalanceMinor = netTargetMinor(recipient.forecastTargets.fullSeasonMinor, creditMinor);
@@ -108,7 +132,7 @@ export function accountParticipantsForPaymentChooser(
   });
 }
 
-/** Build exact V4 server selection semantics from the existing preset UI. */
+/** Build exact V4 server selection semantics from the preset UI. */
 export function buildAccountPaymentSelectionsV4(input: {
   response: ConfirmedAccountPaymentParticipantsV4;
   selected: Readonly<Record<number, boolean>>;
@@ -155,6 +179,42 @@ export function defaultSelectedAccountRecipients(
   return selected;
 }
 
-export function accountPaymentMode(response: ConfirmedAccountPaymentParticipantsV4): InteractivePaymentMode {
-  return response.paymentMode;
+export function isInteractivePaymentQuoteCurrent(
+  displayedQuote: { fingerprint: string; amountMinor: number; selectionKey: string } | null,
+  quote: { fingerprint: string; amountMinor: number } | null | undefined,
+  selectionKey: string,
+): boolean {
+  return displayedQuote !== null
+    && quote !== null
+    && quote !== undefined
+    && displayedQuote.selectionKey === selectionKey
+    && displayedQuote.fingerprint === quote.fingerprint
+    && displayedQuote.amountMinor === quote.amountMinor;
+}
+
+export function clampInteractivePaymentWeeks(
+  participant: Pick<AccountPaymentChooserParticipant, "weeklyOptions">,
+  weeks: number,
+): number {
+  const maxWeeks = participant.weeklyOptions.at(-1)?.weeks ?? 0;
+  if (maxWeeks <= 0) return 1;
+  return Math.min(Math.max(1, Math.trunc(weeks)), maxWeeks);
+}
+
+export function initialInteractivePaymentWeeks(
+  participant: Pick<AccountPaymentChooserParticipant, "weeklyOptions">,
+  paymentMode: AccountPaymentMode,
+): number {
+  if (paymentMode === "upfront") return participant.weeklyOptions.at(-1)?.weeks ?? 1;
+  return clampInteractivePaymentWeeks(participant, 1);
+}
+
+export function participantAmountForSelection(
+  participant: Pick<AccountPaymentChooserParticipant, "weeklyOptions" | "remainingMinor">,
+  weeks: number,
+  paymentMode: AccountPaymentMode,
+): number {
+  if (paymentMode === "upfront") return participant.remainingMinor;
+  const option = participant.weeklyOptions.find((candidate) => candidate.weeks === weeks);
+  return option?.amountMinor ?? 0;
 }

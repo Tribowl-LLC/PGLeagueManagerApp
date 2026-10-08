@@ -8,7 +8,6 @@ import { PaymentSummaryCards } from "@/components/payment-summary-cards";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { PageErrorState } from "@/components/page-states";
 import { LeagueBottomSheet } from "@/components/league-bottom-sheet";
-import type { DoublePayStatus } from "@/lib/financial-utils";
 import type { RotatingCreditDisplayState } from "@/components/payment-status-section";
 
 interface PaymentHistoryContentProps {
@@ -32,7 +31,6 @@ interface PaymentHistoryContentProps {
   waivedAmount?: number;
   amountPastDue: number;
   remainingBalance: number;
-  doublePay: DoublePayStatus;
   canonicalPaymentLoading: boolean;
   canonicalPaymentError: Error | null;
   onCanonicalReportRetry?: () => void;
@@ -51,7 +49,7 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
   onSelectLeague, totalWeeksInSeason, fullSeasonAmount, weeksDueCount,
   totalSeasonDues, weeksPaid, totalPaidAmount, amountPastDue, remainingBalance,
   waivedAmount,
-  doublePay, canonicalPaymentLoading, canonicalPaymentError, canonicalReportPage,
+  canonicalPaymentLoading, canonicalPaymentError, canonicalReportPage,
   onCanonicalReportRetry, canonicalReportTotalPages, onCanonicalReportPageChange, canonicalRows = [], canonicalReportTotalTransactions,
   rotatingCreditState = "standard", isRotating = false,
 }) => {
@@ -91,7 +89,6 @@ export const PaymentHistoryContent: FC<PaymentHistoryContentProps> = ({
                 waivedAmount={waivedAmount}
                 amountPastDue={amountPastDue}
                 remainingBalance={remainingBalance}
-                doublePay={doublePay}
                 isRotating={isRotating}
                 onPayPastDue={() => undefined}
                 onPayRemaining={() => undefined}

@@ -56,7 +56,6 @@ describe("PaymentHistoryContent", () => {
       totalPaidAmount={3000}
       amountPastDue={6000}
       remainingBalance={27000}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
       canonicalPaymentLoading={false}
       canonicalPaymentError={null}
       canonicalRows={[]}
@@ -95,7 +94,6 @@ describe("PaymentHistoryContent", () => {
       totalPaidAmount={3000}
       amountPastDue={6000}
       remainingBalance={27000}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
       canonicalPaymentLoading={false}
       canonicalPaymentError={null}
       canonicalRows={[]}
@@ -127,7 +125,6 @@ describe("PaymentHistoryContent", () => {
       totalPaidAmount={9000}
       amountPastDue={0}
       remainingBalance={0}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: true }}
       canonicalPaymentLoading={false}
       canonicalPaymentError={null}
       canonicalRows={[]}
@@ -146,7 +143,6 @@ describe("PaymentHistoryContent", () => {
       bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
       totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
       weeksPaid={1} totalPaidAmount={3000} amountPastDue={6000} remainingBalance={27000}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
       canonicalPaymentLoading={false} canonicalPaymentError={new Error("report unavailable")}
       onCanonicalReportRetry={retry}
     />);
@@ -163,7 +159,6 @@ describe("PaymentHistoryContent", () => {
       bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
       totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
       weeksPaid={1} totalPaidAmount={3000} amountPastDue={6000} remainingBalance={27000}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
       canonicalPaymentLoading={false} canonicalPaymentError={null} canonicalRows={[]}
       canonicalReportPage={1} canonicalReportTotalPages={2} onCanonicalReportPageChange={onPageChange}
     />);
@@ -179,7 +174,6 @@ describe("PaymentHistoryContent", () => {
       bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
       totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
       weeksPaid={1} totalPaidAmount={3000} amountPastDue={6000} remainingBalance={27000}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
       canonicalPaymentLoading={false} canonicalPaymentError={null} canonicalRows={[]}
       canonicalReportPage={2} canonicalReportTotalPages={2} onCanonicalReportPageChange={onPageChange}
     />);
@@ -206,7 +200,6 @@ describe("PaymentHistoryContent", () => {
       totalPaidAmount: 3000,
       amountPastDue: 6000,
       remainingBalance: 27000,
-      doublePay: { dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false },
       canonicalPaymentLoading: false,
       canonicalPaymentError: null,
       canonicalRows: [],

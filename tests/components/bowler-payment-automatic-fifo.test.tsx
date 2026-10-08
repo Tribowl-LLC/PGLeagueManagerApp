@@ -97,7 +97,6 @@ describe("automatic FIFO bowler payment flow", () => {
       totalPaidAmount={0}
       amountPastDue={0}
       remainingBalance={96_000}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
       onPayPastDue={vi.fn()}
       onPayRemaining={onPayRemaining}
     />);
