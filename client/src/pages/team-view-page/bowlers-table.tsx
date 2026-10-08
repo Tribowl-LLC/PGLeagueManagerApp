@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -12,8 +12,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { fingerprintCanonicalRequest } from "@/lib/rotating-payment-fingerprint";
 import { useToast } from "@/hooks/use-toast";
 
-type TeamPolicy = "main_pays_full" | "sub_pays_full" | "special_split";
-type SharedSpotTeam = Pick<RosterPaymentResponsibilityReadContractV2["teams"][number], "slots" | "policy" | "eligibleRotatingBowlerIds">;
+type RosterTeam = Pick<RosterPaymentResponsibilityReadContractV2["teams"][number], "slots" | "policy" | "eligibleRotatingBowlerIds">;
 
 interface TeamViewBowlersTableProps {
   teamBowlers: TeamBowlerEntry<BowlerWithAccount>[];
@@ -21,18 +20,16 @@ interface TeamViewBowlersTableProps {
   teamId: number;
   leagueId: number;
   canManage: boolean;
+  /** "unavailable" while the lineup spots are loading or could not be read. */
   paymentMode?: "fixed" | "rotating" | "unavailable";
-  /** The team's lineup spots when one of them is still a retiring shared (rotating) spot. */
-  sharedSpotTeam?: SharedSpotTeam;
+  /** The team's saved lineup spots. One may still be a retiring shared (rotating) spot. */
+  rosterTeam?: RosterTeam;
+  lineupSize?: number | null;
   onEditBowler?: (bowler: Bowler) => void;
   onRemoveBowler?: (target: { bowlerId: number; name: string }) => void;
 }
 
 type Slot = { slotIndex: number; occupant: "main" | "vacant" | "unassigned" | "rotating"; mainBowlerId?: number | null };
-type RosterResponse = {
-  payingLineupSize: number | null;
-  teams: Array<{ id: number; slots: Slot[]; policy: TeamPolicy }>;
-};
 
 function rosterFingerprint(lineupSize: number, policy: string, slots: Slot[]): Promise<string> {
   const canonical = JSON.stringify({
@@ -44,15 +41,12 @@ function rosterFingerprint(lineupSize: number, policy: string, slots: Slot[]): P
   return fingerprintCanonicalRequest("lvroster:v1", canonical);
 }
 
-export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, canManage, paymentMode = "fixed", sharedSpotTeam, onEditBowler, onRemoveBowler }: TeamViewBowlersTableProps) {
+export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, canManage, paymentMode = "fixed", rosterTeam, lineupSize: savedLineupSize, onEditBowler, onRemoveBowler }: TeamViewBowlersTableProps) {
   const { toast } = useToast();
   const hasSharedSpot = paymentMode === "rotating";
-  const rosterQuery = useQuery<{ data: RosterResponse }>({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`], enabled: canManage && paymentMode === "fixed" });
-  const fixedTeam = rosterQuery.data?.data?.teams.find((team) => team.id === teamId);
-  const current = hasSharedSpot ? sharedSpotTeam : fixedTeam;
-  const lineupSize = hasSharedSpot
-    ? sharedSpotTeam?.slots.length ?? 0
-    : rosterQuery.data?.data?.payingLineupSize ?? league?.payingLineupSize ?? 0;
+  const current = rosterTeam;
+  const sharedSpotMemberIds = hasSharedSpot ? rosterTeam?.eligibleRotatingBowlerIds ?? [] : [];
+  const lineupSize = savedLineupSize ?? league?.payingLineupSize ?? 0;
   const [slots, setSlots] = useState<Slot[]>([]);
   useEffect(() => {
     if (!current) return;
@@ -84,7 +78,7 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
         lineupSize,
         policy,
         slots: requestSlots,
-        eligibleRotatingBowlerIds: [...(sharedSpotTeam?.eligibleRotatingBowlerIds ?? [])].sort((left, right) => left - right),
+        eligibleRotatingBowlerIds: [...sharedSpotMemberIds].sort((left, right) => left - right),
       } as const;
       return apiRequest(`/api/financials/leagues/${leagueId}/roster-payment-responsibility/2/teams/${teamId}`, "POST", {
         commandKey: crypto.randomUUID(),
@@ -110,6 +104,8 @@ export function TeamViewBowlersTable({ teamBowlers, league, teamId, leagueId, ca
   const updateSlot = (slotIndex: number, value: Partial<Slot>) => setSlots((rows) => rows.map((row) => row.slotIndex === slotIndex ? { ...row, ...value } : row));
   const setMemberRole = (bowlerId: number, role: "regular" | "sub") => {
     if (role === "regular") {
+      // The server does not allow a member of the shared spot to also hold a regular spot.
+      if (sharedSpotMemberIds.includes(bowlerId)) { toast({ title: "This bowler shares the shared spot", description: "A bowler who shares the shared spot cannot also hold a regular spot.", variant: "destructive" }); return; }
       const target = normalizedSlots.find((slot) => slot.occupant === "vacant" || slot.occupant === "unassigned");
       if (!target) { toast({ title: "No open lineup spot", description: "Change a regular to a sub first.", variant: "destructive" }); return; }
       setSlots((rows) => rows.some((row) => row.slotIndex === target.slotIndex)

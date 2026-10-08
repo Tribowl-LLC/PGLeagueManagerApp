@@ -62,15 +62,14 @@ export default function TeamViewPage() {
   const league = detailsResponse?.data?.league;
   const rotatingRosterQuery = useQuery<ApiResponse<RosterPaymentResponsibilityReadContractV2>>({
     queryKey: [`/api/financials/leagues/${team?.leagueId ?? 0}/roster-payment-responsibility/2`],
-    enabled: !!team && canManageRoster,
+    enabled: !!team,
     retry: false,
   });
+  const rosterReadFailed = rotatingRosterQuery.isError || rotatingRosterQuery.data?.success === false;
   const rotatingTeam = rotatingRosterQuery.data?.data?.teams.find((row) => row.id === team?.id);
-  const rotationMode: "fixed" | "rotating" | "unavailable" = !canManageRoster
-    ? "fixed"
-    : rotatingRosterQuery.isLoading
-      ? "unavailable"
-      : rotatingTeam?.slots.some((slot) => slot.occupant === "rotating")
+  const rotationMode: "fixed" | "rotating" | "unavailable" = rotatingRosterQuery.isLoading || rosterReadFailed
+    ? "unavailable"
+    : rotatingTeam?.slots.some((slot) => slot.occupant === "rotating")
         ? "rotating"
         : "fixed";
   const { teams: leagueTeams } = useTeams({
@@ -144,6 +143,7 @@ export default function TeamViewPage() {
         queryClient.invalidateQueries({ queryKey: ["/api/bowler-leagues"] }),
         ...(leagueId === undefined ? [] : [
           queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }),
+          queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/2`] }),
           queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }),
           queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", leagueId] }),
         ]),
@@ -228,7 +228,12 @@ export default function TeamViewPage() {
       />
 
 
-      <TeamViewBowlersTable
+      {rosterReadFailed
+        ? <div className="mt-4 flex flex-wrap items-center gap-3 rounded-md border p-4 text-sm" role="alert">
+          <span>The team roster could not be loaded.</span>
+          <Button variant="outline" size="sm" onClick={() => rotatingRosterQuery.refetch()}>Try again</Button>
+        </div>
+        : <TeamViewBowlersTable
         key={teamId}
         teamBowlers={teamBowlers}
         league={league}
@@ -236,13 +241,14 @@ export default function TeamViewPage() {
         leagueId={team.leagueId}
         canManage={canManageRoster}
         paymentMode={rotationMode}
-        sharedSpotTeam={rotationMode === "rotating" ? rotatingTeam : undefined}
+        rosterTeam={rotatingTeam}
+        lineupSize={rotatingRosterQuery.data?.data?.payingLineupSize}
         onEditBowler={canManageRoster ? (bowler) => {
           setSelectedBowler(bowler);
           setShowForm(true);
         } : undefined}
         onRemoveBowler={canManageRoster ? (target) => setShowRemoveDialog(target) : undefined}
-      />
+      />}
 
       {canManageRoster && teamBowlers.length > 1 && (
         <div className="mt-4">

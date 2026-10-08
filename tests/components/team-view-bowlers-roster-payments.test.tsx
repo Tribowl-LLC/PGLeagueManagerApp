@@ -22,50 +22,6 @@ vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: toastMock }) }))
 
 import { TeamViewBowlersTable } from "@/pages/team-view-page/bowlers-table";
 
-const rosterResponse = {
-  data: {
-    payingLineupSize: 3,
-    ready: true,
-    lineageFee: null,
-    prizeFundFee: null,
-    substituteAccess: "team_only",
-    substitutePaymentRegime: "team_choice",
-    substituteBowlerOptions: [
-      { id: 11, name: "Sub One", teamId: 9 },
-      { id: 12, name: "Sub Two", teamId: 9 },
-    ],
-    occurrences: [
-      { id: "00000000-0000-4000-8000-000000000001", startAt: "2038-01-03 03:00:00+00", status: "scheduled" },
-      { id: "00000000-0000-4000-8000-000000000002", startAt: "2038-01-10T03:00:00.000Z", status: "scheduled" },
-    ],
-    occurrenceResponsibilities: [
-      { occurrenceId: "00000000-0000-4000-8000-000000000001", teamId: 9, slotIndex: 0, positionIndex: 0, responsibilityKind: "substitute", mainBowlerId: 10, substituteBowlerId: 11, payerBowlerId: 10, policy: "main_pays_full", amountMinor: 2000, lineageAmountMinor: null, prizeFundAmountMinor: null },
-      { occurrenceId: "00000000-0000-4000-8000-000000000002", teamId: 9, slotIndex: 1, positionIndex: 1, responsibilityKind: "substitute", mainBowlerId: 13, substituteBowlerId: 12, payerBowlerId: 12, policy: "sub_pays_full", amountMinor: 2000, lineageAmountMinor: null, prizeFundAmountMinor: null },
-    ],
-    teams: [{ id: 9, policy: "main_pays_full", slots: [
-      { id: "slot-1", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 3, slotIndex: 0, occupant: "main", mainBowlerId: 10, currentRevision: 1 },
-      { id: "slot-2", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 3, slotIndex: 1, occupant: "main", mainBowlerId: 13, currentRevision: 1 },
-      { id: "slot-3", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 3, slotIndex: 2, occupant: "vacant", mainBowlerId: null, currentRevision: 1 },
-    ] }],
-  },
-};
-
-const vacantRosterResponse = {
-  data: {
-    ...rosterResponse.data,
-    payingLineupSize: 4,
-    ready: false,
-    occurrences: [],
-    occurrenceResponsibilities: [],
-    teams: [{ id: 9, policy: "main_pays_full", slots: [
-      { id: "slot-main-1", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 4, slotIndex: 0, occupant: "main", mainBowlerId: 10, currentRevision: 1 },
-      { id: "slot-main-2", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 4, slotIndex: 1, occupant: "main", mainBowlerId: 13, currentRevision: 1 },
-      { id: "slot-main-3", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 4, slotIndex: 2, occupant: "main", mainBowlerId: 14, currentRevision: 1 },
-      { id: "slot-vacant", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 4, slotIndex: 3, occupant: "vacant", mainBowlerId: null, currentRevision: 1 },
-    ] }],
-  },
-};
-
 // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 const league = { id: 1, weeklyFee: 2000, timezone: "America/Los_Angeles" } as League;
 // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -83,6 +39,28 @@ const sharedSpotTeam = {
   ],
 };
 
+type RosterTeam = { policy: "main_pays_full" | "sub_pays_full" | "special_split"; eligibleRotatingBowlerIds: number[]; slots: Array<{ teamId: number; slotIndex: number; occupant: "main" | "vacant" | "unassigned" | "rotating"; mainBowlerId: number | null; currentRevision: number }> };
+const savedTeam = (policy: RosterTeam["policy"] = "main_pays_full"): RosterTeam => ({
+  policy,
+  eligibleRotatingBowlerIds: [],
+  slots: [
+    { teamId: 9, slotIndex: 0, occupant: "main", mainBowlerId: 10, currentRevision: 1 },
+    { teamId: 9, slotIndex: 1, occupant: "main", mainBowlerId: 13, currentRevision: 1 },
+    { teamId: 9, slotIndex: 2, occupant: "vacant", mainBowlerId: null, currentRevision: 1 },
+  ],
+});
+const vacancyTeam: RosterTeam = {
+  policy: "main_pays_full",
+  eligibleRotatingBowlerIds: [],
+  slots: [
+    { teamId: 9, slotIndex: 0, occupant: "main", mainBowlerId: 10, currentRevision: 1 },
+    { teamId: 9, slotIndex: 1, occupant: "main", mainBowlerId: 13, currentRevision: 1 },
+    { teamId: 9, slotIndex: 2, occupant: "main", mainBowlerId: 14, currentRevision: 1 },
+    { teamId: 9, slotIndex: 3, occupant: "vacant", mainBowlerId: null, currentRevision: 1 },
+  ],
+};
+let rosterTeam = savedTeam();
+
 function renderRoster(
   paymentMode: "fixed" | "rotating" | "unavailable" = "fixed",
   callbacks: { onEditBowler?: (bowler: Bowler) => void; onRemoveBowler?: (target: { bowlerId: number; name: string }) => void } = {},
@@ -98,7 +76,8 @@ function renderRoster(
     leagueId={1}
     canManage
     paymentMode={paymentMode}
-    sharedSpotTeam={paymentMode === "rotating" ? sharedSpotTeam : undefined}
+    rosterTeam={paymentMode === "rotating" ? sharedSpotTeam : rosterTeam}
+    lineupSize={3}
     onEditBowler={callbacks.onEditBowler}
     onRemoveBowler={callbacks.onRemoveBowler}
   /></QueryClientProvider>);
@@ -115,6 +94,8 @@ function renderRosterWithThreeMainsAndVacancy() {
     teamId={9}
     leagueId={1}
     canManage
+    rosterTeam={vacancyTeam}
+    lineupSize={4}
   /></QueryClientProvider>);
 }
 
@@ -122,14 +103,12 @@ afterEach(() => {
   apiRequestMock.mockReset();
   queryClientMock.invalidateQueries.mockReset();
   toastMock.mockReset();
+  rosterTeam = savedTeam();
   vi.unstubAllGlobals();
 });
 
 describe("Team roster", () => {
-  const stubRoster = (response: unknown) => vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(response), { status: 200, headers: { "content-type": "application/json" } })));
-
   it("shows only the roster: no weekly payment override, team policy, or rotating controls", async () => {
-    stubRoster(rosterResponse);
     renderRoster("fixed");
 
     await waitFor(() => expect(screen.getByLabelText("Role Main One")).toHaveValue("regular"));
@@ -141,7 +120,6 @@ describe("Team roster", () => {
   });
 
   it("labels members as Regular or Sub by whether they hold a lineup spot", async () => {
-    stubRoster(vacantRosterResponse);
     renderRosterWithThreeMainsAndVacancy();
 
     await waitFor(() => expect(screen.getByLabelText("Lineup spot 4")).toHaveValue("vacant"));
@@ -153,7 +131,7 @@ describe("Team roster", () => {
   });
 
   it("submits only the strict roster slot request fields and keeps the saved team policy", async () => {
-    stubRoster({ data: { ...rosterResponse.data, teams: [{ ...rosterResponse.data.teams[0], policy: "sub_pays_full" }] } });
+    rosterTeam = savedTeam("sub_pays_full");
     apiRequestMock.mockResolvedValue(new Response(null, { status: 200 }));
     renderRoster();
 
@@ -186,7 +164,6 @@ describe("Team roster", () => {
   });
 
   it("moves a regular to sub and a sub into the freed lineup spot", async () => {
-    stubRoster(rosterResponse);
     apiRequestMock.mockResolvedValue(new Response(null, { status: 200 }));
     renderRoster();
 
@@ -222,9 +199,12 @@ describe("Team roster", () => {
     expect(onRemove).toHaveBeenCalledWith({ bowlerId: 10, name: "Main One" });
     expect(fetchMock).not.toHaveBeenCalled();
 
-    // A team with a shared spot has no open spot to promote a sub into.
+    // A bowler who shares the shared spot cannot also take a regular spot.
+    fireEvent.change(screen.getByLabelText("Role Main One"), { target: { value: "sub" } });
     fireEvent.change(screen.getByLabelText("Role Sub One"), { target: { value: "regular" } });
-    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ title: "No open lineup spot" }));
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ title: "This bowler shares the shared spot" }));
+    expect(screen.getByLabelText("Role Sub One")).toHaveValue("sub");
+    fireEvent.change(screen.getByLabelText("Role Main One"), { target: { value: "regular" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Save roster" }));
     await waitFor(() => expect(apiRequestMock).toHaveBeenCalledOnce());
