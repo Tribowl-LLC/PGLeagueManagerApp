@@ -1,9 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Bowler, BowlerLeague, League, BowlerWithAccount } from "@shared/schema";
-import { occurrenceResponsibilityInputSchema } from "@shared/roster-payment-contract";
 
 const apiRequestMock = vi.hoisted(() => vi.fn());
 const queryClientMock = vi.hoisted(() => ({
@@ -24,56 +22,44 @@ vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: toastMock }) }))
 
 import { TeamViewBowlersTable } from "@/pages/team-view-page/bowlers-table";
 
-const rosterResponse = {
-  data: {
-    payingLineupSize: 3,
-    ready: true,
-    lineageFee: null,
-    prizeFundFee: null,
-    substituteAccess: "team_only",
-    substitutePaymentRegime: "team_choice",
-    substituteBowlerOptions: [
-      { id: 11, name: "Sub One", teamId: 9 },
-      { id: 12, name: "Sub Two", teamId: 9 },
-    ],
-    occurrences: [
-      { id: "00000000-0000-4000-8000-000000000001", startAt: "2038-01-03 03:00:00+00", status: "scheduled" },
-      { id: "00000000-0000-4000-8000-000000000002", startAt: "2038-01-10T03:00:00.000Z", status: "scheduled" },
-    ],
-    occurrenceResponsibilities: [
-      { occurrenceId: "00000000-0000-4000-8000-000000000001", teamId: 9, slotIndex: 0, positionIndex: 0, responsibilityKind: "substitute", mainBowlerId: 10, substituteBowlerId: 11, payerBowlerId: 10, policy: "main_pays_full", amountMinor: 2000, lineageAmountMinor: null, prizeFundAmountMinor: null },
-      { occurrenceId: "00000000-0000-4000-8000-000000000002", teamId: 9, slotIndex: 1, positionIndex: 1, responsibilityKind: "substitute", mainBowlerId: 13, substituteBowlerId: 12, payerBowlerId: 12, policy: "sub_pays_full", amountMinor: 2000, lineageAmountMinor: null, prizeFundAmountMinor: null },
-    ],
-    teams: [{ id: 9, policy: "main_pays_full", slots: [
-      { id: "slot-1", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 3, slotIndex: 0, occupant: "main", mainBowlerId: 10, currentRevision: 1 },
-      { id: "slot-2", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 3, slotIndex: 1, occupant: "main", mainBowlerId: 13, currentRevision: 1 },
-      { id: "slot-3", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 3, slotIndex: 2, occupant: "vacant", mainBowlerId: null, currentRevision: 1 },
-    ] }],
-  },
-};
-
-const vacantRosterResponse = {
-  data: {
-    ...rosterResponse.data,
-    payingLineupSize: 4,
-    ready: false,
-    occurrences: [],
-    occurrenceResponsibilities: [],
-    teams: [{ id: 9, policy: "main_pays_full", slots: [
-      { id: "slot-main-1", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 4, slotIndex: 0, occupant: "main", mainBowlerId: 10, currentRevision: 1 },
-      { id: "slot-main-2", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 4, slotIndex: 1, occupant: "main", mainBowlerId: 13, currentRevision: 1 },
-      { id: "slot-main-3", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 4, slotIndex: 2, occupant: "main", mainBowlerId: 14, currentRevision: 1 },
-      { id: "slot-vacant", organizationId: 1, leagueId: 1, teamId: 9, lineupSize: 4, slotIndex: 3, occupant: "vacant", mainBowlerId: null, currentRevision: 1 },
-    ] }],
-  },
-};
-
 // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 const league = { id: 1, weeklyFee: 2000, timezone: "America/Los_Angeles" } as League;
 // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 const bowler = (id: number, name: string): BowlerWithAccount => ({ id, name, active: true, hasAccount: true } as BowlerWithAccount);
 // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 const bowlerLeague = (id: number, bowlerId: number): BowlerLeague => ({ id, bowlerId, leagueId: 1, teamId: 9, active: true } as BowlerLeague);
+
+const sharedSpotTeam = {
+  policy: "main_pays_full" as const,
+  eligibleRotatingBowlerIds: [12, 11],
+  slots: [
+    { teamId: 9, slotIndex: 0, occupant: "main" as const, mainBowlerId: 10, currentRevision: 1 },
+    { teamId: 9, slotIndex: 1, occupant: "main" as const, mainBowlerId: 13, currentRevision: 1 },
+    { teamId: 9, slotIndex: 2, occupant: "rotating" as const, mainBowlerId: null, currentRevision: 1 },
+  ],
+};
+
+type RosterTeam = { policy: "main_pays_full" | "sub_pays_full" | "special_split"; eligibleRotatingBowlerIds: number[]; slots: Array<{ teamId: number; slotIndex: number; occupant: "main" | "vacant" | "unassigned" | "rotating"; mainBowlerId: number | null; currentRevision: number }> };
+const savedTeam = (policy: RosterTeam["policy"] = "main_pays_full"): RosterTeam => ({
+  policy,
+  eligibleRotatingBowlerIds: [],
+  slots: [
+    { teamId: 9, slotIndex: 0, occupant: "main", mainBowlerId: 10, currentRevision: 1 },
+    { teamId: 9, slotIndex: 1, occupant: "main", mainBowlerId: 13, currentRevision: 1 },
+    { teamId: 9, slotIndex: 2, occupant: "vacant", mainBowlerId: null, currentRevision: 1 },
+  ],
+});
+const vacancyTeam: RosterTeam = {
+  policy: "main_pays_full",
+  eligibleRotatingBowlerIds: [],
+  slots: [
+    { teamId: 9, slotIndex: 0, occupant: "main", mainBowlerId: 10, currentRevision: 1 },
+    { teamId: 9, slotIndex: 1, occupant: "main", mainBowlerId: 13, currentRevision: 1 },
+    { teamId: 9, slotIndex: 2, occupant: "main", mainBowlerId: 14, currentRevision: 1 },
+    { teamId: 9, slotIndex: 3, occupant: "vacant", mainBowlerId: null, currentRevision: 1 },
+  ],
+};
+let rosterTeam = savedTeam();
 
 function renderRoster(
   paymentMode: "fixed" | "rotating" | "unavailable" = "fixed",
@@ -90,6 +76,8 @@ function renderRoster(
     leagueId={1}
     canManage
     paymentMode={paymentMode}
+    rosterTeam={paymentMode === "rotating" ? sharedSpotTeam : rosterTeam}
+    lineupSize={3}
     onEditBowler={callbacks.onEditBowler}
     onRemoveBowler={callbacks.onRemoveBowler}
   /></QueryClientProvider>);
@@ -106,6 +94,8 @@ function renderRosterWithThreeMainsAndVacancy() {
     teamId={9}
     leagueId={1}
     canManage
+    rosterTeam={vacancyTeam}
+    lineupSize={4}
   /></QueryClientProvider>);
 }
 
@@ -113,68 +103,50 @@ afterEach(() => {
   apiRequestMock.mockReset();
   queryClientMock.invalidateQueries.mockReset();
   toastMock.mockReset();
+  rosterTeam = savedTeam();
   vi.unstubAllGlobals();
 });
 
-describe("Team Rosters payment responsibility surface", () => {
-  it("keeps fixed teams on the existing v1 role and occurrence override controls", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(rosterResponse), { status: 200, headers: { "content-type": "application/json" } })));
+describe("Team roster", () => {
+  it("shows only the roster: no weekly payment override, team policy, or rotating controls", async () => {
     renderRoster("fixed");
 
-    expect(await screen.findByText("Payment override for one occurrence")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Role Main One")).toHaveValue("regular"));
     expect(screen.getByRole("button", { name: "Save roster" })).toBeInTheDocument();
-    expect(screen.getAllByLabelText(/Payer role /).length).toBeGreaterThan(0);
-    expect(screen.queryByText("Rotating team payments")).not.toBeInTheDocument();
-  });
-
-  it("keeps rotating teams out of the v1 fixed save and override form while retaining member actions", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    const onEdit = vi.fn();
-    const onRemove = vi.fn();
-    renderRoster("rotating", { onEditBowler: onEdit, onRemoveBowler: onRemove });
-    expect(screen.queryByRole("button", { name: "Save roster" })).not.toBeInTheDocument();
     expect(screen.queryByText("Payment override for one occurrence")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Main One" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Edit Main One" }));
-    fireEvent.click(screen.getByRole("button", { name: "Remove Main One" }));
-    expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 10, name: "Main One" }));
-    expect(onRemove).toHaveBeenCalledWith({ bowlerId: 10, name: "Main One" });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Team payment policy")).not.toBeInTheDocument();
+    expect(screen.queryByText("Rotating team payments")).not.toBeInTheDocument();
+    expect(screen.queryByText("Weekly Fee")).not.toBeInTheDocument();
   });
 
-  it("edits one selected occurrence and hydrates overrides independently by occurrence and slot", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(rosterResponse), { status: 200, headers: { "content-type": "application/json" } })));
-    renderRoster();
+  it("labels members as Regular or Sub by whether they hold a lineup spot", async () => {
+    renderRosterWithThreeMainsAndVacancy();
 
-    expect(await screen.findByText("Payment override for one occurrence")).toBeInTheDocument();
-    expect(screen.getByText("Saved non-default overrides: 2")).toBeInTheDocument();
-    expect(screen.getAllByLabelText(/Override kind/)).toHaveLength(3);
-    expect(screen.getByText("Sub One · $20.00")).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText("Override occurrence"), { target: { value: "00000000-0000-4000-8000-000000000002" } });
-    await waitFor(() => expect(screen.getByText("Sub Two · $20.00")).toBeInTheDocument());
-    expect(screen.getAllByLabelText(/Override kind/)).toHaveLength(3);
-    expect(screen.queryByText("Sub One · $20.00")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Lineup spot 4")).toHaveValue("vacant"));
+    const roles = screen.getAllByRole("combobox")
+      .filter((element) => (element.getAttribute("aria-label") ?? "").startsWith("Role "))
+      .map((element) => (element as HTMLSelectElement).value)
+      .sort();
+    expect(roles).toEqual(["regular", "regular", "regular", "sub", "sub", "sub"]);
   });
 
-  it("submits only the strict roster slot request fields when read data contains persistence metadata", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(rosterResponse), { status: 200, headers: { "content-type": "application/json" } })));
+  it("submits only the strict roster slot request fields and keeps the saved team policy", async () => {
+    rosterTeam = savedTeam("sub_pays_full");
     apiRequestMock.mockResolvedValue(new Response(null, { status: 200 }));
     renderRoster();
 
-    await screen.findByText("Payment override for one occurrence");
     await waitFor(() => {
-      expect(screen.getByLabelText("Payer role Main One")).toHaveValue("main");
-      expect(screen.getByLabelText("Payer role Main Two")).toHaveValue("main");
-      expect(screen.getByLabelText("Payer role position 3")).toHaveValue("vacant");
+      expect(screen.getByLabelText("Role Main One")).toHaveValue("regular");
+      expect(screen.getByLabelText("Role Main Two")).toHaveValue("regular");
+      expect(screen.getByLabelText("Lineup spot 3")).toHaveValue("vacant");
     });
     fireEvent.click(screen.getByRole("button", { name: "Save roster" }));
 
     await waitFor(() => expect(apiRequestMock).toHaveBeenCalledOnce());
-    const [url, method, body] = apiRequestMock.mock.calls[0] as [string, string, { slots: Array<Record<string, unknown>> }];
+    const [url, method, body] = apiRequestMock.mock.calls[0] as [string, string, { policy: string; slots: Array<Record<string, unknown>> }];
     expect(url).toBe("/api/financials/leagues/1/roster-payment-responsibility/1/teams/9");
     expect(method).toBe("POST");
+    expect(body.policy).toBe("sub_pays_full");
     expect(body.slots).toEqual([
       { slotIndex: 0, occupant: "main", mainBowlerId: 10 },
       { slotIndex: 1, occupant: "main", mainBowlerId: 13 },
@@ -191,97 +163,59 @@ describe("Team Rosters payment responsibility surface", () => {
     expect(organizationDuePredicate?.({ queryKey: ["/api/other"] })).toBe(false);
   });
 
-  it("saves a substitute with the server canonical fingerprint and normalized DB timestamp", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(rosterResponse), { status: 200, headers: { "content-type": "application/json" } })));
-    apiRequestMock.mockResolvedValue(new Response(null, { status: 201 }));
+  it("moves a regular to sub and a sub into the freed lineup spot", async () => {
+    apiRequestMock.mockResolvedValue(new Response(null, { status: 200 }));
     renderRoster();
 
-    const occurrenceId = "00000000-0000-4000-8000-000000000001";
-    await screen.findByText("Payment override for one occurrence");
-    fireEvent.change(screen.getByLabelText(`Override bowler ${occurrenceId}:0`), { target: { value: "12" } });
-    fireEvent.click(screen.getAllByRole("button", { name: /^Save$/ })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Role Main One")).toHaveValue("regular"));
+    fireEvent.change(screen.getByLabelText("Role Main One"), { target: { value: "sub" } });
+    fireEvent.change(screen.getByLabelText("Role Sub One"), { target: { value: "regular" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save roster" }));
 
     await waitFor(() => expect(apiRequestMock).toHaveBeenCalledOnce());
-    const [url, method, body] = apiRequestMock.mock.calls[0] as [string, string, {
-      commandKey: string;
-      requestFingerprint: string;
-      responsibilities: Array<Record<string, unknown>>;
-    }];
-    expect(url).toBe("/api/financials/leagues/1/roster-payment-responsibility/1/occurrences");
-    expect(method).toBe("POST");
-    expect(body.commandKey).toEqual(expect.any(String));
-    expect(body.responsibilities).toHaveLength(1);
-
-    const responsibility = body.responsibilities[0];
-    expect(occurrenceResponsibilityInputSchema.safeParse(responsibility).success).toBe(true);
-    expect(responsibility).toMatchObject({
-      occurrenceId,
-      teamId: 9,
-      slotIndex: 0,
-      positionIndex: 0,
-      kind: "substitute",
-      mainBowlerId: 10,
-      substituteBowlerId: 12,
-      payerBowlerId: 10,
-      policy: "main_pays_full",
-      amountMinor: 2000,
-      lineageAmountMinor: null,
-      prizeFundAmountMinor: null,
-      dueAt: "2038-01-03T03:00:00.000Z",
-      pastDueAt: "2038-01-03T06:00:00.000Z",
-    });
-
-    // This projection is intentionally written in the test instead of
-    // calling the shared helper: it is the wire contract that the server
-    // hashes, including field order and explicit null identities.
-    const canonicalProjection = JSON.stringify([{
-      occurrenceId,
-      teamId: 9,
-      slotIndex: 0,
-      positionIndex: 0,
-      kind: "substitute",
-      mainBowlerId: 10,
-      substituteBowlerId: 12,
-      payerBowlerId: 10,
-      policy: "main_pays_full",
-    }]);
-    const expectedFingerprint = `lvresponsibility:v1:${createHash("sha256").update(canonicalProjection).digest("hex")}`;
-    expect(body.requestFingerprint).toBe(expectedFingerprint);
+    const body = apiRequestMock.mock.calls[0]?.[2] as { slots: Array<Record<string, unknown>> };
+    expect(body.slots).toEqual([
+      { slotIndex: 0, occupant: "main", mainBowlerId: 11 },
+      { slotIndex: 1, occupant: "main", mainBowlerId: 13 },
+      { slotIndex: 2, occupant: "vacant", mainBowlerId: null },
+    ]);
   });
 
-  it("directs an organization admin to Manage Payments when a saved-week override is blocked", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(rosterResponse), { status: 200, headers: { "content-type": "application/json" } })));
-    apiRequestMock.mockRejectedValue(Object.assign(
-      new Error("This league's weekly responsibility and receipt corrections are managed in Manage Payments."),
-      { code: "MANAGE_PAYMENTS_REQUIRED" },
-    ));
-    renderRoster();
+  it("keeps a shared spot unchanged while the regular spots stay editable", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    apiRequestMock.mockResolvedValue(new Response(null, { status: 200 }));
+    const onEdit = vi.fn();
+    const onRemove = vi.fn();
+    renderRoster("rotating", { onEditBowler: onEdit, onRemoveBowler: onRemove });
 
-    const occurrenceId = "00000000-0000-4000-8000-000000000001";
-    await screen.findByText("Payment override for one occurrence");
-    fireEvent.change(screen.getByLabelText(`Override bowler ${occurrenceId}:0`), { target: { value: "12" } });
-    fireEvent.click(screen.getAllByRole("button", { name: /^Save$/ })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Role Main One")).toHaveValue("regular"));
+    expect(screen.getByText("Shared spot")).toBeInTheDocument();
+    expect(screen.getByText("Assigned weekly in Manage Payments")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Lineup spot 3")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Main One" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Main One" }));
+    expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 10, name: "Main One" }));
+    expect(onRemove).toHaveBeenCalledWith({ bowlerId: 10, name: "Main One" });
+    expect(fetchMock).not.toHaveBeenCalled();
 
-    await waitFor(() => expect(toastMock).toHaveBeenCalledOnce());
-    const toast = toastMock.mock.calls[0]?.[0] as { description?: React.ReactNode };
-    const description = toast.description as React.ReactElement<{ children?: React.ReactNode }>;
-    const children = description.props.children as React.ReactNode[];
-    expect(children[2]).toMatchObject({ props: { href: "/manage-payments", children: "Open Manage Payments" } });
-  });
+    // A bowler who shares the shared spot cannot also take a regular spot.
+    fireEvent.change(screen.getByLabelText("Role Main One"), { target: { value: "sub" } });
+    fireEvent.change(screen.getByLabelText("Role Sub One"), { target: { value: "regular" } });
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ title: "This bowler shares the shared spot" }));
+    expect(screen.getByLabelText("Role Sub One")).toHaveValue("sub");
+    fireEvent.change(screen.getByLabelText("Role Main One"), { target: { value: "regular" } });
 
-  it("renders an existing VACANT slot beside three Main and three Substitute members", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(vacantRosterResponse), { status: 200, headers: { "content-type": "application/json" } })));
-    renderRosterWithThreeMainsAndVacancy();
-
-    await screen.findByText("VACANT · no obligation");
-    expect(screen.getAllByRole("cell").some((cell) => cell.textContent?.trim() === "VACANT")).toBe(true);
-    expect(screen.getByText("VACANT · no obligation")).toBeInTheDocument();
-    const memberRoleSelects = screen.getAllByRole("combobox").filter((element) => {
-      const label = element.getAttribute("aria-label") ?? "";
-      return label.startsWith("Payer role ") && !label.startsWith("Payer role position");
-    });
-    expect(memberRoleSelects.map((element) => (element as HTMLSelectElement).value).sort()).toEqual([
-      "main", "main", "main", "substitute", "substitute", "substitute",
+    fireEvent.click(screen.getByRole("button", { name: "Save roster" }));
+    await waitFor(() => expect(apiRequestMock).toHaveBeenCalledOnce());
+    const [url, , body] = apiRequestMock.mock.calls[0] as [string, string, { requestFingerprint: string; eligibleRotatingBowlerIds: number[]; slots: Array<Record<string, unknown>> }];
+    expect(url).toBe("/api/financials/leagues/1/roster-payment-responsibility/2/teams/9");
+    expect(body.requestFingerprint).toMatch(/^lvroster:v2:[0-9a-f]{64}$/);
+    expect(body.eligibleRotatingBowlerIds).toEqual([11, 12]);
+    expect(body.slots).toEqual([
+      { slotIndex: 0, occupant: "main", mainBowlerId: 10 },
+      { slotIndex: 1, occupant: "main", mainBowlerId: 13 },
+      { slotIndex: 2, occupant: "rotating", mainBowlerId: null },
     ]);
   });
 });

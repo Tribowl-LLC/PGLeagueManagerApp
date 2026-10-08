@@ -39,9 +39,10 @@ current and future weeks are forecasts. See
 [`manage-payments-implementation.md`](manage-payments-implementation.md).
 
 Payment managers review payment records and reports. They do not record
-payments, with one retiring exception: while a team still has a rotating slot,
-its Rotating team payments panel lets a payment manager record cash and check
-payments for that team. The exception ends when the panel is removed.
+payments.
+
+The team page shows the roster only: who is on the team and which members hold
+a lineup spot. It has no payment controls.
 
 ## How a bowler pays
 
@@ -94,8 +95,10 @@ retired code and its documentation are gone.
 | Restoring an archived league | Requires account-ledger adoption. |
 | Server-proven paid in full and nothing due | Current. The participants response carries `holdsLineupSpot`, `seasonPaidInFull`, and `noPaymentDue`. |
 | Subs paying by weeks on the Pay page | Not built. Planned for weekly leagues: weeks priced at the league weekly fee, capped at the weeks left in the season, held until staff assign a week. |
-| Rotating slots, rotation pools, weekly rotating assignments, rotating credit, the Rotating team payments panel, and the rotating credit card on the Pay page | Retiring. Still in the code and schema. Remove only after every team with a rotating slot has been converted. |
-| Per-week substitute and split overrides on a slot | Retiring. Still in the code. The worksheet's payer and fee component replace them. |
+| Rotating team payments panel on the team page | Removed. No screen creates a rotating slot, changes a rotation pool, or records a rotating assignment. The server endpoints behind it remain and are to be removed with the rest of the rotating code. |
+| Rotating slots, rotation pools, weekly rotating assignments, rotating credit, and the rotating credit card on the Pay page | Retiring. Still in the code and schema. One team still has a rotating slot; the server refuses to turn off a rotating slot that has assignment history, so the team page shows it as a shared spot and saves it back unchanged. Remove the code only after that slot is converted or its season ends. |
+| Per-week substitute and split overrides on a slot | Retiring. The team page controls are removed; the server endpoints remain. The worksheet's payer and fee component replace them. |
+| Team payment policy (main pays full, substitute pays full, split) | Retiring. The team page no longer edits it and saves the stored value back unchanged. |
 | Legacy V3 payment endpoints (`interactive-payment-participants/3`, `-quote/3`, `-charge/3`) | Live compatibility surface. The web client no longer calls them, but the server still serves them and will take a V3 card charge for a league without account-ledger adoption. Treat them as payment code, not history. Retiring them needs an explicit contract change. |
 
 Schema and migration history is never rewritten. Retired tables and their

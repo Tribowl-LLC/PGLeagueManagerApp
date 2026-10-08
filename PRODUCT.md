@@ -26,9 +26,7 @@ locations and adult leagues.
   seasons, teams, bowlers, users, communications, and integrations.
 - **Payment managers** review payment records and reporting within their
   assigned organization and location. Recording payments is an organization
-  administrator action in Manage Payments; the retiring Rotating team payments
-  panel is the one remaining place a payment manager can record cash or
-  checks.
+  administrator action in Manage Payments.
 - **Bowlers and ordinary users** register, establish an account, access the
   leagues connected to their bowler profile, make payments, view payment
   history, and manage their account profile.
