@@ -502,7 +502,6 @@
 @utility familiar-payment-review { --lv-familiar-pay-component: 1; }
 @utility familiar-rotating-card { --lv-familiar-pay-component: 1; }
 @utility familiar-rotating-checkout { --lv-familiar-pay-component: 1; }
-@utility familiar-rotating-one-time-card { --lv-familiar-pay-component: 1; }
 @utility is-open { --lv-familiar-pay-component: 1; }
 @utility familiar-bowler-pay-header { --lv-familiar-pay-component: 1; }
 @utility familiar-autopay-section { --lv-familiar-pay-component: 1; }
@@ -555,7 +554,6 @@
 @utility familiar-upfront-recipient-row { --lv-familiar-pay-component: 1; }
 @utility familiar-upfront-recipient-summary { --lv-familiar-pay-component: 1; }
 @utility familiar-primary-payment-total { --lv-familiar-pay-component: 1; }
-@utility familiar-bowler-pay-page-rotating { --lv-familiar-pay-component: 1; }
 @utility familiar-pay-context-rail { --lv-familiar-pay-component: 1; }
 @utility familiar-payment-details-column { --lv-familiar-pay-component: 1; }
 @utility familiar-payment-method-column { --lv-familiar-pay-component: 1; }
