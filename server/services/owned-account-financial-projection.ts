@@ -4,7 +4,6 @@ import {
   canonicalCollectionGroups,
   leagueOccurrenceBillingTerms,
   leagueOccurrences,
-  weeklyPaymentWeekConfirmations,
 } from "@shared/schema";
 import {
   FINANCIAL_ACCOUNT_PROJECTION_CONTRACT,
@@ -17,16 +16,13 @@ import type { PaymentOperationTransaction } from "../storage/payment-operations.
 import { comparePublishedCollectionOrder, type FifoPaymentCandidate } from "./automatic-fifo-allocation.js";
 import { confirmedPastDueMinor } from "./account-payment-funding-targets.js";
 import {
-  readConfirmedOwnedObligationsInTransaction,
-  readGenericFundingAvailabilityInTransaction,
-  readOwnedAccountBalancesInTransaction,
   readOwnedLedgerAdoptionInTransaction,
+  readOwnedPaymentLedgerReadSnapshotInTransaction,
   assertOwnedPaymentLedgerReadSnapshot,
   type OwnedConfirmedObligation,
   type OwnedPaymentLedgerReadSnapshot,
 } from "./owned-payment-ledger.js";
 import type { OwnedAccountBalance } from "./owned-payment-ledger.js";
-import { readRotatingCreditFundingBalancesInTransaction } from "./rotating-credit-applications.js";
 
 export interface OwnedAccountProjectionRowInput {
   obligationId: string;
@@ -366,46 +362,23 @@ export async function readOwnedAccountFinancialProjectionInTransaction(
   tx: PaymentOperationTransaction,
   input: OwnedAccountProjectionInput,
 ): Promise<OwnedAccountProjectionResult | null> {
-  const ledgerReadSnapshot = input.ledgerReadSnapshot;
-  if (ledgerReadSnapshot) assertOwnedPaymentLedgerReadSnapshot(tx, input, ledgerReadSnapshot);
-  const adoption = ledgerReadSnapshot?.adoption ?? await readOwnedLedgerAdoptionInTransaction(tx, input);
+  if (input.ledgerReadSnapshot) assertOwnedPaymentLedgerReadSnapshot(tx, input, input.ledgerReadSnapshot);
+  const adoption = input.ledgerReadSnapshot?.adoption ?? await readOwnedLedgerAdoptionInTransaction(tx, input);
   if (!adoption) return null;
   // The caller prepares all canonical rows before this read. Read league-wide
-  // ledger evidence in bounded batches so the shared account budget is
-  // complete; only the response projection is bowler-scoped below.
-  const ledgerScope = { organizationId: input.organizationId, leagueId: input.leagueId };
-  const [confirmedDebts, balances, genericLots, confirmedOccurrenceIds] = ledgerReadSnapshot
-    ? [
-      ledgerReadSnapshot.confirmedObligations,
-      ledgerReadSnapshot.balances,
-      ledgerReadSnapshot.genericFundingLots,
-      ledgerReadSnapshot.confirmedOccurrenceIds,
-    ] as const
-    : await Promise.all([
-      readConfirmedOwnedObligationsInTransaction(tx, ledgerScope),
-      readOwnedAccountBalancesInTransaction(tx, ledgerScope),
-      readGenericFundingAvailabilityInTransaction(tx, ledgerScope),
-      tx.select({ occurrenceId: weeklyPaymentWeekConfirmations.occurrenceId })
-        .from(weeklyPaymentWeekConfirmations)
-        .where(and(
-          eq(weeklyPaymentWeekConfirmations.organizationId, input.organizationId),
-          eq(weeklyPaymentWeekConfirmations.leagueId, input.leagueId),
-        )),
-    ]).then(([debts, accountBalances, fundingLots, confirmationRows]) => [
-      debts,
-      accountBalances,
-      fundingLots,
-      new Set(confirmationRows.map((row) => row.occurrenceId)),
-    ] as const);
-  const accountOwnerIds = [...new Set([
-    ...balances.keys(),
-    ...input.rows.flatMap((row) => row.effectiveDebtorBowlerId === null ? [] : [row.effectiveDebtorBowlerId]),
-  ])];
-  const rotatingLots = ledgerReadSnapshot?.rotatingFundingLots ?? (accountOwnerIds.length === 0 ? [] : await readRotatingCreditFundingBalancesInTransaction(tx, {
+  // ledger evidence once so the shared account budget is complete; only the
+  // response projection is bowler-scoped below. A caller without its own
+  // snapshot gets one loaded here instead of separate debt, balance, and
+  // funding reads that each repeated the same league-wide evidence queries.
+  const ledgerReadSnapshot = input.ledgerReadSnapshot ?? await readOwnedPaymentLedgerReadSnapshotInTransaction(tx, {
     organizationId: input.organizationId,
     leagueId: input.leagueId,
-    bowlerIds: accountOwnerIds,
-  }));
+  }, adoption);
+  const confirmedDebts = ledgerReadSnapshot.confirmedObligations;
+  const balances = ledgerReadSnapshot.balances;
+  const genericLots = ledgerReadSnapshot.genericFundingLots;
+  const confirmedOccurrenceIds = ledgerReadSnapshot.confirmedOccurrenceIds;
+  const rotatingLots = ledgerReadSnapshot.rotatingFundingLots;
   const amountPaidByBowler = new Map<number, number>();
   const sourceReviewBowlerIds = new Set<number>();
   for (const lot of genericLots) {

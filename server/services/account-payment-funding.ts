@@ -44,6 +44,7 @@ import { confirmedPastDueMinor as projectConfirmedPastDueMinor, effectiveCollect
 import {
   readOwnedAccountBalancesInTransaction,
   readOwnedLedgerAdoptionInTransaction,
+  readOwnedPaymentLedgerReadSnapshotInTransaction,
   readConfirmedOwnedObligationsInTransaction,
 } from "./owned-payment-ledger.js";
 import { prepareAccountPaymentOperation } from "./account-payment-operation-preparation.js";
@@ -292,15 +293,24 @@ export function forecastProjection(input: {
   };
 }
 
+/**
+ * Display reads and standalone quotes do not take the league lock: one
+ * repeatable-read snapshot already gives them a consistent view, and holding
+ * the exclusive lock made every payer in a league wait on each other's page
+ * loads. A charge never trusts these results; it recomputes the quote under
+ * the league lock and rejects a stale fingerprint.
+ */
+const ACCOUNT_CONTEXT_SNAPSHOT_READ = { isolationLevel: "repeatable read", accessMode: "read only" } as const;
+
 async function accountContextInTransaction(
   tx: PaymentOperationTransaction,
   input: { organizationId: number; leagueId: number; payerBowlerId: number },
-  options: { lock?: boolean; now?: string } = {},
+  options: { lock?: boolean; now?: string; snapshotRead?: boolean } = {},
 ): Promise<AccountContext> {
-  if (options.lock !== false) await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+  if (options.lock !== false && !options.snapshotRead) await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
   const now = options.now ?? await transactionNow(tx);
   const adoption = await readOwnedLedgerAdoptionInTransaction(tx, input);
-  const resolved = await resolveParticipantsInTransaction(tx, { ...input, now });
+  const resolved = await resolveParticipantsInTransaction(tx, { ...input, now, lockRows: !options.snapshotRead });
   const base = {
     contractVersion: "interactive-payment-participants/4" as const,
     organizationId: input.organizationId,
@@ -317,9 +327,13 @@ async function accountContextInTransaction(
   }
 
   const recipientIds = resolved.participants.map((participant) => participant.bowlerId);
+  // Load the league's ledger evidence once; reading debts and balances
+  // separately repeated the same evidence queries for each.
+  const ledgerScope = { organizationId: input.organizationId, leagueId: input.leagueId };
+  const ledger = await readOwnedPaymentLedgerReadSnapshotInTransaction(tx, ledgerScope, adoption);
   const [debts, balances] = await Promise.all([
-    readConfirmedOwnedObligationsInTransaction(tx, { ...input, bowlerIds: recipientIds }),
-    readOwnedAccountBalancesInTransaction(tx, { ...input, bowlerIds: recipientIds }),
+    readConfirmedOwnedObligationsInTransaction(tx, { ...ledgerScope, bowlerIds: recipientIds }, ledger),
+    readOwnedAccountBalancesInTransaction(tx, { ...ledgerScope, bowlerIds: recipientIds }, ledger),
   ]);
   const candidatesByOwner = await addConfirmedLedgerCandidates(tx, input, resolved.participants, debts);
   const debtByOwner = new Map<number, number>();
@@ -398,7 +412,10 @@ export async function readInteractivePaymentParticipantsV4(input: {
   leagueId: number;
   payerBowlerId: number;
 }): Promise<AccountPaymentParticipantsResponseV4> {
-  return db.transaction(async (tx) => (await accountContextInTransaction(tx, input)).response);
+  return db.transaction(
+    async (tx) => (await accountContextInTransaction(tx, input, { snapshotRead: true })).response,
+    ACCOUNT_CONTEXT_SNAPSHOT_READ,
+  );
 }
 
 function selectedCollectionTargets(
@@ -432,7 +449,7 @@ export async function quoteAccountPaymentFundingV4(input: {
 }): Promise<AccountPaymentFundingQuoteResponseV4> {
   assertRequestPayerMatches(input);
   const run = async (tx: PaymentOperationTransaction) => {
-    const context = await accountContextInTransaction(tx, input, { lock: !input.transaction });
+    const context = await accountContextInTransaction(tx, input, input.transaction ? { lock: false } : { snapshotRead: true });
     if (context.response.accountingMode !== "confirmed_account_v4") {
       throw new RosterPaymentError("ACCOUNT_PAYMENT_V4_REQUIRED", "This league uses legacy payment checkout", 409);
     }
@@ -480,7 +497,7 @@ export async function quoteAccountPaymentFundingV4(input: {
     });
     return quote;
   };
-  return input.transaction ? run(input.transaction) : db.transaction(run);
+  return input.transaction ? run(input.transaction) : db.transaction(run, ACCOUNT_CONTEXT_SNAPSHOT_READ);
 }
 
 export type AccountPaymentChargeResultV4 = {
