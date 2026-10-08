@@ -28,6 +28,7 @@ import {
   fireBowlersExternalResync,
 } from '../services/bowler-resync';
 import {
+  LeagueAccountLedgerNotAdoptedError,
   LeagueCanonicalScheduleLockedError,
   LeagueOccurrenceEvidenceExistsError,
   LeaguePaymentModeLockedError,
@@ -755,6 +756,14 @@ router.patch("/:id/restore", async (req: Request, res) => {
     fireLeagueBowlersExternalResync(id, req.user?.organizationId);
     sendSuccess(res, restored);
   } catch (error) {
+    if (error instanceof LeagueAccountLedgerNotAdoptedError) {
+      return sendError(
+        res,
+        'This league was archived before account payments and cannot be restored until it is moved to the account payment ledger.',
+        409,
+        'LEAGUE_ACCOUNT_LEDGER_REQUIRED',
+      );
+    }
     sendError(res, 'Failed to restore league');
   }
 });

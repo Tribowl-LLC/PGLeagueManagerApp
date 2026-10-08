@@ -91,9 +91,10 @@ const mockStorage = {
   deleteBowlerLeague: vi.fn(),
   createBowlerLeagueIfBowlerFree: vi.fn(),
 };
-const { LeagueEvidenceError, LeaguePaymentModeError } = vi.hoisted(() => ({
+const { LeagueEvidenceError, LeaguePaymentModeError, LeagueLedgerNotAdoptedError } = vi.hoisted(() => ({
   LeagueEvidenceError: class LeagueOccurrenceEvidenceExistsError extends Error {},
   LeaguePaymentModeError: class LeaguePaymentModeLockedError extends Error {},
+  LeagueLedgerNotAdoptedError: class LeagueAccountLedgerNotAdoptedError extends Error {},
 }));
 const { mockCreateLeagueWithCanonicalSetup, mockCreateNewSeasonWithCanonicalSetup, mockEditCanonicalLeagueSchedule, mockHasCompleteOperationalLeagueSchedule } = vi.hoisted(() => ({
   mockCreateLeagueWithCanonicalSetup: vi.fn(),
@@ -105,6 +106,7 @@ vi.mock('../../server/storage', () => ({ storage: mockStorage }));
 vi.mock('../../server/storage/leagues', () => ({
   LeagueOccurrenceEvidenceExistsError: LeagueEvidenceError,
   LeaguePaymentModeLockedError: LeaguePaymentModeError,
+  LeagueAccountLedgerNotAdoptedError: LeagueLedgerNotAdoptedError,
 }));
 vi.mock('../../server/services/league-setup-integration.js', () => ({
   LeagueSetupIntegrationError: class LeagueSetupIntegrationError extends Error {},
@@ -674,6 +676,17 @@ describe('PATCH /api/leagues/:id/restore → fires resync so bowlers return to S
     const [, , attrs] = mockSyncCustomerLeagueAttributes.mock.calls[0];
     expect(attrs.leagueName).toBe(league.name);
     expect(attrs.leagueSeason.length).toBeGreaterThan(0);
+  });
+
+  it('refuses to restore a league that never adopted the account ledger and does not resync', async () => {
+    const league = makeLeague({ active: false });
+    mockStorage.getLeague.mockResolvedValue(league);
+    mockStorage.restoreLeague.mockRejectedValue(new LeagueLedgerNotAdoptedError());
+
+    const res = await patch(`/api/leagues/${league.id}/restore`, {});
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: { code: 'LEAGUE_ACCOUNT_LEDGER_REQUIRED' } });
+    expect(mockSyncCustomerLeagueAttributes).not.toHaveBeenCalled();
   });
 });
 
