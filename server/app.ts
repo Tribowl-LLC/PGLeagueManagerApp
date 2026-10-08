@@ -202,9 +202,21 @@ export async function createApp(opts: CreateAppOptions = {}): Promise<CreatedApp
   // the explicit Phase 4A-1 ingest-only mode is configured.
   registerSquareWebhookReceiver(app);
   registerSendgridWebhookReceiver(app, { publicKey: env.SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY ?? '' });
-  app.use(singletonOrganizationContext);
   app.use(compression());
   app.use(securityHeaders);
+  // Fingerprinted build assets are public and identical for every caller, so
+  // serve them before business context, body parsing, and the session store.
+  // Otherwise each chunk a signed-in browser loads costs a session read and a
+  // user lookup. Entry documents and every other static path stay on the
+  // mount at the end of the chain, behind host validation.
+  if (!suppress && !isDev && opts.serveStaticFrontend !== true) {
+    app.use('/assets', express.static(path.join(process.cwd(), 'dist/public/assets'), {
+      maxAge: '1y',
+      immutable: true,
+      index: false,
+    }));
+  }
+  app.use(singletonOrganizationContext);
   app.use(['/set-password', '/api/auth/validate-invite', '/report-profile-claim', '/api/profile-claims/report'], (_req, res, next) => {
     res.set('Referrer-Policy', 'no-referrer');
     res.set('Cache-Control', 'no-store');
