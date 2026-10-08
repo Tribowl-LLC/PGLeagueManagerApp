@@ -28,7 +28,7 @@ import { canUserPayForBowler } from "../utils/bowler-payment-authz.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { createLogger } from "../logger.js";
 import { storage } from "../storage/index.js";
-import { adminWriteLimiter, paymentWriteLimiter } from "../middleware/rate-limit.js";
+import { adminWriteLimiter, paymentQuoteLimiter, paymentWriteLimiter } from "../middleware/rate-limit.js";
 import {
   correctCanonicalAllocation,
   deleteCanonicalCashPayment,
@@ -345,7 +345,7 @@ router.get("/leagues/:leagueId/interactive-payment-participants/3", async (req, 
   } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/interactive-payment-quote/3", paymentWriteLimiter, async (req, res) => {
+router.post("/leagues/:leagueId/interactive-payment-quote/3", paymentQuoteLimiter, async (req, res) => {
   const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user?.bowlerId) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = interactivePaymentQuoteRequestV3Schema.safeParse(req.body);
@@ -384,7 +384,7 @@ router.get("/leagues/:leagueId/interactive-payment-participants/4", async (req, 
   } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/interactive-payment-quote/4", paymentWriteLimiter, async (req, res) => {
+router.post("/leagues/:leagueId/interactive-payment-quote/4", paymentQuoteLimiter, async (req, res) => {
   const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = accountPaymentFundingQuoteRequestV4Schema.safeParse(req.body);
@@ -570,7 +570,7 @@ router.get("/leagues/:leagueId/canonical-due-past-due/3", async (req, res) => {
   try { return sendSuccess(res, await readCanonicalDuePastDueV3({ organizationId: league.organizationId, leagueId, bowlerId })); } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/interactive-obligation-quote/2", paymentWriteLimiter, async (req, res) => {
+router.post("/leagues/:leagueId/interactive-obligation-quote/2", paymentQuoteLimiter, async (req, res) => {
   const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = interactiveObligationQuoteRequestV2Schema.safeParse(req.body);
