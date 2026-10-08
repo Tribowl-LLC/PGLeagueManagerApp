@@ -164,6 +164,11 @@ describe("Team Rosters payment responsibility surface", () => {
     renderRoster();
 
     await screen.findByText("Payment override for one occurrence");
+    await waitFor(() => {
+      expect(screen.getByLabelText("Payer role Main One")).toHaveValue("main");
+      expect(screen.getByLabelText("Payer role Main Two")).toHaveValue("main");
+      expect(screen.getByLabelText("Payer role position 3")).toHaveValue("vacant");
+    });
     fireEvent.click(screen.getByRole("button", { name: "Save roster" }));
 
     await waitFor(() => expect(apiRequestMock).toHaveBeenCalledOnce());
