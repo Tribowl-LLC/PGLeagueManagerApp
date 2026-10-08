@@ -57,3 +57,16 @@ describe('Render liveness health check', () => {
     expect(livenessSource).not.toContain('testConnection');
   });
 });
+
+describe('Fingerprinted build assets', () => {
+  it('are served before business context, body parsing, and the session store', () => {
+    const assetsMount = appSource.indexOf("app.use('/assets', express.static(");
+    const tenantResolutionStart = appSource.indexOf('app.use(singletonOrganizationContext)');
+    const sessionStart = appSource.indexOf('await setupAuth(app)');
+    const securityHeadersStart = appSource.indexOf('app.use(securityHeaders)');
+
+    expect(assetsMount).toBeGreaterThan(securityHeadersStart);
+    expect(tenantResolutionStart).toBeGreaterThan(assetsMount);
+    expect(sessionStart).toBeGreaterThan(assetsMount);
+  });
+});

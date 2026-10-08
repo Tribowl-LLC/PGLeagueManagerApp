@@ -97,6 +97,7 @@ const UNIT_NO_DB = [
   'tests/unit/single-tenant-boundaries.test.ts',
   'tests/unit/single-tenant-config.test.ts',
   'tests/unit/single-tenant-context.test.ts',
+  'tests/unit/single-tenant-organization-pin.test.ts',
   'tests/unit/single-tenant-preflight.test.ts',
   'tests/unit/apple-pay-verification-file.test.ts',
   'tests/unit/score-requests.test.ts',
