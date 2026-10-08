@@ -1,10 +1,11 @@
 import { Switch, Route } from "wouter";
 import * as Sentry from "@sentry/react";
 import { isSessionExpiredError, queryClient, prefetchQueries, redirectToLoginForExpiredSession } from "./lib/queryClient";
+import { preloadBowlerScreens } from "./lib/bowler-screen-queries";
 import { logger } from "@/lib/logger";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
-import { lazy, Suspense, useEffect, FC, ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, FC, ReactNode } from "react";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ProtectedRoute, type RouteRequirement } from "@/components/protected-route";
 import { useLocation } from "wouter";
@@ -149,7 +150,9 @@ function Router() {
     Sentry.setTags(identity.tags);
   }, [userData?.data]);
 
+  const preloadedBowlerIdRef = useRef<number | null>(null);
   useEffect(() => {
+    if (!userData?.data) preloadedBowlerIdRef.current = null;
     if (userData?.data) {
       const user = userData.data;
       const isAdmin = user.role === 'system_admin' || user.role === 'org_admin';
@@ -157,6 +160,12 @@ function Router() {
         prefetchQueries('admin').catch((error) => logger.error('App', 'Failed to prefetch admin queries', error));
       } else if (user.bowlerId) {
         prefetchQueries('bowler').catch((error) => logger.error('App', 'Failed to prefetch bowler queries', error));
+        // Once per signed-in bowler: load the dashboard, Pay, and payment
+        // history data in the background so each opens from memory.
+        if (!user.mustChangePassword && preloadedBowlerIdRef.current !== user.bowlerId) {
+          preloadedBowlerIdRef.current = user.bowlerId;
+          preloadBowlerScreens(queryClient, user.bowlerId).catch((error) => logger.error('App', 'Failed to preload bowler screens', error));
+        }
       }
     }
   }, [userData]);

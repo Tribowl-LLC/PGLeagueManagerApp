@@ -1,10 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { User, ApiResponse, BowlerDetailsResponse } from "@shared/schema";
-import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
-import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
-import type { RotatingCreditBalanceWire } from "@shared/rotating-credit-contract";
-import { PageLoadingState } from "@/components/page-states";
+import type { User, ApiResponse } from "@shared/schema";
+import { BowlerScreenSkeleton } from "@/components/bowler-screen-skeleton";
 import { useLocation, useSearch } from "wouter";
 import { useSelectedLeague } from "@/hooks/use-selected-league";
 import { PaymentHistoryContent } from "./payment-history-page/payment-history-content";
@@ -15,7 +12,7 @@ import { NoLeaguesView } from "./payment-history-page/no-leagues-view";
 import { NoLeagueView } from "./payment-history-page/no-league-view";
 import { resolveInteractiveFinancialRead } from "@/lib/financial-read-contract";
 import { accountProjectionForBowler, countCanonicalPaidWeeks, deriveBowlerFinancials } from "@/lib/financial-utils";
-import { paymentHistoryFinancialQueryKey } from "@/lib/payment-history-financial-query";
+import { bowlerDetailsQueryOptions, paymentHistoryFinancialQueryOptions, paymentHistoryReportQueryOptions, rotatingCreditQueryOptions } from "@/lib/bowler-screen-queries";
 import { resolveRotatingCreditDisplayState } from "@/components/payment-status-section";
 import { rotatingPaidTotalMinor } from "@/lib/rotating-paid-total";
 import { filterBowlerLeaguesForActiveLeagues } from "@/lib/bowler-league-utils";
@@ -30,13 +27,8 @@ export default function PaymentHistoryPage() {
 
   const { data: currentUser, isLoading: loadingUser, error: userError } = useQuery<ApiResponse<User>>({ queryKey: ["/api/user"] });
   const bowlerId = currentUser?.data?.bowlerId;
-  const { data: detailsResponse, isLoading: loadingDetails, error: bowlerError } = useQuery<ApiResponse<BowlerDetailsResponse>>({
-    queryKey: [`/api/bowlers/${bowlerId}/details`],
-    queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/bowlers/${bowlerId}/details`, { credentials: "include", headers: { Accept: "application/json" }, signal });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error?.message || "Failed to fetch bowler details");
-      return response.json();
-    },
+  const { data: detailsResponse, isLoading: loadingDetails, error: bowlerError } = useQuery({
+    ...bowlerDetailsQueryOptions(bowlerId),
     enabled: !!bowlerId,
   });
   const details = detailsResponse?.data;
@@ -61,38 +53,17 @@ export default function PaymentHistoryPage() {
   const league = leagueId === undefined ? undefined : leagueMap.get(leagueId);
   const activeMembership = leagueId === undefined ? undefined : bowlerLeagues.find((membership) => membership.leagueId === leagueId);
   const activeTeam = activeMembership?.teamId != null ? teamMap.get(activeMembership.teamId) : undefined;
-  const { data: reportResponse, isLoading: loadingReport, error: reportError, refetch: refetchReport } = useQuery<ApiResponse<CanonicalPaymentReport>>({
-    queryKey: ["/api/financials/f5/payments", { bowlerId, leagueId, page: canonicalReportPage }],
-    queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/financials/f5/payments?leagueId=${leagueId}&bowlerId=${bowlerId}&page=${canonicalReportPage}&limit=200`, { credentials: "include", headers: { Accept: "application/json" }, signal });
-      if (!response.ok) throw new Error("Payment evidence requires review");
-      return response.json();
-    },
+  const { data: reportResponse, isLoading: loadingReport, error: reportError, refetch: refetchReport } = useQuery({
+    ...paymentHistoryReportQueryOptions(leagueId, bowlerId, canonicalReportPage),
     enabled: !!bowlerId && !!leagueId,
-    staleTime: 30_000,
-    retry: false,
   });
-  const { data: financialResponse, isLoading: loadingFinancial } = useQuery<ApiResponse<CanonicalDuePastDueResponseV2>>({
-    queryKey: paymentHistoryFinancialQueryKey(leagueId ?? 0, bowlerId ?? 0),
-    queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/financials/leagues/${leagueId}/canonical-due-past-due/2?bowlerId=${bowlerId}`, { credentials: "include", headers: { Accept: "application/json" }, signal });
-      if (!response.ok) throw new Error("Financial evidence is unavailable");
-      return response.json();
-    },
+  const { data: financialResponse, isLoading: loadingFinancial } = useQuery({
+    ...paymentHistoryFinancialQueryOptions(leagueId ?? 0, bowlerId ?? 0),
     enabled: !!bowlerId && !!leagueId,
-    staleTime: 30_000,
-    retry: false,
   });
-  const { data: rotatingCreditResponse, isLoading: loadingRotatingCredit, error: rotatingCreditError } = useQuery<ApiResponse<RotatingCreditBalanceWire>>({
-    queryKey: [`/api/financials/leagues/${leagueId ?? 0}/rotating-credit/1`],
-    queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/financials/leagues/${leagueId}/rotating-credit/1`, { credentials: "include", headers: { Accept: "application/json" }, signal });
-      if (!response.ok) throw new Error("Rotating payment eligibility is unavailable");
-      return response.json();
-    },
+  const { data: rotatingCreditResponse, isLoading: loadingRotatingCredit, error: rotatingCreditError } = useQuery({
+    ...rotatingCreditQueryOptions(leagueId ?? 0),
     enabled: !!bowlerId && !!leagueId,
-    staleTime: 30_000,
-    retry: false,
   });
 
   const report = reportResponse?.data;
@@ -125,7 +96,7 @@ export default function PaymentHistoryPage() {
   };
 
   if (loadingUser || loadingDetails || loadingReport || loadingFinancial) {
-    return <PageLoadingState />;
+    return <BowlerScreenSkeleton screen="history" bowlerName={details?.bowler?.name} leagueName={league?.name} leagueId={league?.id} />;
   }
   if (userError) return <AuthErrorView />;
   if (currentUser?.data && !currentUser.data.bowlerId) return <NoBowlerView userName={currentUser.data.name} isSystemAdmin={currentUser.data.role === "system_admin"} />;
