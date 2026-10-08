@@ -55,6 +55,26 @@ function netTargetMinor(targetMinor: number, availableCreditMinor: number): numb
   return Math.max(0, targetMinor - availableCreditMinor);
 }
 
+type AccountPaymentRecipientV4 = ConfirmedAccountPaymentParticipantsV4["recipients"][number];
+
+interface PricedAccountWeeklyOption {
+  /** Dense chooser ordinal, counting only options with a positive new charge. */
+  weeks: number;
+  amountMinor: number;
+  /** Original V4 ordinal used to request this gross target from the server. */
+  targetWeeks: number;
+}
+
+function pricedAccountWeeklyOptions(recipient: AccountPaymentRecipientV4): PricedAccountWeeklyOption[] {
+  return recipient.forecastTargets.selectedWeeks
+    .map((option) => ({
+      targetWeeks: option.weeks,
+      amountMinor: netTargetMinor(option.amountMinor, recipient.availableCreditMinor),
+    }))
+    .filter((option) => option.amountMinor > 0)
+    .map((option, index) => ({ ...option, weeks: index + 1 }));
+}
+
 /** Adapt only for the existing recipient chooser and balance labels. Every
  * amount remains sourced from the V4 participant response; quotes still come
  * from the V4 server endpoint. */
@@ -67,10 +87,7 @@ export function accountParticipantsForPaymentChooser(
     const currentCollectionMinor = netTargetMinor(recipient.forecastTargets.currentCollectionMinor, creditMinor);
     const weeklyOptions = response.paymentMode === "upfront"
       ? [{ weeks: 1, amountMinor: fullBalanceMinor }]
-      : recipient.forecastTargets.selectedWeeks.map((option) => ({
-        weeks: option.weeks,
-        amountMinor: netTargetMinor(option.amountMinor, creditMinor),
-      }));
+      : pricedAccountWeeklyOptions(recipient).map(({ weeks, amountMinor }) => ({ weeks, amountMinor }));
     const hasPreset = weeklyOptions.some((option) => option.amountMinor > 0)
       || currentCollectionMinor > 0
       || fullBalanceMinor > 0;
@@ -86,7 +103,7 @@ export function accountParticipantsForPaymentChooser(
       reason: eligible ? null : "No balance or forecast is currently available",
       dueNowMinor: currentCollectionMinor,
       catchUpAmountMinor: currentCollectionMinor,
-      catchUpWeeks: weeklyOptions[0]?.weeks ?? 1,
+      catchUpWeeks: recipient.forecastTargets.selectedWeeks[0]?.weeks ?? 1,
     };
   });
 }
@@ -114,12 +131,14 @@ export function buildAccountPaymentSelectionsV4(input: {
       } else if (input.response.paymentMode === "upfront") {
         selection = { kind: "forecast_collection_target", scope: "full_season" };
       } else {
-        const availableWeeks = recipient.forecastTargets.selectedWeeks;
+        const availableWeeks = pricedAccountWeeklyOptions(recipient);
         if (availableWeeks.length === 0) return [];
-        const maxWeeks = availableWeeks.at(-1)?.weeks ?? 1;
+        const maxWeeks = availableWeeks.length;
         const requestedWeeks = input.weeksByBowlerId[recipient.bowlerId] ?? 1;
         const weeks = Math.min(Math.max(1, Math.trunc(requestedWeeks)), maxWeeks);
-        selection = { kind: "forecast_collection_target", scope: "selected_weeks", weeks };
+        const selectedOption = availableWeeks[weeks - 1];
+        if (!selectedOption) return [];
+        selection = { kind: "forecast_collection_target", scope: "selected_weeks", weeks: selectedOption.targetWeeks };
       }
       return [{ bowlerId: recipient.bowlerId, selection }];
     })
