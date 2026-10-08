@@ -13,7 +13,7 @@ import { hasAccessToLeague, hasAdminAccessToLeague, hasPaymentManagerAccessToLea
 import { canUserPayForBowler } from "../utils/bowler-payment-authz.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { storage } from "../storage/index.js";
-import { adminWriteLimiter, paymentWriteLimiter } from "../middleware/rate-limit.js";
+import { adminWriteLimiter, paymentQuoteLimiter, paymentWriteLimiter } from "../middleware/rate-limit.js";
 import {
   RotatingCreditError,
   chargeRotatingCreditPurchase,
@@ -123,7 +123,7 @@ router.get("/leagues/:leagueId/rotating-credit/admin/teams/:teamId/members/1", a
   } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/rotating-credit/quote/1", paymentWriteLimiter, async (req, res) => {
+router.post("/leagues/:leagueId/rotating-credit/quote/1", paymentQuoteLimiter, async (req, res) => {
   const leagueId = parseLeagueId(String(req.params.leagueId));
   const parsed = rotatingCreditQuoteRequestSchema.safeParse(req.body);
   if (!leagueId || !parsed.success) return sendError(res, "Invalid rotating credit quote request", 400, "INVALID_REQUEST");

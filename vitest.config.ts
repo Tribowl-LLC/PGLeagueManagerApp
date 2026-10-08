@@ -94,6 +94,7 @@ const UNIT_NO_DB = [
   'tests/unit/app-domain-runtime.test.ts',
   'tests/unit/apple-pay-domains.test.ts',
   'tests/unit/security-app-domain.test.ts',
+  'tests/unit/payment-rate-limit-keys.test.ts',
   'tests/unit/single-tenant-boundaries.test.ts',
   'tests/unit/single-tenant-config.test.ts',
   'tests/unit/single-tenant-context.test.ts',
