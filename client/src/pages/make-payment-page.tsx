@@ -34,6 +34,7 @@ import {
   accountPaymentParticipantsQueryKey,
   accountParticipantsForPaymentChooser,
   buildAccountPaymentSelectionsV4,
+  previewAccountPaymentQuoteV4,
   clampInteractivePaymentWeeks,
   defaultSelectedAccountRecipients,
   initialInteractivePaymentWeeks,
@@ -539,6 +540,14 @@ export default function MakePaymentPage() {
     role: row.role,
     amountMinor: row.subtotalMinor,
   })) ?? [], [quote]);
+  // Changing weeks or recipients changes the quote key, so the authoritative
+  // quote is briefly absent. Show the total from the participant response
+  // already on the page meanwhile; payment stays gated on the real quote.
+  const previewQuote = useMemo(() => {
+    if (!accountParticipants || paymentRefreshState !== "idle" || isRecoveryBlocked) return null;
+    const preview = previewAccountPaymentQuoteV4(accountParticipants, recipientSelections);
+    return preview ? { amountMinor: preview.amountMinor, rows: preview.recipients } : null;
+  }, [accountParticipants, isRecoveryBlocked, paymentRefreshState, recipientSelections]);
   const hasPositivePaymentAmount = paymentAmountMinor > 0;
   const bowlerEmail = details?.bowler?.email ?? "";
   const paymentActorUserId = currentUser?.data?.id;
@@ -1584,6 +1593,7 @@ export default function MakePaymentPage() {
           recipientRows={selectedRecipientRows}
           breakdownRows={breakdownRows}
           quoteLoading={loadingQuote || fetchingQuote}
+          previewQuote={previewQuote}
           quoteError={quoteError && !selectionStale ? interactivePaymentErrorMessage(quoteError) : null}
           onRetryQuote={retryInteractivePaymentQuote}
           paymentRefreshState={paymentRefreshState}

@@ -18,6 +18,7 @@ import {
   isNoPaymentDueV4,
   isSeasonPaidInFullV4,
   resolveAccountPaymentFundingChargeAmountV4,
+  resolveAccountPaymentFundingCollectionTargetsV4,
   type AccountPaymentFundingQuoteRequestV4,
   type AccountPaymentFundingQuoteResponseV4,
   type AccountPaymentFundingSelectionV4,
@@ -479,21 +480,17 @@ function selectedCollectionTargets(
   participant: ForecastParticipant,
   paymentMode: "weekly" | "upfront",
 ): { collectionTargetMinor: number; forecastCollectionTargetMinor: number } {
-  if (selection.kind === "explicit_amount") return { collectionTargetMinor: 0, forecastCollectionTargetMinor: 0 };
-  if (selection.kind === "confirmed_debt_balance") return { collectionTargetMinor: participant.confirmedDebtMinor, forecastCollectionTargetMinor: 0 };
-  if (paymentMode === "upfront" && selection.scope === "selected_weeks") {
+  const targets = resolveAccountPaymentFundingCollectionTargetsV4({
+    selection,
+    paymentMode,
+    confirmedDebtMinor: participant.confirmedDebtMinor,
+    forecastTargets: participant.forecastTargets,
+  });
+  if (targets.ok) return { collectionTargetMinor: targets.collectionTargetMinor, forecastCollectionTargetMinor: targets.forecastCollectionTargetMinor };
+  if (targets.reason === "UPFRONT_FULL_BALANCE_REQUIRED") {
     throw new RosterPaymentError("UPFRONT_FULL_BALANCE_REQUIRED", "Upfront checkout must use the full-season forecast target", 422);
   }
-  const collectionTargetMinor = selection.scope === "current_collection"
-    ? participant.forecastTargets.currentCollectionMinor
-    : selection.scope === "full_season"
-      ? participant.forecastTargets.fullSeasonMinor
-      : participant.forecastTargets.selectedWeeks.find((item) => item.weeks === selection.weeks)?.amountMinor ?? -1;
-  if (collectionTargetMinor < 0) throw new RosterPaymentError("WEEKS_SELECTION_INVALID", "The selected forecast weeks are unavailable", 409);
-  return {
-    collectionTargetMinor,
-    forecastCollectionTargetMinor: Math.max(0, collectionTargetMinor - participant.confirmedDebtMinor),
-  };
+  throw new RosterPaymentError("WEEKS_SELECTION_INVALID", "The selected forecast weeks are unavailable", 409);
 }
 
 export async function quoteAccountPaymentFundingV4(input: {

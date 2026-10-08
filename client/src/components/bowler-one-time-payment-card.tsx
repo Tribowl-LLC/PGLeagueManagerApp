@@ -93,6 +93,10 @@ interface Props {
   recipientRows: PaymentRecipientRow[];
   breakdownRows?: PaymentBreakdownRow[];
   quoteLoading?: boolean;
+  /** Total and breakdown worked out on the page for the current choices,
+   * shown while the authoritative quote loads. Display only: paying still
+   * waits for the quote. */
+  previewQuote?: { amountMinor: number; rows: PaymentBreakdownRow[] } | null;
   quoteError?: string | null;
   onRetryQuote?: () => void;
   paymentRefreshState?: "idle" | "refreshing" | "retry";
@@ -124,7 +128,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   onCardEditorModeChange, cardEditorMode, applePayAvailable, googlePayAvailable,
   applePayTokenizeOnly, googlePayTokenizeOnly, applePayRef, googlePayRef,
   onApplePayClick, onGooglePayClick, isWalletProcessing, bowlerHasEmail,
-  receiptEmail, onReceiptEmailChange, recipientRows, breakdownRows, quoteLoading = false,
+  receiptEmail, onReceiptEmailChange, recipientRows, breakdownRows, quoteLoading = false, previewQuote = null,
   quoteError = null, selectionStale = false, onRecipientToggle, onRecipientWeeksChange,
   onResetRecipientSelection, paymentRefreshState = "idle", paymentRefreshError = null,
   onRetryPaymentRefresh, onRetryQuote, dueNowOnly = false, onCancelDueNow,
@@ -193,6 +197,11 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     setReviewOpen(true);
   };
 
+  const showPreviewQuote = quoteLoading && previewQuote !== null;
+  const paymentTotalLabel = showPreviewQuote
+    ? formatPayCurrency(previewQuote.amountMinor)
+    : quoteLoading ? "Calculating…" : formatPayCurrency(paymentAmountMinor);
+  const shownBreakdownRows = showPreviewQuote ? previewQuote.rows : quoteLoading ? [] : breakdownRows ?? [];
   const reviewRecipients = recipientRows.filter((row) => row.selected && row.eligible);
   const reviewQuoteForRecipient = (row: PaymentRecipientRow) => breakdownRows?.find((candidate) => candidate.bowlerId === row.bowlerId);
   const selectedWeekCountLabel = (weeks: number) => `${weeks} ${weeks === 1 ? "week" : "weeks"} selected`;
@@ -300,15 +309,15 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
         {paymentRefreshState === "retry" && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{paymentRefreshError ?? "Payment balances could not be refreshed. Try again."}</span>{onRetryPaymentRefresh && <Button type="button" variant="outline" size="sm" onClick={onRetryPaymentRefresh}>Retry refresh</Button>}</AlertDescription></Alert>}
         {selectionStale && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{selectionStaleMessage}</span>{onResetRecipientSelection && <Button type="button" variant="outline" size="sm" onClick={onResetRecipientSelection}>Reset choices</Button>}</AlertDescription></Alert>}
         {quoteError && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{quoteError}</span>{onRetryQuote && <Button type="button" variant="outline" size="sm" onClick={onRetryQuote}>Retry quote</Button>}</AlertDescription></Alert>}
-        {!fullBalanceOnly && <div className="familiar-primary-payment-total"><span>Payment total</span><strong>{quoteLoading ? "Calculating…" : formatPayCurrency(paymentAmountMinor)}</strong></div>}
+        {!fullBalanceOnly && <div className="familiar-primary-payment-total"><span>Payment total</span><strong>{paymentTotalLabel}</strong></div>}
         <div className="familiar-payment-breakdown flex flex-col gap-2 rounded-md border bg-muted/50 p-4" aria-live="polite" data-testid="payment-breakdown">
           {!fullBalanceOnly && <div className="flex items-center justify-between">
             <span className="text-sm font-medium">Payment total</span>
-            <span className="text-lg font-bold">{quoteLoading ? "Calculating…" : formatPayCurrency(paymentAmountMinor)}</span>
+            <span className="text-lg font-bold">{paymentTotalLabel}</span>
           </div>}
-          {breakdownRows && breakdownRows.length > 0 && !quoteLoading && (
+          {shownBreakdownRows.length > 0 && (
             <div className="flex flex-col gap-2 border-t pt-3 text-sm">
-              {breakdownRows.map((row) => (
+              {shownBreakdownRows.map((row) => (
                 <div key={row.bowlerId} className="flex flex-col gap-1">
                   <div className="flex items-center justify-between gap-3">
                     <span className="min-w-0 truncate font-medium">{row.name}</span>

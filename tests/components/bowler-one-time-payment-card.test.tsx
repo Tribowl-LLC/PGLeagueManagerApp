@@ -1,9 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
 import { BowlerOneTimePaymentCard, type CompletedPayment, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
 
-function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[], dueNowOnly = false, options: { applePayAvailable?: boolean; googlePayAvailable?: boolean; cardMode?: "new" | "saved"; selectedSavedCardId?: string; savedCards?: Array<{ id: string; brand: string; last4: string; expMonth: number; expYear: number }>; storeCard?: boolean; quoteFingerprint?: string; completedPayment?: CompletedPayment; onViewPaymentHistory?: () => void; onMakeAnotherPayment?: () => void; onRetryQuote?: () => void; hasAccountForecastChoices?: boolean } = {}) {
+function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[], dueNowOnly = false, options: { quoteLoading?: boolean; previewQuote?: { amountMinor: number; rows: PaymentBreakdownRow[] } | null; applePayAvailable?: boolean; googlePayAvailable?: boolean; cardMode?: "new" | "saved"; selectedSavedCardId?: string; savedCards?: Array<{ id: string; brand: string; last4: string; expMonth: number; expYear: number }>; storeCard?: boolean; quoteFingerprint?: string; completedPayment?: CompletedPayment; onViewPaymentHistory?: () => void; onMakeAnotherPayment?: () => void; onRetryQuote?: () => void; hasAccountForecastChoices?: boolean } = {}) {
   const applePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const googlePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const onRecipientToggle = vi.fn();
@@ -54,6 +54,8 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     onReceiptEmailChange={vi.fn()}
     recipientRows={recipientRowsOverride ?? [recipient, ...additionalRows]}
     breakdownRows={breakdownRows}
+    quoteLoading={options.quoteLoading}
+    previewQuote={options.previewQuote}
     quoteFingerprint={options.quoteFingerprint}
     completedPayment={options.completedPayment}
     onViewPaymentHistory={options.onViewPaymentHistory}
@@ -70,6 +72,21 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
 }
 
 describe("BowlerOneTimePaymentCard payment mode", () => {
+  it("shows the on-page total while the quote loads but keeps review locked until it arrives", () => {
+    renderCard(false, { weeks: 2, amountMinor: 0 }, [], [], false, false, undefined, false, {
+      quoteLoading: true,
+      previewQuote: { amountMinor: 5_000, rows: [{ bowlerId: 42, name: "Bowler", role: "self", amountMinor: 5_000 }] },
+    });
+    expect(screen.queryByText("Calculating…")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("payment-breakdown")).getAllByText("$50")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: /^Review payment/ })).toBeDisabled();
+  });
+
+  it("falls back to the calculating label when no on-page total is available", () => {
+    renderCard(false, { weeks: 2, amountMinor: 0 }, [], [], false, false, undefined, false, { quoteLoading: true });
+    expect(screen.getAllByText("Calculating…").length).toBeGreaterThan(0);
+  });
+
   it("reviews one server-priced week without offering an arbitrary amount", () => {
     const { onSubmit } = renderCard(false, { weeks: 1, maximumWeekCount: 1, hasPricedWeekOptions: true, amountMinor: 2_500 }, [], [], false, false, undefined, false, {
       hasAccountForecastChoices: true,

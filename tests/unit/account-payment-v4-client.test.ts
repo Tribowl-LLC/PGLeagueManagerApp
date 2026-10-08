@@ -9,6 +9,7 @@ import {
   isInteractivePaymentQuoteCurrent,
   parseExplicitPaymentAmountMinor,
   participantAmountForSelection,
+  previewAccountPaymentQuoteV4,
   type ConfirmedAccountPaymentParticipantsV4,
 } from "../../client/src/lib/account-payment-v4";
 
@@ -313,5 +314,41 @@ describe("account payment V4 client adapter", () => {
     expect(isInteractivePaymentQuoteCurrent(displayed, { ...matching, amountMinor: 6_000 }, displayed.selectionKey)).toBe(false);
     expect(isInteractivePaymentQuoteCurrent(displayed, matching, "selection-b")).toBe(false);
     expect(isInteractivePaymentQuoteCurrent(null, matching, displayed.selectionKey)).toBe(false);
+  });
+
+  it("previews the quote total from the participant response with the server's pricing rules", () => {
+    // Partner: two-week target 5,000 less 500 credit. Payer: one-week target 0 less 1,000 credit floors at 0.
+    expect(previewAccountPaymentQuoteV4(participants, [
+      { bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 1 } },
+      { bowlerId: 84, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 2 } },
+    ])).toEqual({
+      amountMinor: 4_500,
+      recipients: [
+        { bowlerId: 42, name: "Avery Lane", role: "self", amountMinor: 0 },
+        { bowlerId: 84, name: "Blair Quinn", role: "partner", amountMinor: 4_500 },
+      ],
+    });
+    expect(previewAccountPaymentQuoteV4(participants, [
+      { bowlerId: 84, selection: { kind: "forecast_collection_target", scope: "full_season" } },
+    ])?.amountMinor).toBe(7_500);
+    expect(previewAccountPaymentQuoteV4(participants, [
+      { bowlerId: 84, selection: { kind: "confirmed_debt_balance" } },
+    ])?.amountMinor).toBe(2_000);
+    expect(previewAccountPaymentQuoteV4(participants, [
+      { bowlerId: 42, selection: { kind: "explicit_amount", amountMinor: 1_234 } },
+    ])?.amountMinor).toBe(1_234);
+  });
+
+  it("offers no preview when a choice cannot be priced", () => {
+    expect(previewAccountPaymentQuoteV4(participants, [])).toBeNull();
+    expect(previewAccountPaymentQuoteV4(participants, [
+      { bowlerId: 84, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 9 } },
+    ])).toBeNull();
+    expect(previewAccountPaymentQuoteV4(participants, [
+      { bowlerId: 999, selection: { kind: "forecast_collection_target", scope: "full_season" } },
+    ])).toBeNull();
+    expect(previewAccountPaymentQuoteV4({ ...participants, paymentMode: "upfront" }, [
+      { bowlerId: 84, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 1 } },
+    ])).toBeNull();
   });
 });

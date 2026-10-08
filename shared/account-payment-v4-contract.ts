@@ -180,6 +180,42 @@ export function resolveAccountPaymentFundingChargeAmountV4(input: {
   return Math.max(0, targetMinor - availableCreditMinor);
 }
 
+export type AccountPaymentFundingCollectionTargetsV4 =
+  | { ok: true; collectionTargetMinor: number; forecastCollectionTargetMinor: number }
+  | { ok: false; reason: "UPFRONT_FULL_BALANCE_REQUIRED" | "WEEKS_SELECTION_INVALID" };
+
+/**
+ * Resolve one recipient's gross preset target for a selection. The server
+ * quote and the payer's instant on-page total both use this, so the amount a
+ * payer sees while the authoritative quote loads follows the same rules.
+ */
+export function resolveAccountPaymentFundingCollectionTargetsV4(input: {
+  selection: AccountPaymentFundingSelectionV4;
+  paymentMode: "weekly" | "upfront";
+  confirmedDebtMinor: number;
+  forecastTargets: {
+    currentCollectionMinor: number;
+    selectedWeeks: ReadonlyArray<{ weeks: number; amountMinor: number }>;
+    fullSeasonMinor: number;
+  };
+}): AccountPaymentFundingCollectionTargetsV4 {
+  const { selection, forecastTargets } = input;
+  if (selection.kind === "explicit_amount") return { ok: true, collectionTargetMinor: 0, forecastCollectionTargetMinor: 0 };
+  if (selection.kind === "confirmed_debt_balance") return { ok: true, collectionTargetMinor: input.confirmedDebtMinor, forecastCollectionTargetMinor: 0 };
+  if (input.paymentMode === "upfront" && selection.scope === "selected_weeks") return { ok: false, reason: "UPFRONT_FULL_BALANCE_REQUIRED" };
+  const collectionTargetMinor = selection.scope === "current_collection"
+    ? forecastTargets.currentCollectionMinor
+    : selection.scope === "full_season"
+      ? forecastTargets.fullSeasonMinor
+      : forecastTargets.selectedWeeks.find((item) => item.weeks === selection.weeks)?.amountMinor ?? -1;
+  if (collectionTargetMinor < 0) return { ok: false, reason: "WEEKS_SELECTION_INVALID" };
+  return {
+    ok: true,
+    collectionTargetMinor,
+    forecastCollectionTargetMinor: Math.max(0, collectionTargetMinor - input.confirmedDebtMinor),
+  };
+}
+
 const accountPaymentFundingQuoteRecipientResponseV4Schema = z.object({
   bowlerId: payerBowlerIdSchema,
   name: z.string().trim().min(1).max(255),
