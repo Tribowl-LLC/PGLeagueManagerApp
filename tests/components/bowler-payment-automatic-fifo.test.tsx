@@ -147,6 +147,7 @@ describe("automatic FIFO bowler payment flow", () => {
         forecastTargets: { currentCollectionMinor: 0, selectedWeeks: [], fullSeasonMinor: 0 },
         holdsLineupSpot: true,
         seasonPaidInFull: false,
+        noPaymentDue: false,
       }],
     });
     mocks.csrfFetch

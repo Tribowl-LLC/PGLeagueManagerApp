@@ -96,7 +96,7 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
   });
 
   it("tells a weekly bowler the server proved paid in full that no payment is needed", () => {
-    renderCard(false, { amountMinor: 0, remainingMinor: 0, pastDueMinor: 0, holdsLineupSpot: true, seasonPaidInFull: true }, [], [], false, false, undefined, false, {
+    renderCard(false, { amountMinor: 0, remainingMinor: 0, pastDueMinor: 0, seasonPaidInFull: true }, [], [], false, false, undefined, false, {
       hasAccountForecastChoices: false,
     });
 
@@ -106,7 +106,7 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
   });
 
   it("does not infer paid in full from a zero balance the server did not prove", () => {
-    renderCard(false, { amountMinor: 0, remainingMinor: 0, pastDueMinor: 0, holdsLineupSpot: true, seasonPaidInFull: false }, [], [], false, false, undefined, false, {
+    renderCard(false, { amountMinor: 0, remainingMinor: 0, pastDueMinor: 0, seasonPaidInFull: false, noPaymentDue: false }, [], [], false, false, undefined, false, {
       hasAccountForecastChoices: false,
     });
 
@@ -114,8 +114,8 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.queryByText(/Paid in full/)).not.toBeInTheDocument();
   });
 
-  it("tells a roster member without a lineup spot who owes nothing that no payment is due", () => {
-    renderCard(false, { amountMinor: 0, remainingMinor: 0, pastDueMinor: 0, holdsLineupSpot: false, seasonPaidInFull: false }, [], [], false, false, undefined, false, {
+  it("tells a recipient the server proved owes nothing that no payment is due", () => {
+    renderCard(false, { amountMinor: 0, remainingMinor: 0, pastDueMinor: 0, seasonPaidInFull: false, noPaymentDue: true }, [], [], false, false, undefined, false, {
       hasAccountForecastChoices: false,
     });
 
@@ -138,12 +138,11 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
       selected: false,
       eligible: false,
       reason: "Paid in full, no additional payment needed.",
-      holdsLineupSpot: true,
       seasonPaidInFull: true,
     };
     renderCard(false, {
       amountMinor: 0, remainingMinor: 0, pastDueMinor: 0, selected: false, eligible: false,
-      reason: "Paid in full, no additional payment needed.", hasPricedWeekOptions: false, holdsLineupSpot: true, seasonPaidInFull: true,
+      reason: "Paid in full, no additional payment needed.", hasPricedWeekOptions: false, seasonPaidInFull: true,
     }, [partner], [], false, false, undefined, false, {
       hasAccountForecastChoices: false,
     });

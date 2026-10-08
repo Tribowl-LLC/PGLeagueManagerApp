@@ -22,10 +22,10 @@ export interface PaymentRecipientRow {
   role: "self" | "partner";
   remainingMinor: number;
   pastDueMinor: number;
-  /** Occupies a main lineup position in this league. */
-  holdsLineupSpot?: boolean;
   /** Server-proven season coverage; never inferred from a zero balance. */
   seasonPaidInFull?: boolean;
+  /** Server-proven clean zero demand for a recipient without a lineup spot. */
+  noPaymentDue?: boolean;
   weeks: number;
   maximumWeekCount: number;
   hasPricedWeekOptions?: boolean;
@@ -139,7 +139,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   const showSoloWeekSelection = !hasPaymentPartner && !dueNowOnly && !fullBalanceOnly && hasAccountForecastChoices;
   const paidInFull = recipientRows.length > 0 && recipientRows.every((row) => row.seasonPaidInFull === true);
   const nothingDue = recipientRows.length > 0
-    && recipientRows.every((row) => row.seasonPaidInFull === true || (row.holdsLineupSpot === false && row.remainingMinor <= 0));
+    && recipientRows.every((row) => row.seasonPaidInFull === true || row.noPaymentDue === true);
   const hasEligibleRecipient = recipientRows.some((row) => row.eligible);
   const compactFullBalanceRows = fullBalanceOnly && hasPaymentPartner;
   const showRecipientRows = hasPaymentPartner || dueNowOnly || showSoloWeekSelection;

@@ -7,6 +7,7 @@ import {
   accountPaymentFundingQuoteRequestV4Schema,
   accountPaymentParticipantsResponseV4Schema,
   isAccountFundingOperationUnresolvedV4,
+  isNoPaymentDueV4,
   isSeasonPaidInFullV4,
   resolveAccountPaymentFundingChargeAmountV4,
 } from "@shared/account-payment-v4-contract";
@@ -164,12 +165,18 @@ describe("account payment funding V4 contract and operation snapshots", () => {
         },
         holdsLineupSpot: true,
         seasonPaidInFull: false,
+        noPaymentDue: false,
       }],
     };
     expect(accountPaymentParticipantsResponseV4Schema.safeParse(response).success).toBe(true);
+    // A server that predates the evidence fields fails closed to "not proven".
+    const { holdsLineupSpot: _spot, seasonPaidInFull: _paid, noPaymentDue: _due, ...olderRecipient } = response.recipients[0];
+    const older = accountPaymentParticipantsResponseV4Schema.parse({ ...response, recipients: [olderRecipient] });
+    if (older.accountingMode !== "confirmed_account_v4") throw new Error("expected the account response");
+    expect(older.recipients[0]).toMatchObject({ holdsLineupSpot: false, seasonPaidInFull: false, noPaymentDue: false });
     expect(accountPaymentParticipantsResponseV4Schema.safeParse({
       ...response,
-      recipients: [{ ...response.recipients[0], seasonPaidInFull: undefined }],
+      recipients: [{ ...response.recipients[0], seasonPaidInFull: "yes" }],
     }).success).toBe(false);
     expect(accountPaymentParticipantsResponseV4Schema.safeParse({
       ...response,
@@ -482,5 +489,23 @@ describe("isSeasonPaidInFullV4", () => {
   it("fails closed when the season is not fully published or evidence is under review", () => {
     expect(isSeasonPaidInFullV4({ ...covered, seasonFullyPublished: false })).toBe(false);
     expect(isSeasonPaidInFullV4({ ...covered, reviewHeld: true })).toBe(false);
+  });
+});
+
+describe("isNoPaymentDueV4", () => {
+  const clean = { holdsLineupSpot: false, fullSeasonMinor: 0, availableCreditMinor: 0, reviewHeld: false };
+
+  it("accepts a roster member without a lineup spot whose demand is covered", () => {
+    expect(isNoPaymentDueV4(clean)).toBe(true);
+    expect(isNoPaymentDueV4({ ...clean, fullSeasonMinor: 2_500, availableCreditMinor: 2_500 })).toBe(true);
+  });
+
+  it("rejects uncovered demand and evidence under review", () => {
+    expect(isNoPaymentDueV4({ ...clean, fullSeasonMinor: 2_500, availableCreditMinor: 2_499 })).toBe(false);
+    expect(isNoPaymentDueV4({ ...clean, reviewHeld: true })).toBe(false);
+  });
+
+  it("leaves a lineup-spot holder to the season coverage rule", () => {
+    expect(isNoPaymentDueV4({ ...clean, holdsLineupSpot: true })).toBe(false);
   });
 });

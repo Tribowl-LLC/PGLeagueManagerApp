@@ -30,6 +30,7 @@ const participants: ConfirmedAccountPaymentParticipantsV4 = {
       forecastTargets: { currentCollectionMinor: 0, selectedWeeks: [{ weeks: 1, amountMinor: 0 }], fullSeasonMinor: 0 },
       holdsLineupSpot: true,
       seasonPaidInFull: false,
+      noPaymentDue: false,
     },
     {
       bowlerId: 84,
@@ -41,6 +42,7 @@ const participants: ConfirmedAccountPaymentParticipantsV4 = {
       forecastTargets: { currentCollectionMinor: 1_500, selectedWeeks: [{ weeks: 1, amountMinor: 2_500 }, { weeks: 2, amountMinor: 5_000 }], fullSeasonMinor: 8_000 },
       holdsLineupSpot: true,
       seasonPaidInFull: false,
+      noPaymentDue: false,
     },
   ],
 };
@@ -53,6 +55,7 @@ const noWeeklyPresetParticipants: ConfirmedAccountPaymentParticipantsV4 = {
       forecastTargets: { ...recipient.forecastTargets, selectedWeeks: [] },
       holdsLineupSpot: true,
       seasonPaidInFull: false,
+      noPaymentDue: false,
     }
     : recipient),
 };
@@ -74,6 +77,7 @@ const prepaidWeekParticipants: ConfirmedAccountPaymentParticipantsV4 = {
       },
       holdsLineupSpot: true,
       seasonPaidInFull: false,
+      noPaymentDue: false,
     },
     {
       bowlerId: 84,
@@ -89,6 +93,7 @@ const prepaidWeekParticipants: ConfirmedAccountPaymentParticipantsV4 = {
       },
       holdsLineupSpot: true,
       seasonPaidInFull: false,
+      noPaymentDue: false,
     },
   ],
 };
@@ -264,6 +269,7 @@ describe("account payment V4 client adapter", () => {
           forecastTargets: { ...recipient.forecastTargets, fullSeasonMinor: 4_500 },
           holdsLineupSpot: true,
           seasonPaidInFull: false,
+          noPaymentDue: false,
         }
         : recipient),
     };

@@ -146,12 +146,15 @@ function isAccountRecipientPayable(
 function accountRecipientUnavailableReason(
   paymentMode: AccountPaymentMode,
   combinedAutopayMode: boolean,
-  participant: Pick<AccountPaymentChooserParticipant, "remainingMinor" | "holdsLineupSpot" | "seasonPaidInFull">,
+  participant: Pick<AccountPaymentChooserParticipant, "reason" | "seasonPaidInFull" | "noPaymentDue">,
 ): string {
-  if (combinedAutopayMode) return "No amount is due now for this recipient.";
-  if (paymentMode === "upfront") return "No one-time balance is available for this recipient.";
+  if (combinedAutopayMode) return participant.reason ?? "No amount is due now for this recipient.";
+  if (paymentMode === "upfront") return participant.reason ?? "No one-time balance is available for this recipient.";
+  // Server evidence outranks the adapter's generic reason, which a partner
+  // without a balance always carries.
   if (participant.seasonPaidInFull) return "Paid in full, no additional payment needed.";
-  if (!participant.holdsLineupSpot && participant.remainingMinor <= 0) return "No payment is due right now.";
+  if (participant.noPaymentDue) return "No payment is due right now.";
+  if (participant.reason) return participant.reason;
   return "Weekly payments are unavailable for this recipient right now.";
 }
 
@@ -468,8 +471,8 @@ export default function MakePaymentPage() {
       role: participant.role,
       remainingMinor: participant.remainingMinor,
       pastDueMinor: participant.pastDueMinor,
-      holdsLineupSpot: participant.holdsLineupSpot,
       seasonPaidInFull: participant.seasonPaidInFull,
+      noPaymentDue: participant.noPaymentDue,
       weeks,
       maximumWeekCount: Math.max(1, maximumWeeks),
       hasPricedWeekOptions: participant.weeklyOptions.some((option) => option.amountMinor > 0),
@@ -480,7 +483,7 @@ export default function MakePaymentPage() {
       eligible,
       reason: eligible
         ? participant.reason
-        : participant.reason ?? accountRecipientUnavailableReason(paymentMode, combinedAutopayMode, participant),
+        : accountRecipientUnavailableReason(paymentMode, combinedAutopayMode, participant),
     };
   }), [combinedAutopayMode, participants, fullBalanceOnly, paymentMode, recipientWeeks, effectiveSelectedRecipients]);
   const recipientSelections = useMemo<AccountPaymentRecipientSelectionV4[]>(() => {

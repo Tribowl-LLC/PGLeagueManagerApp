@@ -15,6 +15,7 @@ import {
 } from "@shared/schema";
 import {
   accountPaymentFundingQuoteResponseV4Schema,
+  isNoPaymentDueV4,
   isSeasonPaidInFullV4,
   resolveAccountPaymentFundingChargeAmountV4,
   type AccountPaymentFundingQuoteRequestV4,
@@ -77,6 +78,7 @@ type ForecastParticipant = {
   };
   holdsLineupSpot: boolean;
   seasonPaidInFull: boolean;
+  noPaymentDue: boolean;
 };
 
 type AccountContext = {
@@ -307,7 +309,9 @@ export function forecastProjection(input: {
 const ACCOUNT_CONTEXT_SNAPSHOT_READ = { isolationLevel: "repeatable read", accessMode: "read only" } as const;
 
 /** The season is fully published when no schedulable occurrence is still a
- * draft and the published schedule reaches the league's season end date. */
+ * draft and the published schedule reaches the league's season end date. A
+ * published week that was later cancelled still proves publication coverage;
+ * it is excluded only from payment demand. */
 async function isSeasonFullyPublishedInTransaction(
   tx: PaymentOperationTransaction,
   input: { organizationId: number; leagueId: number },
@@ -315,7 +319,7 @@ async function isSeasonFullyPublishedInTransaction(
   const [row] = await tx.select({
     seasonEnd: sql<string>`${leagues.seasonEnd}::date::text`,
     draftCount: sql<number>`count(${leagueOccurrences.id}) FILTER (WHERE ${leagueOccurrences.lifecycle} = 'draft' AND ${leagueOccurrences.status} = 'scheduled')::int`,
-    lastPublishedDate: sql<string | null>`max(${leagueOccurrences.authoritativeLocalDate}) FILTER (WHERE ${leagueOccurrences.lifecycle} IN ('published', 'locked') AND ${leagueOccurrences.status} IN ('scheduled', 'completed'))::text`,
+    lastPublishedDate: sql<string | null>`max(${leagueOccurrences.authoritativeLocalDate}) FILTER (WHERE ${leagueOccurrences.lifecycle} IN ('published', 'locked') AND ${leagueOccurrences.status} IN ('scheduled', 'completed', 'cancelled'))::text`,
   }).from(leagues).leftJoin(leagueOccurrences, and(
     eq(leagueOccurrences.leagueId, leagues.id),
     eq(leagueOccurrences.organizationId, input.organizationId),
@@ -396,6 +400,8 @@ async function accountContextInTransaction(
     const balance = balances.get(participant.bowlerId);
     const ownerDebts = debts.filter((debt) => debt.debtorBowlerId === participant.bowlerId);
     reviewHeldConfirmedDebtById.set(participant.bowlerId, ownerDebts.some((debt) => debt.reviewRequired && debt.outstandingMinor > 0));
+    const holdsLineupSpot = lineupSpotHolderIds.has(participant.bowlerId);
+    const reviewHeld = ownerDebts.some((debt) => debt.reviewRequired);
     const response: ForecastParticipant = {
       bowlerId: participant.bowlerId,
       name: participant.name,
@@ -412,14 +418,20 @@ async function accountContextInTransaction(
         selectedWeeks: projected.selectedWeeks,
         fullSeasonMinor: projected.fullSeasonMinor,
       },
-      holdsLineupSpot: lineupSpotHolderIds.has(participant.bowlerId),
+      holdsLineupSpot,
       seasonPaidInFull: isSeasonPaidInFullV4({
-        holdsLineupSpot: lineupSpotHolderIds.has(participant.bowlerId),
+        holdsLineupSpot,
         seasonFullyPublished,
         fullSeasonMinor: projected.fullSeasonMinor,
         availableCreditMinor: balance?.availableCreditMinor ?? 0,
         confirmedPaidMinor: ownerDebts.reduce((sum, debt) => sum + debt.paidMinor, 0),
-        reviewHeld: ownerDebts.some((debt) => debt.reviewRequired),
+        reviewHeld,
+      }),
+      noPaymentDue: isNoPaymentDueV4({
+        holdsLineupSpot,
+        fullSeasonMinor: projected.fullSeasonMinor,
+        availableCreditMinor: balance?.availableCreditMinor ?? 0,
+        reviewHeld,
       }),
     };
     recipients.push(response);

@@ -36,12 +36,18 @@ const accountPaymentFundingParticipantV4Schema = z.object({
     fullSeasonMinor: amountMinorSchema,
   }).strict(),
   /** True when this recipient occupies a main lineup position in the league.
-   * Other roster members owe only the weeks staff assign to them. */
-  holdsLineupSpot: z.boolean(),
+   * Other roster members owe only the weeks staff assign to them. These three
+   * evidence fields default to false so a response from a server that predates
+   * them fails closed to the unavailable state instead of blocking payment. */
+  holdsLineupSpot: z.boolean().default(false),
   /** Server-proven season coverage: a lineup-spot holder in a fully published
    * season whose real payments and available credit cover every confirmed and
    * forecast week, with no review hold. Zero demand alone is never proof. */
-  seasonPaidInFull: z.boolean(),
+  seasonPaidInFull: z.boolean().default(false),
+  /** Server-proven clean zero demand for a roster member without a lineup
+   * spot: nothing confirmed or forecast is uncovered and nothing is under
+   * review. Review status itself is never exposed. */
+  noPaymentDue: z.boolean().default(false),
 }).strict();
 
 /** Decide whether a recipient may be told the season is paid in full. Every
@@ -59,6 +65,19 @@ export function isSeasonPaidInFullV4(input: {
   if (!input.holdsLineupSpot || !input.seasonFullyPublished || input.reviewHeld) return false;
   if (input.availableCreditMinor < input.fullSeasonMinor) return false;
   return input.fullSeasonMinor > 0 || input.confirmedPaidMinor > 0;
+}
+
+/** A roster member without a lineup spot owes only assigned weeks, so clean
+ * zero demand may be reported as nothing due. Evidence under review never
+ * qualifies, and a lineup-spot holder is judged by season coverage instead. */
+export function isNoPaymentDueV4(input: {
+  holdsLineupSpot: boolean;
+  fullSeasonMinor: number;
+  availableCreditMinor: number;
+  reviewHeld: boolean;
+}): boolean {
+  if (input.holdsLineupSpot || input.reviewHeld) return false;
+  return input.availableCreditMinor >= input.fullSeasonMinor;
 }
 
 const accountPaymentParticipantsV4Base = z.object({

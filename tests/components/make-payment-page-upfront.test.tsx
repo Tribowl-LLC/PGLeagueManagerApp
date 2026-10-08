@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => {
   let paidInFull = false;
   let selfHoldsLineupSpot = true;
   let selfSeasonPaidInFull = false;
+  let selfNoPaymentDue = false;
+  let partnerSeasonPaidInFull = false;
   let zeroParticipants = false;
   let includePartner = false;
   let remainingMinor = 8_750;
@@ -129,6 +131,7 @@ const mocks = vi.hoisted(() => {
       },
       holdsLineupSpot: selfHoldsLineupSpot,
       seasonPaidInFull: selfSeasonPaidInFull,
+      noPaymentDue: selfNoPaymentDue,
     }, ...(includePartner ? [{
       bowlerId: 84,
       name: "Alex Partner",
@@ -136,13 +139,14 @@ const mocks = vi.hoisted(() => {
       confirmedDebtMinor: 0,
       confirmedPastDueMinor: 0,
       availableCreditMinor: 0,
-      forecastTargets: {
+      forecastTargets: partnerSeasonPaidInFull ? { currentCollectionMinor: 0, selectedWeeks: [], fullSeasonMinor: 0 } : {
         currentCollectionMinor: 0,
         selectedWeeks: [{ weeks: 1, amountMinor: 6_000 }],
         fullSeasonMinor: 8_000,
       },
       holdsLineupSpot: true,
-      seasonPaidInFull: false,
+      seasonPaidInFull: partnerSeasonPaidInFull,
+      noPaymentDue: false,
     }] : [])],
   } : {
     contractVersion: "interactive-payment-participants/4",
@@ -287,10 +291,12 @@ const mocks = vi.hoisted(() => {
     },
     setStandingAutopayState: (state: "pending" | "active" | "revoked" | "expired" | "none") => { standingAutopayState = state; },
     setPaidInFull: (value: boolean) => { paidInFull = value; },
-    setSelfSeasonEvidence: (values: { holdsLineupSpot: boolean; seasonPaidInFull: boolean }) => {
+    setSelfSeasonEvidence: (values: { holdsLineupSpot: boolean; seasonPaidInFull: boolean; noPaymentDue: boolean }) => {
       selfHoldsLineupSpot = values.holdsLineupSpot;
       selfSeasonPaidInFull = values.seasonPaidInFull;
+      selfNoPaymentDue = values.noPaymentDue;
     },
+    setPartnerSeasonPaidInFull: (value: boolean) => { partnerSeasonPaidInFull = value; },
     setZeroParticipants: (value: boolean) => { zeroParticipants = value; },
     setIncludePartner: (value: boolean) => { includePartner = value; },
     setRemainingBalance: (value: number) => { remainingMinor = value; },
@@ -460,7 +466,8 @@ afterEach(() => {
   mocks.setAccountLedgerAdopted(true);
   mocks.setStandingAutopayState("none");
   mocks.setPaidInFull(false);
-  mocks.setSelfSeasonEvidence({ holdsLineupSpot: true, seasonPaidInFull: false });
+  mocks.setSelfSeasonEvidence({ holdsLineupSpot: true, seasonPaidInFull: false, noPaymentDue: false });
+  mocks.setPartnerSeasonPaidInFull(false);
   mocks.setZeroParticipants(false);
   mocks.setIncludePartner(false);
   mocks.setRemainingBalance(8_750);
@@ -691,14 +698,15 @@ describe("MakePaymentPage upfront payment mode", () => {
   });
 
   it.each([
-    { label: "a lineup-spot holder the server proved paid in full", holdsLineupSpot: true, seasonPaidInFull: true, reason: "Paid in full, no additional payment needed." },
-    { label: "a roster member without a lineup spot who owes nothing", holdsLineupSpot: false, seasonPaidInFull: false, reason: "No payment is due right now." },
-    { label: "a lineup-spot holder with a zero balance the server did not prove", holdsLineupSpot: true, seasonPaidInFull: false, reason: "Weekly payments are unavailable for this recipient right now." },
-  ])("labels $label while a priced partner stays payable", async ({ holdsLineupSpot, seasonPaidInFull, reason }) => {
+    { label: "a lineup-spot holder the server proved paid in full", holdsLineupSpot: true, seasonPaidInFull: true, noPaymentDue: false, reason: "Paid in full, no additional payment needed." },
+    { label: "a roster member the server proved owes nothing", holdsLineupSpot: false, seasonPaidInFull: false, noPaymentDue: true, reason: "No payment is due right now." },
+    { label: "a roster member without a lineup spot whose zero balance is not proven clean", holdsLineupSpot: false, seasonPaidInFull: false, noPaymentDue: false, reason: "Weekly payments are unavailable for this recipient right now." },
+    { label: "a lineup-spot holder with a zero balance the server did not prove", holdsLineupSpot: true, seasonPaidInFull: false, noPaymentDue: false, reason: "Weekly payments are unavailable for this recipient right now." },
+  ])("labels $label while a priced partner stays payable", async ({ holdsLineupSpot, seasonPaidInFull, noPaymentDue, reason }) => {
     mocks.setPaymentMode("weekly");
     mocks.setIncludePartner(true);
     mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 0 });
-    mocks.setSelfSeasonEvidence({ holdsLineupSpot, seasonPaidInFull });
+    mocks.setSelfSeasonEvidence({ holdsLineupSpot, seasonPaidInFull, noPaymentDue });
     render(<MakePaymentPage />);
 
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
@@ -708,6 +716,22 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(checkout.recipientRows).toEqual([
       expect.objectContaining({ bowlerId: 42, eligible: false, reason }),
       expect.objectContaining({ bowlerId: 84, eligible: true, reason: null }),
+    ]);
+  });
+
+  it("shows a paid-in-full partner the server evidence instead of the generic unavailable reason", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.setIncludePartner(true);
+    mocks.setPartnerSeasonPaidInFull(true);
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
+      recipientRows: Array<{ bowlerId: number; eligible: boolean; reason: string | null }>;
+    };
+    expect(checkout.recipientRows).toEqual([
+      expect.objectContaining({ bowlerId: 42, eligible: true }),
+      expect.objectContaining({ bowlerId: 84, eligible: false, reason: "Paid in full, no additional payment needed." }),
     ]);
   });
 
