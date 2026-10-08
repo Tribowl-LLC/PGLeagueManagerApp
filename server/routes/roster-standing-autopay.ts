@@ -3,7 +3,7 @@ import { standingAutopayConsentRequestSchema, standingAutopayQuoteRequestSchema,
 import { hasAccessToLeague, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague, requireOrganizationAccess } from "../utils/access-control.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { storage } from "../storage/index.js";
-import { paymentWriteLimiter } from "../middleware/rate-limit.js";
+import { paymentQuoteLimiter, paymentWriteLimiter } from "../middleware/rate-limit.js";
 import { activateStandingAutopayConsent, quoteStandingAutopay, readStandingAutopayConsent, revokeStandingAutopayConsent, StandingAutopayError, StandingAutopayReplay } from "../services/roster-standing-autopay.js";
 
 const router = Router();
@@ -79,7 +79,7 @@ async function sendStandingAutopayQuote(req: Request, res: Response) {
 
 router.get("/leagues/:leagueId/standing-autopay/1/quote", sendStandingAutopayQuote);
 
-router.post("/leagues/:leagueId/standing-autopay/1/quote", paymentWriteLimiter, async (req, res) => {
+router.post("/leagues/:leagueId/standing-autopay/1/quote", paymentQuoteLimiter, async (req, res) => {
   const parsed = standingAutopayQuoteRequestSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid standing quote request", 400, "INVALID_REQUEST");
   return sendStandingAutopayQuote(req, res);

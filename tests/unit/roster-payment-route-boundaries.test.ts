@@ -61,6 +61,7 @@ vi.mock("../../server/utils/bowler-payment-authz.js", () => ({
 }));
 vi.mock("../../server/middleware/rate-limit.js", () => ({
   adminWriteLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
+  paymentQuoteLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
   paymentWriteLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 vi.mock("../../server/services/roster-payment-core.js", () => ({
