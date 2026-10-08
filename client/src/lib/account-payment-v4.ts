@@ -2,7 +2,11 @@ import type {
   AccountPaymentFundingSelectionV4,
   AccountPaymentParticipantsResponseV4,
 } from "@shared/account-payment-v4-contract";
-import { accountPaymentParticipantsResponseV4Schema } from "@shared/account-payment-v4-contract";
+import {
+  accountPaymentParticipantsResponseV4Schema,
+  resolveAccountPaymentFundingChargeAmountV4,
+  resolveAccountPaymentFundingCollectionTargetsV4,
+} from "@shared/account-payment-v4-contract";
 import { makeApiError } from "@/lib/api-error";
 
 export type ConfirmedAccountPaymentParticipantsV4 = Extract<
@@ -167,6 +171,48 @@ export function buildAccountPaymentSelectionsV4(input: {
       return [{ bowlerId: recipient.bowlerId, selection }];
     })
     .sort((left, right) => left.bowlerId - right.bowlerId);
+}
+
+export interface AccountPaymentQuotePreviewV4 {
+  amountMinor: number;
+  recipients: Array<{ bowlerId: number; name: string; role: "self" | "partner"; amountMinor: number }>;
+}
+
+/** Work out the total for the current choices from the participant response
+ * already on the page, using the same shared rules as the server quote. It is
+ * display-only: it carries no fingerprint, so a payment still needs the
+ * authoritative quote. Returns null when any choice cannot be priced. */
+export function previewAccountPaymentQuoteV4(
+  response: ConfirmedAccountPaymentParticipantsV4,
+  selections: readonly AccountPaymentRecipientSelectionV4[],
+): AccountPaymentQuotePreviewV4 | null {
+  if (selections.length === 0) return null;
+  const recipientById = new Map(response.recipients.map((recipient) => [recipient.bowlerId, recipient]));
+  const recipients: AccountPaymentQuotePreviewV4["recipients"] = [];
+  for (const { bowlerId, selection } of selections) {
+    const recipient = recipientById.get(bowlerId);
+    if (!recipient) return null;
+    const targets = resolveAccountPaymentFundingCollectionTargetsV4({
+      selection,
+      paymentMode: response.paymentMode,
+      confirmedDebtMinor: recipient.confirmedDebtMinor,
+      forecastTargets: recipient.forecastTargets,
+    });
+    if (!targets.ok) return null;
+    recipients.push({
+      bowlerId,
+      name: recipient.name,
+      role: recipient.role,
+      amountMinor: resolveAccountPaymentFundingChargeAmountV4({
+        selection,
+        confirmedDebtMinor: recipient.confirmedDebtMinor,
+        availableCreditMinor: recipient.availableCreditMinor,
+        collectionTargetMinor: targets.collectionTargetMinor,
+        forecastCollectionTargetMinor: targets.forecastCollectionTargetMinor,
+      }),
+    });
+  }
+  return { amountMinor: recipients.reduce((sum, recipient) => sum + recipient.amountMinor, 0), recipients };
 }
 
 export function defaultSelectedAccountRecipients(
