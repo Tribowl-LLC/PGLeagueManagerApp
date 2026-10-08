@@ -1,15 +1,18 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BrowserClient, defaultStackParser } from "@sentry/browser";
+import { dedupeIntegration, type Event, type SeverityLevel } from "@sentry/core/browser";
 
 type DiagnosticState = {
   user: unknown;
-  level?: string;
+  level?: SeverityLevel;
+  fingerprint?: string[];
   tags: Array<[string, string]>;
 };
 
 const mocks = vi.hoisted(() => ({
   initializeSquare: vi.fn(),
-  captureMessage: vi.fn(),
+  captureMessage: vi.fn<(message: string) => string>(),
   scopes: [] as DiagnosticState[],
 }));
 
@@ -18,7 +21,8 @@ vi.mock("@sentry/react", () => ({
   captureMessage: mocks.captureMessage,
   withScope: (callback: (scope: {
     setUser: (user: unknown) => void;
-    setLevel: (level: string) => void;
+    setLevel: (level: SeverityLevel) => void;
+    setFingerprint: (fingerprint: string[]) => void;
     setTag: (key: string, value: string) => void;
   }) => void) => {
     const state: DiagnosticState = { user: undefined, tags: [] };
@@ -26,6 +30,7 @@ vi.mock("@sentry/react", () => ({
     callback({
       setUser: (user) => { state.user = user; },
       setLevel: (level) => { state.level = level; },
+      setFingerprint: (fingerprint) => { state.fingerprint = [...fingerprint]; },
       setTag: (key, value) => { state.tags.push([key, value]); },
     });
   },
@@ -69,6 +74,30 @@ async function renderReadyWallet(
 
 function diagnosticTags(state: DiagnosticState): Record<string, string> {
   return Object.fromEntries(state.tags);
+}
+
+function capturedDiagnosticEvents(): Event[] {
+  return mocks.scopes.map((scope, index) => {
+    const message = mocks.captureMessage.mock.calls[index]?.[0];
+    if (message === undefined) throw new Error(`Apple Pay diagnostic ${index} had no captured message`);
+    return {
+      message,
+      level: scope.level,
+      fingerprint: scope.fingerprint,
+      tags: diagnosticTags(scope),
+    };
+  });
+}
+
+function createNoNetworkSentryClient(): BrowserClient {
+  return new BrowserClient({
+    integrations: [],
+    stackParser: defaultStackParser,
+    transport: () => ({
+      send: async () => ({ statusCode: 200 }),
+      flush: async () => true,
+    }),
+  });
 }
 
 describe("useWalletPayments Apple Pay diagnostics", () => {
@@ -195,6 +224,62 @@ describe("useWalletPayments Apple Pay diagnostics", () => {
       .not.toContain(downstreamMessage);
     expect(onError).toHaveBeenCalledWith(downstreamMessage);
     expect(diagnosticTags(mocks.scopes[1])).not.toHaveProperty("wallet_error_name");
+  });
+
+  it("keeps each Apple Pay outcome stage through the installed Sentry dedupe integration", async () => {
+    const applePay = {
+      tokenize: vi.fn()
+        .mockResolvedValueOnce({ status: "OK", token: "cnon:demo" })
+        .mockResolvedValueOnce({ status: "Cancel" })
+        .mockResolvedValueOnce({ status: "Error", errors: [{ type: "TOKENIZATION_IN_PROCESS", message: "private SDK detail" }] }),
+      destroy: vi.fn(),
+    };
+    const { result } = await renderReadyWallet(applePay);
+
+    await act(async () => { await result.current.handleApplePayClick(); });
+    await act(async () => { await result.current.handleApplePayClick(); });
+    await act(async () => { await result.current.handleApplePayClick(); });
+
+    expect(mocks.scopes.map(diagnosticTags).map((tags) => tags.wallet_payment_stage)).toEqual([
+      "tokenize_started",
+      "token_received",
+      "tokenize_started",
+      "dismissed",
+      "tokenize_started",
+      "tokenize_failed",
+    ]);
+
+    const dedupe = dedupeIntegration();
+    if (!dedupe.processEvent) throw new Error("Sentry Dedupe integration has no event processor");
+    const client = createNoNetworkSentryClient();
+    const accepted: Array<Event | null> = [];
+    try {
+      for (const event of capturedDiagnosticEvents()) {
+        accepted.push(await dedupe.processEvent(event, {}, client));
+      }
+    } finally {
+      await client.close(0);
+    }
+
+    expect(accepted.map((event) => event !== null)).toEqual([true, true, true, true, true, true]);
+    expect(accepted.flatMap((event) => event ? [event.tags?.wallet_payment_stage] : [])).toEqual([
+      "tokenize_started",
+      "token_received",
+      "tokenize_started",
+      "dismissed",
+      "tokenize_started",
+      "tokenize_failed",
+    ]);
+    expect(accepted.map((event) => event?.fingerprint)).toEqual([
+      ["apple-pay-wallet-outcome", "tokenize_started"],
+      ["apple-pay-wallet-outcome", "token_received"],
+      ["apple-pay-wallet-outcome", "tokenize_started"],
+      ["apple-pay-wallet-outcome", "dismissed"],
+      ["apple-pay-wallet-outcome", "tokenize_started"],
+      ["apple-pay-wallet-outcome", "tokenize_failed"],
+    ]);
+    expect(JSON.stringify(accepted)).not.toContain("cnon:demo");
+    expect(JSON.stringify(accepted)).not.toContain("private SDK detail");
   });
 
   it("does not invoke the charge callback when tokenization returns no token", async () => {
