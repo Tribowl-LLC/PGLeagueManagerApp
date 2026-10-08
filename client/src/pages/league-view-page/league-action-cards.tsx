@@ -1,5 +1,5 @@
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
-import { CalendarDays, Users, CircleDollarSign, ClipboardPenLine } from "lucide-react";
+import { CalendarDays, Users } from "lucide-react";
 import { Link } from "wouter";
 
 export function LeagueActionCards({
@@ -28,41 +28,6 @@ export function LeagueActionCards({
           </CardContent>
         </Card>
       </Link>}
-
-      {canManagePayments && (
-        <Link href={`/leagues/${leagueId}/payments/manage`} className="block">
-          <Card interaction="accent">
-            <CardHeader>
-              <div className="mb-2 flex justify-center">
-                <ClipboardPenLine className="size-6" />
-              </div>
-              <CardTitle>Manage Payments</CardTitle>
-              <CardDescription>
-                Record cash and check payments for this league
-              </CardDescription>
-            </CardHeader>
-            <CardContent />
-          </Card>
-        </Link>
-      )}
-
-      {canManagePayments && (
-        <Link href={`/payments?leagueId=${leagueId}`} className="block">
-          <Card interaction="accent">
-            <CardHeader>
-              <div className="flex justify-center mb-2">
-                <CircleDollarSign className="size-6" />
-              </div>
-              <CardTitle>Payment Records</CardTitle>
-              <CardDescription>
-                Review recorded league payments
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-            </CardContent>
-          </Card>
-        </Link>
-      )}
 
       <Link href={`/leagues/${leagueId}/schedule`} className="block">
         <Card interaction="accent">
