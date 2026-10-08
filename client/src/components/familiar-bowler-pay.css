@@ -915,11 +915,6 @@
   width: 100%;
 }
 
-[data-rotating-mode="true"] .familiar-payment-breakdown,
-[data-rotating-mode="true"] .familiar-payment-coverage {
-  display: none;
-}
-
 .familiar-rotating-balance-details {
   border-top: 1px solid var(--familiar-pay-line);
   color: var(--familiar-pay-muted);
@@ -1254,24 +1249,10 @@
     border: 1px solid var(--familiar-pay-line);
     border-radius: 8px;
   }
-
-  .familiar-bowler-pay-page-rotating {
-    display: block;
-    width: min(440px, calc(100% - 32px));
-    max-width: 440px;
-  }
-
-  .familiar-bowler-pay-page-rotating .familiar-bowler-pay-header {
-    margin-bottom: 18px;
-  }
-
-  .familiar-bowler-pay-page-rotating .familiar-rotating-card {
-    max-width: 440px;
-  }
 }
 
 @media (min-width: 1024px) and (max-width: 1120px) {
-  .familiar-bowler-pay-page:not(.familiar-bowler-pay-page-rotating):not(.familiar-bowler-pay-page-upfront) {
+  .familiar-bowler-pay-page:not(.familiar-bowler-pay-page-upfront) {
     width: min(754px, calc(100% - 32px));
     max-width: 754px;
     column-gap: 24px;
