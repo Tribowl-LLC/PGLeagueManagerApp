@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
-import type { ApiResponse, BowlerDetailsResponse, SavedCard, User } from "@shared/schema";
+import type { ApiResponse, User } from "@shared/schema";
 import type { StandingAutopayConsentWire } from "@shared/standing-autopay-contract";
 import { accountPaymentFundingQuoteResponseV4Schema } from "@shared/account-payment-v4-contract";
-import type { AccountPaymentFundingQuoteResponseV4, AccountPaymentParticipantsResponseV4 } from "@shared/account-payment-v4-contract";
+import type { AccountPaymentFundingQuoteResponseV4 } from "@shared/account-payment-v4-contract";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { LeagueBottomSheet } from "@/components/league-bottom-sheet";
 import { BowlerOneTimePaymentCard, type CompletedPayment, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
@@ -13,6 +13,7 @@ import { RotatingShareCreditCard } from "@/components/rotating-share-credit-card
 import "@/components/familiar-bowler-pay.css";
 import { Button } from "@/components/ui/button";
 import { PageErrorState, PageLoadingState } from "@/components/page-states";
+import { BowlerScreenSkeleton } from "@/components/bowler-screen-skeleton";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { useSelectedLeague } from "@/hooks/use-selected-league";
 import { filterBowlerLeaguesForActiveLeagues } from "@/lib/bowler-league-utils";
@@ -30,8 +31,8 @@ import { getApiErrorCode, getApiErrorStatus, isTransportError } from "@/lib/api-
 import { isProviderNotConfiguredError, providerNotConfiguredToast, makeApiError } from "@/lib/provider-not-configured";
 import { assertRosterPaymentSucceeded, clearPaymentIntent, interactivePaymentIntentScope, isTerminalRosterPaymentFailure, paymentRequestHeaders, paymentRequestWithRecovery, prepareRosterPaymentIntent, rosterPaymentStatusMessage } from "@/lib/payment-request-identity";
 import { paymentHistoryFinancialQueryKey, invalidatePaymentHistoryFinancials } from "@/lib/payment-history-financial-query";
+import { accountPaymentParticipantsQueryOptions, bowlerDetailsWithPaymentsQueryOptions, savedCardsQueryOptions } from "@/lib/bowler-screen-queries";
 import {
-  accountPaymentParticipantsQueryKey,
   accountParticipantsForPaymentChooser,
   buildAccountPaymentSelectionsV4,
   previewAccountPaymentQuoteV4,
@@ -39,7 +40,6 @@ import {
   defaultSelectedAccountRecipients,
   initialInteractivePaymentWeeks,
   isInteractivePaymentQuoteCurrent,
-  loadAccountPaymentParticipantsV4,
   participantAmountForSelection,
   type AccountPaymentChooserParticipant,
   type AccountPaymentMode,
@@ -338,13 +338,8 @@ export default function MakePaymentPage() {
 
   const { data: currentUser, isLoading: loadingUser, error: userError } = useQuery<ApiResponse<User>>({ queryKey: ["/api/user"] });
   const bowlerId = currentUser?.data?.bowlerId;
-  const { data: detailsResponse, isLoading: loadingDetails, error: detailsError, refetch: refetchDetails } = useQuery<ApiResponse<BowlerDetailsResponse>>({
-    queryKey: [`/api/bowlers/${bowlerId}/details`, { includePayments: true }],
-    queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/bowlers/${bowlerId}/details?includePayments=true`, { credentials: "include", headers: { Accept: "application/json" }, signal });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error?.message || "Failed to fetch bowler details");
-      return response.json();
-    },
+  const { data: detailsResponse, isLoading: loadingDetails, error: detailsError, refetch: refetchDetails } = useQuery({
+    ...bowlerDetailsWithPaymentsQueryOptions(bowlerId),
     enabled: !!bowlerId,
   });
   const details = detailsResponse?.data;
@@ -368,12 +363,9 @@ export default function MakePaymentPage() {
     setLeagueSheetOpen(true);
   }, []);
 
-  const accountParticipantsQuery = useQuery<AccountPaymentParticipantsResponseV4>({
-    queryKey: accountPaymentParticipantsQueryKey(leagueId ?? 0, bowlerId ?? 0),
-    queryFn: ({ signal }) => loadAccountPaymentParticipantsV4(leagueId ?? 0, bowlerId ?? 0, signal),
+  const accountParticipantsQuery = useQuery({
+    ...accountPaymentParticipantsQueryOptions(leagueId ?? 0, bowlerId ?? 0),
     enabled: !!bowlerId && !!leagueId,
-    staleTime: 30_000,
-    retry: false,
   });
   const refetchAccountParticipants = accountParticipantsQuery.refetch;
   const accountParticipants = accountParticipantsQuery.data?.accountingMode === "confirmed_account_v4"
@@ -413,16 +405,9 @@ export default function MakePaymentPage() {
     isLoading: loadingSavedCards,
     error: savedCardsError,
     refetch: refetchSavedCards,
-  } = useQuery<ApiResponse<SavedCard[]>>({
-    queryKey: [`/api/payments-provider/cards/${bowlerId}`, leagueId],
-    queryFn: async () => {
-      const response = await csrfFetch(`/api/payments-provider/cards/${bowlerId}?leagueId=${leagueId}`);
-      if (!response.ok) throw new Error("Failed to fetch saved cards");
-      return response.json();
-    },
+  } = useQuery({
+    ...savedCardsQueryOptions(bowlerId, leagueId),
     enabled: savedCardsQueryEnabled,
-    staleTime: 5 * 60_000,
-    retry: false,
   });
   const savedCards = savedCardsResponse?.data ?? [];
   const savedCardReadState = resolveSavedCardReadState(
@@ -1502,7 +1487,7 @@ export default function MakePaymentPage() {
     finally { setIsSubmitting(false); }
   };
 
-  if (loadingUser || loadingDetails || loadingParticipants || savedCardReadState === "loading") return <PageLoadingState />;
+  if (loadingUser || loadingDetails || loadingParticipants || savedCardReadState === "loading") return <BowlerScreenSkeleton screen="pay" bowlerName={details?.bowler?.name} leagueName={league?.name} />;
   if (userError) return <PageLoadingState message="Authentication required" />;
   if (currentUser?.data && !currentUser.data.bowlerId) return <PageLoadingState message="A bowler profile is required to make a payment" />;
   if (detailsError) return <MakePaymentReadError message="Payment profile data could not be loaded. Try again." onRetry={() => { void refetchDetails(); }} leagueId={selectedLeagueId ?? undefined} />;

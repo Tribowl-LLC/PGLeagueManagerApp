@@ -1,19 +1,18 @@
 /* eslint-disable shadcn/no-unknown-classes */
 import { FC, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { csrfFetch } from "@/lib/queryClient";
+import { dashboardDuePastDueQueryOptions, dashboardLatestPaymentsQueryOptions, occurrenceScheduleQueryOptions, rotatingCreditQueryOptions } from "@/lib/bowler-screen-queries";
 import { PaymentOverviewCard } from "@/components/payment-overview-card";
 import { PaymentDetailsDialog, paymentEvidenceBowlerDisplayStatus } from "@/components/payment-details-dialog";
 import { Link } from "wouter";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { ApiResponse, League, Bowler } from "@shared/schema";
-import type { CanonicalPaymentReport, CanonicalPaymentRow } from "@shared/canonical-payment-report";
+import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 import type { RotatingCreditBalanceWire } from "@shared/rotating-credit-contract";
 import type { CanonicalDuePastDueRowV2 } from "@shared/roster-payment-contract";
-import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import {
   LEAGUE_OCCURRENCE_SCHEDULE_CONTRACT_VERSION,
   type LeagueOccurrenceScheduleOccurrence,
-  type LeagueOccurrenceScheduleReadContract,
 } from "@shared/league-occurrence-schedule";
 import { accountProjectionForBowler, confirmedCurrentDueMinor, deriveBowlerFinancials } from "@/lib/financial-utils";
 import { rotatingPaidTotalMinor } from "@/lib/rotating-paid-total";
@@ -98,81 +97,13 @@ export function deriveCurrentDuePeriodLabel(
  * canonical due contract and has no legacy schedule fallback.
  */
 export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({ league, bowler, weeklyFee }) => {
-  const { data, isLoading, error } = useQuery<ApiResponse<CanonicalDuePastDueResponseV2>>({
-    queryKey: [`/api/financials/leagues/${league.id}/canonical-due-past-due/2`, bowler.id],
-    queryFn: async () => {
-      const response = await csrfFetch(`/api/financials/leagues/${league.id}/canonical-due-past-due/2?bowlerId=${bowler.id}`);
-      if (!response.ok) throw new Error("Canonical payment evidence is unavailable");
-      return response.json();
-    },
-    enabled: true,
-    retry: false,
-    staleTime: 30_000,
-  });
+  const { data, isLoading, error } = useQuery(dashboardDuePastDueQueryOptions(league.id, bowler.id));
 
-  const { data: paymentReportResponse, isLoading: isLoadingPayments, error: paymentReportError } = useQuery<ApiResponse<CanonicalPaymentReport>>({
-    queryKey: [`/api/financials/f5/payments`, { leagueId: league.id, bowlerId: bowler.id, view: "dashboard-latest" }],
-    queryFn: async ({ signal }) => {
-      // The canonical report is ordered oldest first. Its totals cover the
-      // full scope, but rows are paginated, so the newest payment is on the
-      // final page once a bowler has more than 20 rows.
-      const pageSize = 20;
-      const readPage = async (page: number): Promise<ApiResponse<CanonicalPaymentReport>> => {
-        const response = await fetch(`/api/financials/f5/payments?leagueId=${league.id}&bowlerId=${bowler.id}&page=${page}&limit=${pageSize}`, {
-          credentials: "include",
-          headers: { Accept: "application/json" },
-          signal,
-        });
-        if (!response.ok) throw new Error("Payment history is unavailable");
-        const result = await response.json() as ApiResponse<CanonicalPaymentReport>;
-        if (!result.success || !result.data || !Array.isArray(result.data.rows)
-          || !Number.isSafeInteger(result.data.totalRows) || result.data.totalRows < 0) {
-          throw new Error("Payment history is unavailable");
-        }
-        return result;
-      };
-      const firstPage = await readPage(1);
-      const lastPage = Math.ceil(firstPage.data.totalRows / pageSize);
-      const report = lastPage > 1 ? await readPage(lastPage) : firstPage;
-      if (report.data.totalRows > 0 && report.data.rows.length === 0) throw new Error("Payment history is unavailable");
-      return report;
-    },
-    enabled: true,
-    retry: false,
-    staleTime: 30_000,
-  });
+  const { data: paymentReportResponse, isLoading: isLoadingPayments, error: paymentReportError } = useQuery(dashboardLatestPaymentsQueryOptions(league.id, bowler.id));
 
-  const { data: rotatingCreditResponse, isLoading: isLoadingRotatingCredit, error: rotatingCreditError } = useQuery<ApiResponse<RotatingCreditBalanceWire>>({
-    queryKey: [`/api/financials/leagues/${league.id}/rotating-credit/1`],
-    queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/financials/leagues/${league.id}/rotating-credit/1`, {
-        credentials: "include",
-        headers: { Accept: "application/json" },
-        signal,
-      });
-      if (!response.ok) throw new Error("Rotating payment eligibility is unavailable");
-      return response.json();
-    },
-    enabled: true,
-    retry: false,
-    staleTime: 30_000,
-  });
+  const { data: rotatingCreditResponse, isLoading: isLoadingRotatingCredit, error: rotatingCreditError } = useQuery(rotatingCreditQueryOptions(league.id));
 
-  const { data: scheduleResponse } = useQuery<ApiResponse<LeagueOccurrenceScheduleReadContract>>({
-    queryKey: [`/api/leagues/${league.id}/occurrence-schedule`],
-    queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/leagues/${league.id}/occurrence-schedule`, {
-        credentials: "include",
-        headers: { Accept: "application/json" },
-        signal,
-      });
-      if (!response.ok) throw new Error("Canonical schedule is unavailable");
-      return response.json();
-    },
-    enabled: true,
-    retry: false,
-    staleTime: 60_000,
-  });
+  const { data: scheduleResponse } = useQuery(occurrenceScheduleQueryOptions(league.id));
 
   const rotatingCreditState = resolveRotatingCreditDisplayState(rotatingCreditResponse, isLoadingRotatingCredit, rotatingCreditError);
 
@@ -205,7 +136,16 @@ export const PaymentStatusSection: FC<PaymentStatusSectionProps> = ({ league, bo
     remainingBalance: report?.accountProjection ? summary.remainingBalance : report?.totals.outstandingMinor ?? 0,
     waivedAmount: summary.waivedAmount,
   };
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading canonical payment evidence…</p>;
+  if (isLoading) return (
+    <div role="status" aria-busy="true" className="flex flex-col gap-3" data-testid="payment-status-skeleton">
+      <span className="sr-only">Loading your payment status…</span>
+      <div className="grid grid-cols-2 gap-3">
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+      <Skeleton className="h-20 w-full" />
+    </div>
+  );
   if (error) return <p className="text-sm text-destructive">Canonical payment evidence requires review.</p>;
 
   return (
