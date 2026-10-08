@@ -593,6 +593,8 @@ export default function MakePaymentPage() {
   const walletStartQuoteRef = useRef<{ fingerprint: string; amountMinor: number; selectionKey: string } | null>(null);
   const selectedRecipientsRef = useRef(effectiveSelectedRecipients);
   selectedRecipientsRef.current = effectiveSelectedRecipients;
+  const storedSelectedRecipientsRef = useRef(selectedRecipients);
+  storedSelectedRecipientsRef.current = selectedRecipients;
   const recipientWeeksRef = useRef(recipientWeeks);
   recipientWeeksRef.current = recipientWeeks;
   const participantSnapshotRef = useRef<AccountPaymentChooserParticipant[] | null>(null);
@@ -692,9 +694,19 @@ export default function MakePaymentPage() {
       participantSnapshotRef.current = participants;
     } else {
       const previousParticipants = participantSnapshotRef.current;
+      const currentById = new Map(participants.map((participant) => [participant.bowlerId, participant]));
+      // The effective selection is derived from the refreshed participants, so
+      // a selected recipient who is no longer returned has already dropped out
+      // of it. Only the stored selection still shows that they were chosen.
+      const selectedRecipientRemoved = previousParticipants?.some((participant) => !currentById.has(participant.bowlerId)
+        && storedSelectedRecipientsRef.current[participant.bowlerId] === true) ?? false;
+      if (selectedRecipientRemoved) {
+        participantSnapshotRef.current = participants;
+        setSelectionStale(true);
+        return;
+      }
       if (previousParticipants && Object.values(selectedRecipientsRef.current).some(Boolean)) {
         const previousById = new Map(previousParticipants.map((participant) => [participant.bowlerId, participant]));
-        const currentById = new Map(participants.map((participant) => [participant.bowlerId, participant]));
         const stale = Object.entries(selectedRecipientsRef.current).some(([id, isSelected]) => {
           if (!isSelected) return false;
           const bowlerId = Number(id);
