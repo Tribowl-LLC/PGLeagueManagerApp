@@ -679,6 +679,22 @@ describe("MakePaymentPage upfront payment mode", () => {
     }));
   });
 
+  it("tells a paid-up self they are paid in full while a priced partner stays payable", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.setIncludePartner(true);
+    mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 0 });
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
+      recipientRows: Array<{ bowlerId: number; eligible: boolean; reason: string | null }>;
+    };
+    expect(checkout.recipientRows).toEqual([
+      expect.objectContaining({ bowlerId: 42, eligible: false, reason: "Paid in full, no additional payment needed." }),
+      expect.objectContaining({ bowlerId: 84, eligible: true, reason: null }),
+    ]);
+  });
+
   it("keeps an unpriced self unchecked and lets the payer select and charge only a priced partner week", async () => {
     mocks.setPaymentMode("weekly");
     mocks.setIncludePartner(true);

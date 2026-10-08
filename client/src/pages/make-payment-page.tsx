@@ -146,9 +146,11 @@ function isAccountRecipientPayable(
 function accountRecipientUnavailableReason(
   paymentMode: AccountPaymentMode,
   combinedAutopayMode: boolean,
+  remainingMinor: number,
 ): string {
   if (combinedAutopayMode) return "No amount is due now for this recipient.";
   if (paymentMode === "upfront") return "No one-time balance is available for this recipient.";
+  if (remainingMinor <= 0) return "Paid in full, no additional payment needed.";
   return "Weekly payments are unavailable for this recipient right now.";
 }
 
@@ -475,7 +477,7 @@ export default function MakePaymentPage() {
       eligible,
       reason: eligible
         ? participant.reason
-        : participant.reason ?? accountRecipientUnavailableReason(paymentMode, combinedAutopayMode),
+        : participant.reason ?? accountRecipientUnavailableReason(paymentMode, combinedAutopayMode, participant.remainingMinor),
     };
   }), [combinedAutopayMode, participants, fullBalanceOnly, paymentMode, recipientWeeks, effectiveSelectedRecipients]);
   const recipientSelections = useMemo<AccountPaymentRecipientSelectionV4[]>(() => {

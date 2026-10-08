@@ -95,6 +95,16 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
   });
 
+  it("tells a weekly bowler with no remaining balance that they are paid in full", () => {
+    renderCard(false, { amountMinor: 0, remainingMinor: 0, pastDueMinor: 0 }, [], [], false, false, undefined, false, {
+      hasAccountForecastChoices: false,
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Paid in full, no additional payment needed.");
+    expect(screen.queryByText(/Weekly payments are unavailable/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
+  });
+
   it("keeps combined autopay review available for its server-quoted current collection", () => {
     renderCard(false, { amountMinor: 4_500 }, [], [], false, false, undefined, true);
 
