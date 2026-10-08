@@ -2661,6 +2661,8 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     expect(participants.accountingMode).toBe("confirmed_account_v4");
     if (participants.accountingMode !== "confirmed_account_v4") throw new Error("review fixture did not use adopted account funding");
     expect(participants.recipients.every((recipient) => !("reviewHeldConfirmedDebt" in recipient))).toBe(true);
+    // A review-held or still-owing recipient is never reported as paid in full.
+    expect(participants.recipients.every((recipient) => recipient.seasonPaidInFull === false)).toBe(true);
 
     const quote = (recipientBowlerId: number, selection: { kind: "confirmed_debt_balance" } | { kind: "forecast_collection_target"; scope: "current_collection" } | { kind: "explicit_amount"; amountMinor: number }) => quoteAccountPaymentFundingV4({
       organizationId,
