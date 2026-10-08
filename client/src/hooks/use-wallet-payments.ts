@@ -47,6 +47,7 @@ function reportApplePayOutcome(
   try {
     Sentry.withScope((scope) => {
       scope.setUser(null);
+      scope.setFingerprint(["apple-pay-wallet-outcome", stage]);
       scope.setLevel(stage === "tokenize_failed" ? "warning" : "info");
       scope.setTag("wallet_payment_method", "apple_pay");
       scope.setTag("wallet_payment_stage", stage);
