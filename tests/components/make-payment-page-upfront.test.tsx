@@ -907,7 +907,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     }));
   });
 
-  it("returns to the solo self selection after a selected partner is removed", async () => {
+  it("warns that choices changed when the only selected recipient, a partner, is removed", async () => {
     mocks.setIncludePartner(true);
     const view = render(<MakePaymentPage />);
 
@@ -915,6 +915,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     let props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
       recipientRows: Array<{ bowlerId: number; selected: boolean }>;
       onRecipientToggle: (bowlerId: number, selected: boolean) => void;
+      onResetRecipientSelection: () => void;
     };
     expect(props.recipientRows).toEqual([
       expect.objectContaining({ bowlerId: 42, selected: true }),
@@ -929,6 +930,59 @@ describe("MakePaymentPage upfront payment mode", () => {
       recipientRows: [
         expect.objectContaining({ bowlerId: 42, selected: false }),
         expect.objectContaining({ bowlerId: 84, selected: true }),
+      ],
+    }));
+
+    mocks.setIncludePartner(false);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      selectionStale: true,
+      paymentAmountMinor: 0,
+    }));
+
+    props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof props;
+    act(() => { props.onResetRecipientSelection(); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      selectionStale: false,
+      paymentAmountMinor: 8_750,
+      recipientRows: [expect.objectContaining({ bowlerId: 42, selected: true })],
+    }));
+    view.unmount();
+  });
+
+  it("warns that choices changed when a selected partner is removed from a shared basket", async () => {
+    mocks.setIncludePartner(true);
+    const view = render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
+      onRecipientToggle: (bowlerId: number, selected: boolean) => void;
+    };
+    act(() => { props.onRecipientToggle(84, true); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      recipientRows: [
+        expect.objectContaining({ bowlerId: 42, selected: true }),
+        expect.objectContaining({ bowlerId: 84, selected: true }),
+      ],
+    }));
+
+    mocks.setIncludePartner(false);
+    view.rerender(<MakePaymentPage />);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      selectionStale: true,
+      paymentAmountMinor: 0,
+    }));
+    view.unmount();
+  });
+
+  it("does not warn when an unselected partner is removed", async () => {
+    mocks.setIncludePartner(true);
+    const view = render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      recipientRows: [
+        expect.objectContaining({ bowlerId: 42, selected: true }),
+        expect.objectContaining({ bowlerId: 84, selected: false }),
       ],
     }));
 
