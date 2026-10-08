@@ -14,6 +14,8 @@ const PROVIDER_TOKEN_RE =
 const BEARER_RE = /\bBearer\s+[A-Za-z0-9._-]+/gi;
 const PHONE_RE = /\+?\d[\d()\s.-]{6,}\d/g;
 const LONG_TOKEN_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
+const SENTRY_TRACE_ID_RE = /^(?!0{32}$)[0-9a-f]{32}$/;
+const SENTRY_SPAN_ID_RE = /^(?!0{16}$)[0-9a-f]{16}$/;
 
 export function scrubString(input: string): string {
   if (!input) return input;
@@ -94,6 +96,53 @@ type SentrySpanLike = {
   data?: Record<string, unknown>;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isSentryTraceId(value: unknown): value is string {
+  return typeof value === "string" && SENTRY_TRACE_ID_RE.test(value);
+}
+
+function isSentrySpanId(value: unknown): value is string {
+  return typeof value === "string" && SENTRY_SPAN_ID_RE.test(value);
+}
+
+function preserveTraceIdentifier(
+  source: Record<string, unknown>,
+  scrubbed: Record<string, unknown>,
+  key: "trace_id" | "span_id" | "parent_span_id",
+  isValid: (value: unknown) => value is string,
+  nullable = false,
+): void {
+  const value = source[key];
+  if (value === undefined) return;
+  if (nullable && value === null) {
+    scrubbed[key] = null;
+    return;
+  }
+  scrubbed[key] = isValid(value) ? value : TOKEN_MASK;
+}
+
+/**
+ * Keep only validated trace identity fields in Sentry's dedicated trace
+ * context. All other context data still goes through the normal privacy scrub.
+ */
+function scrubSentryContexts(contexts: Record<string, unknown>): Record<string, unknown> {
+  const scrubbedContexts = scrubDeep(contexts);
+  if (!isRecord(scrubbedContexts)) return {};
+
+  const sourceTrace = contexts.trace;
+  const scrubbedTrace = scrubbedContexts.trace;
+  if (!isRecord(sourceTrace) || !isRecord(scrubbedTrace)) return scrubbedContexts;
+
+  preserveTraceIdentifier(sourceTrace, scrubbedTrace, "trace_id", isSentryTraceId);
+  preserveTraceIdentifier(sourceTrace, scrubbedTrace, "span_id", isSentrySpanId);
+  preserveTraceIdentifier(sourceTrace, scrubbedTrace, "parent_span_id", isSentrySpanId, true);
+
+  return scrubbedContexts;
+}
+
 function isSensitiveSpanAttribute(key: string): boolean {
   const normalized = key.toLowerCase();
   return normalized === "url.query"
@@ -139,7 +188,7 @@ export function scrubSentryEvent<T extends SentryEventLike>(event: T): T {
   }
 
   if (event.extra) event.extra = scrubDeep(event.extra) as Record<string, unknown>;
-  if (event.contexts) event.contexts = scrubDeep(event.contexts) as Record<string, unknown>;
+  if (event.contexts) event.contexts = scrubSentryContexts(event.contexts);
 
   if (event.breadcrumbs) {
     for (const breadcrumb of event.breadcrumbs) {

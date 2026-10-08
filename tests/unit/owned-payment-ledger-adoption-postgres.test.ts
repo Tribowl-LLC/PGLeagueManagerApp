@@ -1434,14 +1434,18 @@ describe("owned payment ledger adoption preflight", () => {
     const triggerName = `owned_adoption_fail_${token}`;
     await db.execute(sql.raw(`CREATE FUNCTION public.${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'owned adoption test fault'; END; $$`));
     try {
-      await db.execute(sql.raw(`CREATE TRIGGER ${triggerName} BEFORE INSERT ON public.weekly_payment_fundings FOR EACH ROW EXECUTE FUNCTION public.${functionName}()`));
+      await db.execute(sql.raw(`CREATE TRIGGER ${triggerName} BEFORE INSERT ON public.weekly_payment_fundings
+        FOR EACH ROW WHEN (NEW.organization_id = ${organizationId} AND NEW.league_id = ${fixture.leagueId})
+        EXECUTE FUNCTION public.${functionName}()`));
       await expect(applyOwnedPaymentLedgerAdoption({
         organizationId,
         leagueId: fixture.leagueId,
         actorUserId,
         expectedSourceFingerprint: plan.sourceFingerprint,
         expectedResultFingerprint: plan.resultFingerprint,
-      }, db)).rejects.toThrow();
+      }, db)).rejects.toMatchObject({
+        cause: expect.objectContaining({ message: "owned adoption test fault" }),
+      });
     } finally {
       await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${triggerName} ON public.weekly_payment_fundings`));
       await db.execute(sql.raw(`DROP FUNCTION IF EXISTS public.${functionName}()`));
