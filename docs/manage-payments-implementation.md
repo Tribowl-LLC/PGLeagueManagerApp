@@ -1,5 +1,10 @@
 # Manage Payments: accepted design and release plan
 
+Manage Payments is the only place staff decide who owes for a week. For the
+bowler types, how bowlers pay, and the paid-in-full rule, see
+[`bowler-payment-model.md`](bowler-payment-model.md). Rotating credit described
+below is retiring; existing rotating lots stay readable.
+
 ## Scope and existing surfaces
 
 The organization-admin worksheet is the existing **Manage Payments** entry at

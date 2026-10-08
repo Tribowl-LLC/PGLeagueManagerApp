@@ -1,5 +1,18 @@
 # Roster-driven payments
 
+> **Partly superseded.** The current operating model is
+> [`bowler-payment-model.md`](bowler-payment-model.md). In this document:
+>
+> - Lineup slots still decide who is a Regular and still create a Regular's
+>   payment lines for each published week.
+> - Weekly responsibility is now decided on the Manage Payments worksheet.
+>   Per-week substitute and split overrides on a slot are retiring.
+> - The statements that paying ahead creates no credit ledger are no longer
+>   true. Leagues on the account ledger hold surplus as credit owned by the
+>   bowler; see [`manage-payments-implementation.md`](manage-payments-implementation.md).
+> - Recording cash and checks happens on the worksheet. The per-league
+>   manual-record page is removed.
+
 PR1 makes the Team Rosters surface the sole source of payer responsibility for
 newly configured leagues. A league chooses a paying lineup size of three or
 four, substitute access (`team_only` or `floating`), and a substitute payment
