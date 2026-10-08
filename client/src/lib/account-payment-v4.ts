@@ -32,6 +32,10 @@ export interface AccountPaymentChooserParticipant {
   weeklyOptions: AccountPaymentWeeklyOption[];
   eligible: boolean;
   reason: string | null;
+  /** Occupies a main lineup position; other roster members owe only assigned weeks. */
+  holdsLineupSpot: boolean;
+  /** Server-proven: payments and credit cover the whole published season. */
+  seasonPaidInFull: boolean;
   /** Exact amount currently due before standing automatic payments can start. */
   dueNowMinor?: number;
   /** Number of weeks represented by the due-now amount. */
@@ -125,6 +129,8 @@ export function accountParticipantsForPaymentChooser(
       weeklyOptions,
       eligible,
       reason: eligible ? null : "No balance or forecast is currently available",
+      holdsLineupSpot: recipient.holdsLineupSpot,
+      seasonPaidInFull: recipient.seasonPaidInFull,
       dueNowMinor: currentCollectionMinor,
       catchUpAmountMinor: currentCollectionMinor,
       catchUpWeeks: recipient.forecastTargets.selectedWeeks[0]?.weeks ?? 1,

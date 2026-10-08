@@ -95,14 +95,61 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
   });
 
-  it("tells a weekly bowler with no remaining balance that they are paid in full", () => {
-    renderCard(false, { amountMinor: 0, remainingMinor: 0, pastDueMinor: 0 }, [], [], false, false, undefined, false, {
+  it("tells a weekly bowler the server proved paid in full that no payment is needed", () => {
+    renderCard(false, { amountMinor: 0, remainingMinor: 0, pastDueMinor: 0, holdsLineupSpot: true, seasonPaidInFull: true }, [], [], false, false, undefined, false, {
       hasAccountForecastChoices: false,
     });
 
     expect(screen.getByRole("status")).toHaveTextContent("Paid in full, no additional payment needed.");
     expect(screen.queryByText(/Weekly payments are unavailable/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
+  });
+
+  it("does not infer paid in full from a zero balance the server did not prove", () => {
+    renderCard(false, { amountMinor: 0, remainingMinor: 0, pastDueMinor: 0, holdsLineupSpot: true, seasonPaidInFull: false }, [], [], false, false, undefined, false, {
+      hasAccountForecastChoices: false,
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Weekly payments are unavailable for this league right now. Contact your league manager for help.");
+    expect(screen.queryByText(/Paid in full/)).not.toBeInTheDocument();
+  });
+
+  it("tells a roster member without a lineup spot who owes nothing that no payment is due", () => {
+    renderCard(false, { amountMinor: 0, remainingMinor: 0, pastDueMinor: 0, holdsLineupSpot: false, seasonPaidInFull: false }, [], [], false, false, undefined, false, {
+      hasAccountForecastChoices: false,
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("No payment is due right now.");
+    expect(screen.queryByText(/Paid in full/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Weekly payments are unavailable/)).not.toBeInTheDocument();
+  });
+
+  it("does not ask for a recipient when linked recipients are all paid in full", () => {
+    const partner: PaymentRecipientRow = {
+      bowlerId: 84,
+      name: "Alex Partner",
+      role: "partner",
+      remainingMinor: 0,
+      pastDueMinor: 0,
+      weeks: 1,
+      maximumWeekCount: 1,
+      hasPricedWeekOptions: false,
+      amountMinor: 0,
+      selected: false,
+      eligible: false,
+      reason: "Paid in full, no additional payment needed.",
+      holdsLineupSpot: true,
+      seasonPaidInFull: true,
+    };
+    renderCard(false, {
+      amountMinor: 0, remainingMinor: 0, pastDueMinor: 0, selected: false, eligible: false,
+      reason: "Paid in full, no additional payment needed.", hasPricedWeekOptions: false, holdsLineupSpot: true, seasonPaidInFull: true,
+    }, [partner], [], false, false, undefined, false, {
+      hasAccountForecastChoices: false,
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Paid in full, no additional payment needed.");
+    expect(screen.queryByText("Select at least one recipient to continue.")).not.toBeInTheDocument();
   });
 
   it("keeps combined autopay review available for its server-quoted current collection", () => {

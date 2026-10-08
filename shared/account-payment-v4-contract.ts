@@ -35,7 +35,31 @@ const accountPaymentFundingParticipantV4Schema = z.object({
     }).strict()).max(1000),
     fullSeasonMinor: amountMinorSchema,
   }).strict(),
+  /** True when this recipient occupies a main lineup position in the league.
+   * Other roster members owe only the weeks staff assign to them. */
+  holdsLineupSpot: z.boolean(),
+  /** Server-proven season coverage: a lineup-spot holder in a fully published
+   * season whose real payments and available credit cover every confirmed and
+   * forecast week, with no review hold. Zero demand alone is never proof. */
+  seasonPaidInFull: z.boolean(),
 }).strict();
+
+/** Decide whether a recipient may be told the season is paid in full. Every
+ * input is server evidence. Zero remaining demand is not proof on its own: a
+ * league with nothing materialized, a waived-only history, or a roster member
+ * without a lineup spot never qualifies. */
+export function isSeasonPaidInFullV4(input: {
+  holdsLineupSpot: boolean;
+  seasonFullyPublished: boolean;
+  fullSeasonMinor: number;
+  availableCreditMinor: number;
+  confirmedPaidMinor: number;
+  reviewHeld: boolean;
+}): boolean {
+  if (!input.holdsLineupSpot || !input.seasonFullyPublished || input.reviewHeld) return false;
+  if (input.availableCreditMinor < input.fullSeasonMinor) return false;
+  return input.fullSeasonMinor > 0 || input.confirmedPaidMinor > 0;
+}
 
 const accountPaymentParticipantsV4Base = z.object({
   contractVersion: z.literal(ACCOUNT_PAYMENT_PARTICIPANTS_CONTRACT_V4),

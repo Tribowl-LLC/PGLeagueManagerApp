@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => {
   let accountLedgerAdopted = true;
   let explicitAccountTargets = false;
   let paidInFull = false;
+  let selfHoldsLineupSpot = true;
+  let selfSeasonPaidInFull = false;
   let zeroParticipants = false;
   let includePartner = false;
   let remainingMinor = 8_750;
@@ -125,6 +127,8 @@ const mocks = vi.hoisted(() => {
         selectedWeeks: selfAccountTargets().selectedWeeks,
         fullSeasonMinor: selfAccountTargets().fullSeasonMinor,
       },
+      holdsLineupSpot: selfHoldsLineupSpot,
+      seasonPaidInFull: selfSeasonPaidInFull,
     }, ...(includePartner ? [{
       bowlerId: 84,
       name: "Alex Partner",
@@ -137,6 +141,8 @@ const mocks = vi.hoisted(() => {
         selectedWeeks: [{ weeks: 1, amountMinor: 6_000 }],
         fullSeasonMinor: 8_000,
       },
+      holdsLineupSpot: true,
+      seasonPaidInFull: false,
     }] : [])],
   } : {
     contractVersion: "interactive-payment-participants/4",
@@ -281,6 +287,10 @@ const mocks = vi.hoisted(() => {
     },
     setStandingAutopayState: (state: "pending" | "active" | "revoked" | "expired" | "none") => { standingAutopayState = state; },
     setPaidInFull: (value: boolean) => { paidInFull = value; },
+    setSelfSeasonEvidence: (values: { holdsLineupSpot: boolean; seasonPaidInFull: boolean }) => {
+      selfHoldsLineupSpot = values.holdsLineupSpot;
+      selfSeasonPaidInFull = values.seasonPaidInFull;
+    },
     setZeroParticipants: (value: boolean) => { zeroParticipants = value; },
     setIncludePartner: (value: boolean) => { includePartner = value; },
     setRemainingBalance: (value: number) => { remainingMinor = value; },
@@ -450,6 +460,7 @@ afterEach(() => {
   mocks.setAccountLedgerAdopted(true);
   mocks.setStandingAutopayState("none");
   mocks.setPaidInFull(false);
+  mocks.setSelfSeasonEvidence({ holdsLineupSpot: true, seasonPaidInFull: false });
   mocks.setZeroParticipants(false);
   mocks.setIncludePartner(false);
   mocks.setRemainingBalance(8_750);
@@ -679,10 +690,15 @@ describe("MakePaymentPage upfront payment mode", () => {
     }));
   });
 
-  it("tells a paid-up self they are paid in full while a priced partner stays payable", async () => {
+  it.each([
+    { label: "a lineup-spot holder the server proved paid in full", holdsLineupSpot: true, seasonPaidInFull: true, reason: "Paid in full, no additional payment needed." },
+    { label: "a roster member without a lineup spot who owes nothing", holdsLineupSpot: false, seasonPaidInFull: false, reason: "No payment is due right now." },
+    { label: "a lineup-spot holder with a zero balance the server did not prove", holdsLineupSpot: true, seasonPaidInFull: false, reason: "Weekly payments are unavailable for this recipient right now." },
+  ])("labels $label while a priced partner stays payable", async ({ holdsLineupSpot, seasonPaidInFull, reason }) => {
     mocks.setPaymentMode("weekly");
     mocks.setIncludePartner(true);
     mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 0 });
+    mocks.setSelfSeasonEvidence({ holdsLineupSpot, seasonPaidInFull });
     render(<MakePaymentPage />);
 
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
@@ -690,7 +706,7 @@ describe("MakePaymentPage upfront payment mode", () => {
       recipientRows: Array<{ bowlerId: number; eligible: boolean; reason: string | null }>;
     };
     expect(checkout.recipientRows).toEqual([
-      expect.objectContaining({ bowlerId: 42, eligible: false, reason: "Paid in full, no additional payment needed." }),
+      expect.objectContaining({ bowlerId: 42, eligible: false, reason }),
       expect.objectContaining({ bowlerId: 84, eligible: true, reason: null }),
     ]);
   });

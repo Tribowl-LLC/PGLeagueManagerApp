@@ -22,6 +22,10 @@ export interface PaymentRecipientRow {
   role: "self" | "partner";
   remainingMinor: number;
   pastDueMinor: number;
+  /** Occupies a main lineup position in this league. */
+  holdsLineupSpot?: boolean;
+  /** Server-proven season coverage; never inferred from a zero balance. */
+  seasonPaidInFull?: boolean;
   weeks: number;
   maximumWeekCount: number;
   hasPricedWeekOptions?: boolean;
@@ -133,7 +137,10 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
   const hasPaymentPartner = recipientRows.some((row) => row.role === "partner");
   const showRecipientChooser = hasPaymentPartner && !dueNowOnly;
   const showSoloWeekSelection = !hasPaymentPartner && !dueNowOnly && !fullBalanceOnly && hasAccountForecastChoices;
-  const paidInFull = recipientRows.length > 0 && recipientRows.every((row) => row.remainingMinor <= 0);
+  const paidInFull = recipientRows.length > 0 && recipientRows.every((row) => row.seasonPaidInFull === true);
+  const nothingDue = recipientRows.length > 0
+    && recipientRows.every((row) => row.seasonPaidInFull === true || (row.holdsLineupSpot === false && row.remainingMinor <= 0));
+  const hasEligibleRecipient = recipientRows.some((row) => row.eligible);
   const compactFullBalanceRows = fullBalanceOnly && hasPaymentPartner;
   const showRecipientRows = hasPaymentPartner || dueNowOnly || showSoloWeekSelection;
   const hasSelectedRecipient = recipientRows.some((row) => row.selected && row.eligible);
@@ -286,9 +293,9 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
                 </div>
               ))}
         </fieldset>
-        {!dueNowOnly && !fullBalanceOnly && !hasAccountForecastChoices && <Alert role="status"><AlertDescription>{paidInFull ? "Paid in full, no additional payment needed." : "Weekly payments are unavailable for this league right now. Contact your league manager for help."}</AlertDescription></Alert>}
+        {!dueNowOnly && !fullBalanceOnly && !hasAccountForecastChoices && <Alert role="status"><AlertDescription>{paidInFull ? "Paid in full, no additional payment needed." : nothingDue ? "No payment is due right now." : "Weekly payments are unavailable for this league right now. Contact your league manager for help."}</AlertDescription></Alert>}
         {recipientRows.length === 0 && <Alert><AlertDescription>No payment recipients are available for this league.</AlertDescription></Alert>}
-        {showRecipientChooser && !hasSelectedRecipient && <Alert><AlertDescription>Select at least one recipient to continue.</AlertDescription></Alert>}
+        {showRecipientChooser && !hasSelectedRecipient && hasEligibleRecipient && <Alert><AlertDescription>Select at least one recipient to continue.</AlertDescription></Alert>}
         {paymentRefreshState === "refreshing" && <Alert><AlertDescription>Refreshing payment balances before continuing…</AlertDescription></Alert>}
         {paymentRefreshState === "retry" && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{paymentRefreshError ?? "Payment balances could not be refreshed. Try again."}</span>{onRetryPaymentRefresh && <Button type="button" variant="outline" size="sm" onClick={onRetryPaymentRefresh}>Retry refresh</Button>}</AlertDescription></Alert>}
         {selectionStale && <Alert variant="destructive"><AlertDescription gap="3" className="flex flex-wrap items-center justify-between"><span>{selectionStaleMessage}</span>{onResetRecipientSelection && <Button type="button" variant="outline" size="sm" onClick={onResetRecipientSelection}>Reset choices</Button>}</AlertDescription></Alert>}

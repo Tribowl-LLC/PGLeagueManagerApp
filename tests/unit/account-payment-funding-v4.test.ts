@@ -7,6 +7,7 @@ import {
   accountPaymentFundingQuoteRequestV4Schema,
   accountPaymentParticipantsResponseV4Schema,
   isAccountFundingOperationUnresolvedV4,
+  isSeasonPaidInFullV4,
   resolveAccountPaymentFundingChargeAmountV4,
 } from "@shared/account-payment-v4-contract";
 import {
@@ -161,9 +162,15 @@ describe("account payment funding V4 contract and operation snapshots", () => {
           selectedWeeks: [{ weeks: 1, amountMinor: 1_500 }, { weeks: 2, amountMinor: 3_000 }],
           fullSeasonMinor: 8_000,
         },
+        holdsLineupSpot: true,
+        seasonPaidInFull: false,
       }],
     };
     expect(accountPaymentParticipantsResponseV4Schema.safeParse(response).success).toBe(true);
+    expect(accountPaymentParticipantsResponseV4Schema.safeParse({
+      ...response,
+      recipients: [{ ...response.recipients[0], seasonPaidInFull: undefined }],
+    }).success).toBe(false);
     expect(accountPaymentParticipantsResponseV4Schema.safeParse({
       ...response,
       recipients: [{ ...response.recipients[0], confirmedPastDueMinor: undefined }],
@@ -438,5 +445,42 @@ describe("account payment funding V4 contract and operation snapshots", () => {
       recipientEvidence: [stored.recipientEvidence[0], { ...stored.recipientEvidence[1], linkFingerprint: `lvpartnerlink:v1:${"c".repeat(64)}` }],
     };
     expect(() => reconstructAccountPaymentOperationSnapshot({ operation: expected, stored: tamperedEvidence })).toThrow(/fingerprint/);
+  });
+});
+
+describe("isSeasonPaidInFullV4", () => {
+  const covered = {
+    holdsLineupSpot: true,
+    seasonFullyPublished: true,
+    fullSeasonMinor: 60_000,
+    availableCreditMinor: 60_000,
+    confirmedPaidMinor: 0,
+    reviewHeld: false,
+  };
+
+  it("accepts a lineup-spot holder whose credit covers a positive remaining season", () => {
+    expect(isSeasonPaidInFullV4(covered)).toBe(true);
+    expect(isSeasonPaidInFullV4({ ...covered, availableCreditMinor: 75_000 })).toBe(true);
+  });
+
+  it("accepts a settled season only when real payment was applied", () => {
+    const settled = { ...covered, fullSeasonMinor: 0, availableCreditMinor: 0 };
+    expect(isSeasonPaidInFullV4({ ...settled, confirmedPaidMinor: 2_500 })).toBe(true);
+    // Nothing materialized, or waived-only history: zero demand is not proof.
+    expect(isSeasonPaidInFullV4({ ...settled, confirmedPaidMinor: 0 })).toBe(false);
+  });
+
+  it("rejects any shortfall, however small", () => {
+    expect(isSeasonPaidInFullV4({ ...covered, availableCreditMinor: 59_999 })).toBe(false);
+  });
+
+  it("never applies to a roster member without a lineup spot", () => {
+    expect(isSeasonPaidInFullV4({ ...covered, holdsLineupSpot: false })).toBe(false);
+    expect(isSeasonPaidInFullV4({ ...covered, holdsLineupSpot: false, fullSeasonMinor: 0, confirmedPaidMinor: 2_500 })).toBe(false);
+  });
+
+  it("fails closed when the season is not fully published or evidence is under review", () => {
+    expect(isSeasonPaidInFullV4({ ...covered, seasonFullyPublished: false })).toBe(false);
+    expect(isSeasonPaidInFullV4({ ...covered, reviewHeld: true })).toBe(false);
   });
 });
