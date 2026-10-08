@@ -13,9 +13,11 @@ kinds, decided by one fact: whether they hold a lineup spot.
 
 - **Regular.** Holds a lineup spot on a team (a `main` position in
   `team_payment_slots`). A regular is expected every week, so the system
-  creates a payment line for every published week of the season. A regular has
-  a season total, can be paid through a number of weeks, can use automatic
-  payments, and can be paid in full.
+  creates a payment line for each published week that is not yet confirmed.
+  Weeks confirmed before the bowler took the spot keep whatever responsibility
+  was recorded for them; taking a spot never creates liability for earlier
+  confirmed weeks. A regular has a season total, can be paid through a number
+  of weeks, can use automatic payments, and can be paid in full.
 - **Sub.** Every other roster member. A sub owes only the weeks that staff
   assign to them in Manage Payments. A sub has no season total and is never
   paid in full, because nobody knows how many weeks they will bowl.
@@ -37,13 +39,17 @@ current and future weeks are forecasts. See
 [`manage-payments-implementation.md`](manage-payments-implementation.md).
 
 Payment managers review payment records and reports. They do not record
-payments.
+payments, with one retiring exception: while a team still has a rotating slot,
+its Rotating team payments panel lets a payment manager record cash and check
+payments for that team. The exception ends when the panel is removed.
 
 ## How a bowler pays
 
-Bowlers pay on the Pay page by choosing a number of weeks. A bowler never
-types a dollar amount, and there is no "add credit to my account" option. Do
-not add one.
+In a weekly league, bowlers pay on the Pay page by choosing a number of weeks.
+In an upfront league, the Pay page offers one payment for the full season
+balance and does not accept a week count; that mode is supported and stays. In
+both modes a bowler never types a dollar amount, and there is no "add credit
+to my account" option. Do not add one.
 
 - A regular's weeks are priced from their own remaining season.
 - Money that arrives before staff confirm a week waits as credit owned by that
@@ -86,11 +92,11 @@ retired code and its documentation are gone.
 | Manage Payments worksheet | Current. The only screen for recording payments. |
 | Per-league manual-record page (`/leagues/:leagueId/payments/manage`) | Removed. Its `canonical/manual-record-batch` server endpoints remain with no client caller and are to be removed. |
 | Restoring an archived league | Requires account-ledger adoption. |
-| Server-proven paid in full and nothing due | In review; the participants response carries `holdsLineupSpot`, `seasonPaidInFull`, and `noPaymentDue`. |
-| Subs paying by weeks on the Pay page | Not built. Planned: weeks priced at the league weekly fee, capped at the weeks left in the season, held until staff assign a week. |
+| Server-proven paid in full and nothing due | Current. The participants response carries `holdsLineupSpot`, `seasonPaidInFull`, and `noPaymentDue`. |
+| Subs paying by weeks on the Pay page | Not built. Planned for weekly leagues: weeks priced at the league weekly fee, capped at the weeks left in the season, held until staff assign a week. |
 | Rotating slots, rotation pools, weekly rotating assignments, rotating credit, the Rotating team payments panel, and the rotating credit card on the Pay page | Retiring. Still in the code and schema. Remove only after every team with a rotating slot has been converted. |
 | Per-week substitute and split overrides on a slot | Retiring. Still in the code. The worksheet's payer and fee component replace them. |
-| Legacy V3 payment endpoints and contracts on the server | Retained for history and receipts. Not used by the bowler checkout. |
+| Legacy V3 payment endpoints (`interactive-payment-participants/3`, `-quote/3`, `-charge/3`) | Live compatibility surface. The web client no longer calls them, but the server still serves them and will take a V3 card charge for a league without account-ledger adoption. Treat them as payment code, not history. Retiring them needs an explicit contract change. |
 
 Schema and migration history is never rewritten. Retired tables and their
 historical rows stay readable; retirement removes behavior, screens, and

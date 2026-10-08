@@ -364,8 +364,9 @@ integrity, historical reports, and future ownership boundaries.
   - A roster member is a Regular (holds a lineup spot) or a Sub (everyone
     else). There is no rotating bowler type.
   - Manage Payments is the only place staff decide who owes for a week.
-  - Bowlers pay by choosing weeks. Do not add a typed-amount or "add credit to
-    my account" option.
+  - Weekly-league bowlers pay by choosing weeks; upfront leagues keep their
+    single full-season payment. Do not add a typed-amount or "add credit to my
+    account" option.
   - "Paid in full" and "nothing due" are server-proven; never infer them from
     a zero balance in the client.
   - Do not build on anything that document lists as retiring.
