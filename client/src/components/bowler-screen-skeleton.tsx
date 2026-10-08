@@ -8,6 +8,8 @@ interface BowlerScreenSkeletonProps {
   message?: string;
   bowlerName?: string | null;
   leagueName?: string | null;
+  /** Keeps the navigation links on the league this screen is loading. */
+  leagueId?: number;
 }
 
 const SCREEN_TITLES = {
@@ -47,12 +49,12 @@ function SkeletonRows({ count }: { count: number }) {
  * screen's data loads, in place of a blank page with a spinner. Whatever is
  * already known (the bowler and league names) is shown for real.
  */
-export const BowlerScreenSkeleton: FC<BowlerScreenSkeletonProps> = ({ screen, message = "Loading…", bowlerName, leagueName }) => {
+export const BowlerScreenSkeleton: FC<BowlerScreenSkeletonProps> = ({ screen, message = "Loading…", bowlerName, leagueName, leagueId }) => {
   const title = SCREEN_TITLES[screen];
   return (
     // A non-breaking space keeps the league bar from inviting a league choice
     // before the bowler's leagues are known.
-    <BowlerLayout bowlerName={bowlerName ?? ""} leagueName={leagueName || " "}>
+    <BowlerLayout bowlerName={bowlerName ?? ""} leagueName={leagueName || " "} currentLeagueId={leagueId}>
       <div role="status" aria-busy="true" className="flex flex-col gap-6" data-testid="bowler-screen-skeleton">
         <span className="sr-only">{message}</span>
         {title

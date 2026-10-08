@@ -1495,7 +1495,7 @@ export default function MakePaymentPage() {
     finally { setIsSubmitting(false); }
   };
 
-  if (loadingUser || loadingDetails || loadingParticipants || savedCardReadState === "loading") return <BowlerScreenSkeleton screen="pay" bowlerName={details?.bowler?.name} leagueName={league?.name} />;
+  if (loadingUser || loadingDetails || loadingParticipants || savedCardReadState === "loading") return <BowlerScreenSkeleton screen="pay" bowlerName={details?.bowler?.name} leagueName={league?.name} leagueId={league?.id} />;
   if (userError) return <PageLoadingState message="Authentication required" />;
   if (currentUser?.data && !currentUser.data.bowlerId) return <PageLoadingState message="A bowler profile is required to make a payment" />;
   if (detailsError) return <MakePaymentReadError message="Payment profile data could not be loaded. Try again." onRetry={() => { void refetchDetails(); }} leagueId={selectedLeagueId ?? undefined} />;

@@ -1,4 +1,4 @@
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import { hashKey, queryOptions, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import type { ApiResponse, BowlerDetailsResponse, SavedCard } from "@shared/schema";
 import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
@@ -163,7 +163,8 @@ export function accountPaymentParticipantsQueryOptions(leagueId: number, bowlerI
 const SELECTED_LEAGUE_STORAGE_KEY = "bowler_selected_league_id";
 
 /** The league the bowler screens will open on: the remembered choice when it
- * is still one of the bowler's leagues, otherwise their first active one. */
+ * is still one of the bowler's active leagues, otherwise their first active
+ * one. Matches the dashboard, which never opens on an inactive league. */
 export function resolvePreloadLeagueId(details: BowlerDetailsResponse | undefined): number | undefined {
   const memberships = details?.bowlerLeagues ?? [];
   if (memberships.length === 0) return undefined;
@@ -174,10 +175,24 @@ export function resolvePreloadLeagueId(details: BowlerDetailsResponse | undefine
   } catch {
     stored = null;
   }
-  if (stored !== null && memberships.some((membership) => membership.leagueId === stored)) return stored;
   const leagueMap = new Map((details?.leagues ?? []).map((league) => [league.id, league]));
   const active = filterBowlerLeaguesForActiveLeagues(memberships.filter((membership) => membership.active), leagueMap);
-  return (active[0] ?? memberships[0])?.leagueId;
+  const remembered = stored === null ? undefined : active.find((membership) => membership.leagueId === stored);
+  return (remembered ?? active[0] ?? memberships[0])?.leagueId;
+}
+
+/** Resolves once the query holds data, so a preload that started while the
+ * profile read was failing picks up again when a screen's retry succeeds. */
+function whenQueryHasData(client: QueryClient, queryKey: QueryKey): Promise<void> {
+  if (client.getQueryData(queryKey) !== undefined) return Promise.resolve();
+  const queryHash = hashKey(queryKey);
+  return new Promise((resolve) => {
+    const unsubscribe = client.getQueryCache().subscribe((event) => {
+      if (event.query.queryHash !== queryHash || event.query.state.data === undefined) return;
+      unsubscribe();
+      resolve();
+    });
+  });
 }
 
 /** Kept a little longer than the default so a first tap a few minutes after
@@ -202,7 +217,9 @@ export async function preloadBowlerScreens(client: QueryClient, bowlerId: number
     client.prefetchQuery({ queryKey: ["/api/leagues"] }),
     client.prefetchQuery(detailsOptions),
   ]);
-  const leagueId = resolvePreloadLeagueId(client.getQueryData(detailsOptions.queryKey)?.data);
+  await whenQueryHasData(client, detailsOptions.queryKey);
+  const details = client.getQueryData(detailsOptions.queryKey)?.data;
+  const leagueId = resolvePreloadLeagueId(details);
   if (leagueId === undefined) return;
 
   const dueOptions = dashboardDuePastDueQueryOptions(leagueId, bowlerId);
@@ -219,11 +236,20 @@ export async function preloadBowlerScreens(client: QueryClient, bowlerId: number
     client.setQueryData(historyFinancialKey, due);
   }
 
+  const participantsOptions = accountPaymentParticipantsQueryOptions(leagueId, bowlerId);
   await Promise.all([
     client.prefetchQuery({ ...bowlerDetailsWithPaymentsQueryOptions(bowlerId), gcTime: PRELOAD_GC_TIME }),
-    client.prefetchQuery({ ...accountPaymentParticipantsQueryOptions(leagueId, bowlerId), gcTime: PRELOAD_GC_TIME }),
     client.prefetchQuery({ ...savedCardsQueryOptions(bowlerId, leagueId), gcTime: PRELOAD_GC_TIME }),
-    client.prefetchQuery({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`], retry: false, gcTime: PRELOAD_GC_TIME }),
+    client.prefetchQuery({ ...participantsOptions, gcTime: PRELOAD_GC_TIME }).then(() => {
+      // Pay only reads standing autopay for a weekly league; the endpoint
+      // rejects an upfront one.
+      const participants = client.getQueryData(participantsOptions.queryKey);
+      const paymentMode = (participants && "paymentMode" in participants ? participants.paymentMode : undefined)
+        ?? details?.leagues?.find((league) => league.id === leagueId)?.paymentMode
+        ?? "weekly";
+      if (paymentMode === "upfront") return undefined;
+      return client.prefetchQuery({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`], retry: false, gcTime: PRELOAD_GC_TIME });
+    }),
   ]);
 
   await client.prefetchQuery({ ...paymentHistoryReportQueryOptions(leagueId, bowlerId, 1), gcTime: PRELOAD_GC_TIME });

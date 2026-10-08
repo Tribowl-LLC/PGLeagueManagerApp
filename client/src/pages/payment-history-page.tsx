@@ -96,7 +96,7 @@ export default function PaymentHistoryPage() {
   };
 
   if (loadingUser || loadingDetails || loadingReport || loadingFinancial) {
-    return <BowlerScreenSkeleton screen="history" bowlerName={details?.bowler?.name} leagueName={league?.name} />;
+    return <BowlerScreenSkeleton screen="history" bowlerName={details?.bowler?.name} leagueName={league?.name} leagueId={league?.id} />;
   }
   if (userError) return <AuthErrorView />;
   if (currentUser?.data && !currentUser.data.bowlerId) return <NoBowlerView userName={currentUser.data.name} isSystemAdmin={currentUser.data.role === "system_admin"} />;

@@ -4,6 +4,7 @@ import { QueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import {
   accountPaymentParticipantsQueryOptions,
+  bowlerDetailsQueryOptions,
   bowlerDetailsWithPaymentsQueryOptions,
   dashboardDuePastDueQueryOptions,
   dashboardLatestPaymentsQueryOptions,
@@ -21,8 +22,8 @@ vi.mock("@/lib/queryClient", () => ({
   csrfFetch: (url: string, init?: RequestInit) => fetch(url, init),
 }));
 vi.mock("@/components/bowler-layout", () => ({
-  BowlerLayout: ({ children, bowlerName, leagueName }: { children: ReactNode; bowlerName: string; leagueName: string }) => (
-    <div data-testid="bowler-layout" data-bowler-name={bowlerName} data-league-name={leagueName}>{children}</div>
+  BowlerLayout: ({ children, bowlerName, leagueName, currentLeagueId }: { children: ReactNode; bowlerName: string; leagueName: string; currentLeagueId?: number }) => (
+    <div data-testid="bowler-layout" data-bowler-name={bowlerName} data-league-name={leagueName} data-league-id={currentLeagueId}>{children}</div>
   ),
 }));
 
@@ -138,6 +139,42 @@ describe("bowler screen preload", () => {
     expect(requested.some((url) => url.includes("/api/financials/"))).toBe(false);
   });
 
+  it("does not read standing autopay for an upfront league", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      const body = url.includes("interactive-payment-participants/4")
+        ? { success: true, data: { ...participantsBody(17), paymentMode: "upfront" } }
+        : bodyFor(url);
+      return new Response(JSON.stringify(body), { status: 200 });
+    }));
+    const client = newClient();
+    await preloadBowlerScreens(client, BOWLER_ID);
+
+    expect(client.getQueryData(accountPaymentParticipantsQueryOptions(17, BOWLER_ID).queryKey)).toBeDefined();
+    expect(requested.some((url) => url.includes("standing-autopay"))).toBe(false);
+  });
+
+  it("picks the preload back up when a failed profile read later succeeds", async () => {
+    let profileAvailable = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.includes("/details") && !profileAvailable) return new Response("{}", { status: 500 });
+      return new Response(JSON.stringify(bodyFor(url)), { status: 200 });
+    }));
+    const client = newClient();
+    const preload = preloadBowlerScreens(client, BOWLER_ID);
+    await vi.waitFor(() => expect(client.getQueryState(bowlerDetailsQueryOptions(BOWLER_ID).queryKey)?.status).toBe("error"));
+    expect(requested.some((url) => url.includes("/api/financials/"))).toBe(false);
+
+    profileAvailable = true;
+    await client.fetchQuery(bowlerDetailsQueryOptions(BOWLER_ID));
+    await preload;
+
+    expect(client.getQueryData(accountPaymentParticipantsQueryOptions(17, BOWLER_ID).queryKey)).toBeDefined();
+  });
+
   it("leaves a failed read for the screen to report and still loads the rest", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -159,6 +196,14 @@ describe("resolvePreloadLeagueId", () => {
     expect(resolvePreloadLeagueId(details as never)).toBe(17);
   });
 
+  it("ignores a remembered league that is no longer active", () => {
+    localStorage.setItem("bowler_selected_league_id", "17");
+    expect(resolvePreloadLeagueId({
+      ...details,
+      leagues: [{ id: 17, name: "Monday Mixed", active: false }, { id: 23, name: "Thursday Trios", active: true }],
+    } as never)).toBe(23);
+  });
+
   it("prefers an active league and has no answer without memberships", () => {
     expect(resolvePreloadLeagueId({
       ...details,
@@ -177,6 +222,12 @@ describe("BowlerScreenSkeleton", () => {
     expect(layout).toHaveAttribute("data-league-name", "Monday Mixed");
     expect(screen.getByRole("heading", { name: "Make a payment" })).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("keeps the navigation on the league the screen is loading", () => {
+    render(<BowlerScreenSkeleton screen="history" leagueName="Thursday Trios" leagueId={23} />);
+
+    expect(screen.getByTestId("bowler-layout")).toHaveAttribute("data-league-id", "23");
   });
 
   it("does not invite a league choice before the leagues are known", () => {
