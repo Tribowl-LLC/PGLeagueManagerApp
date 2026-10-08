@@ -6,8 +6,10 @@ The organization-admin worksheet is the existing **Manage Payments** entry at
 `/manage-payments`, implemented by `AdminWeeklyPaymentsPage` and
 `AdminWeeklyPaymentsWorksheet`. Its versioned API is
 `/api/financials/leagues/:leagueId/manage-payments/1`. The older
-`/leagues/:leagueId/payments/manage` payment-manager surface, `/payments`, bowler
-login, saved-card management, receipts, and AutoPay setup remain available.
+`/leagues/:leagueId/payments/manage` payment-manager page has been removed;
+recording payments is an organization-admin action on this worksheet.
+`/payments`, bowler login, saved-card management, receipts, and AutoPay setup
+remain available.
 This work adds no payment-history tab, add-bowler action, or rotating-credit
 classification.
 
