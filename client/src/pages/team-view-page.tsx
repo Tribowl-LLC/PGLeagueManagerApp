@@ -20,7 +20,6 @@ import { TeamViewBowlersTable } from "./team-view-page/bowlers-table";
 import { TeamViewEditDialog } from "./team-view-page/edit-dialog";
 import { TeamViewRemoveBowlerDialog } from "./team-view-page/remove-bowler-dialog";
 import { useTeams } from "@/hooks/use-teams";
-import { RotatingPaymentsPanel } from "./team-view-page/rotating-payments-panel";
 import type { RosterPaymentResponsibilityReadContractV2 } from "@shared/roster-payment-contract";
 
 const editTeamSchema = z.object({
@@ -44,7 +43,6 @@ export default function TeamViewPage() {
   });
   const canManageRoster = currentUserResponse?.data?.role === "org_admin"
     || currentUserResponse?.data?.role === "system_admin";
-  const canManageRotatingPayments = canManageRoster || String(currentUserResponse?.data?.role) === "payment_manager";
 
   // Form for editing team name
   const editForm = useForm({
@@ -64,19 +62,17 @@ export default function TeamViewPage() {
   const league = detailsResponse?.data?.league;
   const rotatingRosterQuery = useQuery<ApiResponse<RosterPaymentResponsibilityReadContractV2>>({
     queryKey: [`/api/financials/leagues/${team?.leagueId ?? 0}/roster-payment-responsibility/2`],
-    enabled: !!team && canManageRotatingPayments,
+    enabled: !!team && canManageRoster,
     retry: false,
   });
   const rotatingTeam = rotatingRosterQuery.data?.data?.teams.find((row) => row.id === team?.id);
-  const rotationMode: "fixed" | "rotating" | "unavailable" = !canManageRotatingPayments
+  const rotationMode: "fixed" | "rotating" | "unavailable" = !canManageRoster
     ? "fixed"
-    : rotatingRosterQuery.isLoading || rotatingRosterQuery.isFetching
+    : rotatingRosterQuery.isLoading
       ? "unavailable"
-      : rotatingRosterQuery.isError || !rotatingRosterQuery.data?.success
-        ? "unavailable"
-        : rotatingTeam?.slots.some((slot) => slot.occupant === "rotating")
-          ? "rotating"
-          : "fixed";
+      : rotatingTeam?.slots.some((slot) => slot.occupant === "rotating")
+        ? "rotating"
+        : "fixed";
   const { teams: leagueTeams } = useTeams({
     leagueId: team?.leagueId ?? 0,
     enabled: !!team,
@@ -240,25 +236,13 @@ export default function TeamViewPage() {
         leagueId={team.leagueId}
         canManage={canManageRoster}
         paymentMode={rotationMode}
+        sharedSpotTeam={rotationMode === "rotating" ? rotatingTeam : undefined}
         onEditBowler={canManageRoster ? (bowler) => {
           setSelectedBowler(bowler);
           setShowForm(true);
         } : undefined}
         onRemoveBowler={canManageRoster ? (target) => setShowRemoveDialog(target) : undefined}
       />
-
-      {canManageRotatingPayments && <RotatingPaymentsPanel
-        leagueId={team.leagueId}
-        teamId={team.id}
-        league={league}
-        teamBowlers={teamBowlers}
-        canManage={canManageRotatingPayments}
-        isOrganizationAdmin={canManageRoster}
-        roster={rotatingRosterQuery.data?.success ? rotatingRosterQuery.data.data : undefined}
-        rosterLoading={rotatingRosterQuery.isLoading || rotatingRosterQuery.isFetching}
-        rosterError={rotatingRosterQuery.error || (!rotatingRosterQuery.data?.success ? rotatingRosterQuery.data?.error?.message : undefined)}
-        onReloadRoster={() => rotatingRosterQuery.refetch()}
-      />}
 
       {canManageRoster && teamBowlers.length > 1 && (
         <div className="mt-4">
