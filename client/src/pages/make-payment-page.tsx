@@ -203,9 +203,9 @@ function accountSelectionLabel(
   if (paymentMode === "upfront") return "full season";
   const selection = selections.find((candidate) => candidate.bowlerId === bowlerId)?.selection;
   const row = rows.find((candidate) => candidate.bowlerId === bowlerId);
-  const weeks = selection?.kind === "forecast_collection_target" && selection.scope === "selected_weeks"
+  const weeks = row?.weeks ?? (selection?.kind === "forecast_collection_target" && selection.scope === "selected_weeks"
     ? selection.weeks
-    : row?.weeks ?? 1;
+    : 1);
   const weekLabel = `${weeks} ${weeks === 1 ? "week" : "weeks"}`;
   return includeName && row ? `${row.name}: ${weekLabel}` : weekLabel;
 }

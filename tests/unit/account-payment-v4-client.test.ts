@@ -47,6 +47,44 @@ const noWeeklyPresetParticipants: ConfirmedAccountPaymentParticipantsV4 = {
     : recipient),
 };
 
+const prepaidWeekParticipants: ConfirmedAccountPaymentParticipantsV4 = {
+  ...participants,
+  recipients: [
+    {
+      bowlerId: 42,
+      name: "Avery Lane",
+      role: "self",
+      confirmedDebtMinor: 0,
+      confirmedPastDueMinor: 0,
+      availableCreditMinor: 9_000,
+      forecastTargets: {
+        currentCollectionMinor: 9_000,
+        selectedWeeks: [3_000, 6_000, 9_000, 12_000, 15_000].map((amountMinor, index) => ({ weeks: index + 1, amountMinor })),
+        fullSeasonMinor: 15_000,
+      },
+    },
+    {
+      bowlerId: 84,
+      name: "Blair Quinn",
+      role: "partner",
+      confirmedDebtMinor: 0,
+      confirmedPastDueMinor: 0,
+      availableCreditMinor: 3_000,
+      forecastTargets: {
+        currentCollectionMinor: 6_000,
+        selectedWeeks: [{ weeks: 1, amountMinor: 3_000 }, { weeks: 2, amountMinor: 6_000 }],
+        fullSeasonMinor: 6_000,
+      },
+    },
+  ],
+};
+
+function payerRecipient(response: ConfirmedAccountPaymentParticipantsV4) {
+  const recipient = response.recipients.find((candidate) => candidate.role === "self");
+  if (!recipient) throw new Error("self recipient fixture is missing");
+  return recipient;
+}
+
 describe("account payment V4 client adapter", () => {
   it.each([
     [".50", 50],
@@ -70,6 +108,79 @@ describe("account payment V4 client adapter", () => {
 
   it("shows only the server-derived net past-due amount, not all confirmed debt", () => {
     expect(accountParticipantsForPaymentChooser(participants)[1]?.pastDueMinor).toBe(500);
+    expect(accountParticipantsForPaymentChooser(participants)[1]?.weeklyOptions).toEqual([
+      { weeks: 1, amountMinor: 2_000 },
+      { weeks: 2, amountMinor: 4_500 },
+    ]);
+  });
+
+  it("skips fully credit-covered week choices and maps paid week counts to original V4 targets per recipient", () => {
+    const chooser = accountParticipantsForPaymentChooser(prepaidWeekParticipants);
+    expect(chooser.map(({ bowlerId, weeklyOptions }) => ({ bowlerId, weeklyOptions }))).toEqual([
+      { bowlerId: 42, weeklyOptions: [{ weeks: 1, amountMinor: 3_000 }, { weeks: 2, amountMinor: 6_000 }] },
+      { bowlerId: 84, weeklyOptions: [{ weeks: 1, amountMinor: 3_000 }] },
+    ]);
+
+    expect(buildAccountPaymentSelectionsV4({
+      response: prepaidWeekParticipants,
+      selected: { 42: true, 84: true },
+      weeksByBowlerId: { 42: 2, 84: 1 },
+    })).toEqual([
+      { bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 5 } },
+      { bowlerId: 84, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 2 } },
+    ]);
+  });
+
+  it("keeps the first weekly choice at week one when no credit exists", () => {
+    const noCreditParticipants: ConfirmedAccountPaymentParticipantsV4 = {
+      ...prepaidWeekParticipants,
+      recipients: [
+        {
+          ...payerRecipient(prepaidWeekParticipants),
+          availableCreditMinor: 0,
+        },
+      ],
+    };
+
+    expect(accountParticipantsForPaymentChooser(noCreditParticipants)[0]?.weeklyOptions).toEqual([
+      { weeks: 1, amountMinor: 3_000 },
+      { weeks: 2, amountMinor: 6_000 },
+      { weeks: 3, amountMinor: 9_000 },
+      { weeks: 4, amountMinor: 12_000 },
+      { weeks: 5, amountMinor: 15_000 },
+    ]);
+    expect(buildAccountPaymentSelectionsV4({
+      response: noCreditParticipants,
+      selected: { 42: true },
+      weeksByBowlerId: { 42: 1 },
+    })).toEqual([{ bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 1 } }]);
+  });
+
+  it("offers no weekly preset when credit covers the entire available forecast", () => {
+    const coveredParticipants: ConfirmedAccountPaymentParticipantsV4 = {
+      ...prepaidWeekParticipants,
+      recipients: [
+        {
+          ...payerRecipient(prepaidWeekParticipants),
+          forecastTargets: {
+            currentCollectionMinor: 9_000,
+            selectedWeeks: [{ weeks: 1, amountMinor: 3_000 }, { weeks: 2, amountMinor: 6_000 }, { weeks: 3, amountMinor: 9_000 }],
+            fullSeasonMinor: 9_000,
+          },
+        },
+      ],
+    };
+
+    expect(accountParticipantsForPaymentChooser(coveredParticipants)[0]).toMatchObject({
+      eligible: true,
+      remainingMinor: 0,
+      weeklyOptions: [],
+    });
+    expect(buildAccountPaymentSelectionsV4({
+      response: coveredParticipants,
+      selected: { 42: true },
+      weeksByBowlerId: { 42: 1 },
+    })).toEqual([]);
   });
 
   it("sends explicit payer amounts as exact V4 amounts even when credit exists", () => {
@@ -84,13 +195,13 @@ describe("account payment V4 client adapter", () => {
     ]);
   });
 
-  it("uses the server-priced preset when the explicit amount is blank and omits an explicit zero", () => {
+  it("omits a zero-priced preset when the explicit amount is blank and omits an explicit zero", () => {
     expect(buildAccountPaymentSelectionsV4({
       response: participants,
       selected: { 42: true },
       weeksByBowlerId: {},
       explicitPayerAmountMinor: null,
-    })).toEqual([{ bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 1 } }]);
+    })).toEqual([]);
     expect(buildAccountPaymentSelectionsV4({
       response: participants,
       selected: { 42: true, 84: true },
