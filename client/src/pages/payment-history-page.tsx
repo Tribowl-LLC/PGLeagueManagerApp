@@ -122,7 +122,6 @@ export default function PaymentHistoryPage() {
     fullSeasonAmount: summary.fullSeasonAmount,
     waivedAmount: summary.waivedAmount,
     remainingBalance: resolved.remainingBalance,
-    doublePay: { dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: resolved.remainingBalance <= 0 },
   };
 
   if (loadingUser || loadingDetails || loadingReport || loadingFinancial) {
@@ -156,7 +155,6 @@ export default function PaymentHistoryPage() {
     waivedAmount={financials.waivedAmount}
     amountPastDue={financials.amountPastDue}
     remainingBalance={financials.remainingBalance}
-    doublePay={financials.doublePay}
     canonicalPaymentLoading={loadingReport}
     canonicalPaymentError={reportError}
     onCanonicalReportRetry={() => { void refetchReport(); }}

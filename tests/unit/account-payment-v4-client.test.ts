@@ -3,8 +3,12 @@ import {
   accountPaymentParticipantsQueryKey,
   accountParticipantsForPaymentChooser,
   buildAccountPaymentSelectionsV4,
+  clampInteractivePaymentWeeks,
   defaultSelectedAccountRecipients,
+  initialInteractivePaymentWeeks,
+  isInteractivePaymentQuoteCurrent,
   parseExplicitPaymentAmountMinor,
+  participantAmountForSelection,
   type ConfirmedAccountPaymentParticipantsV4,
 } from "../../client/src/lib/account-payment-v4";
 
@@ -261,5 +265,35 @@ describe("account payment V4 client adapter", () => {
   it("scopes participant cache identity by both league and payer", () => {
     expect(accountPaymentParticipantsQueryKey(17, 42)).not.toEqual(accountPaymentParticipantsQueryKey(17, 84));
     expect(accountPaymentParticipantsQueryKey(17, 42)).not.toEqual(accountPaymentParticipantsQueryKey(18, 42));
+  });
+
+  it("clamps week choices to the priced options and prices upfront at the full balance", () => {
+    const chooser = {
+      remainingMinor: 8_750,
+      weeklyOptions: [
+        { weeks: 1, amountMinor: 3_000 },
+        { weeks: 2, amountMinor: 6_000 },
+        { weeks: 3, amountMinor: 8_750 },
+      ],
+    };
+    expect(clampInteractivePaymentWeeks(chooser, 99)).toBe(3);
+    expect(clampInteractivePaymentWeeks(chooser, 0)).toBe(1);
+    expect(clampInteractivePaymentWeeks({ weeklyOptions: [] }, 4)).toBe(1);
+    expect(initialInteractivePaymentWeeks(chooser, "weekly")).toBe(1);
+    expect(initialInteractivePaymentWeeks(chooser, "upfront")).toBe(3);
+    expect(participantAmountForSelection(chooser, 1, "weekly")).toBe(3_000);
+    expect(participantAmountForSelection(chooser, 2, "weekly")).toBe(6_000);
+    expect(participantAmountForSelection(chooser, 4, "weekly")).toBe(0);
+    expect(participantAmountForSelection(chooser, 1, "upfront")).toBe(8_750);
+  });
+
+  it("rejects a quote when fingerprint, amount, or selected recipient set changed", () => {
+    const displayed = { fingerprint: "quote-8750", amountMinor: 8_750, selectionKey: "selection-a" };
+    const matching = { fingerprint: "quote-8750", amountMinor: 8_750 };
+    expect(isInteractivePaymentQuoteCurrent(displayed, matching, displayed.selectionKey)).toBe(true);
+    expect(isInteractivePaymentQuoteCurrent(displayed, { ...matching, fingerprint: "quote-6000" }, displayed.selectionKey)).toBe(false);
+    expect(isInteractivePaymentQuoteCurrent(displayed, { ...matching, amountMinor: 6_000 }, displayed.selectionKey)).toBe(false);
+    expect(isInteractivePaymentQuoteCurrent(displayed, matching, "selection-b")).toBe(false);
+    expect(isInteractivePaymentQuoteCurrent(null, matching, displayed.selectionKey)).toBe(false);
   });
 });

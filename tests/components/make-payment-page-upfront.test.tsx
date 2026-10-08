@@ -16,7 +16,8 @@ const mocks = vi.hoisted(() => {
   const oneTimePaymentCard = vi.fn((..._args: unknown[]) => null);
   const rotatingShareCreditCard = vi.fn((..._args: unknown[]) => null);
   let paymentMode: "upfront" | "weekly" = "upfront";
-  let confirmedAccountMode = false;
+  let accountLedgerAdopted = true;
+  let explicitAccountTargets = false;
   let paidInFull = false;
   let zeroParticipants = false;
   let includePartner = false;
@@ -56,7 +57,6 @@ const mocks = vi.hoisted(() => {
   let useActualBowlerLayout = false;
   let useActualLeagueBottomSheet = false;
   const standingQueryCalls: unknown[][] = [];
-  let rotatingPoolMember = false;
   let standingAutopayState: "pending" | "active" | "revoked" | "expired" | "none" = "none";
   const standingStatusRefetch = vi.fn(async () => ({ data: { data: { state: standingAutopayState } }, error: null, isError: false }));
   const financialData = () => ({
@@ -91,52 +91,39 @@ const mocks = vi.hoisted(() => {
     }],
     totals: { collectiblePastDueMinor: 0 },
   });
-  const participantsData = () => ({
-    contractVersion: "interactive-payment-participants/3",
-    organizationId: 1,
-    leagueId: 17,
-    paymentMode,
-    participants: zeroParticipants ? [] : [{
-      bowlerId: 42,
-      name: "Bowler",
-      role: "self" as const,
-      remainingMinor: paidInFull ? 0 : remainingMinor,
-      pastDueMinor,
-      weeklyOptions: paymentMode === "upfront"
-        ? (paidInFull ? [] : [{ weeks: 1, amountMinor: remainingMinor }])
-        : [1, 2, 3].map((weeks) => ({ weeks, amountMinor: weeks * 1_000 })),
-      eligible: !paidInFull,
-      reason: paidInFull ? "No remaining balance" : null,
-      ...(paymentMode === "weekly" ? { dueNowMinor, catchUpWeeks: 1, catchUpAmountMinor: dueNowMinor } : {}),
-    }, ...(includePartner ? [{
-      bowlerId: 84,
-      name: "Partner",
-      role: "partner" as const,
-      remainingMinor: 6_000,
-      pastDueMinor: 0,
-      weeklyOptions: [{ weeks: 1, amountMinor: 6_000 }],
-      eligible: true,
-      reason: null,
-    }] : [])],
-  });
-  const accountParticipantsData = () => confirmedAccountMode ? {
+  // Default fixture: no account credit, three priced weeks, and the configured
+  // season balance. Tests that call a set*AccountTargets helper replace it.
+  const selfAccountTargets = () => explicitAccountTargets ? {
+    availableCreditMinor: accountAvailableCreditMinor,
+    currentCollectionMinor: accountCurrentCollectionMinor,
+    selectedWeeks: accountSelectedWeekTargets,
+    selectedWeekFallbackMinor: accountSelectedWeekMinor,
+    fullSeasonMinor: accountFullSeasonMinor,
+  } : {
+    availableCreditMinor: 0,
+    currentCollectionMinor: paymentMode === "weekly" && !paidInFull ? dueNowMinor : 0,
+    selectedWeeks: paymentMode === "weekly" && !paidInFull ? [1, 2, 3].map((weeks) => ({ weeks, amountMinor: weeks * 1_000 })) : [],
+    selectedWeekFallbackMinor: 0,
+    fullSeasonMinor: paidInFull ? 0 : remainingMinor,
+  };
+  const accountParticipantsData = () => accountLedgerAdopted ? {
     contractVersion: "interactive-payment-participants/4",
     organizationId: 1,
     leagueId: 17,
     payerBowlerId: 42,
     accountingMode: "confirmed_account_v4",
     paymentMode,
-    recipients: [{
+    recipients: zeroParticipants ? [] : [{
       bowlerId: 42,
       name: "Bowler",
       role: "self",
       confirmedDebtMinor: 0,
-      confirmedPastDueMinor: 0,
-      availableCreditMinor: accountAvailableCreditMinor,
+      confirmedPastDueMinor: pastDueMinor,
+      availableCreditMinor: selfAccountTargets().availableCreditMinor,
       forecastTargets: {
-        currentCollectionMinor: accountCurrentCollectionMinor,
-        selectedWeeks: accountSelectedWeekTargets,
-        fullSeasonMinor: accountFullSeasonMinor,
+        currentCollectionMinor: selfAccountTargets().currentCollectionMinor,
+        selectedWeeks: selfAccountTargets().selectedWeeks,
+        fullSeasonMinor: selfAccountTargets().fullSeasonMinor,
       },
     }, ...(includePartner ? [{
       bowlerId: 84,
@@ -162,14 +149,6 @@ const mocks = vi.hoisted(() => {
     const key = String(queryKey[0]);
     if (enabled && key.startsWith("/api/financials/leagues/") && key.includes("/standing-autopay/")) {
       standingQueryCalls.push(queryKey);
-    }
-    if (key.startsWith("/api/financials/leagues/") && key.includes("/rotating-credit/1")) {
-      return {
-        data: { success: true, data: { eligibleForCredit: rotatingPoolMember, shareAmountMinor: rotatingPoolMember ? 1_000 : null } },
-        isLoading: false,
-        error: null,
-        refetch: vi.fn(),
-      };
     }
     if (key.startsWith("/api/financials/leagues/") && key.endsWith("/standing-autopay/1")) {
       return {
@@ -201,15 +180,7 @@ const mocks = vi.hoisted(() => {
       };
     }
     if (key === "/api/financials/leagues" && queryKey[2] === "interactive-payment-participants/4") {
-      return {
-        data: accountParticipantsData(),
-        isLoading: false,
-        error: null,
-        refetch: vi.fn(async () => ({ data: accountParticipantsData(), isLoading: false, isFetching: false, error: null, isError: false })),
-      };
-    }
-    if (key === "/api/financials/leagues" && queryKey[2] === "interactive-payment-participants/3") {
-      const participantResponse = { success: true, data: participantsData() };
+      const participantResponse = accountParticipantsData();
       return {
         data: participantResponse,
         isLoading: false,
@@ -219,24 +190,26 @@ const mocks = vi.hoisted(() => {
         refetch: vi.fn(async () => {
           if (participantRefreshGate) await participantRefreshGate;
           if (participantRefreshMissing) return { data: undefined, isLoading: false, isFetching: false, error: null, isError: false };
-          return { data: participantRefreshUsesCurrentData ? { success: true, data: participantsData() } : participantResponse, isLoading: false, isFetching: false, error: null, isError: false };
+          return { data: participantRefreshUsesCurrentData ? accountParticipantsData() : participantResponse, isLoading: false, isFetching: false, error: null, isError: false };
         }),
       };
     }
     if (key === "/api/financials/leagues" && queryKey[2] === "interactive-payment-quote/4") {
+      if (quoteError) return { data: undefined, isLoading: false, isFetching: false, error: quoteError, refetch: vi.fn() };
+      const self = selfAccountTargets();
       const recipients = queryKey[5] as Array<{ bowlerId: number; selection: { kind: string; amountMinor?: number; scope?: string; weeks?: number } }> | undefined;
       const quoteRecipients = (recipients ?? []).map((recipient) => {
         const isPartner = recipient.bowlerId === 84;
         const targetMinor = recipient.selection.kind === "explicit_amount"
           ? recipient.selection.amountMinor ?? 0
           : recipient.selection.scope === "current_collection"
-            ? (isPartner ? 0 : accountCurrentCollectionMinor)
+            ? (isPartner ? 0 : self.currentCollectionMinor)
             : recipient.selection.scope === "full_season"
-              ? (isPartner ? 8_000 : accountFullSeasonMinor)
+              ? (isPartner ? 8_000 : self.fullSeasonMinor)
               : (isPartner
                 ? 6_000
-                : accountSelectedWeekTargets.find((option) => option.weeks === recipient.selection.weeks)?.amountMinor ?? accountSelectedWeekMinor);
-        const creditMinor = isPartner ? 0 : accountAvailableCreditMinor;
+                : self.selectedWeeks.find((option) => option.weeks === recipient.selection.weeks)?.amountMinor ?? self.selectedWeekFallbackMinor);
+        const creditMinor = isPartner ? 0 : self.availableCreditMinor;
         const amountMinor = recipient.selection.kind === "explicit_amount" ? targetMinor : Math.max(0, targetMinor - creditMinor);
         return {
           bowlerId: recipient.bowlerId,
@@ -261,33 +234,7 @@ const mocks = vi.hoisted(() => {
         providerChargeAmountMinor: amountMinor,
         quoteFingerprint: `lvaccountfundquote:v4:${amountMinor.toString(16).padStart(64, "0")}`,
       };
-      return { data: { success: true, data: quote }, isLoading: false, isFetching: false, error: null, refetch: vi.fn() };
-    }
-    if (key === "/api/financials/leagues" && queryKey[2] === "interactive-payment-quote/3") {
-      if (quoteError) return { data: undefined, isLoading: false, isFetching: false, error: quoteError, refetch: vi.fn() };
-      const recipientRows = queryKey[4] as Array<{ bowlerId: number; weeks: number }> | undefined;
-      const weeks = recipientRows?.[0]?.weeks ?? 1;
-      const amountMinor = paymentMode === "upfront" ? remainingMinor : weeks * 1_000;
-      const quote = {
-        contractVersion: "interactive-payment-quote/3" as const,
-        organizationId: 1,
-        leagueId: 17,
-        payerBowlerId: 42,
-        currency: "USD" as const,
-        amountMinor,
-        fingerprint: `quote-${amountMinor}`,
-        recipients: [{
-          bowlerId: 42,
-          name: "Bowler",
-          role: "self" as const,
-          weeks,
-          fullBalance: paymentMode === "upfront",
-          subtotalMinor: amountMinor,
-          allocations: [{ obligationId: "obligation-1", amountMinor, occurrenceId: "occurrence-1", occurrenceLocalDate: "2026-09-01", plannedOrdinal: 1, label: "Week 1", isPairedFinalWeek: false }],
-          coveredWeeks: ["Week 1"],
-        }],
-      };
-      return { data: { success: true, data: quote }, isLoading: false, isFetching: quoteFetching, error: null, refetch: vi.fn(async () => ({ data: { success: true, data: quote }, error: null })) };
+      return { data: { success: true, data: quote }, isLoading: false, isFetching: quoteFetching, error: null, refetch: vi.fn() };
     }
     if (key.includes("canonical-due-past-due")) {
       return {
@@ -323,8 +270,15 @@ const mocks = vi.hoisted(() => {
     standingQueryCalls,
     standingStatusRefetch,
     setPaymentMode: (mode: "upfront" | "weekly") => { paymentMode = mode; },
-    setConfirmedAccountMode: (value: boolean) => { confirmedAccountMode = value; },
-    setRotatingPoolMember: (value: boolean) => { rotatingPoolMember = value; },
+    setAccountLedgerAdopted: (value: boolean) => { accountLedgerAdopted = value; },
+    resetAccountTargets: () => {
+      explicitAccountTargets = false;
+      accountAvailableCreditMinor = 5_000;
+      accountCurrentCollectionMinor = 0;
+      accountSelectedWeekMinor = 0;
+      accountSelectedWeekTargets = [];
+      accountFullSeasonMinor = 0;
+    },
     setStandingAutopayState: (state: "pending" | "active" | "revoked" | "expired" | "none") => { standingAutopayState = state; },
     setPaidInFull: (value: boolean) => { paidInFull = value; },
     setZeroParticipants: (value: boolean) => { zeroParticipants = value; },
@@ -332,12 +286,14 @@ const mocks = vi.hoisted(() => {
     setRemainingBalance: (value: number) => { remainingMinor = value; },
     setDueNowMinor: (value: number) => { dueNowMinor = value; },
     setAccountForecastTargets: (values: { currentCollectionMinor: number; selectedWeekMinor: number; fullSeasonMinor: number }) => {
+      explicitAccountTargets = true;
       accountCurrentCollectionMinor = values.currentCollectionMinor;
       accountSelectedWeekMinor = values.selectedWeekMinor;
       accountSelectedWeekTargets = values.selectedWeekMinor > 0 ? [{ weeks: 1, amountMinor: values.selectedWeekMinor }] : [];
       accountFullSeasonMinor = values.fullSeasonMinor;
     },
     setPrepaidAccountTargets: (values: { availableCreditMinor: number; currentCollectionMinor: number; weeklyTargetMinor: number[]; fullSeasonMinor: number }) => {
+      explicitAccountTargets = true;
       accountAvailableCreditMinor = values.availableCreditMinor;
       accountCurrentCollectionMinor = values.currentCollectionMinor;
       accountSelectedWeekTargets = values.weeklyTargetMinor.map((amountMinor, index) => ({ weeks: index + 1, amountMinor }));
@@ -446,6 +402,36 @@ vi.mock("@/lib/payment-request-identity", () => ({
 
 import MakePaymentPage from "@/pages/make-payment-page";
 
+const accountQuoteFingerprint = (amountMinor: number) => `lvaccountfundquote:v4:${amountMinor.toString(16).padStart(64, "0")}`;
+
+/** A server quote response for one self recipient with no account credit. */
+function accountQuoteResponse(amountMinor: number) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({ data: {
+      contractVersion: "account-payment-funding-quote/4",
+      organizationId: 1,
+      leagueId: 17,
+      payerBowlerId: 42,
+      currency: "USD",
+      recipients: [{
+        bowlerId: 42,
+        name: "Bowler",
+        role: "self",
+        selection: { kind: "forecast_collection_target", scope: "full_season" },
+        confirmedDebtMinor: 0,
+        availableCreditMinor: 0,
+        forecastCollectionTargetMinor: amountMinor,
+        collectionTargetMinor: amountMinor,
+        providerChargeAmountMinor: amountMinor,
+      }],
+      providerChargeAmountMinor: amountMinor,
+      quoteFingerprint: accountQuoteFingerprint(amountMinor),
+    } }),
+  };
+}
+
 afterEach(() => {
   mocks.setUseActualBowlerLayout(false);
   mocks.setUseActualLeagueBottomSheet(false);
@@ -461,8 +447,7 @@ afterEach(() => {
   mocks.standingQueryCalls.length = 0;
   mocks.standingStatusRefetch.mockReset().mockImplementation(async () => ({ data: { data: { state: "none" } }, error: null, isError: false }));
   mocks.setPaymentMode("upfront");
-  mocks.setConfirmedAccountMode(false);
-  mocks.setRotatingPoolMember(false);
+  mocks.setAccountLedgerAdopted(true);
   mocks.setStandingAutopayState("none");
   mocks.setPaidInFull(false);
   mocks.setZeroParticipants(false);
@@ -470,8 +455,7 @@ afterEach(() => {
   mocks.setRemainingBalance(8_750);
   mocks.setDueNowMinor(1_000);
   mocks.setPastDueMinor(0);
-  mocks.setPrepaidAccountTargets({ availableCreditMinor: 5_000, currentCollectionMinor: 0, weeklyTargetMinor: [], fullSeasonMinor: 0 });
-  mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 0 });
+  mocks.resetAccountTargets();
   mocks.setParticipantRefreshUsesCurrentData(false);
   mocks.setDetailsLeagueReady(true);
   mocks.setLeagueActive(true);
@@ -571,7 +555,6 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("prices additional weeks after existing credit and summarizes the displayed week count", async () => {
     mocks.setPaymentMode("weekly");
-    mocks.setConfirmedAccountMode(true);
     const weeklyTargets = [3_000, 6_000, 9_000, 12_000, 15_000];
     mocks.setPrepaidAccountTargets({ availableCreditMinor: 9_000, currentCollectionMinor: 0, weeklyTargetMinor: weeklyTargets, fullSeasonMinor: 15_000 });
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "account-v4-weekly-request", outcome: "new" });
@@ -637,7 +620,6 @@ describe("MakePaymentPage upfront payment mode", () => {
     render(<MakePaymentPage />);
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
     let checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
-      accountFunding: boolean;
       hasAccountForecastChoices: boolean;
       fullBalanceOnly: boolean;
       paymentAmountMinor: number;
@@ -645,7 +627,7 @@ describe("MakePaymentPage upfront payment mode", () => {
       onRecipientWeeksChange: (bowlerId: number, weeks: number) => void;
       onSubmit: () => void;
     };
-    expect(checkout).toMatchObject({ accountFunding: true, hasAccountForecastChoices: true, fullBalanceOnly: false, paymentAmountMinor: 3_000 });
+    expect(checkout).toMatchObject({ hasAccountForecastChoices: true, fullBalanceOnly: false, paymentAmountMinor: 3_000 });
     expect(checkout.recipientRows).toEqual([expect.objectContaining({ bowlerId: 42, remainingMinor: 6_000, weeks: 1, amountMinor: 3_000, selected: true })]);
     expect(checkout).not.toHaveProperty("explicitAmountValue");
     expect(checkout).not.toHaveProperty("onExplicitAmountChange");
@@ -699,7 +681,6 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("keeps an unpriced self unchecked and lets the payer select and charge only a priced partner week", async () => {
     mocks.setPaymentMode("weekly");
-    mocks.setConfirmedAccountMode(true);
     mocks.setIncludePartner(true);
     mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 10_000 });
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "partner-weekly-request", outcome: "new" });
@@ -795,7 +776,6 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("keeps V4 upfront checkout on the server-priced full-season option", async () => {
     mocks.setPaymentMode("upfront");
-    mocks.setConfirmedAccountMode(true);
     mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 10_000 });
     render(<MakePaymentPage />);
 
@@ -818,7 +798,6 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("shows no one-time balance when V4 credit covers the only upfront season balance", async () => {
     mocks.setPaymentMode("upfront");
-    mocks.setConfirmedAccountMode(true);
     mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 5_000 });
     render(<MakePaymentPage />);
 
@@ -832,7 +811,6 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("keeps upfront checkout available when a partner has a balance after self credit is applied", async () => {
     mocks.setPaymentMode("upfront");
-    mocks.setConfirmedAccountMode(true);
     mocks.setIncludePartner(true);
     mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 5_000 });
     render(<MakePaymentPage />);
@@ -849,7 +827,7 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("leaves V4 weekly checkout unavailable when the server has no priced week option", async () => {
     mocks.setPaymentMode("weekly");
-    mocks.setConfirmedAccountMode(true);
+    mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 0 });
     render(<MakePaymentPage />);
 
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
@@ -869,7 +847,6 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("does not request a new payment when existing credit covers the full weekly forecast", async () => {
     mocks.setPaymentMode("weekly");
-    mocks.setConfirmedAccountMode(true);
     mocks.setPrepaidAccountTargets({ availableCreditMinor: 9_000, currentCollectionMinor: 9_000, weeklyTargetMinor: [3_000, 6_000, 9_000], fullSeasonMinor: 9_000 });
     render(<MakePaymentPage />);
 
@@ -889,7 +866,6 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("keeps combined account autopay on the current-collection selection", async () => {
     mocks.setPaymentMode("weekly");
-    mocks.setConfirmedAccountMode(true);
     mocks.setAccountForecastTargets({ currentCollectionMinor: 6_000, selectedWeekMinor: 6_000, fullSeasonMinor: 6_000 });
     render(<MakePaymentPage />);
 
@@ -931,20 +907,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     }));
   });
 
-  it("replaces standing autopay setup with a revoke path for a rotating member who has legacy consent", async () => {
-    mocks.setPaymentMode("weekly");
-    mocks.setRotatingPoolMember(true);
-    mocks.setStandingAutopayState("active");
-    render(<MakePaymentPage />);
-
-    expect(await screen.findByText("Existing automatic payment")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Revoke existing automatic payments" })).toBeInTheDocument();
-    expect(screen.getByText(/Rotating members buy shares manually/)).toBeInTheDocument();
-    expect(mocks.oneTimePaymentCard).not.toHaveBeenCalled();
-    expect(mocks.standingAutopayCard).not.toHaveBeenCalled();
-  });
-
-  it("keeps the solo self selected after a selected partner is removed, while stale guard blocks charging", async () => {
+  it("returns to the solo self selection after a selected partner is removed", async () => {
     mocks.setIncludePartner(true);
     const view = render(<MakePaymentPage />);
 
@@ -952,7 +915,6 @@ describe("MakePaymentPage upfront payment mode", () => {
     let props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
       recipientRows: Array<{ bowlerId: number; selected: boolean }>;
       onRecipientToggle: (bowlerId: number, selected: boolean) => void;
-      onResetRecipientSelection: () => void;
     };
     expect(props.recipientRows).toEqual([
       expect.objectContaining({ bowlerId: 42, selected: true }),
@@ -972,15 +934,11 @@ describe("MakePaymentPage upfront payment mode", () => {
 
     mocks.setIncludePartner(false);
     view.rerender(<MakePaymentPage />);
-    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: true }));
-    props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof props;
-    expect(props.recipientRows).toEqual([expect.objectContaining({ bowlerId: 42, selected: true })]);
-
-    act(() => { props.onResetRecipientSelection(); });
-    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: false }));
-    expect((mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof props).recipientRows).toEqual([
-      expect.objectContaining({ bowlerId: 42, selected: true }),
-    ]);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      selectionStale: false,
+      paymentAmountMinor: 8_750,
+      recipientRows: [expect.objectContaining({ bowlerId: 42, selected: true })],
+    }));
     view.unmount();
   });
 
@@ -1061,6 +1019,23 @@ describe("MakePaymentPage upfront payment mode", () => {
     });
   });
 
+  it("offers no checkout for a league that has not adopted the account ledger", async () => {
+    mocks.setAccountLedgerAdopted(false);
+    render(<MakePaymentPage />);
+
+    expect(await screen.findByText(/You can try loading the payment data again/)).toBeInTheDocument();
+    expect(mocks.oneTimePaymentCard).not.toHaveBeenCalled();
+    expect(mocks.standingAutopayCard).not.toHaveBeenCalled();
+    expect(mocks.rotatingShareCreditCard).not.toHaveBeenCalled();
+    const quoteQueries = mocks.query.mock.calls
+      .map(([options]) => options)
+      .filter((options) => options.queryKey[2] === "interactive-payment-quote/4");
+    expect(quoteQueries.length).toBeGreaterThan(0);
+    expect(quoteQueries.every((options) => options.enabled === false)).toBe(true);
+    expect(mocks.query.mock.calls.some(([options]) => String(options.queryKey[2]).endsWith("/3"))).toBe(false);
+    expect(mocks.csrfFetch).not.toHaveBeenCalled();
+  });
+
   it("retains a restored consent marker while the initial league resolves", async () => {
     mocks.setPaymentMode("weekly");
     mocks.setDetailsLeagueReady(false);
@@ -1085,8 +1060,8 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setPaymentMode("weekly");
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "fifo-initial", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-fifo-initial" } }) });
+      .mockResolvedValueOnce(accountQuoteResponse(1_000))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-fifo-initial", recipientFunding: [{ bowlerId: 42, amountMinor: 1_000 }] } }) });
     mocks.apiRequest.mockImplementationOnce(async () => {
       mocks.setDueNowMinor(2_000);
       mocks.setParticipantRefreshUsesCurrentData(true);
@@ -1112,8 +1087,8 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setPaymentMode("weekly");
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "fifo-retry", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-fifo-retry" } }) });
+      .mockResolvedValueOnce(accountQuoteResponse(1_000))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-fifo-retry", recipientFunding: [{ bowlerId: 42, amountMinor: 1_000 }] } }) });
     mocks.apiRequest
       .mockRejectedValueOnce(Object.assign(new Error("consent unavailable"), { status: 503 }))
       .mockImplementationOnce(async () => {
@@ -1144,8 +1119,8 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setPaymentMode("weekly");
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "fifo-refresh-failure", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-fifo-refresh-failure" } }) });
+      .mockResolvedValueOnce(accountQuoteResponse(1_000))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-fifo-refresh-failure", recipientFunding: [{ bowlerId: 42, amountMinor: 1_000 }] } }) });
     mocks.apiRequest
       .mockRejectedValueOnce(Object.assign(new Error("consent unavailable"), { status: 503 }))
       .mockRejectedValueOnce(Object.assign(new Error("new due amount"), { status: 409, code: "ARREARS_REQUIRE_ONE_TIME_FIFO" }));
@@ -1171,7 +1146,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setPaymentMode("weekly");
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "combined-request", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(1_000))
       .mockResolvedValueOnce({ ok: true, status: 202, json: async () => ({ data: { status: "pending" } }) });
     mocks.tokenizeCard.mockResolvedValue("combined-source");
 
@@ -1194,7 +1169,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setPaymentMode("weekly");
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "combined-transport", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(1_000))
       .mockRejectedValueOnce(new Error("charge transport"));
     mocks.paymentRequestWithRecovery.mockImplementationOnce(async (_key: string, request: () => Promise<Response>) => {
       await request().catch(() => undefined);
@@ -1272,7 +1247,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setPaymentMode("weekly");
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "combined-terminal", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(1_000))
       .mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ data: { status: "failed_terminal" } }) });
     mocks.tokenizeCard.mockResolvedValue("combined-source");
 
@@ -1294,8 +1269,8 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setPaymentMode("weekly");
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "combined-consent", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-1" } }) });
+      .mockResolvedValueOnce(accountQuoteResponse(1_000))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-1", recipientFunding: [{ bowlerId: 42, amountMinor: 1_000 }] } }) });
     mocks.apiRequest.mockRejectedValueOnce(Object.assign(new Error("consent unavailable"), { status: 503 }));
     mocks.tokenizeCard.mockResolvedValue("combined-source");
 
@@ -1315,13 +1290,12 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(document.body).toHaveTextContent("Retry automatic payments");
     expect(document.body).not.toHaveTextContent("No one-time balance available");
 
-    const oneTimeCallCountBeforeRetry = mocks.oneTimePaymentCard.mock.calls.length;
     mocks.setStandingAutopayState("active");
     mocks.standingStatusRefetch.mockResolvedValue({ data: { data: { state: "active" } }, error: null, isError: false });
     view.rerender(<MakePaymentPage />);
     await act(async () => { screen.getByRole("button", { name: "Retry automatic payments" }).click(); });
-    await waitFor(() => expect(document.body).toHaveTextContent("No one-time balance available"));
-    expect(mocks.oneTimePaymentCard).toHaveBeenCalledTimes(oneTimeCallCountBeforeRetry);
+    await waitFor(() => expect(document.body).not.toHaveTextContent("Retry automatic payments"));
+    expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ hasAccountForecastChoices: false, paymentAmountMinor: 0, dueNowOnly: false });
     expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "combined-consent");
     expect(mocks.paymentRequestWithRecovery).toHaveBeenCalledOnce();
   });
@@ -1330,8 +1304,8 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setPaymentMode("weekly");
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "refresh-failure", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-refresh-failure" } }) });
+      .mockResolvedValueOnce(accountQuoteResponse(1_000))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded", operationId: "operation-refresh-failure", recipientFunding: [{ bowlerId: 42, amountMinor: 1_000 }] } }) });
     mocks.apiRequest.mockRejectedValueOnce(Object.assign(new Error("consent unavailable"), { status: 503 }));
     mocks.invalidatePaymentHistoryFinancials.mockRejectedValue(new Error("balance refresh unavailable"));
     mocks.tokenizeCard.mockResolvedValue("combined-source");
@@ -1359,12 +1333,14 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.prepareRosterPaymentIntent
       .mockReset()
       .mockResolvedValue({ requestKey: "stable-request", outcome: "new" });
-    const view = render(<MakePaymentPage />);
+    mocks.setPaymentMode("weekly");
+    render(<MakePaymentPage />);
     await waitFor(() => expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentAmountMinor: 1_000 }));
 
-    mocks.setRemainingBalance(5_750);
-    view.rerender(<MakePaymentPage />);
-    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentAmountMinor: 5_750 }));
+    const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onRecipientWeeksChange: (bowlerId: number, weeks: number) => void };
+    act(() => { props.onRecipientWeeksChange(42, 2); });
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentAmountMinor: 2_000 }));
     expect(mocks.prepareRosterPaymentIntent).toHaveBeenCalledOnce();
   });
 
@@ -1372,7 +1348,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     const firstRender = render(<MakePaymentPage />);
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "stale-quote-request", outcome: "new" });
-    mocks.csrfFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-5750", amountMinor: 5_750 } }) });
+    mocks.csrfFetch.mockResolvedValueOnce(accountQuoteResponse(5_750));
 
     const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
     await act(async () => { await props.onSubmit(); });
@@ -1405,7 +1381,7 @@ describe("MakePaymentPage upfront payment mode", () => {
       .mockResolvedValueOnce({ requestKey: "stable-request", outcome: "new" })
       .mockResolvedValueOnce({ requestKey: "stable-request", outcome: "unresolved", status: "pending" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750, payerBowlerId: 42 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(8_750))
       .mockRejectedValueOnce(new Error("response lost after provider success"));
     mocks.tokenizeCard.mockResolvedValue("source-token");
 
@@ -1434,7 +1410,7 @@ describe("MakePaymentPage upfront payment mode", () => {
   it("clears the refresh baseline after an authoritative unchanged response", async () => {
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "successful-request", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(8_750))
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded" } }) });
     mocks.tokenizeCard.mockResolvedValue("card-source");
 
@@ -1444,13 +1420,15 @@ describe("MakePaymentPage upfront payment mode", () => {
     await act(async () => { await props.onSubmit(); });
     expect(mocks.toast.mock.calls.filter(([value]) => (value as { title?: string }).title === "Payment Successful")).toHaveLength(0);
     await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
-      completedPayment: expect.objectContaining({ amountMinor: 8_750, isUpfront: true, coverage: "Week 1", hasRemainingBalance: false }),
+      completedPayment: expect.objectContaining({ amountMinor: 8_750, isUpfront: true, paymentSelection: "full season", hasRemainingBalance: false }),
     }));
-    expect((mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { completedPayment: { coverage: string } }).completedPayment.coverage).not.toContain("Bowler:");
 
     mocks.setRemainingBalance(5_750);
     view.rerender(<MakePaymentPage />);
-    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ selectionStale: true, paymentAmountMinor: 5_750 }));
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      selectionStale: true,
+      recipientRows: [expect.objectContaining({ bowlerId: 42, remainingMinor: 5_750 })],
+    }));
     view.unmount();
   });
 
@@ -1458,7 +1436,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setPaymentMode("weekly");
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "ordinary-card-request", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-1000", amountMinor: 1_000 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(1_000))
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded" } }) });
     mocks.tokenizeCard.mockResolvedValue("card-source");
 
@@ -1496,10 +1474,17 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("keeps recovered checkout blocked and preserves its identity when refresh fails", async () => {
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "confirmed-request", outcome: "succeeded" });
-    mocks.invalidatePaymentHistoryFinancials.mockRejectedValueOnce(new Error("refresh failed")).mockResolvedValue(undefined);
+    // The failed refresh marks the selection stale, which drops the quote to
+    // zero and re-runs the recovery probe once; that pass fails as well.
+    mocks.invalidatePaymentHistoryFinancials
+      .mockRejectedValueOnce(new Error("refresh failed"))
+      .mockRejectedValueOnce(new Error("refresh failed"))
+      .mockResolvedValue(undefined);
 
     render(<MakePaymentPage />);
     await waitFor(() => expect(document.body).toHaveTextContent("Payment confirmation in progress"));
+    await waitFor(() => expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Check payment status again" })).toBeEnabled());
     expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
     await act(async () => { await (document.querySelector("button") as HTMLButtonElement).click(); });
     await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "confirmed-request"));
@@ -1511,13 +1496,20 @@ describe("MakePaymentPage upfront payment mode", () => {
       .mockResolvedValueOnce({ requestKey: "initial-request", outcome: "new" })
       .mockResolvedValueOnce({ requestKey: "submit-confirmed", outcome: "succeeded" })
       .mockResolvedValue({ requestKey: "submit-confirmed", outcome: "succeeded" });
-    mocks.invalidatePaymentHistoryFinancials.mockRejectedValueOnce(new Error("refresh failed")).mockResolvedValue(undefined);
+    // The stale selection left by the failed refresh re-runs the recovery
+    // probe once on its own; that pass fails as well.
+    mocks.invalidatePaymentHistoryFinancials
+      .mockRejectedValueOnce(new Error("refresh failed"))
+      .mockRejectedValueOnce(new Error("refresh failed"))
+      .mockResolvedValue(undefined);
 
     render(<MakePaymentPage />);
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
     const props = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { onSubmit: () => void };
     await act(async () => { await props.onSubmit(); });
     await waitFor(() => expect(document.body).toHaveTextContent("Payment confirmation in progress"));
+    await waitFor(() => expect(mocks.invalidatePaymentHistoryFinancials).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Check payment status again" })).toBeEnabled());
     expect((mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as { completedPayment: unknown }).completedPayment).toBeNull();
     expect(mocks.clearPaymentIntent).not.toHaveBeenCalled();
 
@@ -1531,7 +1523,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setIncludePartner(true);
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "partner-balance-request", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(8_750))
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { status: "succeeded" } }) });
     mocks.tokenizeCard.mockResolvedValue("card-source");
 
@@ -1555,7 +1547,7 @@ describe("MakePaymentPage upfront payment mode", () => {
       .mockResolvedValueOnce({ requestKey: "wallet-key", outcome: "new" })
       .mockResolvedValueOnce({ requestKey: "wallet-replacement", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750, payerBowlerId: 42 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(8_750))
       .mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ data: { status: "failed_terminal" } }) });
 
     render(<MakePaymentPage />);
@@ -1578,8 +1570,9 @@ describe("MakePaymentPage upfront payment mode", () => {
       .mockResolvedValueOnce({ requestKey: "prepared-wallet-request", outcome: "new" })
       .mockResolvedValue({ requestKey: "prepared-wallet-request", outcome: "unresolved", status: "pending" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-2000", payerBowlerId: 42, amountMinor: 2_000 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(2_000))
       .mockResolvedValueOnce({ ok: true, status: 202, json: async () => ({ data: { status: "pending" } }) });
+    const selectedWeeks = [{ bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 2 } }];
 
     const view = render(<MakePaymentPage />);
     await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
@@ -1598,18 +1591,18 @@ describe("MakePaymentPage upfront payment mode", () => {
     await act(async () => { await mocks.walletOptions.onTokenReceived?.("wallet-source", walletType); });
     await waitFor(() => expect(mocks.csrfFetch).toHaveBeenCalledTimes(2));
     const quoteRequest = mocks.csrfFetch.mock.calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(String(quoteRequest.body))).toMatchObject({ recipients: [{ bowlerId: 42, weeks: 2, fullBalance: false }] });
-    expect(JSON.parse(String(quoteRequest.body))).not.toHaveProperty("amountMinor");
-    expect(JSON.parse(String(quoteRequest.body))).not.toHaveProperty("payerBowlerId");
+    expect(JSON.parse(String(quoteRequest.body))).toEqual({ payerBowlerId: 42, recipients: selectedWeeks });
     const chargeRequest = mocks.csrfFetch.mock.calls[1]?.[1] as RequestInit;
     expect(chargeRequest.headers).toMatchObject({ "Idempotency-Key": "prepared-wallet-request" });
     expect(JSON.parse(String(chargeRequest.body))).toMatchObject({
-      recipients: [{ bowlerId: 42, weeks: 2, fullBalance: false }],
+      payerBowlerId: 42,
+      recipients: selectedWeeks,
       sourceId: "wallet-source",
       sourceKind: "wallet",
       idempotencyKey: "prepared-wallet-request",
-      requestFingerprint: "quote-2000",
+      quoteFingerprint: accountQuoteFingerprint(2_000),
     });
+    expect(JSON.parse(String(chargeRequest.body))).not.toHaveProperty("amountMinor");
     expect(document.body).toHaveTextContent("Payment confirmation in progress");
     view.unmount();
   });
@@ -1617,7 +1610,7 @@ describe("MakePaymentPage upfront payment mode", () => {
   it("rejects a deferred wallet token when the basket changes after the native sheet opens", async () => {
     mocks.setPaymentMode("weekly");
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "wallet-request", outcome: "new" });
-    mocks.csrfFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-3000", amountMinor: 3_000 } }) });
+    mocks.csrfFetch.mockResolvedValueOnce(accountQuoteResponse(3_000));
 
     const view = render(<MakePaymentPage />);
     await waitFor(() => expect(mocks.walletOptions.enabled).toBe(true));
@@ -1648,7 +1641,7 @@ describe("MakePaymentPage upfront payment mode", () => {
 
   it("does not charge a card when the displayed quote changes during tokenization", async () => {
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "card-request", outcome: "new" });
-    mocks.csrfFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) });
+    mocks.csrfFetch.mockResolvedValueOnce(accountQuoteResponse(8_750));
     let resolveToken!: (token: string) => void;
     mocks.tokenizeCard.mockReturnValue(new Promise<string>((resolve) => { resolveToken = resolve; }));
 
@@ -1673,7 +1666,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setParticipantRefreshGate(new Promise<void>((resolve) => { resolveParticipants = resolve; }));
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "refresh-request", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(8_750))
       .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ data: { status: "succeeded" } }) });
     mocks.tokenizeCard.mockResolvedValue("card-source");
 
@@ -1692,7 +1685,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     mocks.setParticipantRefreshMissing(true);
     mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "missing-refresh-request", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(8_750))
       .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ data: { status: "succeeded" } }) });
     mocks.tokenizeCard.mockResolvedValue("card-source");
 
@@ -1711,7 +1704,7 @@ describe("MakePaymentPage upfront payment mode", () => {
     await act(async () => { retryProps.onRetryPaymentRefresh(); });
     await waitFor(() => expect(mocks.clearPaymentIntent).toHaveBeenCalledWith("stable-scope", "missing-refresh-request"));
     expect(mocks.toast.mock.calls.filter(([value]) => (value as { title?: string }).title === "Payment Successful")).toHaveLength(0);
-    expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ completedPayment: expect.objectContaining({ amountMinor: 8_750, coverage: "Week 1" }) });
+    expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ completedPayment: expect.objectContaining({ amountMinor: 8_750, paymentSelection: "full season" }) });
     expect(mocks.cleanupCard).toHaveBeenCalledOnce();
     view.unmount();
   });
@@ -1724,9 +1717,9 @@ describe("MakePaymentPage upfront payment mode", () => {
       .mockResolvedValueOnce({ requestKey: "wallet-old", outcome: "new" })
       .mockResolvedValueOnce({ requestKey: "wallet-new", outcome: "new" });
     mocks.csrfFetch
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(16_750))
       .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ data: { status: "succeeded" } }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: { fingerprint: "quote-8750", amountMinor: 8_750 } }) })
+      .mockResolvedValueOnce(accountQuoteResponse(8_750))
       .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ data: { status: "succeeded" } }) });
 
     const view = render(<MakePaymentPage />);

@@ -5,7 +5,6 @@ import type { ReactNode } from "react";
 import {
   clampPaymentWeekCount,
   clearWalletRequestKeyForTerminalStatus,
-  formatCompletedCoverage,
   hasPositivePaymentEvidence,
   invalidatePaymentViews,
   MakePaymentReadError,
@@ -14,15 +13,10 @@ import {
   shouldReinitializeOneTimeCardEditor,
 } from "@/pages/make-payment-page";
 import { queryClient } from "@/lib/queryClient";
-import { buildInteractivePaymentRecipients } from "@/lib/interactive-payment-v3";
 
 vi.mock("@/components/bowler-layout", () => ({ BowlerLayout: ({ children }: { children: ReactNode }) => <div data-testid="bowler-layout">{children}</div> }));
 
 describe("dedicated make-payment guards", () => {
-  it("sorts and groups double-pay completion weeks into concise factual ranges", () => {
-    expect(formatCompletedCoverage(["Week 5", "Week 30", "Week 6", "Week 31", "Week 30"])).toBe("Weeks 5–6 and Weeks 30–31");
-  });
-
   it.each(["failed_terminal", "canceled", "action_required"])("clears the in-memory wallet key for terminal HTTP-202 status %s", (status) => {
     const requestKeyRef = { current: "wallet-request-key" };
     clearWalletRequestKeyForTerminalStatus(status, requestKeyRef);
@@ -40,8 +34,8 @@ describe("dedicated make-payment guards", () => {
     invalidatePaymentViews(17, 42, [42, 84]);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/17/standing-autopay/1"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/17/standing-autopay/1/quote"] });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 17, "interactive-payment-participants/3"] });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 17, "interactive-payment-quote/3"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 17, "interactive-payment-participants/4"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 17, "interactive-payment-quote/4"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/payments", { bowlerId: 84, leagueId: 17 }] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/bowlers/84/details"] });
     invalidate.mockRestore();
@@ -55,14 +49,6 @@ describe("dedicated make-payment guards", () => {
 
   it("resets week count and past-due intent when changing leagues", () => {
     expect(resetPaymentSelectionForLeagueChange()).toEqual({ weekCount: 1, intentApplied: false });
-  });
-
-  it("marks only the self recipient for the exact due-now v3 selection", () => {
-    const recipients = buildInteractivePaymentRecipients([
-      { bowlerId: 42, name: "Bowler", role: "self", remainingMinor: 8_000, pastDueMinor: 2_000, weeklyOptions: [{ weeks: 1, amountMinor: 4_000 }, { weeks: 2, amountMinor: 8_000 }], eligible: true, reason: null, dueNowMinor: 4_000, catchUpAmountMinor: 4_000, catchUpWeeks: 1 },
-      { bowlerId: 84, name: "Partner", role: "partner", remainingMinor: 4_000, pastDueMinor: 0, weeklyOptions: [{ weeks: 1, amountMinor: 4_000 }], eligible: true, reason: null },
-    ], { 42: true, 84: false }, { 42: 1, 84: 1 }, "weekly", 42);
-    expect(recipients).toEqual([{ bowlerId: 42, weeks: 1, fullBalance: false, dueNow: true }]);
   });
 
   it.each([
