@@ -210,9 +210,16 @@ const mocks = vi.hoisted(() => {
       };
     }
     if (key === "/api/financials/leagues" && queryKey[2] === "interactive-payment-quote/4") {
-      const recipients = queryKey[5] as Array<{ bowlerId: number; selection: { kind: string; amountMinor?: number } }> | undefined;
+      const recipients = queryKey[5] as Array<{ bowlerId: number; selection: { kind: string; amountMinor?: number; scope?: string; weeks?: number } }> | undefined;
       const quoteRecipients = (recipients ?? []).map((recipient) => {
-        const amountMinor = recipient.selection.kind === "explicit_amount" ? recipient.selection.amountMinor ?? 0 : 0;
+        const targetMinor = recipient.selection.kind === "explicit_amount"
+          ? recipient.selection.amountMinor ?? 0
+          : recipient.selection.scope === "current_collection"
+            ? accountCurrentCollectionMinor
+            : recipient.selection.scope === "full_season"
+              ? accountFullSeasonMinor
+              : accountSelectedWeekMinor;
+        const amountMinor = recipient.selection.kind === "explicit_amount" ? targetMinor : Math.max(0, targetMinor - 5_000);
         return {
           bowlerId: recipient.bowlerId,
           name: "Bowler",
@@ -220,8 +227,8 @@ const mocks = vi.hoisted(() => {
           selection: recipient.selection,
           confirmedDebtMinor: 0,
           availableCreditMinor: 5_000,
-          forecastCollectionTargetMinor: 0,
-          collectionTargetMinor: 0,
+          forecastCollectionTargetMinor: targetMinor,
+          collectionTargetMinor: targetMinor,
           providerChargeAmountMinor: amountMinor,
         };
       });
@@ -535,18 +542,27 @@ describe("MakePaymentPage upfront payment mode", () => {
     });
   });
 
-  it("lets an account-mode payer fund an explicit exact amount with no debt or forecast", async () => {
+  it("quotes and submits exactly one server-priced account week", async () => {
+    mocks.setPaymentMode("weekly");
     mocks.setConfirmedAccountMode(true);
-    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "account-v4-explicit-request", outcome: "new" });
+    mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 7_500, fullSeasonMinor: 10_000 });
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "account-v4-weekly-request", outcome: "new" });
     mocks.tokenizeCard.mockResolvedValue("account-v4-source");
     mocks.csrfFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       const request = JSON.parse(String(init?.body ?? "{}")) as {
         payerBowlerId: number;
-        recipients: Array<{ bowlerId: number; selection: { kind: string; amountMinor?: number } }>;
+        recipients: Array<{ bowlerId: number; selection: { kind: string; amountMinor?: number; scope?: string; weeks?: number } }>;
       };
       if (url.includes("interactive-payment-quote/4")) {
         const recipients = request.recipients.map((recipient) => {
-          const amountMinor = recipient.selection.kind === "explicit_amount" ? recipient.selection.amountMinor ?? 0 : 0;
+          const targetMinor = recipient.selection.kind === "explicit_amount"
+            ? recipient.selection.amountMinor ?? 0
+            : recipient.selection.scope === "current_collection"
+              ? 0
+              : recipient.selection.scope === "full_season"
+                ? 10_000
+                : 7_500;
+          const amountMinor = recipient.selection.kind === "explicit_amount" ? targetMinor : Math.max(0, targetMinor - 5_000);
           return {
             bowlerId: recipient.bowlerId,
             name: "Bowler",
@@ -554,8 +570,8 @@ describe("MakePaymentPage upfront payment mode", () => {
             selection: recipient.selection,
             confirmedDebtMinor: 0,
             availableCreditMinor: 5_000,
-            forecastCollectionTargetMinor: 0,
-            collectionTargetMinor: 0,
+            forecastCollectionTargetMinor: targetMinor,
+            collectionTargetMinor: targetMinor,
             providerChargeAmountMinor: amountMinor,
           };
         });
@@ -592,20 +608,24 @@ describe("MakePaymentPage upfront payment mode", () => {
 
     render(<MakePaymentPage />);
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
-    let checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
+    const checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
       accountFunding: boolean;
       hasAccountForecastChoices: boolean;
-      explicitAmountValue: string;
-      recipientRows: Array<{ bowlerId: number; remainingMinor: number; selected: boolean }>;
-      onExplicitAmountChange: (value: string) => void;
+      fullBalanceOnly: boolean;
+      paymentAmountMinor: number;
+      recipientRows: Array<{ bowlerId: number; remainingMinor: number; weeks: number; amountMinor: number; selected: boolean }>;
       onSubmit: () => void;
     };
-    expect(checkout).toMatchObject({ accountFunding: true, hasAccountForecastChoices: false, explicitAmountValue: "" });
-    expect(checkout.recipientRows).toEqual([expect.objectContaining({ bowlerId: 42, remainingMinor: 0, selected: true })]);
+    expect(checkout).toMatchObject({ accountFunding: true, hasAccountForecastChoices: true, fullBalanceOnly: false, paymentAmountMinor: 2_500 });
+    expect(checkout.recipientRows).toEqual([expect.objectContaining({ bowlerId: 42, remainingMinor: 5_000, weeks: 1, amountMinor: 2_500, selected: true })]);
+    expect(checkout).not.toHaveProperty("explicitAmountValue");
+    expect(checkout).not.toHaveProperty("onExplicitAmountChange");
+    const initialQuoteCall = mocks.query.mock.calls
+      .map(([options]) => options)
+      .find((options) => options.queryKey[2] === "interactive-payment-quote/4"
+        && (options.queryKey[5] as Array<{ selection?: { scope?: string; weeks?: number } }> | undefined)?.[0]?.selection?.scope === "selected_weeks");
+    expect(initialQuoteCall?.queryKey[5]).toEqual([{ bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 1 } }]);
 
-    act(() => checkout.onExplicitAmountChange("25.00"));
-    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({ paymentAmountMinor: 2_500 }));
-    checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof checkout;
     act(() => checkout.onSubmit());
 
     await waitFor(() => expect(mocks.csrfFetch.mock.calls.some(([url]) => String(url).includes("interactive-payment-charge/4"))).toBe(true));
@@ -614,19 +634,66 @@ describe("MakePaymentPage upfront payment mode", () => {
     expect(quoteCall?.[0]).toBe("/api/financials/leagues/17/interactive-payment-quote/4");
     expect(JSON.parse(String((quoteCall?.[1] as RequestInit).body))).toMatchObject({
       payerBowlerId: 42,
-      recipients: [{ bowlerId: 42, selection: { kind: "explicit_amount", amountMinor: 2_500 } }],
+      recipients: [{ bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 1 } }],
     });
     expect(chargeCall?.[0]).toBe("/api/financials/leagues/17/interactive-payment-charge/4");
     expect(JSON.parse(String((chargeCall?.[1] as RequestInit).body))).toMatchObject({
       payerBowlerId: 42,
       sourceId: "account-v4-source",
-      idempotencyKey: "account-v4-explicit-request",
-      recipients: [{ bowlerId: 42, selection: { kind: "explicit_amount", amountMinor: 2_500 } }],
+      idempotencyKey: "account-v4-weekly-request",
+      recipients: [{ bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 1 } }],
+      quoteFingerprint: `lvaccountfundquote:v4:${(2_500).toString(16).padStart(64, "0")}`,
     });
-    expect(mocks.paymentRequestWithRecovery).toHaveBeenCalledWith("account-v4-explicit-request", expect.any(Function), 17);
+    expect(mocks.paymentRequestWithRecovery).toHaveBeenCalledWith("account-v4-weekly-request", expect.any(Function), 17);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      completedPayment: expect.objectContaining({ amountMinor: 2_500, isUpfront: false }),
+    }));
   });
 
-  it("ignores a prior invalid account amount during combined autopay and restores it on cancel", async () => {
+  it("keeps V4 upfront checkout on the server-priced full-season option", async () => {
+    mocks.setPaymentMode("upfront");
+    mocks.setConfirmedAccountMode(true);
+    mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 10_000 });
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
+      fullBalanceOnly: boolean;
+      paymentAmountMinor: number;
+      recipientRows: Array<{ weeks: number; amountMinor: number }>;
+    };
+    expect(checkout).toMatchObject({ fullBalanceOnly: true, paymentAmountMinor: 5_000 });
+    expect(checkout.recipientRows).toEqual([expect.objectContaining({ weeks: 1, amountMinor: 5_000 })]);
+    expect(checkout).not.toHaveProperty("explicitAmountValue");
+    expect(checkout).not.toHaveProperty("onExplicitAmountChange");
+    const upfrontQuote = mocks.query.mock.calls
+      .map(([options]) => options)
+      .find((options) => options.queryKey[2] === "interactive-payment-quote/4"
+        && (options.queryKey[5] as Array<{ selection?: { scope?: string } }> | undefined)?.[0]?.selection?.scope === "full_season");
+    expect(upfrontQuote?.queryKey[5]).toEqual([{ bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "full_season" } }]);
+  });
+
+  it("leaves V4 weekly checkout unavailable when the server has no priced week option", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.setConfirmedAccountMode(true);
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    const checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
+      hasAccountForecastChoices: boolean;
+      paymentAmountMinor: number;
+    };
+    expect(checkout).toMatchObject({ hasAccountForecastChoices: false, paymentAmountMinor: 0 });
+    expect(checkout).not.toHaveProperty("explicitAmountValue");
+    expect(checkout).not.toHaveProperty("onExplicitAmountChange");
+    const weeklyQuote = mocks.query.mock.calls
+      .map(([options]) => options)
+      .find((options) => options.queryKey[2] === "interactive-payment-quote/4");
+    expect(weeklyQuote?.enabled).toBe(false);
+    expect(weeklyQuote?.queryKey[5]).toEqual([]);
+  });
+
+  it("keeps combined account autopay on the current-collection selection", async () => {
     mocks.setPaymentMode("weekly");
     mocks.setConfirmedAccountMode(true);
     mocks.setAccountForecastTargets({ currentCollectionMinor: 6_000, selectedWeekMinor: 6_000, fullSeasonMinor: 6_000 });
@@ -635,25 +702,13 @@ describe("MakePaymentPage upfront payment mode", () => {
     await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
     let checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
       dueNowOnly: boolean;
-      explicitAmountValue: string;
-      explicitAmountError: string | null;
-      onExplicitAmountChange: (value: string) => void;
       onCancelDueNow?: () => void;
       onSubmit: () => void;
     };
-    act(() => checkout.onExplicitAmountChange("-"));
-    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
-      dueNowOnly: false,
-      explicitAmountValue: "-",
-      explicitAmountError: "Enter an amount with up to two decimal places.",
-    }));
-
     const standingProps = mocks.standingAutopayCard.mock.calls.at(-1)?.[0] as { onPayDueNow: () => void };
     act(() => standingProps.onPayDueNow());
     await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
       dueNowOnly: true,
-      explicitAmountValue: "-",
-      explicitAmountError: null,
     }));
     const dueNowQuery = mocks.query.mock.calls
       .map(([options]) => options)
@@ -670,17 +725,15 @@ describe("MakePaymentPage upfront payment mode", () => {
     checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof checkout;
     await act(async () => { checkout.onSubmit(); });
     await waitFor(() => expect(mocks.csrfFetch.mock.calls.some(([url]) => String(url).includes("interactive-payment-quote/4"))).toBe(true));
-    expect(mocks.toast).not.toHaveBeenCalledWith(expect.objectContaining({
-      title: "Payment unavailable",
-      description: "Enter an amount with up to two decimal places.",
-    }));
+    const currentCollectionRequest = mocks.csrfFetch.mock.calls.find(([url]) => String(url).includes("interactive-payment-quote/4"));
+    expect(JSON.parse(String((currentCollectionRequest?.[1] as RequestInit).body))).toMatchObject({
+      recipients: [{ bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "current_collection" } }],
+    });
 
     checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof checkout;
     act(() => checkout.onCancelDueNow?.());
     await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
       dueNowOnly: false,
-      explicitAmountValue: "-",
-      explicitAmountError: "Enter an amount with up to two decimal places.",
     }));
   });
 

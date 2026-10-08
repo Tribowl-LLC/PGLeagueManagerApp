@@ -51,7 +51,6 @@ import {
   buildAccountPaymentSelectionsV4,
   defaultSelectedAccountRecipients,
   loadAccountPaymentParticipantsV4,
-  parseExplicitPaymentAmountMinor,
   type AccountPaymentRecipientSelectionV4,
   type ConfirmedAccountPaymentParticipantsV4,
 } from "@/lib/account-payment-v4";
@@ -316,7 +315,6 @@ export default function MakePaymentPage() {
   const restoredCombinedConsentScopeRef = useRef<string | null>(null);
   const [selectedRecipients, setSelectedRecipients] = useState<Record<number, boolean>>({});
   const [recipientWeeks, setRecipientWeeks] = useState<Record<number, number>>({});
-  const [explicitAmountText, setExplicitAmountText] = useState("");
   const [selectionStale, setSelectionStale] = useState(false);
 
   const { data: currentUser, isLoading: loadingUser, error: userError } = useQuery<ApiResponse<User>>({ queryKey: ["/api/user"] });
@@ -402,13 +400,6 @@ export default function MakePaymentPage() {
   const hasAccountForecastChoices = !accountParticipants || (paymentMode === "upfront"
     ? participants.some((participant) => participant.remainingMinor > 0)
     : participants.some((participant) => participant.weeklyOptions.some((option) => option.amountMinor > 0)));
-  const explicitAmount = parseExplicitPaymentAmountMinor(explicitAmountText);
-  const explicitAmountMinor = explicitAmountText.trim() && explicitAmount.valid ? explicitAmount.amountMinor : null;
-  const explicitAmountError = !explicitAmount.valid
-    ? "Enter an amount with up to two decimal places."
-    : explicitAmount.amountMinor === 0 && explicitAmountText.trim()
-      ? "Enter an amount greater than zero."
-      : null;
   const rotatingCreditEligibilityQuery = useQuery<ApiResponse<RotatingCreditBalanceWire>>({
     queryKey: [`/api/financials/leagues/${leagueId ?? 0}/rotating-credit/1`],
     enabled: !!bowlerId && !!leagueId && accountParticipantsQuery.data?.accountingMode === "legacy_roster_v3",
@@ -476,9 +467,7 @@ export default function MakePaymentPage() {
       const defaults = defaultSelectedAccountRecipients(accountParticipants);
       return Object.fromEntries(participants.map((participant) => [
         participant.bowlerId,
-        participant.role === "self" && explicitAmountMinor !== null && explicitAmountMinor > 0
-          ? true
-          : selectedRecipients[participant.bowlerId] ?? defaults[participant.bowlerId] ?? false,
+        selectedRecipients[participant.bowlerId] ?? defaults[participant.bowlerId] ?? false,
       ]));
     }
     const next = { ...selectedRecipients };
@@ -489,7 +478,7 @@ export default function MakePaymentPage() {
       }
     }
     return next;
-  }, [accountParticipants, combinedAutopayMode, explicitAmountMinor, hasPaymentPartner, participants, selectedRecipients]);
+  }, [accountParticipants, combinedAutopayMode, hasPaymentPartner, participants, selectedRecipients]);
   const selectedRecipientRows = useMemo<PaymentRecipientRow[]>(() => participants.map((participant) => {
     const maximumWeeks = participant.weeklyOptions.at(-1)?.weeks ?? 0;
     const weeks = combinedAutopayMode && participant.catchUpWeeks && participant.catchUpWeeks > 0
@@ -505,32 +494,29 @@ export default function MakePaymentPage() {
       pastDueMinor: participant.pastDueMinor,
       weeks,
       maximumWeekCount: Math.max(1, maximumWeeks),
-      amountMinor: accountParticipants && !combinedAutopayMode && participant.bowlerId === accountParticipants.payerBowlerId && explicitAmountMinor !== null && explicitAmountMinor > 0
-        ? explicitAmountMinor
-        : combinedAutopayMode && participant.role === "self" && ((participant.catchUpAmountMinor ?? participant.dueNowMinor) ?? 0) > 0
+      hasPricedWeekOptions: participant.weeklyOptions.some((option) => option.amountMinor > 0),
+      amountMinor: combinedAutopayMode && participant.role === "self" && ((participant.catchUpAmountMinor ?? participant.dueNowMinor) ?? 0) > 0
           ? (participant.catchUpAmountMinor ?? participant.dueNowMinor ?? 0)
           : participantAmountForSelection(participant, weeks, paymentMode),
       selected: effectiveSelectedRecipients[participant.bowlerId] === true,
-      eligible: accountParticipants && participant.bowlerId === accountParticipants.payerBowlerId
-        ? true
-        : participant.eligible && participant.remainingMinor > 0,
+      eligible: participant.eligible && (participant.remainingMinor > 0
+        || (accountParticipants !== undefined && participant.weeklyOptions.some((option) => option.amountMinor > 0))),
       reason: participant.reason,
     };
-  }), [accountParticipants, combinedAutopayMode, explicitAmountMinor, participants, fullBalanceOnly, paymentMode, recipientWeeks, effectiveSelectedRecipients]);
+  }), [accountParticipants, combinedAutopayMode, participants, fullBalanceOnly, paymentMode, recipientWeeks, effectiveSelectedRecipients]);
   const legacyRecipientSelections = useMemo(() => selectionStale || accountParticipants
     ? []
     : buildInteractivePaymentRecipients(participants, effectiveSelectedRecipients, recipientWeeks, paymentMode, combinedAutopayMode ? selfParticipant?.bowlerId : undefined),
   [accountParticipants, combinedAutopayMode, effectiveSelectedRecipients, participants, paymentMode, recipientWeeks, selectionStale, selfParticipant?.bowlerId]);
   const accountRecipientSelections = useMemo<AccountPaymentRecipientSelectionV4[]>(() => {
-    if (selectionStale || !accountParticipants || (!combinedAutopayMode && explicitAmountError)) return [];
+    if (selectionStale || !accountParticipants) return [];
     return buildAccountPaymentSelectionsV4({
         response: accountParticipants,
         selected: effectiveSelectedRecipients,
         weeksByBowlerId: recipientWeeks,
-        explicitPayerAmountMinor: combinedAutopayMode ? null : explicitAmountMinor,
         currentCollectionOnly: combinedAutopayMode,
       });
-  }, [accountParticipants, combinedAutopayMode, effectiveSelectedRecipients, explicitAmountError, explicitAmountMinor, recipientWeeks, selectionStale]);
+  }, [accountParticipants, combinedAutopayMode, effectiveSelectedRecipients, recipientWeeks, selectionStale]);
   const recipientSelections: (InteractivePaymentRecipientSelection | AccountPaymentRecipientSelectionV4)[] = accountParticipants
     ? accountRecipientSelections
     : legacyRecipientSelections;
@@ -853,7 +839,6 @@ export default function MakePaymentPage() {
     setSelectionStale(false);
     setSelectedRecipients({});
     setRecipientWeeks({});
-    setExplicitAmountText("");
     setPaymentRefreshState("idle");
     setPaymentRefreshError(null);
     recoveryRefreshKeyRef.current = null;
@@ -1339,7 +1324,6 @@ export default function MakePaymentPage() {
   useEffect(() => () => cleanupWallet(), [cleanupWallet]);
 
   const submitOneTimePayment = async () => {
-    if (!combinedAutopayMode && explicitAmountError) { toast({ title: "Payment unavailable", description: explicitAmountError, variant: "destructive" }); return; }
     if (!bowlerId || !leagueId || !league || recipientSelections.length === 0 || quoteError || selectionStale || paymentRefreshState !== "idle" || isRecoveryBlocked) { toast({ title: "Payment unavailable", description: "Select at least one payable recipient and wait for an exact payment quote.", variant: "destructive" }); return; }
     if (isWalletProcessing || wallet.isProcessing) return;
     const paymentGeneration = pageGenerationRef.current;
@@ -1716,9 +1700,6 @@ export default function MakePaymentPage() {
           rotatingMode={isRotatingPoolMember}
           accountFunding={isAccountMode}
           hasAccountForecastChoices={isAccountMode ? hasAccountForecastChoices : undefined}
-          explicitAmountValue={isAccountMode ? explicitAmountText : undefined}
-          explicitAmountError={isAccountMode && !combinedAutopayMode ? explicitAmountError : null}
-          onExplicitAmountChange={isAccountMode ? setExplicitAmountText : undefined}
           onCancelDueNow={combinedAutopayConsentRecovery ? undefined : cancelCombinedAutopay}
           combinedConsentRecovery={combinedConsentRecoveryProps}
         />}
