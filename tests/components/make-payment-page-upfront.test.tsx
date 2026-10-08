@@ -136,7 +136,19 @@ const mocks = vi.hoisted(() => {
         selectedWeeks: accountSelectedWeekMinor > 0 ? [{ weeks: 1, amountMinor: accountSelectedWeekMinor }] : [],
         fullSeasonMinor: accountFullSeasonMinor,
       },
-    }],
+    }, ...(includePartner ? [{
+      bowlerId: 84,
+      name: "Alex Partner",
+      role: "partner",
+      confirmedDebtMinor: 0,
+      confirmedPastDueMinor: 0,
+      availableCreditMinor: 0,
+      forecastTargets: {
+        currentCollectionMinor: 0,
+        selectedWeeks: [{ weeks: 1, amountMinor: 6_000 }],
+        fullSeasonMinor: 8_000,
+      },
+    }] : [])],
   } : {
     contractVersion: "interactive-payment-participants/4",
     organizationId: 1,
@@ -212,21 +224,23 @@ const mocks = vi.hoisted(() => {
     if (key === "/api/financials/leagues" && queryKey[2] === "interactive-payment-quote/4") {
       const recipients = queryKey[5] as Array<{ bowlerId: number; selection: { kind: string; amountMinor?: number; scope?: string; weeks?: number } }> | undefined;
       const quoteRecipients = (recipients ?? []).map((recipient) => {
+        const isPartner = recipient.bowlerId === 84;
         const targetMinor = recipient.selection.kind === "explicit_amount"
           ? recipient.selection.amountMinor ?? 0
           : recipient.selection.scope === "current_collection"
-            ? accountCurrentCollectionMinor
+            ? (isPartner ? 0 : accountCurrentCollectionMinor)
             : recipient.selection.scope === "full_season"
-              ? accountFullSeasonMinor
-              : accountSelectedWeekMinor;
-        const amountMinor = recipient.selection.kind === "explicit_amount" ? targetMinor : Math.max(0, targetMinor - 5_000);
+              ? (isPartner ? 8_000 : accountFullSeasonMinor)
+              : (isPartner ? 6_000 : accountSelectedWeekMinor);
+        const creditMinor = isPartner ? 0 : 5_000;
+        const amountMinor = recipient.selection.kind === "explicit_amount" ? targetMinor : Math.max(0, targetMinor - creditMinor);
         return {
           bowlerId: recipient.bowlerId,
-          name: "Bowler",
-          role: "self" as const,
+          name: isPartner ? "Alex Partner" : "Bowler",
+          role: isPartner ? "partner" as const : "self" as const,
           selection: recipient.selection,
           confirmedDebtMinor: 0,
-          availableCreditMinor: 5_000,
+          availableCreditMinor: creditMinor,
           forecastCollectionTargetMinor: targetMinor,
           collectionTargetMinor: targetMinor,
           providerChargeAmountMinor: amountMinor,
@@ -646,7 +660,108 @@ describe("MakePaymentPage upfront payment mode", () => {
     });
     expect(mocks.paymentRequestWithRecovery).toHaveBeenCalledWith("account-v4-weekly-request", expect.any(Function), 17);
     await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
-      completedPayment: expect.objectContaining({ amountMinor: 2_500, isUpfront: false }),
+      completedPayment: expect.objectContaining({
+        amountMinor: 2_500,
+        isUpfront: false,
+        paymentSelection: "1 week",
+        recipients: [expect.objectContaining({ bowlerId: 42, coverage: "1 week" })],
+      }),
+    }));
+  });
+
+  it("keeps an unpriced self unchecked and lets the payer select and charge only a priced partner week", async () => {
+    mocks.setPaymentMode("weekly");
+    mocks.setConfirmedAccountMode(true);
+    mocks.setIncludePartner(true);
+    mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 10_000 });
+    mocks.prepareRosterPaymentIntent.mockReset().mockResolvedValue({ requestKey: "partner-weekly-request", outcome: "new" });
+    mocks.tokenizeCard.mockResolvedValue("partner-v4-source");
+    mocks.csrfFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as {
+        recipients: Array<{ bowlerId: number; selection: { kind: string; amountMinor?: number; scope?: string; weeks?: number } }>;
+      };
+      if (url.includes("interactive-payment-quote/4")) {
+        const recipients = request.recipients.map((recipient) => ({
+          bowlerId: recipient.bowlerId,
+          name: "Alex Partner",
+          role: "partner" as const,
+          selection: recipient.selection,
+          confirmedDebtMinor: 0,
+          availableCreditMinor: 0,
+          forecastCollectionTargetMinor: 6_000,
+          collectionTargetMinor: 6_000,
+          providerChargeAmountMinor: 6_000,
+        }));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: {
+            contractVersion: "account-payment-funding-quote/4",
+            organizationId: 1,
+            leagueId: 17,
+            payerBowlerId: 42,
+            currency: "USD",
+            recipients,
+            providerChargeAmountMinor: 6_000,
+            quoteFingerprint: `lvaccountfundquote:v4:${(6_000).toString(16).padStart(64, "0")}`,
+          } }),
+        };
+      }
+      if (url.includes("interactive-payment-charge/4")) {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ data: {
+            status: "succeeded",
+            operationId: "partner-account-v4-operation",
+            providerPaymentId: "partner-account-v4-payment",
+            recipientFunding: [{ bowlerId: 84, amountMinor: 6_000 }],
+          } }),
+        };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    let checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as {
+      paymentAmountMinor: number;
+      recipientRows: Array<{ bowlerId: number; selected: boolean; eligible: boolean; reason: string | null }>;
+      onRecipientToggle: (bowlerId: number, selected: boolean) => void;
+      onSubmit: () => void;
+    };
+    expect(checkout.recipientRows).toEqual([
+      expect.objectContaining({ bowlerId: 42, selected: false, eligible: false, reason: "Weekly payments are unavailable for this recipient right now." }),
+      expect.objectContaining({ bowlerId: 84, selected: false, eligible: true, reason: null }),
+    ]);
+
+    act(() => checkout.onRecipientToggle(84, true));
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      paymentAmountMinor: 6_000,
+      recipientRows: [
+        expect.objectContaining({ bowlerId: 42, selected: false, eligible: false }),
+        expect.objectContaining({ bowlerId: 84, selected: true, eligible: true }),
+      ],
+    }));
+    const partnerOnlyQuoteKey = mocks.query.mock.calls
+      .map(([options]) => options)
+      .find((options) => options.queryKey[2] === "interactive-payment-quote/4"
+        && (options.queryKey[5] as Array<{ bowlerId: number }> | undefined)?.length === 1);
+    expect(partnerOnlyQuoteKey?.queryKey[5]).toEqual([{ bowlerId: 84, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 1 } }]);
+
+    checkout = mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0] as typeof checkout;
+    await act(async () => { await checkout.onSubmit(); });
+    const quoteCall = mocks.csrfFetch.mock.calls.find(([url]) => String(url).includes("interactive-payment-quote/4"));
+    const chargeCall = mocks.csrfFetch.mock.calls.find(([url]) => String(url).includes("interactive-payment-charge/4"));
+    const expectedPartnerSelection = [{ bowlerId: 84, selection: { kind: "forecast_collection_target", scope: "selected_weeks", weeks: 1 } }];
+    expect(JSON.parse(String((quoteCall?.[1] as RequestInit).body)).recipients).toEqual(expectedPartnerSelection);
+    expect(JSON.parse(String((chargeCall?.[1] as RequestInit).body)).recipients).toEqual(expectedPartnerSelection);
+    await waitFor(() => expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      completedPayment: expect.objectContaining({
+        amountMinor: 6_000,
+        paymentSelection: "1 week",
+        recipients: [expect.objectContaining({ bowlerId: 84, name: "Alex Partner", amountMinor: 6_000, coverage: "1 week" })],
+      }),
     }));
   });
 
@@ -671,6 +786,37 @@ describe("MakePaymentPage upfront payment mode", () => {
       .find((options) => options.queryKey[2] === "interactive-payment-quote/4"
         && (options.queryKey[5] as Array<{ selection?: { scope?: string } }> | undefined)?.[0]?.selection?.scope === "full_season");
     expect(upfrontQuote?.queryKey[5]).toEqual([{ bowlerId: 42, selection: { kind: "forecast_collection_target", scope: "full_season" } }]);
+  });
+
+  it("shows no one-time balance when V4 credit covers the only upfront season balance", async () => {
+    mocks.setPaymentMode("upfront");
+    mocks.setConfirmedAccountMode(true);
+    mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 5_000 });
+    render(<MakePaymentPage />);
+
+    expect(await screen.findByRole("status")).toHaveTextContent("No one-time balance available");
+    expect(mocks.oneTimePaymentCard).not.toHaveBeenCalled();
+    const upfrontQuote = mocks.query.mock.calls
+      .map(([options]) => options)
+      .find((options) => options.queryKey[2] === "interactive-payment-quote/4");
+    expect(upfrontQuote?.enabled).toBe(false);
+  });
+
+  it("keeps upfront checkout available when a partner has a balance after self credit is applied", async () => {
+    mocks.setPaymentMode("upfront");
+    mocks.setConfirmedAccountMode(true);
+    mocks.setIncludePartner(true);
+    mocks.setAccountForecastTargets({ currentCollectionMinor: 0, selectedWeekMinor: 0, fullSeasonMinor: 5_000 });
+    render(<MakePaymentPage />);
+
+    await waitFor(() => expect(mocks.oneTimePaymentCard).toHaveBeenCalled());
+    expect(screen.queryByText("No one-time balance available")).not.toBeInTheDocument();
+    expect(mocks.oneTimePaymentCard.mock.calls.at(-1)?.[0]).toMatchObject({
+      recipientRows: [
+        expect.objectContaining({ bowlerId: 42, eligible: false, selected: false }),
+        expect.objectContaining({ bowlerId: 84, eligible: true, selected: false, remainingMinor: 8_000 }),
+      ],
+    });
   });
 
   it("leaves V4 weekly checkout unavailable when the server has no priced week option", async () => {

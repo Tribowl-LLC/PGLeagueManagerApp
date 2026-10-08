@@ -109,6 +109,41 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByRole("button", { name: "Review payment of $45" })).toBeEnabled();
   });
 
+  it("lets a payable partner review a week while the unavailable self row stays disabled", () => {
+    const partner: PaymentRecipientRow = {
+      bowlerId: 84,
+      name: "Alex Partner",
+      role: "partner",
+      remainingMinor: 6_000,
+      pastDueMinor: 0,
+      weeks: 1,
+      maximumWeekCount: 1,
+      hasPricedWeekOptions: true,
+      amountMinor: 6_000,
+      selected: true,
+      eligible: true,
+      reason: null,
+    };
+    renderCard(false, {
+      amountMinor: 6_000,
+      selected: false,
+      eligible: false,
+      reason: "Weekly payments are unavailable for this recipient right now.",
+      hasPricedWeekOptions: false,
+    }, [partner], [], false, false, undefined, false, {
+      accountFunding: true,
+      hasAccountForecastChoices: true,
+    });
+
+    expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeDisabled();
+    expect(screen.getByText("Weekly payments are unavailable for this recipient right now.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review payment of $60" }));
+    const review = screen.getByRole("dialog", { name: "Review payment" });
+    expect(review).toHaveTextContent("Alex Partner");
+    expect(review).toHaveTextContent("1 week selected");
+    expect(review).not.toHaveTextContent("Bowler");
+  });
+
   it("explains when the participant projection is empty without showing an impossible chooser action", () => {
     renderCard(false, { amountMinor: 0 }, [], [], false, false, []);
 
@@ -601,6 +636,40 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByRole("button", { name: "View payment history" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Make another payment" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Confirm payment/ })).not.toBeInTheDocument();
+  });
+
+  it("shows selected account weeks without claiming account credit allocated future obligations", () => {
+    renderCard(false, {}, [], [], false, false, undefined, false, {
+      completedPayment: {
+        amountMinor: 2_500,
+        coverage: "account credit",
+        paymentSelection: "1 week",
+        isUpfront: false,
+        hasRemainingBalance: true,
+        recipients: [{ bowlerId: 84, name: "Alex Partner", role: "partner", amountMinor: 2_500, coverage: "1 week" }],
+      },
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Paid $25 for 1 week.");
+    expect(screen.getByRole("status")).not.toHaveTextContent("account credit");
+    expect(screen.getByRole("status")).toHaveTextContent("Alex Partner");
+    expect(screen.getByRole("status")).toHaveTextContent("1 week");
+  });
+
+  it("shows the full-season selection in account completion copy", () => {
+    renderCard(true, {}, [], [], false, false, undefined, false, {
+      completedPayment: {
+        amountMinor: 5_000,
+        coverage: "account credit",
+        paymentSelection: "full season",
+        isUpfront: true,
+        hasRemainingBalance: false,
+        recipients: [{ bowlerId: 42, name: "Bowler", role: "self", amountMinor: 5_000, coverage: "full season" }],
+      },
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Paid $50 for full season.");
+    expect(screen.getByRole("status")).not.toHaveTextContent("account credit");
   });
 
   it("keeps repeated schedule labels distinct with server obligation identity", () => {

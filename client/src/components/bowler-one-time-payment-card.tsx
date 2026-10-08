@@ -50,6 +50,7 @@ export interface PaymentBreakdownRow {
 export interface CompletedPayment {
   amountMinor: number;
   coverage: string;
+  paymentSelection?: string;
   isUpfront: boolean;
   hasRemainingBalance: boolean;
   recipients: Array<{
@@ -307,7 +308,7 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
     && !(accountFunding && !hasAccountForecastChoices);
   const compactFullBalanceRows = fullBalanceOnly && hasPaymentPartner;
   const showRecipientRows = hasPaymentPartner || dueNowOnly || showSoloWeekSelection;
-  const hasSelectedRecipient = recipientRows.some((row) => row.selected);
+  const hasSelectedRecipient = recipientRows.some((row) => row.selected && row.eligible);
   const selectionStaleMessage = "The available bowler or payment details changed while this page was open. Review the available bowler and payment details before paying.";
   const [sourceOpen, setSourceOpen] = useState(savedCards.length === 0 || fullBalanceOnly);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -405,7 +406,9 @@ export const BowlerOneTimePaymentCard: FC<Props> = ({
           <div className="familiar-payment-success" role="status">
             <CheckCircle2 className="familiar-payment-success-icon" aria-hidden="true" />
             <h2>{completedPayment.isUpfront ? "Upfront payment complete" : "Payment complete"}</h2>
-            <p>{formatPayCurrency(completedPayment.amountMinor)} covered {completedPayment.coverage}.</p>
+            <p>{completedPayment.paymentSelection
+              ? `Paid ${formatPayCurrency(completedPayment.amountMinor)} for ${completedPayment.paymentSelection}.`
+              : `${formatPayCurrency(completedPayment.amountMinor)} covered ${completedPayment.coverage}.`}</p>
             {completedPayment.recipients.some((recipient) => recipient.role === "partner") && (
               <div className="familiar-payment-success-allocations" aria-label="Payment allocation">
                 {completedPayment.recipients.map((recipient) => (

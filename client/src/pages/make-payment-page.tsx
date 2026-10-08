@@ -168,6 +168,65 @@ export function formatCompletedCoverage(labels: string[]): string {
   return ranges.join(" and ");
 }
 
+function isAccountRecipientPayable(
+  participant: InteractivePaymentParticipant,
+  paymentMode: InteractivePaymentMode,
+  combinedAutopayMode: boolean,
+): boolean {
+  if (!participant.eligible) return false;
+  if (combinedAutopayMode) {
+    return participant.role === "self"
+      && (participant.catchUpAmountMinor ?? participant.dueNowMinor ?? 0) > 0;
+  }
+  if (paymentMode === "upfront") return participant.remainingMinor > 0;
+  return participant.weeklyOptions.some((option) => option.amountMinor > 0);
+}
+
+function accountRecipientUnavailableReason(
+  paymentMode: InteractivePaymentMode,
+  combinedAutopayMode: boolean,
+): string {
+  if (combinedAutopayMode) return "No amount is due now for this recipient.";
+  if (paymentMode === "upfront") return "No one-time balance is available for this recipient.";
+  return "Weekly payments are unavailable for this recipient right now.";
+}
+
+function accountSelectionLabel(
+  bowlerId: number,
+  rows: readonly PaymentRecipientRow[],
+  selections: readonly AccountPaymentRecipientSelectionV4[],
+  paymentMode: InteractivePaymentMode,
+  combinedAutopayMode: boolean,
+  includeName: boolean,
+): string {
+  if (combinedAutopayMode) return "the amount needed to get up to date";
+  if (paymentMode === "upfront") return "full season";
+  const selection = selections.find((candidate) => candidate.bowlerId === bowlerId)?.selection;
+  const row = rows.find((candidate) => candidate.bowlerId === bowlerId);
+  const weeks = selection?.kind === "forecast_collection_target" && selection.scope === "selected_weeks"
+    ? selection.weeks
+    : row?.weeks ?? 1;
+  const weekLabel = `${weeks} ${weeks === 1 ? "week" : "weeks"}`;
+  return includeName && row ? `${row.name}: ${weekLabel}` : weekLabel;
+}
+
+function accountPaymentSelectionSummary(
+  rows: readonly PaymentRecipientRow[],
+  selections: readonly AccountPaymentRecipientSelectionV4[],
+  paymentMode: InteractivePaymentMode,
+  combinedAutopayMode: boolean,
+): string {
+  if (combinedAutopayMode) return "the amount needed to get up to date";
+  if (paymentMode === "upfront") return "full season";
+  const selectedRows = rows.filter((row) => row.selected && row.eligible
+    && selections.some((selection) => selection.bowlerId === row.bowlerId));
+  const onlySelectedRow = selectedRows[0];
+  if (selectedRows.length === 1 && onlySelectedRow) return accountSelectionLabel(onlySelectedRow.bowlerId, rows, selections, paymentMode, false, false);
+  return selectedRows
+    .map((row) => accountSelectionLabel(row.bowlerId, rows, selections, paymentMode, false, true))
+    .join(", ") || "selected payment";
+}
+
 interface PendingPaymentRefreshIdentity {
   scope: string;
   requestKey: string;
@@ -461,13 +520,21 @@ export default function MakePaymentPage() {
   const fullBalanceOnly = paymentMode === "upfront";
   const effectiveSelectedRecipients = useMemo(() => {
     if (combinedAutopayMode) {
+      if (accountParticipants) {
+        return Object.fromEntries(participants.map((participant) => [
+          participant.bowlerId,
+          isAccountRecipientPayable(participant, paymentMode, true),
+        ]));
+      }
       return Object.fromEntries(participants.map((participant) => [participant.bowlerId, participant.role === "self" && participant.eligible && participant.remainingMinor > 0]));
     }
     if (accountParticipants) {
       const defaults = defaultSelectedAccountRecipients(accountParticipants);
       return Object.fromEntries(participants.map((participant) => [
         participant.bowlerId,
-        selectedRecipients[participant.bowlerId] ?? defaults[participant.bowlerId] ?? false,
+        isAccountRecipientPayable(participant, paymentMode, false)
+          ? selectedRecipients[participant.bowlerId] ?? defaults[participant.bowlerId] ?? false
+          : false,
       ]));
     }
     const next = { ...selectedRecipients };
@@ -478,7 +545,7 @@ export default function MakePaymentPage() {
       }
     }
     return next;
-  }, [accountParticipants, combinedAutopayMode, hasPaymentPartner, participants, selectedRecipients]);
+  }, [accountParticipants, combinedAutopayMode, hasPaymentPartner, participants, paymentMode, selectedRecipients]);
   const selectedRecipientRows = useMemo<PaymentRecipientRow[]>(() => participants.map((participant) => {
     const maximumWeeks = participant.weeklyOptions.at(-1)?.weeks ?? 0;
     const weeks = combinedAutopayMode && participant.catchUpWeeks && participant.catchUpWeeks > 0
@@ -486,6 +553,9 @@ export default function MakePaymentPage() {
       : fullBalanceOnly
       ? initialInteractivePaymentWeeks(participant, paymentMode)
       : Math.max(1, Math.trunc(recipientWeeks[participant.bowlerId] ?? 1));
+    const eligible = accountParticipants
+      ? isAccountRecipientPayable(participant, paymentMode, combinedAutopayMode)
+      : participant.eligible && participant.remainingMinor > 0;
     return {
       bowlerId: participant.bowlerId,
       name: participant.name,
@@ -499,9 +569,10 @@ export default function MakePaymentPage() {
           ? (participant.catchUpAmountMinor ?? participant.dueNowMinor ?? 0)
           : participantAmountForSelection(participant, weeks, paymentMode),
       selected: effectiveSelectedRecipients[participant.bowlerId] === true,
-      eligible: participant.eligible && (participant.remainingMinor > 0
-        || (accountParticipants !== undefined && participant.weeklyOptions.some((option) => option.amountMinor > 0))),
-      reason: participant.reason,
+      eligible,
+      reason: accountParticipants && !eligible
+        ? participant.reason ?? accountRecipientUnavailableReason(paymentMode, combinedAutopayMode)
+        : participant.reason,
     };
   }), [accountParticipants, combinedAutopayMode, participants, fullBalanceOnly, paymentMode, recipientWeeks, effectiveSelectedRecipients]);
   const legacyRecipientSelections = useMemo(() => selectionStale || accountParticipants
@@ -695,7 +766,7 @@ export default function MakePaymentPage() {
     const nextWeeks: Record<number, number> = {};
     for (const participant of nextParticipants) {
       nextSelected[participant.bowlerId] = accountParticipants
-        ? participant.role === "self"
+        ? participant.role === "self" && isAccountRecipientPayable(participant, paymentModeRef.current, false)
         : isInteractiveParticipantSelectedByDefault(participant);
       nextWeeks[participant.bowlerId] = initialInteractivePaymentWeeks(participant, paymentModeRef.current);
     }
@@ -781,8 +852,10 @@ export default function MakePaymentPage() {
           const bowlerId = Number(id);
           const previous = previousById.get(bowlerId);
           const current = currentById.get(bowlerId);
-          const explicitPayerCanFund = accountParticipants?.payerBowlerId === bowlerId && bowlerId === Number(id);
-          if (!previous || !current || !current.eligible || (!explicitPayerCanFund && current.remainingMinor <= 0)) return true;
+          const isPayable = current && (accountParticipants
+            ? isAccountRecipientPayable(current, paymentMode, false)
+            : current.eligible && current.remainingMinor > 0);
+          if (!previous || !current || !isPayable) return true;
           const selectedWeeks = recipientWeeksRef.current[bowlerId] ?? 1;
           const maximumWeeks = current.weeklyOptions.at(-1)?.weeks ?? 0;
           return selectedWeeks > maximumWeeks
@@ -804,11 +877,12 @@ export default function MakePaymentPage() {
     setSelectedRecipients((current) => {
       const next: Record<number, boolean> = {};
       for (const participant of participants) {
-        const canFundExplicitly = accountParticipants?.payerBowlerId === participant.bowlerId;
-        const isPayable = participant.eligible && (participant.remainingMinor > 0 || canFundExplicitly);
+        const isPayable = accountParticipants
+          ? isAccountRecipientPayable(participant, paymentMode, false)
+          : participant.eligible && participant.remainingMinor > 0;
         const isSoloSelf = !hasPaymentPartner && participant.role === "self";
         const defaultSelected = accountParticipants
-          ? participant.role === "self"
+          ? participant.role === "self" && isPayable
           : isInteractiveParticipantSelectedByDefault(participant);
         if (!isPayable) next[participant.bowlerId] = false;
         else if (isSoloSelf) next[participant.bowlerId] = defaultSelected;
@@ -1058,7 +1132,7 @@ export default function MakePaymentPage() {
     const nextWeeks: Record<number, number> = {};
     for (const participant of participants) {
       nextSelected[participant.bowlerId] = accountParticipants
-        ? participant.role === "self"
+        ? participant.role === "self" && isAccountRecipientPayable(participant, paymentMode, false)
         : isInteractiveParticipantSelectedByDefault(participant);
       nextWeeks[participant.bowlerId] = initialInteractivePaymentWeeks(participant, paymentMode);
     }
@@ -1346,12 +1420,15 @@ export default function MakePaymentPage() {
       isUpfront: fullBalanceOnly,
       hasRemainingBalance: selectedRecipientRows.some((row) => row.eligible && row.remainingMinor > (row.selected ? row.amountMinor : 0)),
       coverage: completedCoverage,
+      ...(isAccountMode ? { paymentSelection: accountPaymentSelectionSummary(selectedRecipientRows, accountRecipientSelections, paymentMode, combinedEnrollment) } : {}),
       recipients: breakdownRows.map((row) => ({
         bowlerId: row.bowlerId,
         name: row.name,
         role: row.role,
         amountMinor: row.amountMinor,
-        coverage: isAccountMode ? "account credit" : formatCompletedCoverage(row.coveredWeeks),
+        coverage: isAccountMode
+          ? accountSelectionLabel(row.bowlerId, selectedRecipientRows, accountRecipientSelections, paymentMode, combinedEnrollment, false)
+          : formatCompletedCoverage(row.coveredWeeks),
       })),
     };
     let combinedMarkerForRecovery: CombinedAutopayConsentRecovery | null = null;
@@ -1614,7 +1691,9 @@ export default function MakePaymentPage() {
 
   const hasEligibleParticipant = participants.some((participant) => participant.eligible
     && (participant.remainingMinor > 0 || (accountParticipants?.payerBowlerId === participant.bowlerId)));
-  const isNoBalanceAvailable = !isAccountMode && selfParticipant !== undefined && !hasEligibleParticipant && selfParticipant.remainingMinor <= 0;
+  const isNoBalanceAvailable = fullBalanceOnly && isAccountMode
+    ? participants.length > 0 && !participants.some((participant) => participant.eligible && participant.remainingMinor > 0)
+    : !isAccountMode && selfParticipant !== undefined && !hasEligibleParticipant && selfParticipant.remainingMinor <= 0;
   const combinedConsentRecoveryProps = combinedAutopayConsentRecovery === null ? null : {
     message: combinedAutopayConsentRecovery.message,
     onRetry: () => void retryCombinedAutopayConsent(),
