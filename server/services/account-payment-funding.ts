@@ -44,6 +44,7 @@ import { confirmedPastDueMinor as projectConfirmedPastDueMinor, effectiveCollect
 import {
   readOwnedAccountBalancesInTransaction,
   readOwnedLedgerAdoptionInTransaction,
+  readOwnedPaymentLedgerReadSnapshotInTransaction,
   readConfirmedOwnedObligationsInTransaction,
 } from "./owned-payment-ledger.js";
 import { prepareAccountPaymentOperation } from "./account-payment-operation-preparation.js";
@@ -326,9 +327,13 @@ async function accountContextInTransaction(
   }
 
   const recipientIds = resolved.participants.map((participant) => participant.bowlerId);
+  // Load the league's ledger evidence once; reading debts and balances
+  // separately repeated the same evidence queries for each.
+  const ledgerScope = { organizationId: input.organizationId, leagueId: input.leagueId };
+  const ledger = await readOwnedPaymentLedgerReadSnapshotInTransaction(tx, ledgerScope, adoption);
   const [debts, balances] = await Promise.all([
-    readConfirmedOwnedObligationsInTransaction(tx, { ...input, bowlerIds: recipientIds }),
-    readOwnedAccountBalancesInTransaction(tx, { ...input, bowlerIds: recipientIds }),
+    readConfirmedOwnedObligationsInTransaction(tx, { ...ledgerScope, bowlerIds: recipientIds }, ledger),
+    readOwnedAccountBalancesInTransaction(tx, { ...ledgerScope, bowlerIds: recipientIds }, ledger),
   ]);
   const candidatesByOwner = await addConfirmedLedgerCandidates(tx, input, resolved.participants, debts);
   const debtByOwner = new Map<number, number>();
