@@ -185,9 +185,18 @@ mandatory. Keep the handoff current with the evidence fields in
 
 ## Render Configuration
 
-The production Render project, last verified in the live dashboard on
-2026-07-21, contains one `LeagueVault` Node Web Service in the Ohio region,
-using one Starter instance. It tracks GitHub
+The production Render project, last verified on 2026-10-08, serves
+`leaguevault.app` from one `LeagueVault-virginia` Node Web Service
+(`srv-db3u9m2j9qps73ffu9r0`) in the Virginia region, the same region as the
+Neon database, using one Starter instance. Production moved there from the
+original Ohio `LeagueVault` service (`srv-d8j4fv0jo6nc73du2h80`) on 2026-10-08
+because each database round trip from Ohio cost about 15 ms against about 2 ms
+from Virginia. The Ohio service holds no custom domain and has scheduled
+payments paused; it is retained only as a short-term rollback and must not
+receive deployments. Environment values saved with "Save only" take effect on
+the next deploy, not on a restart. The application answers only on
+`leaguevault.app`, so a service without that domain can be checked only through
+`/healthz`. The production service tracks GitHub
 `Tribowl-LLC/PGLeagueManagerApp` branch `main`. The exact dashboard commands are:
 
 ```text
