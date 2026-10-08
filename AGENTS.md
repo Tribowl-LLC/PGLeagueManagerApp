@@ -96,7 +96,7 @@ uses npm. Do not introduce Yarn, pnpm, or an additional lockfile.
   unverified branch.
 - Keep production secrets in the appropriate provider: Render, Neon, Square,
   SendGrid, Sentry, or GitHub Actions secrets.
-- Never put production credentials in Codex prompts, source files, commits,
+- Never put production credentials in agent prompts, source files, commits,
   logs, screenshots, test fixtures, or test output.
 
 See `docs/ci.md` and `docs/production-runbook.md` for operational details.
