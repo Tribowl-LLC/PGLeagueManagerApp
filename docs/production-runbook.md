@@ -5,7 +5,9 @@
 Canonical occurrences are the operational schedule authority. Roster responsibilities,
 payment obligations and allocations are the financial authority. Interactive and
 standing automatic payments share the provider ledger and roster snapshots.
-See [roster-driven payments](roster-driven-payments.md) and
+The current operating model for who owes and how bowlers pay is the
+[bowler payment model](bowler-payment-model.md); it takes precedence over
+[roster-driven payments](roster-driven-payments.md). See also
 [standing automatic payments](roster-standing-autopay.md).
 
 Keep the existing production payment execution settings unchanged during ordinary

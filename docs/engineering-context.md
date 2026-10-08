@@ -118,6 +118,10 @@ legacy projection with no fabricated UUID or UTC/DST proof. Schedule reads are
 tenant-scoped and zero-write. See
 `docs/phase-e1-canonical-schedule-admin-views.md`.
 
+The current bowler payment model (Regular and Sub, Manage Payments as the only
+place weekly responsibility is decided, pay by weeks, server-proven paid in
+full) is defined in [`bowler-payment-model.md`](bowler-payment-model.md).
+
 Required weekly payer count and substitute-payer assignment are separate from
 payment timing. A future money-consumer cutover must model the league's three-
 or four-bowler team requirement and the actual bowlers responsible for each

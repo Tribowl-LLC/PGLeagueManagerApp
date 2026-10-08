@@ -358,6 +358,17 @@ integrity, historical reports, and future ownership boundaries.
   and review of the provider contract.
 - Capacitor and the `ios/` and `android/` projects are intentional native
   application targets, not dead web code.
+- Bowler payments follow
+  [`docs/bowler-payment-model.md`](docs/bowler-payment-model.md), which takes
+  precedence over older payment documents:
+  - A roster member is a Regular (holds a lineup spot) or a Sub (everyone
+    else). There is no rotating bowler type.
+  - Manage Payments is the only place staff decide who owes for a week.
+  - Bowlers pay by choosing weeks. Do not add a typed-amount or "add credit to
+    my account" option.
+  - "Paid in full" and "nothing due" are server-proven; never infer them from
+    a zero balance in the client.
+  - Do not build on anything that document lists as retiring.
 
 ## Dates And Time Zones
 
@@ -442,6 +453,7 @@ integrity, historical reports, and future ownership boundaries.
 - `docs/production-runbook.md`: Render and Neon release procedure
 - `docs/engineering-context.md`: longer architecture notes and durable
   decisions
+- `docs/bowler-payment-model.md`: who owes league fees and how bowlers pay
 
 ## Code And Review Practices
 

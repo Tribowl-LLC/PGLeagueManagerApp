@@ -1,5 +1,13 @@
 # Rotating team payments
 
+> **Retiring.** Rotating slots, rotation pools, weekly rotating assignments,
+> and rotating credit are being retired. A bowler who shares a spot is a Sub,
+> and staff assign each week in Manage Payments. See
+> [`bowler-payment-model.md`](bowler-payment-model.md). Do not build on this
+> mechanism or configure new rotating slots. This document remains only while
+> the code it describes exists; the migration notes below stay accurate for
+> the schema history.
+
 ## Configure and record participation
 
 Set a team's stable slot to **Rotating** in roster version 2, then choose the
