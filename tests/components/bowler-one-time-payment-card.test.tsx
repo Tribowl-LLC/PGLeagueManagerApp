@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
 import { BowlerOneTimePaymentCard, type CompletedPayment, type PaymentBreakdownRow, type PaymentRecipientRow } from "@/components/bowler-one-time-payment-card";
 
-function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[], dueNowOnly = false, options: { applePayAvailable?: boolean; googlePayAvailable?: boolean; rotatingMode?: boolean; cardMode?: "new" | "saved"; selectedSavedCardId?: string; savedCards?: Array<{ id: string; brand: string; last4: string; expMonth: number; expYear: number }>; storeCard?: boolean; quoteFingerprint?: string; completedPayment?: CompletedPayment; onViewPaymentHistory?: () => void; onMakeAnotherPayment?: () => void; onRetryQuote?: () => void; accountFunding?: boolean; hasAccountForecastChoices?: boolean; explicitAmountValue?: string; explicitAmountError?: string | null; onExplicitAmountChange?: (value: string) => void } = {}) {
+function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipientRow> = {}, additionalRows: PaymentRecipientRow[] = [], breakdownRows: PaymentBreakdownRow[] = [], isWalletProcessing = false, selectionStale = false, recipientRowsOverride?: PaymentRecipientRow[], dueNowOnly = false, options: { applePayAvailable?: boolean; googlePayAvailable?: boolean; rotatingMode?: boolean; cardMode?: "new" | "saved"; selectedSavedCardId?: string; savedCards?: Array<{ id: string; brand: string; last4: string; expMonth: number; expYear: number }>; storeCard?: boolean; quoteFingerprint?: string; completedPayment?: CompletedPayment; onViewPaymentHistory?: () => void; onMakeAnotherPayment?: () => void; onRetryQuote?: () => void; accountFunding?: boolean; hasAccountForecastChoices?: boolean } = {}) {
   const applePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const googlePayRef: RefObject<HTMLDivElement | null> = { current: null };
   const onRecipientToggle = vi.fn();
@@ -67,57 +67,81 @@ function renderCard(fullBalanceOnly: boolean, overrides: Partial<PaymentRecipien
     onCancelDueNow={vi.fn()}
     accountFunding={options.accountFunding}
     hasAccountForecastChoices={options.hasAccountForecastChoices}
-    explicitAmountValue={options.explicitAmountValue}
-    explicitAmountError={options.explicitAmountError}
-    onExplicitAmountChange={options.onExplicitAmountChange}
   />);
   return { onRecipientToggle, onRecipientWeeksChange, onSubmit };
 }
 
 describe("BowlerOneTimePaymentCard payment mode", () => {
-  it("renders a decimal account funding amount input and reports invalid entry accessibly", () => {
-    const onExplicitAmountChange = vi.fn();
-    renderCard(false, { amountMinor: 0 }, [], [], false, false, undefined, false, {
+  it("reviews one server-priced week without offering an arbitrary amount", () => {
+    const { onSubmit } = renderCard(false, { weeks: 1, maximumWeekCount: 1, hasPricedWeekOptions: true, amountMinor: 2_500 }, [], [], false, false, undefined, false, {
       accountFunding: true,
-      explicitAmountValue: "-",
-      explicitAmountError: "Enter a valid amount.",
-      onExplicitAmountChange,
+      hasAccountForecastChoices: true,
     });
 
-    const amountInput = screen.getByRole("textbox", { name: "Amount to add to your account" });
-    expect(amountInput).toHaveValue("-");
-    expect(amountInput).toHaveAttribute("inputmode", "decimal");
-    expect(amountInput).toHaveAttribute("aria-invalid", "true");
-    expect(screen.getByRole("alert")).toHaveTextContent("Enter a valid amount.");
-    fireEvent.change(amountInput, { target: { value: "25.50" } });
-    expect(onExplicitAmountChange).toHaveBeenCalledWith("25.50");
+    expect(screen.queryByRole("textbox", { name: "Amount to add to your account" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pay Bowler for one more week" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Review payment of $25" }));
+    expect(screen.getByRole("dialog", { name: "Review payment" })).toHaveTextContent("Payment selection");
+    expect(screen.getByRole("dialog", { name: "Review payment" })).toHaveTextContent("1 week selected");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm payment" }));
+    expect(onSubmit).toHaveBeenCalledOnce();
   });
 
-  it("hides the week selector and gives direct amount guidance when no account presets exist", () => {
+  it("shows an unavailable state and disables review when no server-priced week option exists", () => {
     renderCard(false, { amountMinor: 0 }, [], [], false, false, undefined, false, {
       accountFunding: true,
       hasAccountForecastChoices: false,
-      explicitAmountValue: "",
-      onExplicitAmountChange: vi.fn(),
     });
 
     expect(screen.queryByText("Weeks to pay")).not.toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Amount to add to your account" })).toBeInTheDocument();
-    expect(screen.getByText("Enter an amount to add funds.")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Amount to add to your account" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Weekly payments are unavailable for this league right now. Contact your league manager for help.");
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
   });
 
-  it("hides and ignores a prior invalid amount during combined autopay checkout", () => {
+  it("keeps combined autopay review available for its server-quoted current collection", () => {
     renderCard(false, { amountMinor: 4_500 }, [], [], false, false, undefined, true, {
       accountFunding: true,
-      explicitAmountValue: "-",
-      explicitAmountError: "Enter a valid amount.",
-      onExplicitAmountChange: vi.fn(),
     });
 
     expect(screen.getByText("Pay the amount needed to get up to date and enable automatic payments in one checkout.")).toBeInTheDocument();
-    expect(screen.queryByText("Choose a payment option or enter an amount to add funds to your account.")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Amount to add to your account" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review payment of $45" })).toBeEnabled();
+  });
+
+  it("lets a payable partner review a week while the unavailable self row stays disabled", () => {
+    const partner: PaymentRecipientRow = {
+      bowlerId: 84,
+      name: "Alex Partner",
+      role: "partner",
+      remainingMinor: 6_000,
+      pastDueMinor: 0,
+      weeks: 1,
+      maximumWeekCount: 1,
+      hasPricedWeekOptions: true,
+      amountMinor: 6_000,
+      selected: true,
+      eligible: true,
+      reason: null,
+    };
+    renderCard(false, {
+      amountMinor: 6_000,
+      selected: false,
+      eligible: false,
+      reason: "Weekly payments are unavailable for this recipient right now.",
+      hasPricedWeekOptions: false,
+    }, [partner], [], false, false, undefined, false, {
+      accountFunding: true,
+      hasAccountForecastChoices: true,
+    });
+
+    expect(screen.getByRole("checkbox", { name: "Pay Bowler" })).toBeDisabled();
+    expect(screen.getByText("Weekly payments are unavailable for this recipient right now.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review payment of $60" }));
+    const review = screen.getByRole("dialog", { name: "Review payment" });
+    expect(review).toHaveTextContent("Alex Partner");
+    expect(review).toHaveTextContent("1 week selected");
+    expect(review).not.toHaveTextContent("Bowler");
   });
 
   it("explains when the participant projection is empty without showing an impossible chooser action", () => {
@@ -612,6 +636,40 @@ describe("BowlerOneTimePaymentCard payment mode", () => {
     expect(screen.getByRole("button", { name: "View payment history" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Make another payment" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Confirm payment/ })).not.toBeInTheDocument();
+  });
+
+  it("shows selected account weeks without claiming account credit allocated future obligations", () => {
+    renderCard(false, {}, [], [], false, false, undefined, false, {
+      completedPayment: {
+        amountMinor: 2_500,
+        coverage: "account credit",
+        paymentSelection: "1 week",
+        isUpfront: false,
+        hasRemainingBalance: true,
+        recipients: [{ bowlerId: 84, name: "Alex Partner", role: "partner", amountMinor: 2_500, coverage: "1 week" }],
+      },
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Paid $25 for 1 week.");
+    expect(screen.getByRole("status")).not.toHaveTextContent("account credit");
+    expect(screen.getByRole("status")).toHaveTextContent("Alex Partner");
+    expect(screen.getByRole("status")).toHaveTextContent("1 week");
+  });
+
+  it("shows the full-season selection in account completion copy", () => {
+    renderCard(true, {}, [], [], false, false, undefined, false, {
+      completedPayment: {
+        amountMinor: 5_000,
+        coverage: "account credit",
+        paymentSelection: "full season",
+        isUpfront: true,
+        hasRemainingBalance: false,
+        recipients: [{ bowlerId: 42, name: "Bowler", role: "self", amountMinor: 5_000, coverage: "full season" }],
+      },
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Paid $50 for full season.");
+    expect(screen.getByRole("status")).not.toHaveTextContent("account credit");
   });
 
   it("keeps repeated schedule labels distinct with server obligation identity", () => {
