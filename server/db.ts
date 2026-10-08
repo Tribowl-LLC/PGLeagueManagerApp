@@ -45,11 +45,18 @@ export function createDbClient(databaseUrl: string): DbClient {
   };
 }
 
+// A new Neon connection costs roughly 100-250ms (TLS plus authentication),
+// and one page load fans out into several parallel requests. Keeping a small
+// warm floor means a page opened after a quiet half minute reuses connections
+// instead of every request opening its own. `allowExitOnIdle` stops that floor
+// from holding open a script that imports this pool and never ends it.
 export const pool = new pg.Pool({
   connectionString: env.DATABASE_URL,
   max: 50,
+  min: 10,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
+  allowExitOnIdle: true,
 });
 export const db = drizzle({ client: pool, schema });
 

@@ -2851,6 +2851,27 @@ describe("PR1 roster snapshot finalization on PostgreSQL", () => {
     })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
   });
 
+  it("reads V4 participants and standalone quotes while another transaction holds the league lock", async () => {
+    await ensureOwnedLedgerAdoption(accountLeagueId);
+    const blocker = await getTestPool().connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [organizationId, accountLeagueId]);
+      const participants = await readInteractivePaymentParticipantsV4({ organizationId, leagueId: accountLeagueId, payerBowlerId: bowlerId });
+      expect(participants.accountingMode).toBe("confirmed_account_v4");
+      const quote = await quoteAccountPaymentFundingV4({
+        organizationId,
+        leagueId: accountLeagueId,
+        payerBowlerId: bowlerId,
+        request: { recipients: [{ bowlerId, selection: { kind: "explicit_amount", amountMinor: 2_000 } }] },
+      });
+      expect(quote.quoteFingerprint).toMatch(/^lvaccountfundquote:v4:/);
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+    }
+  });
+
   it("replays a succeeded V4 receipt after the league loses its provider location", async () => {
     await ensureOwnedLedgerAdoption(accountLeagueId);
     const selection = { kind: "explicit_amount" as const, amountMinor: 2_000 };

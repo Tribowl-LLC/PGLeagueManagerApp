@@ -78,33 +78,44 @@ function nowFromTransaction(rows: unknown): string {
   return normalizeInteractivePaymentTransactionTimestamp(row?.now);
 }
 
-async function activePayer(tx: RosterPaymentTransaction, organizationId: number, leagueId: number, bowlerId: number): Promise<{ id: number; name: string; email: string | null } | undefined> {
-  const [row] = await tx.select({ id: bowlers.id, name: bowlers.name, email: bowlers.email }).from(bowlers).innerJoin(bowlerLeagues, and(
+async function activePayer(tx: RosterPaymentTransaction, organizationId: number, leagueId: number, bowlerId: number, lockRows = true): Promise<{ id: number; name: string; email: string | null } | undefined> {
+  const query = tx.select({ id: bowlers.id, name: bowlers.name, email: bowlers.email }).from(bowlers).innerJoin(bowlerLeagues, and(
     eq(bowlerLeagues.bowlerId, bowlers.id), eq(bowlerLeagues.leagueId, leagueId), eq(bowlerLeagues.active, true),
-  )).where(and(eq(bowlers.id, bowlerId), eq(bowlers.organizationId, organizationId), eq(bowlers.active, true))).limit(1).for("share");
+  )).where(and(eq(bowlers.id, bowlerId), eq(bowlers.organizationId, organizationId), eq(bowlers.active, true))).limit(1);
+  const [row] = await (lockRows ? query.for("share") : query);
   return row;
 }
 
-export async function resolveParticipantsInTransaction(tx: RosterPaymentTransaction, input: { organizationId: number; leagueId: number; payerBowlerId: number; now: string }) {
-  const [league] = await tx.select({ paymentMode: leagues.paymentMode }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1).for("share");
+/**
+ * `lockRows: false` is for display-only reads running in a read-only
+ * snapshot transaction: it takes no row locks, so the caller must not treat
+ * the result as a prepare/unlink boundary. Charge preparation keeps the
+ * default and re-resolves under the league lock.
+ */
+export async function resolveParticipantsInTransaction(tx: RosterPaymentTransaction, input: { organizationId: number; leagueId: number; payerBowlerId: number; now: string; lockRows?: boolean }) {
+  const lockRows = input.lockRows !== false;
+  const leagueQuery = tx.select({ paymentMode: leagues.paymentMode }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
+  const [league] = await (lockRows ? leagueQuery.for("share") : leagueQuery);
   if (!league) throw new RosterPaymentError("NOT_FOUND", "League not found", 404);
-  const payer = await activePayer(tx, input.organizationId, input.leagueId, input.payerBowlerId);
+  const payer = await activePayer(tx, input.organizationId, input.leagueId, input.payerBowlerId, lockRows);
   if (!payer) throw new RosterPaymentError("PAYER_SCOPE_MISMATCH", "The payment payer is not an active member of this league", 403);
   // The league lock is acquired before this link lock. unlink uses the same
   // order, making accepted-link evidence a real prepare/unlink boundary.
-  const links = await tx.select().from(bowlerPaymentLinks).where(and(
+  const linksQuery = tx.select().from(bowlerPaymentLinks).where(and(
     eq(bowlerPaymentLinks.organizationId, input.organizationId), eq(bowlerPaymentLinks.status, "accepted"),
     or(eq(bowlerPaymentLinks.bowlerAId, input.payerBowlerId), eq(bowlerPaymentLinks.bowlerBId, input.payerBowlerId)),
-  )).orderBy(asc(bowlerPaymentLinks.id)).for("update");
+  )).orderBy(asc(bowlerPaymentLinks.id));
+  const links = await (lockRows ? linksQuery.for("update") : linksQuery);
   const byPartner = new Map<number, Link>();
   for (const link of links) byPartner.set(link.bowlerAId === input.payerBowlerId ? link.bowlerBId : link.bowlerAId, link);
   const ids = [input.payerBowlerId, ...byPartner.keys()];
-  const members = ids.length === 0 ? [] : await tx.select({ id: bowlers.id, name: bowlers.name, email: bowlers.email }).from(bowlers).innerJoin(bowlerLeagues, and(
+  const membersQuery = tx.select({ id: bowlers.id, name: bowlers.name, email: bowlers.email }).from(bowlers).innerJoin(bowlerLeagues, and(
     eq(bowlerLeagues.bowlerId, bowlers.id), eq(bowlerLeagues.leagueId, input.leagueId), eq(bowlerLeagues.active, true),
-  )).where(and(eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true), inArray(bowlers.id, ids))).orderBy(asc(bowlers.id)).for("share");
+  )).where(and(eq(bowlers.organizationId, input.organizationId), eq(bowlers.active, true), inArray(bowlers.id, ids))).orderBy(asc(bowlers.id));
+  const members = ids.length === 0 ? [] : await (lockRows ? membersQuery.for("share") : membersQuery);
   const result = [];
   for (const member of members) {
-    const candidates = await fifoCandidatesInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: member.id });
+    const candidates = await fifoCandidatesInTransaction(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerId: member.id, forUpdate: lockRows });
     const payableCandidates = candidates.filter((row) => row.outstandingMinor > 0);
     const remainingMinor = payableCandidates.reduce((sum, row) => sum + row.outstandingMinor, 0);
     const payableOccurrenceCount = new Set(payableCandidates.map((row) => row.occurrenceId)).size;
