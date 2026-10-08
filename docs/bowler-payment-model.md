@@ -90,7 +90,7 @@ retired code and its documentation are gone.
 | --- | --- |
 | Account ledger (V4) bowler checkout | Current. The legacy V3 bowler checkout is removed from the client. |
 | Manage Payments worksheet | Current. The only screen for recording payments. |
-| Per-league manual-record page (`/leagues/:leagueId/payments/manage`) | Removed. Its `canonical/manual-record-batch` server endpoints remain with no client caller and are to be removed. |
+| Per-league manual-record page (`/leagues/:leagueId/payments/manage`) | Removed, together with its `canonical/manual-record-batch` server endpoints. The single-payment `canonical/manual-record` endpoints remain; the payment form uses them. |
 | Restoring an archived league | Requires account-ledger adoption. |
 | Server-proven paid in full and nothing due | Current. The participants response carries `holdsLineupSpot`, `seasonPaidInFull`, and `noPaymentDue`. |
 | Subs paying by weeks on the Pay page | Not built. Planned for weekly leagues: weeks priced at the league weekly fee, capped at the weeks left in the season, held until staff assign a week. |
