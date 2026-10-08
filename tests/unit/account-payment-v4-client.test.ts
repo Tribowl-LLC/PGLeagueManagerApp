@@ -29,6 +29,9 @@ const participants: ConfirmedAccountPaymentParticipantsV4 = {
       confirmedPastDueMinor: 0,
       availableCreditMinor: 1_000,
       forecastTargets: { currentCollectionMinor: 0, selectedWeeks: [{ weeks: 1, amountMinor: 0 }], fullSeasonMinor: 0 },
+      holdsLineupSpot: true,
+      seasonPaidInFull: false,
+      noPaymentDue: false,
     },
     {
       bowlerId: 84,
@@ -38,6 +41,9 @@ const participants: ConfirmedAccountPaymentParticipantsV4 = {
       confirmedPastDueMinor: 500,
       availableCreditMinor: 500,
       forecastTargets: { currentCollectionMinor: 1_500, selectedWeeks: [{ weeks: 1, amountMinor: 2_500 }, { weeks: 2, amountMinor: 5_000 }], fullSeasonMinor: 8_000 },
+      holdsLineupSpot: true,
+      seasonPaidInFull: false,
+      noPaymentDue: false,
     },
   ],
 };
@@ -48,6 +54,9 @@ const noWeeklyPresetParticipants: ConfirmedAccountPaymentParticipantsV4 = {
     ? {
       ...recipient,
       forecastTargets: { ...recipient.forecastTargets, selectedWeeks: [] },
+      holdsLineupSpot: true,
+      seasonPaidInFull: false,
+      noPaymentDue: false,
     }
     : recipient),
 };
@@ -67,6 +76,9 @@ const prepaidWeekParticipants: ConfirmedAccountPaymentParticipantsV4 = {
         selectedWeeks: [3_000, 6_000, 9_000, 12_000, 15_000].map((amountMinor, index) => ({ weeks: index + 1, amountMinor })),
         fullSeasonMinor: 15_000,
       },
+      holdsLineupSpot: true,
+      seasonPaidInFull: false,
+      noPaymentDue: false,
     },
     {
       bowlerId: 84,
@@ -80,6 +92,9 @@ const prepaidWeekParticipants: ConfirmedAccountPaymentParticipantsV4 = {
         selectedWeeks: [{ weeks: 1, amountMinor: 3_000 }, { weeks: 2, amountMinor: 6_000 }],
         fullSeasonMinor: 6_000,
       },
+      holdsLineupSpot: true,
+      seasonPaidInFull: false,
+      noPaymentDue: false,
     },
   ],
 };
@@ -253,6 +268,9 @@ describe("account payment V4 client adapter", () => {
         ? {
           ...recipient,
           forecastTargets: { ...recipient.forecastTargets, fullSeasonMinor: 4_500 },
+          holdsLineupSpot: true,
+          seasonPaidInFull: false,
+          noPaymentDue: false,
         }
         : recipient),
     };
