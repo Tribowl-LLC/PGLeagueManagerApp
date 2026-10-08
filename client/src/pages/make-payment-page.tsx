@@ -290,7 +290,10 @@ export function invalidatePaymentViews(
   }
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1/quote`] });
-  void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-participants/4"] });
+  // Mark participants stale without refetching. The caller awaits its own
+  // authoritative refetch, and each participant read takes the league
+  // schedule lock, so an automatic refetch here would be a wasted second read.
+  void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-participants/4"], refetchType: "none" });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-quote/4"] });
   void queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", leagueId] });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] });
