@@ -88,7 +88,7 @@
 .familiar-payment-balance-grid {
   border: 1px solid var(--familiar-pay-line);
   border-radius: 8px;
-  background: #fff;
+  background: rgb(100 116 139 / 0.045);
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   overflow: hidden;
@@ -1095,7 +1095,6 @@
   }
 
   .familiar-payment-balance-grid {
-    background: rgb(100 116 139 / 0.045);
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
