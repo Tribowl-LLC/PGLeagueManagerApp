@@ -60,8 +60,8 @@ equivalent.
 
 ## 2. Render services
 
-The documented production topology contains one Render service (last verified
-in the live dashboard on 2026-07-21):
+The documented production topology contains one Render service that serves
+`leaguevault.app` (last verified in the live dashboard on 2026-07-21):
 
 | Service | Purpose and type | Trigger and scaling | Interactions |
 | --- | --- | --- | --- |
@@ -70,8 +70,12 @@ in the live dashboard on 2026-07-21):
 There is no checked-in Render Blueprint and no separately documented production
 Render worker or cron service. Render dashboard state is therefore an external
 operational control. Before each release, verify that the dashboard still
-matches this topology. If an additional production service exists, stop and
-update this document before deploying.
+matches this topology. The original Ohio `LeagueVault` service
+(`srv-d8j4fv0jo6nc73du2h80`) remains in the project only as a short-term
+rollback: it holds no custom domain, has scheduled payments paused, and must
+not receive deployments. It is expected and is not an additional production
+service. If any other service exists, or the Ohio service holds a domain, stop
+and update this document before deploying.
 
 The single-instance assumption matters because some startup recovery and
 scheduling behavior is process-local. Do not scale the web service horizontally
@@ -394,7 +398,7 @@ boundary.
 Use the Exact-main-certified full Git SHA as the expected release identifier.
 Verify it with both of the repository's available signals:
 
-1. In Render, open the production `LeagueVault` deployment event or deployment
+1. In Render, open the production `LeagueVault-virginia` deployment event or deployment
    details. Confirm its deployed commit SHA is the exact certified `main` SHA,
    not merely a branch name, commit message, or deployment timestamp. This is
    the primary deployment-record evidence.

@@ -62,8 +62,8 @@ mandatory. Keep the handoff current with the evidence fields in
    architect review and focused checks as needed; do not start a full GitHub
    rereview loop. A GitHub rerun requires a later explicit user override.
 4. **Final-head checks and merge.** Before merging, confirm the live `main`
-   ruleset and verify the known `LeagueVault` Render service and its
-   Auto-Deploy setting. If the release requires a schema migration or data
+   ruleset and verify the known `LeagueVault-virginia` Render service
+   (`srv-db3u9m2j9qps73ffu9r0`) and its Auto-Deploy setting. If the release requires a schema migration or data
    backfill, verify Auto-Deploy is Off before merge and record its prior mode;
    keep it Off through exact-main certification, the guarded operation, manual
    deployment of the exact certified SHA, and deployment verification. For a
@@ -110,8 +110,9 @@ mandatory. Keep the handoff current with the evidence fields in
    guarded procedure. The `0040_remove_league_public_signup` application-first
    procedure below remains the labeled approved exception; it is not the
    default order. A migration or guard failure stops deployment.
-7. **Render deployment and verification.** Verify the known `LeagueVault`
-   service and production configuration. For a release requiring a migration
+7. **Render deployment and verification.** Verify the known
+   `LeagueVault-virginia` service (`srv-db3u9m2j9qps73ffu9r0`) and production
+   configuration. Never deploy to the retired Ohio `LeagueVault` service. For a release requiring a migration
    or backfill, keep Auto-Deploy Off and manually select the exact certified
    SHA. For a code-only release with Auto-Deploy Off, manually deploy the exact
    certified SHA after certification. With `On Commit`, rollout starts
