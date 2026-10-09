@@ -193,7 +193,7 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
           <span className="familiar-autopay-next-label">Next automatic payment</span>
           {quoteHasUpcomingPayment && quote?.cutoffAt ? <strong><span>{formatStandingAutopayAmount(quote.amountMinor)}</span><span className="familiar-autopay-date">· {formatNextPaymentDate(quote.cutoffAt, league.timezone, "short")}</span></strong> : <strong>{nextPayment}</strong>}
           {quoteQuery.isError && <p role="alert" className="text-sm text-destructive">{quoteError}</p>}
-          {quoteHasUpcomingPayment && quote?.collectionMode && <p>{quote.collectionMode === "double_pay" ? "Double-pay week" : "Weekly automatic payment"}</p>}
+          {quoteHasUpcomingPayment && quote?.collectionMode === "double_pay" && <p>Double-pay week</p>}
         </div>}
         {consent?.paymentMethod && <p className="familiar-autopay-method"><CreditCard className="size-4" aria-hidden="true" /><span>{formatStandingAutopayBrand(consent.paymentMethod.brand)} ending in {consent.paymentMethod.last4}</span></p>}
         <div className="familiar-autopay-actions"><Button type="button" variant="ghost" disabled={!bowlerHasEmail} onClick={() => setReplaceMode(true)}>Change card</Button><Button type="button" variant="ghost" disabled={revoke.isPending} onClick={() => setRevokeDialogOpen(true)}>Turn off</Button></div>
