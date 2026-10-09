@@ -60,18 +60,22 @@ equivalent.
 
 ## 2. Render services
 
-The documented production topology contains one Render service (last verified
-in the live dashboard on 2026-07-21):
+The documented production topology contains one Render service that serves
+`leaguevault.app` (last verified in the live dashboard on 2026-07-21):
 
 | Service | Purpose and type | Trigger and scaling | Interactions |
 | --- | --- | --- | --- |
-| `LeagueVault` | Render **Node Web Service** in the Ohio region, serving the React application and Express API on the Starter plan | Tracks GitHub `main`; the recorded Auto-Deploy setting is `After CI Checks Pass`. Code-only releases may use Off with manual deployment, `After CI Checks Pass`, or `On Commit`. A release requiring a migration or data backfill uses the runbook's verified [schema-release auto-deploy hold](production-runbook.md#schema-release-auto-deploy-hold) so migration precedes rollout. | Receives all HTTP requests, opens the PostgreSQL connection pool to Neon, serves the built frontend, and starts the in-process payment scheduler, retry sweeps, Apple Pay recovery worker, catalog audit, and provider probes. |
+| `LeagueVault-virginia` | Render **Node Web Service** in the Virginia region (the same region as Neon; moved from the Ohio `LeagueVault` service on 2026-10-08), serving the React application and Express API on the Starter plan | Tracks GitHub `main`; the recorded Auto-Deploy setting is `After CI Checks Pass`. Code-only releases may use Off with manual deployment, `After CI Checks Pass`, or `On Commit`. A release requiring a migration or data backfill uses the runbook's verified [schema-release auto-deploy hold](production-runbook.md#schema-release-auto-deploy-hold) so migration precedes rollout. | Receives all HTTP requests, opens the PostgreSQL connection pool to Neon, serves the built frontend, and starts the in-process payment scheduler, retry sweeps, Apple Pay recovery worker, catalog audit, and provider probes. |
 
 There is no checked-in Render Blueprint and no separately documented production
 Render worker or cron service. Render dashboard state is therefore an external
 operational control. Before each release, verify that the dashboard still
-matches this topology. If an additional production service exists, stop and
-update this document before deploying.
+matches this topology. The original Ohio `LeagueVault` service
+(`srv-d8j4fv0jo6nc73du2h80`) remains in the project only as a short-term
+rollback: it holds no custom domain, has scheduled payments paused, and must
+not receive deployments. It is expected and is not an additional production
+service. If any other service exists, or the Ohio service holds a domain, stop
+and update this document before deploying.
 
 The single-instance assumption matters because some startup recovery and
 scheduling behavior is process-local. Do not scale the web service horizontally
@@ -394,7 +398,7 @@ boundary.
 Use the Exact-main-certified full Git SHA as the expected release identifier.
 Verify it with both of the repository's available signals:
 
-1. In Render, open the production `LeagueVault` deployment event or deployment
+1. In Render, open the production `LeagueVault-virginia` deployment event or deployment
    details. Confirm its deployed commit SHA is the exact certified `main` SHA,
    not merely a branch name, commit message, or deployment timestamp. This is
    the primary deployment-record evidence.
