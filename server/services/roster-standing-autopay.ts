@@ -54,6 +54,7 @@ import { reconstructInteractivePartnerSnapshot, type InteractivePartnerPaymentSn
 import { reconstructAccountPaymentOperationSnapshot } from "./account-payment-operation-snapshot.js";
 import { readOwnedLedgerAdoptionInTransaction, applyOwnedFundingFifoInTransaction, isOccurrenceConfirmedInOwnedLedger } from "./owned-payment-ledger.js";
 import { readOwnedAccountFundingTargetEvidenceInTransaction } from "./account-payment-funding.js";
+import { projectUpcomingStandingCharges, type UpcomingStandingCutoff } from "./account-payment-funding-targets.js";
 import {
   buildAccountStandingFundingSnapshot,
   reconstructAccountStandingFundingSnapshot,
@@ -1676,6 +1677,66 @@ export async function revokeStandingAutopayConsent(input: { organizationId: numb
   return result;
 }
 
+const STANDING_UPCOMING_CHARGE_LIMIT = 3;
+// Enough trigger weeks to look past a bowler who prepaid most of a season.
+const STANDING_UPCOMING_TRIGGER_SCAN = 60;
+const NO_UPCOMING_STANDING_CHARGES = { upcoming: [], paidAheadThroughOrdinal: null, overdueMinor: 0 } satisfies Pick<StandingAutopayQuoteWire, "upcoming" | "paidAheadThroughOrdinal" | "overdueMinor">;
+
+async function billingOrdinalsFor(tx: StandingTx, input: { organizationId: number; leagueId: number; occurrenceIds: readonly string[] }): Promise<number[]> {
+  if (input.occurrenceIds.length === 0) return [];
+  const rows = await tx.select({ occurrenceId: leagueOccurrenceBillingTerms.occurrenceId, billingOrdinal: leagueOccurrenceBillingTerms.billingOrdinal }).from(leagueOccurrenceBillingTerms).where(and(
+    eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
+    eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
+    inArray(leagueOccurrenceBillingTerms.occurrenceId, [...input.occurrenceIds]),
+    eq(leagueOccurrenceBillingTerms.state, "published"),
+    isNotNull(leagueOccurrenceBillingTerms.billingOrdinal),
+  ));
+  const byOccurrence = new Map(rows.map((row) => [row.occurrenceId, row.billingOrdinal]));
+  return input.occurrenceIds.flatMap((occurrenceId) => {
+    const ordinal = byOccurrence.get(occurrenceId);
+    return typeof ordinal === "number" ? [ordinal] : [];
+  });
+}
+
+/** Resolve the collection group for each upcoming cutoff and forecast its
+ * charge from the evidence already read for the first cutoff. A later cutoff
+ * whose group cannot be resolved ends the forecast instead of failing the
+ * quote, because only the first cutoff is authoritative. */
+async function projectUpcomingStandingChargesInTransaction(
+  tx: StandingTx,
+  input: {
+    organizationId: number;
+    leagueId: number;
+    first: { cutoffAt: string; collectionMode: "weekly" | "double_pay"; requirementOccurrenceIds: readonly string[]; triggerOccurrenceIds: readonly string[] };
+    laterCutoffs: string[];
+    recipients: Parameters<typeof projectUpcomingStandingCharges>[0]["recipients"];
+  },
+): Promise<Pick<StandingAutopayQuoteWire, "upcoming" | "paidAheadThroughOrdinal" | "overdueMinor">> {
+  const scope = { organizationId: input.organizationId, leagueId: input.leagueId };
+  const cutoffs: UpcomingStandingCutoff[] = [{
+    cutoffAt: input.first.cutoffAt,
+    collectionMode: input.first.collectionMode,
+    requirementOccurrenceIds: input.first.requirementOccurrenceIds,
+    billingOrdinals: await billingOrdinalsFor(tx, { ...scope, occurrenceIds: input.first.triggerOccurrenceIds }),
+  }];
+  const projectSoFar = () => projectUpcomingStandingCharges({ recipients: input.recipients, cutoffs, limit: STANDING_UPCOMING_CHARGE_LIMIT });
+  for (const cutoffAt of input.laterCutoffs) {
+    if (projectSoFar().charges.length >= STANDING_UPCOMING_CHARGE_LIMIT) break;
+    let group: StandingCutoffGroup;
+    try {
+      group = await groupForCutoff(tx, { ...scope, cutoffAt, requireAccountFundingEligibility: true });
+    } catch (error) {
+      if (error instanceof StandingAutopayError) break;
+      throw error;
+    }
+    if (group.suppressed) continue;
+    cutoffs.push({ cutoffAt, collectionMode: group.mode, requirementOccurrenceIds: group.occurrenceIds, billingOrdinals: await billingOrdinalsFor(tx, { ...scope, occurrenceIds: group.occurrenceIds }) });
+  }
+  const projection = projectSoFar();
+  if (projection.reviewRequired) return NO_UPCOMING_STANDING_CHARGES;
+  return { upcoming: projection.charges, paidAheadThroughOrdinal: projection.paidAheadThroughOrdinal, overdueMinor: projection.overdueMinor };
+}
+
 export async function quoteStandingAutopay(input: { organizationId: number; leagueId: number; payerBowlerId: number }): Promise<StandingAutopayQuoteWire> {
   if (!rosterStandingAutopayEnabled || scheduledPaymentExecutionMode !== "ledger_execute") throw new StandingAutopayError("STANDING_AUTOPAY_DISABLED", "Standing automatic payments are not enabled", 409);
   return db.transaction(async (tx) => {
@@ -1694,7 +1755,7 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
       if (typeof asOfValue !== "string" || !asOfValue) throw new StandingAutopayError("QUOTE_TIME_UNAVAILABLE", "The standing quote could not establish a database timestamp", 503);
       const asOf = iso(asOfValue);
       const activationAt = iso(consent.activatedAt);
-      const [nextTrigger] = await tx.selectDistinct({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt, currentRevision: leagueOccurrences.currentRevision })
+      const [nextTrigger, ...laterTriggers] = await tx.selectDistinct({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt, currentRevision: leagueOccurrences.currentRevision })
         .from(leagueOccurrences).innerJoin(leagueOccurrenceBillingTerms, and(
           eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
           eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
@@ -1726,7 +1787,7 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
               AND paired_member.active = true
               AND paired_group.state = 'published'
           )`,
-        )).orderBy(asc(leagueOccurrences.startAt), asc(leagueOccurrences.id)).limit(1);
+        )).orderBy(asc(leagueOccurrences.startAt), asc(leagueOccurrences.id)).limit(STANDING_UPCOMING_TRIGGER_SCAN);
       if (!nextTrigger) {
         return {
           contractVersion: "standing-autopay-quote/1" as const,
@@ -1739,6 +1800,7 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
           amountMinor: 0,
           obligations: [],
           fingerprint: digest("lvstandingquote:v1:", { consentId: consent.id, consentVersion: consent.consentVersion, noUpcomingTrigger: true }),
+          ...NO_UPCOMING_STANDING_CHARGES,
         };
       }
       const cutoffAt = iso(nextTrigger.startAt);
@@ -1755,6 +1817,7 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
           amountMinor: 0,
           obligations: [],
           fingerprint: digest("lvstandingquote:v1:", { consentId: consent.id, consentVersion: consent.consentVersion, suppressedOccurrenceId: group.triggerOccurrenceId }),
+          ...NO_UPCOMING_STANDING_CHARGES,
         };
       }
       const collectionRequirementOccurrenceIds = await retainedStandingRequirementOccurrenceIdsInTransaction(
@@ -1781,6 +1844,21 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
         if (!target) throw new StandingAutopayError("ACCOUNT_TARGET_MISSING", "A standing account target is unavailable", 503);
         return sum + target.newChargeMinor;
       }, 0);
+      const upcoming = holds.size > 0 ? NO_UPCOMING_STANDING_CHARGES : await projectUpcomingStandingChargesInTransaction(tx, {
+        organizationId: input.organizationId,
+        leagueId: input.leagueId,
+        first: { cutoffAt, collectionMode: group.mode, requirementOccurrenceIds: collectionRequirementOccurrenceIds, triggerOccurrenceIds: group.occurrenceIds },
+        laterCutoffs: laterTriggers.map((trigger) => iso(trigger.startAt)),
+        recipients: recipientIds.map((bowlerId) => {
+          const evidence = targetEvidenceByRecipient.get(bowlerId);
+          if (!evidence) throw new StandingAutopayError("ACCOUNT_TARGET_MISSING", "A standing account target is unavailable", 503);
+          return {
+            candidates: evidence.candidates,
+            confirmedDebts: evidence.confirmedDebts.map((debt) => ({ obligationId: debt.obligationId, occurrenceId: debt.occurrenceId, outstandingMinor: debt.outstandingMinor, reviewRequired: debt.reviewRequired })),
+            availableCreditMinor: evidence.availableCreditMinor,
+          };
+        }),
+      });
       return {
         contractVersion: "standing-autopay-quote/1" as const,
         organizationId: input.organizationId,
@@ -1791,6 +1869,7 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
         collectionMode: group.mode,
         amountMinor,
         obligations: [],
+        ...upcoming,
         fingerprint: digest("lvstandingquote:v1:", {
           consentId: consent.id,
           consentVersion: consent.consentVersion,
@@ -1830,7 +1909,7 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
     if (cutoffAt) await assertNoStandingArrears(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, activationAt, cutoffAt: new Date(cutoffAt).toISOString() });
     const group = cutoffAt ? await groupForCutoff(tx, { organizationId: input.organizationId, leagueId: input.leagueId, cutoffAt }) : { mode: "weekly" as const, groupId: null, groupRevision: null, groupFingerprint: null, triggerOccurrenceId: "", triggerOccurrenceRevision: 0, pairedOccurrenceId: null, triggerMemberId: null, pairedMemberId: null, occurrenceIds: [] };
     if (group.suppressed) {
-      return { contractVersion: "standing-autopay-quote/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt: null, collectionMode: null, amountMinor: 0, obligations: [], fingerprint: digest("lvstandingquote:v1:", { consentId: consent.id, consentVersion: consent.consentVersion, suppressedOccurrenceId: group.triggerOccurrenceId }) };
+      return { contractVersion: "standing-autopay-quote/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt: null, collectionMode: null, amountMinor: 0, obligations: [], fingerprint: digest("lvstandingquote:v1:", { consentId: consent.id, consentVersion: consent.consentVersion, suppressedOccurrenceId: group.triggerOccurrenceId }), ...NO_UPCOMING_STANDING_CHARGES };
     }
     const triggerRows = cutoffAt ? await eligibleRows(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, activationAt, cutoffAt, dueMode: "exact", occurrenceIds: [group.triggerOccurrenceId] }) : [];
     const pairedRows = cutoffAt && group.mode === "double_pay" && group.pairedOccurrenceId ? await eligibleRows(tx, { organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: payerIds, activationAt, cutoffAt, dueMode: "paired", occurrenceIds: [group.pairedOccurrenceId] }) : [];
@@ -1840,7 +1919,11 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
     const result = { contractVersion: "standing-autopay-quote/1" as const, organizationId: input.organizationId, leagueId: input.leagueId, consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, collectionMode: rows.length ? group.mode : null, amountMinor, obligations: rows.map((row) => {
       if (row.obligation.payerBowlerId === null) throw new StandingAutopayError("OWNER_EVIDENCE_INVALID", "A standing payment candidate has no historical payer", 503);
       return { obligationId: row.obligation.id, occurrenceId: row.obligation.occurrenceId, payerBowlerId: row.obligation.payerBowlerId, amountMinor: row.obligation.amountMinor, outstandingMinor: row.outstandingMinor, dueAt: row.obligation.dueAt, collectionGroupId: group.groupId };
-    }), fingerprint: digest("lvstandingquote:v1:", { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, groupId: group.groupId, rows: rows.map((row) => [row.obligation.id, row.outstandingMinor]) }) };
+    }), fingerprint: digest("lvstandingquote:v1:", { consentId: consent.id, consentVersion: consent.consentVersion, cutoffAt, groupId: group.groupId, rows: rows.map((row) => [row.obligation.id, row.outstandingMinor]) }),
+    // Legacy ledgers only forecast the cutoff they can quote exactly.
+    upcoming: cutoffAt && rows.length && amountMinor > 0 ? [{ cutoffAt: iso(cutoffAt), collectionMode: group.mode, amountMinor, billingOrdinals: await billingOrdinalsFor(tx, { organizationId: input.organizationId, leagueId: input.leagueId, occurrenceIds: group.occurrenceIds }) }] : [],
+    paidAheadThroughOrdinal: null,
+    overdueMinor: 0 };
     void league;
     return result;
   });

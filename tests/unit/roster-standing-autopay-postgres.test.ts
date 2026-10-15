@@ -668,6 +668,65 @@ it("retains a prior-consent paired final after adoption and excludes a canceled 
   expect(snapshot.standingEvidence?.collectionRequirementOccurrenceIds).not.toContain(canceledFinal.occurrence.id);
 });
 
+it("forecasts the next three standing charges on an adopted ledger", async () => {
+  const [adoptedLeague] = await db.insert(leagues).values({
+    name: `Standing Upcoming ${randomUUID()}`,
+    organizationId,
+    locationId,
+    payingLineupSize: 3,
+    substituteAccess: "team_only",
+    substitutePaymentRegime: "team_choice",
+    weeklyFee: 2_500,
+    lineageFee: null,
+    prizeFundFee: null,
+    paymentMode: "weekly",
+    seasonStart: "2040-01-01T00:00:00.000Z",
+    seasonEnd: "2040-12-31T23:59:59.000Z",
+    weekDay: "Monday",
+    timezone: "UTC",
+  }).returning({ id: leagues.id });
+  const [adoptedTeam] = await db.insert(teams).values({ name: `Standing Upcoming Team ${randomUUID()}`, number: 1, leagueId: adoptedLeague.id }).returning({ id: teams.id });
+  await db.insert(bowlerLeagues).values({ bowlerId: payerBowlerId, leagueId: adoptedLeague.id, teamId: adoptedTeam.id, active: true });
+  await db.insert(teamPaymentSlots).values([0, 1, 2].map((slotIndex) => ({
+    organizationId, leagueId: adoptedLeague.id, teamId: adoptedTeam.id, slotIndex, lineupSize: 3,
+    occupant: slotIndex === 0 ? "main" as const : "vacant" as const, mainBowlerId: slotIndex === 0 ? payerBowlerId : null, recordedByUserId: actorUserId,
+  })));
+  const scope = { leagueId: adoptedLeague.id, teamId: adoptedTeam.id, payerBowlerId, amountMinor: 2_500 };
+  const first = await publishOccurrence("2040-01-09T23:30:00.000Z", scope);
+  const trigger = await publishOccurrence("2040-01-16T23:30:00.000Z", scope);
+  const third = await publishOccurrence("2040-01-23T23:30:00.000Z", scope);
+  const fourth = await publishOccurrence("2040-01-30T23:30:00.000Z", scope);
+  const pairedFinal = await publishOccurrence("2040-03-05T23:30:00.000Z", scope);
+  await createDoublePayGroup(trigger, pairedFinal, adoptedLeague.id);
+  await db.transaction(async (tx) => {
+    await lockLeagueSchedule(tx, organizationId, adoptedLeague.id);
+    await tx.insert(weeklyPaymentLedgerAdoptions).values({
+      organizationId,
+      leagueId: adoptedLeague.id,
+      adoptedThroughLocalDate: "2039-12-31",
+      preflightFingerprint: uniqueFp("lvweeklyadoptpre:v1:"),
+      resultFingerprint: uniqueFp("lvweeklyadopt:v1:"),
+      grandfatheredAllocationCount: 0,
+      recordedByUserId: actorUserId,
+    });
+  });
+  await insertConsent({ version: 1, activatedAt: "2039-12-15T00:00:00.000Z", leagueId: adoptedLeague.id });
+
+  const { quoteStandingAutopay } = await import("../../server/services/roster-standing-autopay");
+  const quote = await quoteStandingAutopay({ organizationId, leagueId: adoptedLeague.id, payerBowlerId });
+  const at = (value: string) => new Date(value).toISOString();
+  expect(quote.cutoffAt).toBe(at(first.occurrence.startAt));
+  expect(quote.amountMinor).toBe(2_500);
+  expect(quote.overdueMinor).toBe(0);
+  expect(quote.paidAheadThroughOrdinal).toBeNull();
+  expect(quote.upcoming.map(({ cutoffAt, collectionMode, amountMinor, billingOrdinals }) => ({ cutoffAt, collectionMode, amountMinor, ordinalCount: billingOrdinals.length }))).toEqual([
+    { cutoffAt: at(first.occurrence.startAt), collectionMode: "weekly", amountMinor: 2_500, ordinalCount: 1 },
+    { cutoffAt: at(trigger.occurrence.startAt), collectionMode: "double_pay", amountMinor: 5_000, ordinalCount: 2 },
+    { cutoffAt: at(third.occurrence.startAt), collectionMode: "weekly", amountMinor: 2_500, ordinalCount: 1 },
+  ]);
+  expect(quote.upcoming.some((charge) => charge.cutoffAt === at(fourth.occurrence.startAt))).toBe(false);
+});
+
 type PartnerOperationFixtureInput = Omit<Parameters<typeof prepareInteractivePartnerPaymentOperation>[0], "transaction"> & {
   snapshotItemFinalState?: "released";
 };

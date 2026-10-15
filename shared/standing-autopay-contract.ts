@@ -60,6 +60,23 @@ export type StandingAutopayQuoteWire = {
     collectionGroupId: string | null;
   }>;
   fingerprint: string;
+  /**
+   * Display-only forecast of the next standing charges (at most three).
+   * Prepaid cutoffs are skipped. Never used to authorize a charge.
+   */
+  upcoming: StandingAutopayUpcomingChargeWire[];
+  /** Trigger week already covered by paying ahead, when the next cutoffs are prepaid. */
+  paidAheadThroughOrdinal: number | null;
+  /** Older confirmed debt that pauses automatic payments until it is paid. */
+  overdueMinor: number;
+};
+
+export type StandingAutopayUpcomingChargeWire = {
+  cutoffAt: string;
+  collectionMode: "weekly" | "double_pay";
+  amountMinor: number;
+  /** Week numbers collected at this cutoff, trigger week first. */
+  billingOrdinals: number[];
 };
 
 export type StandingAutopayOperationWire = {

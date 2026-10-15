@@ -171,3 +171,77 @@ export function projectStandingAccountFundingTarget(input: {
     newChargeMinor,
   };
 }
+
+export type UpcomingStandingCutoff = {
+  cutoffAt: string;
+  collectionMode: "weekly" | "double_pay";
+  /** The occurrences this cutoff collects, including retained paired finals. */
+  requirementOccurrenceIds: readonly string[];
+  /** Billing ordinals shown to the bowler, trigger week first. */
+  billingOrdinals: number[];
+};
+
+export type UpcomingStandingCharge = {
+  cutoffAt: string;
+  collectionMode: "weekly" | "double_pay";
+  amountMinor: number;
+  billingOrdinals: number[];
+};
+
+export type UpcomingStandingProjection = {
+  charges: UpcomingStandingCharge[];
+  /** Trigger week of the last leading cutoff already covered by prepayment. */
+  paidAheadThroughOrdinal: number | null;
+  /** Older confirmed debt that blocks automatic collection until it is paid. */
+  overdueMinor: number;
+  /** True when review-held evidence prevents any reliable projection. */
+  reviewRequired: boolean;
+};
+
+/**
+ * Display-only forecast of the next standing charges. Each cutoff reuses the
+ * single-cutoff target, with credit carried forward as earlier projected
+ * cutoffs consume it. Older debt is reported separately as overdue, and the
+ * charges show what collection will be once it is cleared. Cutoffs that
+ * prepayment fully covers are skipped. A charge never trusts this forecast;
+ * each cutoff is still quoted and fenced under the league lock when it runs.
+ */
+export function projectUpcomingStandingCharges(input: {
+  recipients: Array<{ candidates: FifoPaymentCandidate[]; confirmedDebts: ConfirmedAccountFundingDebt[]; availableCreditMinor: number }>;
+  cutoffs: UpcomingStandingCutoff[];
+  limit: number;
+}): UpcomingStandingProjection {
+  const charges: UpcomingStandingCharge[] = [];
+  let paidAheadThroughOrdinal: number | null = null;
+  let overdueMinor = 0;
+  const remainingCredit = input.recipients.map((recipient) => recipient.availableCreditMinor);
+  for (const [cutoffIndex, cutoff] of input.cutoffs.entries()) {
+    if (charges.length >= input.limit) break;
+    const requirementIds = new Set(cutoff.requirementOccurrenceIds);
+    let amountMinor = 0;
+    for (const [recipientIndex, recipient] of input.recipients.entries()) {
+      let target: StandingAccountFundingTarget;
+      try {
+        target = projectStandingAccountFundingTarget({
+          candidates: recipient.candidates,
+          // Older debt is measured once, at the first cutoff. Later cutoffs
+          // only see their own debt so it is not counted twice.
+          confirmedDebts: cutoffIndex === 0 ? recipient.confirmedDebts : recipient.confirmedDebts.filter((debt) => requirementIds.has(debt.occurrenceId)),
+          availableCreditMinor: remainingCredit[recipientIndex],
+          cutoffAt: cutoff.cutoffAt,
+          collectionRequirementOccurrenceIds: cutoff.requirementOccurrenceIds,
+        });
+      } catch {
+        return { charges, paidAheadThroughOrdinal, overdueMinor, reviewRequired: true };
+      }
+      if (target.olderDebtReviewRequired || target.currentDebtReviewRequired) return { charges, paidAheadThroughOrdinal, overdueMinor, reviewRequired: true };
+      if (cutoffIndex === 0) overdueMinor += target.olderConfirmedDebtRemainingMinor;
+      const creditForCurrentMinor = target.availableCreditMinor - target.creditAppliedToOlderDebtMinor;
+      remainingCredit[recipientIndex] = creditForCurrentMinor - Math.min(creditForCurrentMinor, target.currentCollectionTargetMinor);
+      amountMinor += Math.max(0, target.currentCollectionTargetMinor - creditForCurrentMinor);
+    }
+    if (amountMinor > 0) charges.push({ cutoffAt: cutoff.cutoffAt, collectionMode: cutoff.collectionMode, amountMinor, billingOrdinals: cutoff.billingOrdinals });
+    else if (charges.length === 0) paidAheadThroughOrdinal = cutoff.billingOrdinals[0] ?? paidAheadThroughOrdinal;
+  }
+  return { charges, paidAheadThroughOrdinal, overdueMinor, reviewRequired: false };
+}

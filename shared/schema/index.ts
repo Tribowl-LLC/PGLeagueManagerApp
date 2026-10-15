@@ -464,5 +464,6 @@ export type {
   StandingAutopayRevokeRequest,
   StandingAutopayConsentWire,
   StandingAutopayQuoteWire,
+  StandingAutopayUpcomingChargeWire,
   StandingAutopayOperationWire,
 } from "../standing-autopay-contract";

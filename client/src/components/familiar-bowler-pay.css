@@ -158,7 +158,7 @@
   color: var(--familiar-pay-muted);
   display: grid;
   font-size: 12px;
-  gap: 5px;
+  gap: 10px;
   line-height: 1.55;
 }
 
@@ -270,13 +270,6 @@
   margin: 0;
 }
 
-.familiar-autopay-next-row {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-  margin-top: 4px;
-}
-
 .familiar-autopay-date-tile {
   align-items: center;
   background: var(--familiar-pay-accent);
@@ -291,7 +284,7 @@
   text-transform: uppercase;
 }
 
-.familiar-autopay-next .familiar-autopay-date-tile strong {
+.familiar-autopay-date-tile strong {
   color: hsl(var(--primary-foreground));
   display: block;
   font-size: 17px;
@@ -299,29 +292,130 @@
   line-height: 1.15;
 }
 
-.familiar-autopay-next-copy {
+.familiar-autopay-pitch {
+  color: var(--familiar-pay-ink);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 1px 0 0;
+}
+
+.familiar-autopay-benefits {
+  display: grid;
+  gap: 9px;
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+}
+
+.familiar-autopay-benefits li {
+  align-items: center;
+  color: var(--familiar-pay-ink);
+  display: flex;
+  font-size: 13px;
+  gap: 9px;
+}
+
+.familiar-autopay-benefits svg {
+  color: var(--color-success-700);
+  flex: 0 0 auto;
+}
+
+.familiar-autopay-schedule-list {
+  margin-top: 4px;
+}
+
+.familiar-autopay-overdue {
+  background: rgb(220 38 38 / 0.06);
+  border: 1px solid rgb(220 38 38 / 0.2);
+  border-radius: 7px;
+  color: hsl(var(--destructive));
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 10px 0 4px;
+  padding: 12px;
+}
+
+.familiar-autopay-overdue p {
+  margin: 6px 0 0;
+}
+
+.familiar-autopay-ahead {
+  align-items: center;
+  color: var(--color-success-700);
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+  margin: 12px 0 0;
+}
+
+.familiar-standing-autopay-card .familiar-autopay-subhead {
+  color: var(--familiar-pay-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  margin: 16px 0 6px;
+  text-transform: uppercase;
+}
+
+.familiar-autopay-empty {
+  color: var(--familiar-pay-muted);
+  font-size: 13px;
+  margin: 4px 0 0;
+}
+
+.familiar-autopay-upcoming {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.familiar-autopay-upcoming li {
+  align-items: center;
+  border-bottom: 1px solid var(--familiar-pay-line);
+  display: flex;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.familiar-autopay-upcoming li:last-child {
+  border-bottom: 0;
+}
+
+.familiar-autopay-upcoming li:not(.familiar-autopay-upcoming-next) .familiar-autopay-date-tile {
+  background: rgb(100 116 139 / 0.07);
+  color: var(--familiar-pay-muted);
+}
+
+.familiar-autopay-upcoming li:not(.familiar-autopay-upcoming-next) .familiar-autopay-date-tile strong {
+  color: var(--familiar-pay-ink);
+}
+
+.familiar-autopay-upcoming-copy {
   display: grid;
   flex: 1;
+  font-size: 13px;
   gap: 3px;
   min-width: 0;
 }
 
-.familiar-autopay-next .familiar-autopay-next-copy strong {
-  display: block;
-  font-size: 14px;
+.familiar-autopay-upcoming-copy strong {
   font-weight: 600;
-  letter-spacing: -0.01em;
 }
 
-.familiar-autopay-next-copy small {
+.familiar-autopay-upcoming-copy small {
   color: var(--familiar-pay-muted);
   font-size: 11px;
 }
 
-.familiar-autopay-next-amount {
-  font-size: 17px;
+.familiar-autopay-upcoming-amount {
+  font-size: 15px;
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
+  font-weight: 650;
+}
+
+.familiar-autopay-paused .familiar-autopay-upcoming {
+  opacity: 0.6;
 }
 
 .familiar-autopay-card-tile {
