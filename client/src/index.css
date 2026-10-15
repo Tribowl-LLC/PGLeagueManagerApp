@@ -477,6 +477,7 @@
 @utility familiar-autopay-next-copy { --lv-familiar-pay-component: 1; }
 @utility familiar-autopay-next-amount { --lv-familiar-pay-component: 1; }
 @utility familiar-autopay-card-tile { --lv-familiar-pay-component: 1; }
+@utility familiar-autopay-card-tile-unavailable { --lv-familiar-pay-component: 1; }
 @utility familiar-autopay-card-icon { --lv-familiar-pay-component: 1; }
 @utility familiar-autopay-card-copy { --lv-familiar-pay-component: 1; }
 @utility familiar-autopay-change { --lv-familiar-pay-component: 1; }

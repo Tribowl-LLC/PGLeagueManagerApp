@@ -43,32 +43,30 @@ function doublePayScheduleCopy(doublePayDates: string[] | null | undefined): str
   return doublePayDates.join(", ");
 }
 
-export function formatNextPaymentDate(value: string, timezone: string | null | undefined, style: "long" | "short" = "long"): string {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return "Unavailable";
-  const timeZone = timezone ?? "UTC";
-  const options: Intl.DateTimeFormatOptions = style === "short"
-    ? { month: "short", day: "numeric", timeZone }
-    : { dateStyle: "long", timeZone };
+function nextPaymentFormatter(timezone: string | null | undefined, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
   try {
-    return new Intl.DateTimeFormat(undefined, options).format(date);
+    return new Intl.DateTimeFormat(undefined, { ...options, timeZone: timezone ?? "UTC" });
   } catch {
-    return new Intl.DateTimeFormat(undefined, { ...options, timeZone: "UTC" }).format(date);
+    return new Intl.DateTimeFormat(undefined, { ...options, timeZone: "UTC" });
   }
 }
 
+export function formatNextPaymentDate(value: string, timezone: string | null | undefined, style: "long" | "short" = "long"): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Unavailable";
+  const options: Intl.DateTimeFormatOptions = style === "short" ? { month: "short", day: "numeric" } : { dateStyle: "long" };
+  return nextPaymentFormatter(timezone, options).format(date);
+}
+
+// Uses the same locale and time-zone fallback as formatNextPaymentDate so the
+// date tile and the full date always describe the payment the same way.
 function nextPaymentDateParts(value: string, timezone: string | null | undefined): { month: string; day: string } | null {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return null;
-  const read = (timeZone: string) => {
-    const parts = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone }).formatToParts(date);
-    return { month: parts.find((part) => part.type === "month")?.value ?? "", day: parts.find((part) => part.type === "day")?.value ?? "" };
-  };
-  try {
-    return read(timezone ?? "UTC");
-  } catch {
-    return read("UTC");
-  }
+  const parts = nextPaymentFormatter(timezone, { month: "short", day: "numeric" }).formatToParts(date);
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  return month && day ? { month, day } : null;
 }
 
 function formatStandingAutopayAmount(amountMinor: number): string {
@@ -213,11 +211,16 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
           </div> : <strong>{nextPayment}</strong>}
           {quoteQuery.isError && <p role="alert" className="text-sm text-destructive">{quoteError}</p>}
         </div>}
-        <div className="familiar-autopay-card-tile">
+        <div className={consent?.paymentMethod ? "familiar-autopay-card-tile" : "familiar-autopay-card-tile familiar-autopay-card-tile-unavailable"}>
           <span className="familiar-autopay-card-icon" aria-hidden="true"><CreditCard className="size-4.5" /></span>
           <span className="familiar-autopay-card-copy">
-            {consent?.paymentMethod ? <strong>{formatStandingAutopayBrand(consent.paymentMethod.brand)} ending in {consent.paymentMethod.last4}</strong> : <strong>Saved card</strong>}
-            <small>Used for automatic payments</small>
+            {consent?.paymentMethod ? <>
+              <strong>{formatStandingAutopayBrand(consent.paymentMethod.brand)} ending in {consent.paymentMethod.last4}</strong>
+              <small>Used for automatic payments</small>
+            </> : <>
+              <strong>Card could not be confirmed</strong>
+              <small>Choose a card so automatic payments can go through.</small>
+            </>}
           </span>
           <Button type="button" variant="paymentsSecondary" size="sm" shape="circular" className="familiar-autopay-change" aria-label="Change card" disabled={!bowlerHasEmail} onClick={() => setReplaceMode(true)}>Change</Button>
         </div>

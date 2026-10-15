@@ -335,6 +335,15 @@
   padding: 12px;
 }
 
+.familiar-autopay-card-tile-unavailable {
+  background: var(--color-warning-50);
+  border-color: var(--color-warning-300);
+}
+
+.familiar-autopay-card-tile-unavailable .familiar-autopay-card-copy small {
+  color: var(--color-warning-900);
+}
+
 .familiar-autopay-card-icon {
   background: hsl(var(--background));
   border: 1px solid var(--familiar-pay-line);

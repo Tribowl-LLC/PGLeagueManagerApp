@@ -344,6 +344,21 @@ describe("PaymentHistoryContent", () => {
     expect(csrfFetchMock).not.toHaveBeenCalled();
   });
 
+  it("warns instead of claiming a saved card when the active payment method cannot be confirmed", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => String(queryKey[0]).endsWith("/quote")
+      ? ({ data: { cutoffAt: "2030-01-10T00:30:00.000Z", amountMinor: 2500, collectionMode: "weekly" } })
+      : ({ data: { state: "active", partnerBowlerIds: [], paymentMethod: null } }) } } });
+    render(<QueryClientProvider client={queryClient}><StandingAutopayCard
+      league={{ ...league, payingLineupSize: 4 }} bowlerId={42}
+      savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
+      cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
+    /></QueryClientProvider>);
+    expect(await screen.findByText("Card could not be confirmed")).toBeInTheDocument();
+    expect(screen.getByText("Choose a card so automatic payments can go through.")).toBeInTheDocument();
+    expect(screen.queryByText("Used for automatic payments")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change card" })).toBeEnabled();
+  });
+
   it("shows the recovery message when the next automatic payment is blocked", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => {
       if (String(queryKey[0]).endsWith("/quote")) throw new Error("409: Pay older unpaid obligations with a one-time payment before automatic payments can resume.");
