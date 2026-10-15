@@ -334,7 +334,9 @@ describe("PaymentHistoryContent", () => {
       cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
     /></QueryClientProvider>);
     await waitFor(() => expect(screen.getByText("$25")).toBeInTheDocument());
-    expect(screen.getByText("· Jan 9")).toBeInTheDocument();
+    expect(screen.getByText("January 9, 2030")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change card" })).toHaveTextContent("Change");
+    expect(screen.getByRole("button", { name: "Turn off automatic payments" })).toBeInTheDocument();
     expect(screen.getByText("Next automatic payment")).toBeInTheDocument();
     expect(screen.getByText("Visa ending in 4242")).toBeInTheDocument();
     expect(screen.queryByText("Double-pay weeks")).not.toBeInTheDocument();
