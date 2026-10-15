@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { League, SavedCard } from "@shared/schema";
@@ -141,14 +141,14 @@ describe("StandingAutopayCard active replacement", () => {
     const user = userEvent.setup();
     renderCard();
 
-    await user.click(await screen.findByRole("button", { name: "Turn off" }));
+    await user.click(await screen.findByRole("button", { name: "Turn off automatic payments" }));
     expect(screen.getByRole("dialog")).toHaveTextContent("Turn off automatic payments?");
     expect(apiRequestMock).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Keep automatic payments" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Turn off" }));
     await user.click(screen.getByRole("button", { name: "Turn off automatic payments" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Turn off automatic payments" }));
 
     await waitFor(() => expect(apiRequestMock).toHaveBeenCalledOnce());
     expect(apiRequestMock).toHaveBeenCalledWith(

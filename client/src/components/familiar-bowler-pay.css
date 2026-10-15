@@ -270,26 +270,118 @@
   margin: 0;
 }
 
-.familiar-autopay-method {
+.familiar-autopay-next-row {
   align-items: center;
   display: flex;
-  gap: 8px;
-  font-size: 12px;
-  line-height: 1.4;
-  margin: 15px 0 0;
+  gap: 12px;
+  margin-top: 4px;
 }
 
-.familiar-autopay-actions {
+.familiar-autopay-date-tile {
   align-items: center;
+  background: var(--familiar-pay-accent);
+  border-radius: 8px;
+  color: hsl(var(--primary-foreground) / 0.78);
   display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 7px;
+  flex: 0 0 42px;
+  flex-direction: column;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  padding: 5px 0;
+  text-transform: uppercase;
 }
 
-.familiar-autopay-actions > button {
-  min-height: 40px;
-  padding-inline: 0;
+.familiar-autopay-next .familiar-autopay-date-tile strong {
+  color: hsl(var(--primary-foreground));
+  display: block;
+  font-size: 17px;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.familiar-autopay-next-copy {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+
+.familiar-autopay-next .familiar-autopay-next-copy strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.familiar-autopay-next-copy small {
+  color: var(--familiar-pay-muted);
+  font-size: 11px;
+}
+
+.familiar-autopay-next-amount {
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.familiar-autopay-card-tile {
+  align-items: center;
+  background: rgb(100 116 139 / 0.03);
+  border: 1px solid var(--familiar-pay-line);
+  border-radius: 10px;
+  display: flex;
+  gap: 11px;
+  margin-top: 16px;
+  padding: 12px;
+}
+
+.familiar-autopay-card-tile-unavailable {
+  background: var(--color-warning-50);
+  border-color: var(--color-warning-300);
+}
+
+.familiar-autopay-card-tile-unavailable .familiar-autopay-card-copy small {
+  color: var(--color-warning-900);
+}
+
+.familiar-autopay-card-icon {
+  background: hsl(var(--background));
+  border: 1px solid var(--familiar-pay-line);
+  border-radius: 8px;
+  display: grid;
+  flex: 0 0 36px;
+  height: 36px;
+  place-items: center;
+}
+
+.familiar-autopay-card-copy {
+  display: grid;
+  flex: 1;
+  font-size: 13px;
+  gap: 3px;
+  min-width: 0;
+}
+
+.familiar-autopay-card-copy strong {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.familiar-autopay-card-copy small {
+  color: var(--familiar-pay-muted);
+  font-size: 11px;
+}
+
+.familiar-autopay-change {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.familiar-autopay-turn-off {
+  font-weight: 600;
+  margin-top: 8px;
+  min-height: 44px;
+  width: 100%;
 }
 
 .familiar-autopay-dialog-actions {

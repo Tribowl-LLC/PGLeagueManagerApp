@@ -334,12 +334,29 @@ describe("PaymentHistoryContent", () => {
       cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
     /></QueryClientProvider>);
     await waitFor(() => expect(screen.getByText("$25")).toBeInTheDocument());
-    expect(screen.getByText("· Jan 9")).toBeInTheDocument();
+    expect(screen.getByText("January 9, 2030")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change card" })).toHaveTextContent("Change");
+    expect(screen.getByRole("button", { name: "Turn off automatic payments" })).toBeInTheDocument();
     expect(screen.getByText("Next automatic payment")).toBeInTheDocument();
     expect(screen.getByText("Visa ending in 4242")).toBeInTheDocument();
     expect(screen.queryByText("Double-pay weeks")).not.toBeInTheDocument();
     expect(screen.queryByText(/exact remaining roster obligations|consent version/i)).not.toBeInTheDocument();
     expect(csrfFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("warns instead of claiming a saved card when the active payment method cannot be confirmed", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => String(queryKey[0]).endsWith("/quote")
+      ? ({ data: { cutoffAt: "2030-01-10T00:30:00.000Z", amountMinor: 2500, collectionMode: "weekly" } })
+      : ({ data: { state: "active", partnerBowlerIds: [], paymentMethod: null } }) } } });
+    render(<QueryClientProvider client={queryClient}><StandingAutopayCard
+      league={{ ...league, payingLineupSize: 4 }} bowlerId={42}
+      savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
+      cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
+    /></QueryClientProvider>);
+    expect(await screen.findByText("Card could not be confirmed")).toBeInTheDocument();
+    expect(screen.getByText("Choose a card so automatic payments can go through.")).toBeInTheDocument();
+    expect(screen.queryByText("Used for automatic payments")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change card" })).toBeEnabled();
   });
 
   it("shows the recovery message when the next automatic payment is blocked", async () => {
