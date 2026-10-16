@@ -642,7 +642,12 @@ it("retains a prior-consent paired final after adoption and excludes a canceled 
   // adoption cutoff. Retention must follow the canonical published pair.
   const currentConsent = await insertConsent({ version: 2, activatedAt: "2039-05-20T00:00:00.000Z", leagueId: adoptedLeague.id });
   expect(currentConsent.id).not.toBe(priorConsent.id);
-  const { prepareStandingAutopayCutoff } = await import("../../server/services/roster-standing-autopay");
+  const { prepareStandingAutopayCutoff, quoteStandingAutopay } = await import("../../server/services/roster-standing-autopay");
+  // The forecast names the retained final with the week that collects it.
+  const [retainedTerm, currentTerm] = await Promise.all([retainedFinal, current].map(async (row) => (await db.select({ billingOrdinal: leagueOccurrenceBillingTerms.billingOrdinal })
+    .from(leagueOccurrenceBillingTerms).where(eq(leagueOccurrenceBillingTerms.occurrenceId, row.occurrence.id)))[0]));
+  const quote = await quoteStandingAutopay({ organizationId, leagueId: adoptedLeague.id, payerBowlerId });
+  expect(quote.upcoming[0]).toMatchObject({ amountMinor: 2_500, billingOrdinals: [currentTerm.billingOrdinal, retainedTerm.billingOrdinal] });
   const operation = await prepareStandingAutopayCutoff({
     organizationId,
     leagueId: adoptedLeague.id,

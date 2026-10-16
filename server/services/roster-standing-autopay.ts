@@ -1707,19 +1707,28 @@ async function projectUpcomingStandingChargesInTransaction(
   input: {
     organizationId: number;
     leagueId: number;
-    first: { cutoffAt: string; collectionMode: "weekly" | "double_pay"; requirementOccurrenceIds: readonly string[]; triggerOccurrenceIds: readonly string[] };
+    first: { cutoffAt: string; collectionMode: "weekly" | "double_pay"; requirementOccurrenceIds: readonly string[]; triggerOccurrenceId: string };
     laterCutoffs: string[];
+    asOf: string;
+    recipientIds: number[];
     recipients: Parameters<typeof projectUpcomingStandingCharges>[0]["recipients"];
   },
 ): Promise<Pick<StandingAutopayQuoteWire, "upcoming" | "paidAheadThroughOrdinal" | "overdueMinor">> {
   const scope = { organizationId: input.organizationId, leagueId: input.leagueId };
+  // Label the first charge from the same requirement set that prices it, so a
+  // retained paired final from an earlier group is named with its week.
+  const firstOrdinals = await billingOrdinalsFor(tx, { ...scope, occurrenceIds: [
+    input.first.triggerOccurrenceId,
+    ...input.first.requirementOccurrenceIds.filter((occurrenceId) => occurrenceId !== input.first.triggerOccurrenceId),
+  ] });
   const cutoffs: UpcomingStandingCutoff[] = [{
     cutoffAt: input.first.cutoffAt,
     collectionMode: input.first.collectionMode,
     requirementOccurrenceIds: input.first.requirementOccurrenceIds,
-    billingOrdinals: await billingOrdinalsFor(tx, { ...scope, occurrenceIds: input.first.triggerOccurrenceIds }),
+    billingOrdinals: [firstOrdinals[0], ...firstOrdinals.slice(1).sort((left, right) => left - right)].filter((ordinal) => ordinal !== undefined),
   }];
-  const projectSoFar = () => projectUpcomingStandingCharges({ recipients: input.recipients, cutoffs, limit: STANDING_UPCOMING_CHARGE_LIMIT });
+  let obligatedOccurrenceIds: ReadonlySet<string> = new Set();
+  const projectSoFar = () => projectUpcomingStandingCharges({ recipients: input.recipients, cutoffs, limit: STANDING_UPCOMING_CHARGE_LIMIT, asOf: input.asOf, obligatedOccurrenceIds });
   for (const cutoffAt of input.laterCutoffs) {
     if (projectSoFar().charges.length >= STANDING_UPCOMING_CHARGE_LIMIT) break;
     let group: StandingCutoffGroup;
@@ -1732,8 +1741,19 @@ async function projectUpcomingStandingChargesInTransaction(
     if (group.suppressed) continue;
     cutoffs.push({ cutoffAt, collectionMode: group.mode, requirementOccurrenceIds: group.occurrenceIds, billingOrdinals: await billingOrdinalsFor(tx, { ...scope, occurrenceIds: group.occurrenceIds }) });
   }
+  const occurrenceIds = [...new Set(cutoffs.flatMap((cutoff) => cutoff.requirementOccurrenceIds))];
+  const obligationRows = occurrenceIds.length === 0 ? [] : await tx.selectDistinct({ occurrenceId: paymentObligations.occurrenceId }).from(paymentObligations).where(and(
+    eq(paymentObligations.organizationId, input.organizationId),
+    eq(paymentObligations.leagueId, input.leagueId),
+    inArray(paymentObligations.occurrenceId, occurrenceIds),
+    inArray(paymentObligations.payerBowlerId, input.recipientIds),
+    currentBowlerOwnerPredicate({ organizationId: input.organizationId, leagueId: input.leagueId, payerBowlerIds: input.recipientIds }),
+    ne(paymentObligations.state, "voided"),
+  ));
+  obligatedOccurrenceIds = new Set(obligationRows.map((row) => row.occurrenceId));
+  // A review hold on a later cutoff ends the forecast there, but the charges
+  // before it are still valid and the first one will still run.
   const projection = projectSoFar();
-  if (projection.reviewRequired) return NO_UPCOMING_STANDING_CHARGES;
   return { upcoming: projection.charges, paidAheadThroughOrdinal: projection.paidAheadThroughOrdinal, overdueMinor: projection.overdueMinor };
 }
 
@@ -1847,14 +1867,16 @@ export async function quoteStandingAutopay(input: { organizationId: number; leag
       const upcoming = holds.size > 0 ? NO_UPCOMING_STANDING_CHARGES : await projectUpcomingStandingChargesInTransaction(tx, {
         organizationId: input.organizationId,
         leagueId: input.leagueId,
-        first: { cutoffAt, collectionMode: group.mode, requirementOccurrenceIds: collectionRequirementOccurrenceIds, triggerOccurrenceIds: group.occurrenceIds },
+        first: { cutoffAt, collectionMode: group.mode, requirementOccurrenceIds: collectionRequirementOccurrenceIds, triggerOccurrenceId: group.triggerOccurrenceId },
+        asOf,
+        recipientIds,
         laterCutoffs: laterTriggers.map((trigger) => iso(trigger.startAt)),
         recipients: recipientIds.map((bowlerId) => {
           const evidence = targetEvidenceByRecipient.get(bowlerId);
           if (!evidence) throw new StandingAutopayError("ACCOUNT_TARGET_MISSING", "A standing account target is unavailable", 503);
           return {
             candidates: evidence.candidates,
-            confirmedDebts: evidence.confirmedDebts.map((debt) => ({ obligationId: debt.obligationId, occurrenceId: debt.occurrenceId, outstandingMinor: debt.outstandingMinor, reviewRequired: debt.reviewRequired })),
+            confirmedDebts: evidence.confirmedDebts.map((debt) => ({ obligationId: debt.obligationId, occurrenceId: debt.occurrenceId, occurrenceLocalDate: debt.occurrenceLocalDate, dueAt: debt.dueAt, pastDueAt: debt.pastDueAt, outstandingMinor: debt.outstandingMinor, reviewRequired: debt.reviewRequired })),
             availableCreditMinor: evidence.availableCreditMinor,
           };
         }),

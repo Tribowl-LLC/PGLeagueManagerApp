@@ -207,13 +207,23 @@ export type UpcomingStandingProjection = {
  * each cutoff is still quoted and fenced under the league lock when it runs.
  */
 export function projectUpcomingStandingCharges(input: {
-  recipients: Array<{ candidates: FifoPaymentCandidate[]; confirmedDebts: ConfirmedAccountFundingDebt[]; availableCreditMinor: number }>;
+  recipients: Array<{ candidates: FifoPaymentCandidate[]; confirmedDebts: Array<ConfirmedAccountFundingDebt & ConfirmedPastDueDebt>; availableCreditMinor: number }>;
   cutoffs: UpcomingStandingCutoff[];
   limit: number;
+  /** Quote time; only confirmed debt already past due is reported as overdue. */
+  asOf: string;
+  /** Cutoff occurrences where a recipient has an obligation in any state. */
+  obligatedOccurrenceIds: ReadonlySet<string>;
 }): UpcomingStandingProjection {
   const charges: UpcomingStandingCharge[] = [];
   let paidAheadThroughOrdinal: number | null = null;
-  let overdueMinor = 0;
+  // A confirmed later week that is not yet past due is not overdue, even
+  // though it is older than the next cutoff's collection requirement.
+  const overdueMinor = input.recipients.reduce((sum, recipient) => sum + confirmedPastDueMinor({
+    debts: recipient.confirmedDebts,
+    availableCreditMinor: recipient.availableCreditMinor,
+    asOf: input.asOf,
+  }), 0);
   const remainingCredit = input.recipients.map((recipient) => recipient.availableCreditMinor);
   for (const [cutoffIndex, cutoff] of input.cutoffs.entries()) {
     if (charges.length >= input.limit) break;
@@ -235,13 +245,16 @@ export function projectUpcomingStandingCharges(input: {
         return { charges, paidAheadThroughOrdinal, overdueMinor, reviewRequired: true };
       }
       if (target.olderDebtReviewRequired || target.currentDebtReviewRequired) return { charges, paidAheadThroughOrdinal, overdueMinor, reviewRequired: true };
-      if (cutoffIndex === 0) overdueMinor += target.olderConfirmedDebtRemainingMinor;
       const creditForCurrentMinor = target.availableCreditMinor - target.creditAppliedToOlderDebtMinor;
       remainingCredit[recipientIndex] = creditForCurrentMinor - Math.min(creditForCurrentMinor, target.currentCollectionTargetMinor);
       amountMinor += Math.max(0, target.currentCollectionTargetMinor - creditForCurrentMinor);
     }
     if (amountMinor > 0) charges.push({ cutoffAt: cutoff.cutoffAt, collectionMode: cutoff.collectionMode, amountMinor, billingOrdinals: cutoff.billingOrdinals });
-    else if (charges.length === 0) paidAheadThroughOrdinal = cutoff.billingOrdinals[0] ?? paidAheadThroughOrdinal;
+    // A zero charge is paid ahead only when an obligation existed and was
+    // covered; a week with no obligation (an unassigned sub) proves nothing.
+    else if (charges.length === 0 && cutoff.requirementOccurrenceIds.some((occurrenceId) => input.obligatedOccurrenceIds.has(occurrenceId))) {
+      paidAheadThroughOrdinal = cutoff.billingOrdinals[0] ?? paidAheadThroughOrdinal;
+    }
   }
   return { charges, paidAheadThroughOrdinal, overdueMinor, reviewRequired: false };
 }
