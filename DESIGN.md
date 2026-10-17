@@ -661,7 +661,9 @@ component system. This design remains distinct from the admin UI.
   using active canonical obligations rather than money or weekly-fee math.
   Follow it with Transactions. A confirmed self-only payment covering several
   canonical weeks names that count, and includes the server-confirmed final
-  paired week when present. Keep single-week, shared, credit, and review rows'
+  paired week when present. A double-pay payment covering exactly its own
+  week and one final paired week names both weeks instead (`Week 5 & 31
+  payment`). Keep single-week, shared, credit, and review rows'
   existing truthful labels. Keep the real transaction evidence and detail
   actions.
 - **Profile:** Present account details as rows and use focused dialogs for
