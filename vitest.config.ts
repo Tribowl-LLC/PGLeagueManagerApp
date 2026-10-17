@@ -138,6 +138,7 @@ const UNIT_NO_DB = [
   'tests/unit/account-payment-v4-client.test.ts',
   'tests/unit/payment-request-identity.test.ts',
   'tests/unit/account-standing-funding-v5.test.ts',
+  'tests/unit/upcoming-standing-charges.test.ts',
   'tests/unit/refund-allocation-adjustments.test.ts',
   'tests/unit/financials-f5-route.test.ts',
   'tests/unit/payment-operation-wake-scheduler.test.ts',

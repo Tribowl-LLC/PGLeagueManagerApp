@@ -13,12 +13,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/utils";
-import { ChevronRight, CreditCard, Power } from "lucide-react";
+import { CalendarClock, Check, ChevronRight, CreditCard, Power } from "lucide-react";
 
 type QuoteResponse = { data: StandingAutopayQuoteWire };
 type EditorMode = "one-time" | "autopay" | null;
 type Props = {
-  league: Pick<League, "id" | "locationId" | "organizationId" | "name" | "paymentMode" | "payingLineupSize" | "timezone"> & Partial<Pick<League, "totalBowlingWeeks" | "doublePayDates">>;
+  league: Pick<League, "id" | "locationId" | "organizationId" | "name" | "paymentMode" | "payingLineupSize" | "timezone"> & Partial<Pick<League, "totalBowlingWeeks" | "doublePayDates" | "weeklyFee" | "competitionStartTime">>;
   bowlerId: number;
   savedCards: SavedCard[];
   bowlerHasEmail: boolean;
@@ -67,6 +67,25 @@ function nextPaymentDateParts(value: string, timezone: string | null | undefined
   const month = parts.find((part) => part.type === "month")?.value;
   const day = parts.find((part) => part.type === "day")?.value;
   return month && day ? { month, day } : null;
+}
+
+function formatChargeTime(value: string, timezone: string | null | undefined): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  return nextPaymentFormatter(timezone, { hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+/** Format a league's "HH:MM" competition start as a local clock time. */
+function formatLeagueStartTime(value: string | null | undefined): string | null {
+  const match = /^(\d{1,2}):(\d{2})/.exec(value ?? "");
+  if (!match) return null;
+  const date = new Date(Date.UTC(2000, 0, 1, Number(match[1]), Number(match[2])));
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(date);
+}
+
+function weekLabel(ordinals: number[]): string {
+  if (ordinals.length === 0) return "Bowling night";
+  return ordinals.length === 1 ? `Week ${ordinals[0]}` : `Weeks ${ordinals.join(" + ")}`;
 }
 
 function formatStandingAutopayAmount(amountMinor: number): string {
@@ -175,48 +194,60 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
   const addingCard = cardEditorMode === "autopay";
   const setupPending = isSavingAndEnabling || activate.isPending;
   const quote = quoteQuery.data?.data;
-  const quoteHasUpcomingPayment = Boolean(quote?.cutoffAt)
-    && Number.isFinite(new Date(quote?.cutoffAt ?? "").getTime())
-    && typeof quote?.amountMinor === "number"
-    && quote.amountMinor > 0;
-  const nextPayment = quoteQuery.isLoading
-    ? "Checking…"
-    : quoteQuery.isError
-      ? "Unavailable"
-      : quoteHasUpcomingPayment && quote?.cutoffAt
-        ? `${formatStandingAutopayAmount(quote.amountMinor)} · ${formatNextPaymentDate(quote.cutoffAt, league.timezone, "short")}`
-        : "No upcoming payment";
   const quoteError = quoteQuery.error instanceof Error
     ? quoteQuery.error.message.replace(/^\d{3}:\s*/, "")
       : "The next automatic payment is unavailable.";
-  const nextDateParts = quoteHasUpcomingPayment && quote?.cutoffAt ? nextPaymentDateParts(quote.cutoffAt, league.timezone) : null;
+  const upcomingCharges = (quote?.upcoming ?? []).filter((charge) => charge.amountMinor > 0 && Number.isFinite(new Date(charge.cutoffAt).getTime()));
+  const overdueMinor = quote?.overdueMinor ?? 0;
+  const paused = paymentAttention !== null || overdueMinor > 0;
+  const leagueStartTime = formatLeagueStartTime(league.competitionStartTime);
+  const setupIntro = <div className="familiar-autopay-intro">
+    <p className="familiar-autopay-pitch">Never think about league fees again.</p>
+    <ul className="familiar-autopay-benefits">
+      <li><CalendarClock className="size-4" aria-hidden="true" />{league.weeklyFee ? `${formatStandingAutopayAmount(league.weeklyFee)} charged` : "Charged"}{leagueStartTime ? ` at ${leagueStartTime}` : ""} on bowling night</li>
+      <li><Check className="size-4" aria-hidden="true" />Weeks you pay ahead are skipped</li>
+      <li><Check className="size-4" aria-hidden="true" />Turn off anytime</li>
+    </ul>
+    <Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setSetupOpen(true)}>Set up automatic payments<ChevronRight className="size-4" aria-hidden="true" /></Button>
+    {partnerAutopayNote && <p className="familiar-autopay-partner-note">{partnerAutopayNote}</p>}
+  </div>;
   const editorOpen = active ? replaceMode : setupOpen;
   const consentCopy = "I agree to automatic weekly payments and understand that double-pay weeks may be charged twice to cover the final weeks of the season.";
   return <>
   <Card data-testid="standing-autopay-card" className="familiar-standing-autopay-card">
-    <CardHeader><CardTitle className="flex items-center justify-between">Automatic payments {active ? <Badge tone="positive" size="compact" className="min-h-5">Enabled</Badge> : <Badge variant="secondary">Off</Badge>}</CardTitle></CardHeader>
+    <CardHeader><CardTitle className="flex items-center justify-between">Automatic payments {!active ? <Badge variant="secondary">Off</Badge> : paused ? <Badge variant="destructive" size="compact" className="min-h-5">Paused</Badge> : <Badge tone="positive" size="compact" className="min-h-5">On</Badge>}</CardTitle></CardHeader>
     <CardContent spacing="tight">
       {!bowlerHasEmail && <p className="rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900">Add an email address to your <Link href="/profile" className="font-semibold underline">Profile</Link> before enabling automatic payments. A temporary receipt email cannot be used.</p>}
       {statusLoading && <div role="status" aria-live="polite" className="rounded-md border border-muted-foreground/30 bg-muted/30 p-3 text-sm text-muted-foreground">Checking automatic-payment status…</div>}
       {statusUnavailable && <div role="alert" className="flex flex-col gap-3 rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900"><p>Automatic-payment status could not be confirmed. Refresh before continuing.</p><Button type="button" variant="outline" size="sm" onClick={() => void statusQuery.refetch()} disabled={statusQuery.isFetching}>{statusQuery.isFetching ? "Refreshing…" : "Refresh status"}</Button></div>}
       {setupDataUnavailable && <div role="alert" className="rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900">Current payment obligations are unavailable. Refresh the payment page before enabling automatic payments.</div>}
-      {statusReady && !setupDataUnavailable && dueNowRequired && !combinedCheckoutActive && !setupOpen && <div className="familiar-autopay-intro"><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setSetupOpen(true)}>Set up automatic payments<ChevronRight className="size-4" aria-hidden="true" /></Button>{partnerAutopayNote && <p className="familiar-autopay-partner-note">{partnerAutopayNote}</p>}</div>}
+      {statusReady && !setupDataUnavailable && dueNowRequired && !combinedCheckoutActive && !setupOpen && setupIntro}
       {statusLoading || statusUnavailable || setupDataUnavailable ? null : active && !replaceMode && !addingCard ? <>
-        {paymentAttention === "scheduled_payment_declined" ? <div role="alert" className="space-y-2 rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900"><p>Your scheduled automatic payment was declined. Use the One-Time Payment section below to settle this balance before automatic payments can resume.</p></div> : <div className="familiar-autopay-next" aria-label="Next automatic payment">
-          <span className="familiar-autopay-next-label">Next automatic payment</span>
-          {quoteHasUpcomingPayment && quote?.cutoffAt ? <div className="familiar-autopay-next-row">
-            {nextDateParts && <span className="familiar-autopay-date-tile" aria-hidden="true"><strong>{nextDateParts.day}</strong>{nextDateParts.month}</span>}
-            <span className="familiar-autopay-next-copy"><strong>{formatNextPaymentDate(quote.cutoffAt, league.timezone, "long")}</strong>{quote.collectionMode === "double_pay" && <small>Double-pay week</small>}</span>
-            <span className="familiar-autopay-next-amount">{formatStandingAutopayAmount(quote.amountMinor)}</span>
-          </div> : <strong>{nextPayment}</strong>}
+        {paymentAttention === "scheduled_payment_declined" ? <div role="alert" className="space-y-2 rounded-md border border-warning-300 bg-warning-50 p-3 text-sm text-warning-900"><p>Your scheduled automatic payment was declined. Use the One-Time Payment section below to settle this balance before automatic payments can resume.</p></div> : <section className={paused ? "familiar-autopay-schedule-list familiar-autopay-paused" : "familiar-autopay-schedule-list"} aria-label="Upcoming automatic payments">
+          {overdueMinor > 0 && <div role="alert" className="familiar-autopay-overdue"><strong>{formatStandingAutopayAmount(overdueMinor)} overdue</strong><p>Use One-time payment to clear it. These charges start once it’s paid.</p></div>}
+          {quote?.paidAheadThroughOrdinal ? <p className="familiar-autopay-ahead"><Check className="size-4" aria-hidden="true" />Paid ahead through Week {quote.paidAheadThroughOrdinal}</p> : null}
+          <h3 className="familiar-autopay-subhead">Coming up</h3>
+          {quoteQuery.isLoading ? <p className="familiar-autopay-empty">Checking…</p> : quoteQuery.isError ? <p className="familiar-autopay-empty">Unavailable</p> : upcomingCharges.length === 0 ? <p className="familiar-autopay-empty">No upcoming payment</p> : <ol className="familiar-autopay-upcoming">{upcomingCharges.map((charge, index) => {
+            const dateParts = nextPaymentDateParts(charge.cutoffAt, league.timezone);
+            const time = formatChargeTime(charge.cutoffAt, league.timezone);
+            return <li key={charge.cutoffAt} className={index === 0 ? "familiar-autopay-upcoming-next" : undefined}>
+              {dateParts && <span className="familiar-autopay-date-tile" aria-hidden="true"><strong>{dateParts.day}</strong>{dateParts.month}</span>}
+              <span className="familiar-autopay-upcoming-copy">
+                <strong>{weekLabel(charge.billingOrdinals)}</strong>
+                <span className="sr-only">{formatNextPaymentDate(charge.cutoffAt, league.timezone, "long")}</span>
+                <small>{[index === 0 ? "Next" : null, time || null, charge.collectionMode === "double_pay" ? "Double pay" : null].filter(Boolean).join(" · ")}</small>
+              </span>
+              <span className="familiar-autopay-upcoming-amount">{formatStandingAutopayAmount(charge.amountMinor)}</span>
+            </li>;
+          })}</ol>}
           {quoteQuery.isError && <p role="alert" className="text-sm text-destructive">{quoteError}</p>}
-        </div>}
+        </section>}
         <div className={consent?.paymentMethod ? "familiar-autopay-card-tile" : "familiar-autopay-card-tile familiar-autopay-card-tile-unavailable"}>
           <span className="familiar-autopay-card-icon" aria-hidden="true"><CreditCard className="size-4.5" /></span>
           <span className="familiar-autopay-card-copy">
             {consent?.paymentMethod ? <>
-              <strong>{formatStandingAutopayBrand(consent.paymentMethod.brand)} ending in {consent.paymentMethod.last4}</strong>
-              <small>Used for automatic payments</small>
+              <strong><span aria-hidden="true">{formatStandingAutopayBrand(consent.paymentMethod.brand)} •••• {consent.paymentMethod.last4}</span><span className="sr-only">{formatStandingAutopayBrand(consent.paymentMethod.brand)} ending in {consent.paymentMethod.last4}</span></strong>
+              <small>Pays each bowling night</small>
             </> : <>
               <strong>Card could not be confirmed</strong>
               <small>Choose a card so automatic payments can go through.</small>
@@ -239,7 +270,7 @@ export function StandingAutopayCard({ league, bowlerId, savedCards, bowlerHasEma
         {!dueNowRequired && !addingCard && savedCards.length === 0 && <Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => { cleanupCard(); onCardEditorModeChange("autopay"); }}>Add new card</Button>}
         {!dueNowRequired && (addingCard || savedCards.length === 0) ? <div className="space-y-3"><p className="text-sm font-medium">{savedCards.length ? "Add a new card" : "Add a card for automatic payments"}</p><div ref={(element) => { if (element && cardEditorMode === "autopay") void initializeCard(element); }} className={cardEditorMode === "autopay" ? "min-h-20 rounded-md border p-3" : "min-h-20 rounded-md border p-3 hidden"} /><div className="flex flex-wrap gap-2"><Button type="button" disabled={!bowlerHasEmail || !isInitialized || setupPending || (!active && !consentGiven)} onClick={() => void saveAndEnable()}>{setupPending ? (active ? "Saving and replacing…" : "Saving card and enabling…") : (active ? "Save card and replace payment method" : "Save card and enable automatic payments")}</Button>{addingCard && <Button type="button" variant="ghost" disabled={setupPending} onClick={() => { cleanupCard(); onCardEditorModeChange(null); }}>Cancel</Button>}</div></div> : null}
         {!dueNowRequired && !addingCard && savedCards.length > 0 && <div className="flex flex-wrap gap-2"><Button type="button" disabled={!bowlerHasEmail || !selectedCard || setupPending || (!active && !consentGiven)} onClick={() => activate.mutate(selectedCard)}>{active ? "Replace payment method" : "Enable automatic payments"}</Button>{active && <Button type="button" variant="ghost" disabled={setupPending} onClick={() => setReplaceMode(false)}>Cancel</Button>}<Button type="button" variant="outline" disabled={!bowlerHasEmail || setupPending} onClick={() => { cleanupCard(); onCardEditorModeChange("autopay"); setReplaceMode(true); }}>Add new card</Button></div>}
-      </> : !active && !dueNowRequired ? <div className="familiar-autopay-intro"><Button type="button" variant="outline" disabled={!bowlerHasEmail} onClick={() => setSetupOpen(true)}>Set up automatic payments<ChevronRight className="size-4" aria-hidden="true" /></Button>{partnerAutopayNote && <p className="familiar-autopay-partner-note">{partnerAutopayNote}</p>}</div> : null}
+      </> : !active && !dueNowRequired ? setupIntro : null}
     </CardContent>
   </Card>
   <Dialog open={revokeDialogOpen} onOpenChange={(open) => { if (!revoke.isPending) setRevokeDialogOpen(open); }}>
