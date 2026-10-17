@@ -321,7 +321,11 @@ async function readLatestManualReceiptBusinessDates(
   return result;
 }
 
-/** Published league nights with a billing week number, for bowler-facing payment labels. */
+/**
+ * Published league nights with a week number, for bowler-facing payment
+ * labels. Cancelled nights still count: a payment made that week, or before a
+ * cancelled Week 1, keeps its calendar week.
+ */
 export async function readLeaguePaymentWeeks(input: { organizationId: number; leagueId: number }): Promise<LeaguePaymentWeek[]> {
   const rows = await db.select({
     plannedOrdinal: leagueOccurrences.plannedOrdinal,
@@ -330,7 +334,7 @@ export async function readLeaguePaymentWeeks(input: { organizationId: number; le
     eq(leagueOccurrences.organizationId, input.organizationId),
     eq(leagueOccurrences.leagueId, input.leagueId),
     inArray(leagueOccurrences.lifecycle, ["published", "locked"]),
-    inArray(leagueOccurrences.status, ["scheduled", "completed"]),
+    inArray(leagueOccurrences.status, ["scheduled", "completed", "cancelled"]),
   ));
   return rows.flatMap((row) => row.plannedOrdinal === null ? [] : [{ plannedOrdinal: row.plannedOrdinal, localDate: String(row.localDate) }]);
 }
