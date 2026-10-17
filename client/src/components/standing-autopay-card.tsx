@@ -83,9 +83,12 @@ function formatLeagueStartTime(value: string | null | undefined): string | null 
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(date);
 }
 
+// Name a charge by the week it runs, like bowler History. Any paired final
+// weeks it also collects come later in the season, so the run week is the
+// earliest ordinal.
 function weekLabel(ordinals: number[]): string {
   if (ordinals.length === 0) return "Bowling night";
-  return ordinals.length === 1 ? `Week ${ordinals[0]}` : `Weeks ${ordinals.join(" + ")}`;
+  return `Week ${Math.min(...ordinals)}`;
 }
 
 function formatStandingAutopayAmount(amountMinor: number): string {

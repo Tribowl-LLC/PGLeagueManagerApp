@@ -328,7 +328,7 @@ describe("PaymentHistoryContent", () => {
     const upcoming = [
       { cutoffAt: "2030-01-10T00:30:00.000Z", collectionMode: "weekly", amountMinor: 2500, billingOrdinals: [4] },
       { cutoffAt: "2030-01-17T00:30:00.000Z", collectionMode: "double_pay", amountMinor: 5000, billingOrdinals: [5, 31] },
-      { cutoffAt: "2030-01-24T00:30:00.000Z", collectionMode: "weekly", amountMinor: 2500, billingOrdinals: [6] },
+      { cutoffAt: "2030-01-24T00:30:00.000Z", collectionMode: "weekly", amountMinor: 2500, billingOrdinals: [6, 30, 31] },
     ];
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => String(queryKey[0]).endsWith("/quote")
       ? ({ data: { cutoffAt: upcoming[0].cutoffAt, amountMinor: 2500, collectionMode: "weekly", upcoming, paidAheadThroughOrdinal: null, overdueMinor: 0 } })
@@ -341,8 +341,9 @@ describe("PaymentHistoryContent", () => {
     expect(await screen.findByText("Week 4")).toBeInTheDocument();
     expect(screen.getByText("Coming up")).toBeInTheDocument();
     expect(screen.queryByText("Next automatic payment")).not.toBeInTheDocument();
-    expect(screen.getByText("Weeks 5 + 31")).toBeInTheDocument();
+    expect(screen.getByText("Week 5")).toBeInTheDocument();
     expect(screen.getByText("Week 6")).toBeInTheDocument();
+    expect(screen.queryByText(/\+/)).not.toBeInTheDocument();
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
     expect(screen.getByText("$50")).toBeInTheDocument();
     expect(screen.getByText(/^Next · /)).toBeInTheDocument();
