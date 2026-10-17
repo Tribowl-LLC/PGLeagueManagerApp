@@ -112,135 +112,31 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByRole("dialog", { name: "Payment Details" })).toBeInTheDocument();
   });
 
-  it("labels confirmed self-only multiweek payments from canonical ordinals and adds the paired final week", () => {
-    const multiWeekAppliedTo = [31, 32].map((plannedOrdinal) => ({
-      plannedOrdinal,
-      occurrenceLocalDate: `2038-04-${plannedOrdinal === 31 ? "01" : "08"}`,
-      amountMinor: 2500,
-      currency: "USD",
-      state: "active" as const,
-      isFinalPairedWeek: true,
-      isFullyCoveredWeek: true,
-    }));
-    const confirmedSelfPayment = {
-      paymentId: 90,
+  it("labels each bowler payment by the league week it was made in, with the date paid and no credit wording", () => {
+    const paid = {
       status: "confirmed_paid" as const,
       unresolved: false,
       reviewRequired: false,
-      source: "canonical_allocation" as const,
-      amountMinor: 5000,
-      allocatedMinor: 5000,
-      refundedAllocationMinor: 0,
-      waivedMinor: 0,
       refund: { present: false, amountMinor: 0, providerRefundId: null },
       dispute: { present: false, amountMinor: 0, disputeId: null },
       isSelfOnlyPayment: true,
-      hasMultipleRecipients: false,
-      appliedTo: multiWeekAppliedTo,
       allocations: [],
     };
-    render(<CanonicalPaymentEvidenceTable rows={[row(confirmedSelfPayment)]} variant="bowler" totalWeeksInSeason={32} />);
+    render(<CanonicalPaymentEvidenceTable variant="bowler" rows={[
+      row({ ...paid, paymentId: 1, source: "canonical_allocation", amountMinor: 6_000, authoritativeLocalDate: "2026-09-30", paymentWeekOrdinal: 5,
+        appliedTo: [{ plannedOrdinal: 5, occurrenceLocalDate: "2026-09-30", amountMinor: 3_000, currency: "USD", state: "active" }, { plannedOrdinal: 6, occurrenceLocalDate: "2026-10-07", amountMinor: 3_000, currency: "USD", state: "active" }] }),
+      row({ ...paid, paymentId: 2, source: "canonical_allocation", amountMinor: 6_000, authoritativeLocalDate: "2026-10-07", paymentWeekOrdinal: 6,
+        appliedTo: [{ plannedOrdinal: 7, occurrenceLocalDate: "2026-10-14", amountMinor: 3_000, currency: "USD", state: "active" }] }),
+      row({ ...paid, paymentId: 3, source: "prepaid_credit", amountMinor: 3_000, authoritativeLocalDate: "2026-10-14", paymentWeekOrdinal: 7, appliedTo: [] }),
+      row({ ...paid, paymentId: 4, source: "canonical_allocation", amountMinor: 3_000, authoritativeLocalDate: "2026-10-21", appliedTo: [] }),
+    ]} />);
 
-    expect(screen.getByText("2 weeks paid (includes Weeks 31 and 32)")).toBeInTheDocument();
-  });
-
-  it("names both weeks of a confirmed double-pay payment", () => {
-    const doublePayAppliedTo = [
-      { plannedOrdinal: 31, occurrenceLocalDate: "2027-04-01", amountMinor: 2500, currency: "USD", state: "active" as const, isFinalPairedWeek: true, isFullyCoveredWeek: true },
-      { plannedOrdinal: 5, occurrenceLocalDate: "2026-10-01", amountMinor: 2500, currency: "USD", state: "active" as const, isFullyCoveredWeek: true },
-    ];
-    const tripleAppliedTo = [
-      ...doublePayAppliedTo,
-      { plannedOrdinal: 6, occurrenceLocalDate: "2026-10-08", amountMinor: 2500, currency: "USD", state: "active" as const, isFullyCoveredWeek: true },
-    ];
-    const confirmedSelfPayment = {
-      status: "confirmed_paid" as const,
-      unresolved: false,
-      reviewRequired: false,
-      source: "canonical_allocation" as const,
-      refund: { present: false, amountMinor: 0, providerRefundId: null },
-      dispute: { present: false, amountMinor: 0, disputeId: null },
-      isSelfOnlyPayment: true,
-      hasMultipleRecipients: false,
-      allocations: [],
-    };
-    render(<CanonicalPaymentEvidenceTable rows={[
-      row({ ...confirmedSelfPayment, paymentId: 93, amountMinor: 5000, allocatedMinor: 5000, appliedTo: doublePayAppliedTo }),
-      row({ ...confirmedSelfPayment, paymentId: 94, amountMinor: 7500, allocatedMinor: 7500, appliedTo: tripleAppliedTo }),
-    ]} variant="bowler" totalWeeksInSeason={31} />);
-
-    expect(screen.getByText("Week 5 & 31 payment")).toBeInTheDocument();
-    expect(screen.getByText("3 weeks paid (includes Week 31)")).toBeInTheDocument();
-  });
-
-  it("keeps the single-week label when a FIFO tail or final paired tail is only partially covered", () => {
-    const base = row({
-      paymentId: 91,
-      status: "confirmed_paid",
-      unresolved: false,
-      reviewRequired: false,
-      source: "canonical_allocation",
-      amountMinor: 3_000,
-      allocatedMinor: 3_000,
-      allocations: [],
-      isSelfOnlyPayment: true,
-      hasMultipleRecipients: false,
-    });
-    const fifoTail = {
-      ...base,
-      paymentId: 91,
-      appliedTo: [
-        { plannedOrdinal: 1, occurrenceLocalDate: "2038-01-01", amountMinor: 2_000, currency: "USD", state: "active" as const, isFullyCoveredWeek: true },
-        { plannedOrdinal: 2, occurrenceLocalDate: "2038-01-08", amountMinor: 1_000, currency: "USD", state: "active" as const },
-      ],
-    };
-    const finalPairedTail = {
-      ...base,
-      paymentId: 92,
-      appliedTo: [
-        { plannedOrdinal: 31, occurrenceLocalDate: "2038-04-01", amountMinor: 2_000, currency: "USD", state: "active" as const, isFullyCoveredWeek: true },
-        { plannedOrdinal: 32, occurrenceLocalDate: "2038-04-08", amountMinor: 1_000, currency: "USD", state: "active" as const, isFinalPairedWeek: true },
-      ],
-    };
-    render(<CanonicalPaymentEvidenceTable rows={[fifoTail, finalPairedTail]} variant="bowler" totalWeeksInSeason={32} />);
-
-    expect(screen.getByText("Week 1 payment")).toBeInTheDocument();
-    expect(screen.getByText("Week 31 payment")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View payment details: Week 5 payment, Sep 30, 2026, $60, Confirmed paid" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View payment details: Week 6 payment, Oct 7, 2026, $60, Confirmed paid" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View payment details: Week 7 payment, Oct 14, 2026, $30, Confirmed paid" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View payment details: Payment, Oct 21, 2026, $30, Confirmed paid" })).toBeInTheDocument();
+    expect(screen.queryByText(/share credit/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/weeks paid/)).not.toBeInTheDocument();
-  });
-
-  it("keeps legacy period labels for single-week, full-season, partner, credit, and unresolved rows", () => {
-    const appliedTo = [31, 32].map((plannedOrdinal) => ({
-      plannedOrdinal,
-      occurrenceLocalDate: `2038-04-${plannedOrdinal === 31 ? "01" : "08"}`,
-      amountMinor: 2500,
-      currency: "USD",
-      state: "active" as const,
-      isFinalPairedWeek: true,
-    }));
-    const base = {
-      status: "confirmed_paid" as const,
-      unresolved: false,
-      reviewRequired: false,
-      source: "canonical_allocation" as const,
-      refund: { present: false, amountMinor: 0, providerRefundId: null },
-      dispute: { present: false, amountMinor: 0, disputeId: null },
-      isSelfOnlyPayment: true,
-      appliedTo,
-      allocations: [],
-    };
-    const fullSeason = Array.from({ length: 32 }, (_, index) => ({ ...appliedTo[0], plannedOrdinal: index + 1, isFinalPairedWeek: false }));
-    const rows = [
-      row({ ...base, paymentId: 1, appliedTo: [appliedTo[0]] }),
-      row({ ...base, paymentId: 2, appliedTo: fullSeason }),
-      row({ ...base, paymentId: 3, hasMultipleRecipients: true }),
-      row({ ...base, paymentId: 4, source: "prepaid_credit", isSelfOnlyPayment: true }),
-      row({ ...base, paymentId: 5, status: "unresolved", source: "unresolved_operation", unresolved: true }),
-    ];
-    render(<CanonicalPaymentEvidenceTable rows={rows} variant="bowler" totalWeeksInSeason={32} />);
-
-    expect(screen.getAllByText("Week 31 payment")).toHaveLength(4);
-    expect(screen.getByText("Week 1 payment")).toBeInTheDocument();
   });
 
   it("uses one accessible bowler row target for pointer, Enter, and Space activation", async () => {
@@ -252,6 +148,8 @@ describe("CanonicalPaymentEvidenceTable", () => {
       reviewRequired: false,
       source: "canonical_allocation",
       amountMinor: 2500,
+      authoritativeLocalDate: "2026-09-01",
+      paymentWeekOrdinal: 2,
       allocations: [],
       appliedTo: [{ plannedOrdinal: 2, occurrenceLocalDate: "2026-09-01", amountMinor: 2500, currency: "USD", state: "active" }],
     })]} variant="bowler" leagueName="Wednesday Night" />);
@@ -442,7 +340,7 @@ describe("CanonicalPaymentEvidenceTable", () => {
       creditRefunds: { completedAmountMinor: 2000, heldAmountMinor: 0, reviewRequired: false, providerRefundIds: [] },
     })]} variant="bowler" leagueName="Wednesday Night" />);
 
-    const transaction = screen.getByRole("button", { name: "View payment details: Payment, Feb 3, 2038, $20, Refunded, Refunded share credit" });
+    const transaction = screen.getByRole("button", { name: "View payment details: Payment, Feb 3, 2038, $20, Refunded" });
     expect(screen.getByText("Refunded", { exact: true })).toBeInTheDocument();
     expect(screen.queryByText("Paid", { exact: true })).not.toBeInTheDocument();
     expect(transaction.querySelector("svg.lucide-check")).toBeNull();

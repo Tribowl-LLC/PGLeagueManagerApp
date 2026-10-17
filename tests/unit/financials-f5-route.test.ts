@@ -7,6 +7,7 @@ import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 const mocks = vi.hoisted(() => ({
   getLeague: vi.fn(),
   readReport: vi.fn(),
+  readWeeks: vi.fn(),
   hasAdmin: vi.fn(),
   hasPaymentManager: vi.fn(),
 }));
@@ -20,6 +21,7 @@ vi.mock("../../server/services/canonical-payment-report.js", () => ({
 }));
 vi.mock("../../server/services/roster-payment-archive-report.js", () => ({
   readCanonicalPaymentReport: (...args: unknown[]) => mocks.readReport(...args),
+  readLeaguePaymentWeeks: (...args: unknown[]) => mocks.readWeeks(...args),
   CanonicalPaymentReportIncompatibilityError: class extends Error {},
 }));
 vi.mock("../../server/utils/access-control.js", () => ({
@@ -53,6 +55,7 @@ beforeEach(() => {
   mocks.hasAdmin.mockResolvedValue(true);
   mocks.hasPaymentManager.mockResolvedValue(false);
   mocks.readReport.mockResolvedValue({ data: { contractVersion: "canonical-payment-report/1", rows: [] } });
+  mocks.readWeeks.mockResolvedValue([]);
 });
 
 function user(role: string, organizationId: number | null, bowlerId: number | null = null) {
@@ -372,6 +375,28 @@ describe("F5 canonical payment report route", () => {
     expect(payerResponse.status).toBe(200);
     const payerReceipt = (await payerResponse.json()).data.rows[0].receipt;
     expect(payerReceipt).toMatchObject({ availability: "unavailable", canOpenReceipt: true, receiptUrl: null, receiptNumber: null });
+  });
+
+  it("labels each ordinary-reader payment with the league week it was made in", async () => {
+    mocks.hasAdmin.mockResolvedValue(false);
+    mocks.readWeeks.mockResolvedValue([
+      { plannedOrdinal: 6, localDate: "2026-10-07" },
+      { plannedOrdinal: 5, localDate: "2026-09-30" },
+      { plannedOrdinal: 7, localDate: "2026-10-14" },
+    ]);
+    const base = { leagueId: 7, bowlerId: 42, currency: "USD", status: "confirmed_paid", paymentType: "square", providerPaymentId: null, paymentOperationId: null, operationType: null, operationStatus: null, allocatedMinor: 0, unallocatedMinor: 0, reviewRequired: false, source: "canonical_allocation", refund: { present: false, amountMinor: 0, providerRefundId: null }, dispute: { present: false, amountMinor: 0, disputeId: null }, unresolved: false, initiatingPayerBowlerId: 42, receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded" }, allocations: [] };
+    const dates = ["2026-09-01", "2026-09-30", "2026-10-13", "2026-10-14", "2027-05-01"];
+    mocks.readReport.mockResolvedValue({
+      contractVersion: "canonical-payment-report/2", organizationId: 11, leagueId: 7, page: 1, limit: 50, totalRows: dates.length, totalTransactions: 0,
+      totals: { grossConfirmedPaidMinor: 0, activeAllocatedMinor: 0, refundedMinor: 0, disputedReviewRequiredMinor: 0, reviewRequiredMinor: 0, unresolvedOperationMinor: 0 },
+      rows: dates.map((date, index) => ({ ...base, paymentId: index + 1, amountMinor: 3_000, businessDate: date, authoritativeLocalDate: date })),
+      transactions: [],
+    });
+
+    const response = await get("/payments?leagueId=7", user("user", 11, 42));
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.rows.map((row: CanonicalPaymentRow) => row.paymentWeekOrdinal)).toEqual([5, 5, 6, 7, 7]);
+    expect(mocks.readWeeks).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7 });
   });
 
   it("returns stable incompatibility without falling back", async () => {

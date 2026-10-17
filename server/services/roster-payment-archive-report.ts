@@ -1,7 +1,7 @@
 import { aliasedTable, and, asc, desc, eq, exists, inArray, sql, or } from "drizzle-orm";
 import { db } from "../db.js";
 import { bowlers, canonicalCollectionGroupMembers, canonicalCollectionGroups, leagueOccurrenceBillingTerms, leagueOccurrenceGenerationRuns, leagueOccurrences, leagues, paymentAllocationCorrections, paymentAllocationFundingApplications, paymentAllocations, paymentDisputes, paymentObligations, paymentOperations, paymentOperationRosterSnapshots, paymentOperationRosterSnapshotItems, paymentVoids, payments, refundAllocationAdjustments, refundPaymentOperationSnapshots, rotatingCreditApplications, rotatingCreditApplicationReversals, rotatingCreditFundings, rotatingCreditPaymentOperationSnapshots, rotatingCreditRefundOperationSnapshots, rotatingCreditRefunds, rotatingOccurrenceAssignments, weeklyPaymentFundings, weeklyPaymentWorksheetReceiptRevisions, weeklyPaymentWorksheetReceipts, type PaymentAllocationCorrection } from "@shared/schema";
-import type { CanonicalPaymentReport, CanonicalPaymentRow, CanonicalPaymentReportTotals, CanonicalPaymentFundingPortionRow } from "@shared/canonical-payment-report";
+import type { CanonicalPaymentReport, CanonicalPaymentRow, CanonicalPaymentReportTotals, CanonicalPaymentFundingPortionRow, LeaguePaymentWeek } from "@shared/canonical-payment-report";
 import { canonicalCreditFundingSource, canonicalPaymentReportFingerprint } from "@shared/canonical-payment-report";
 import { paymentVisibilityCondition } from "../storage/payments.js";
 import type { PaymentOperationTransaction } from "../storage/payment-operations.js";
@@ -319,6 +319,20 @@ async function readLatestManualReceiptBusinessDates(
     result.set(revision.paymentId, revision.businessDate);
   }
   return result;
+}
+
+/** Published league nights with a billing week number, for bowler-facing payment labels. */
+export async function readLeaguePaymentWeeks(input: { organizationId: number; leagueId: number }): Promise<LeaguePaymentWeek[]> {
+  const rows = await db.select({
+    plannedOrdinal: leagueOccurrences.plannedOrdinal,
+    localDate: leagueOccurrences.authoritativeLocalDate,
+  }).from(leagueOccurrences).where(and(
+    eq(leagueOccurrences.organizationId, input.organizationId),
+    eq(leagueOccurrences.leagueId, input.leagueId),
+    inArray(leagueOccurrences.lifecycle, ["published", "locked"]),
+    inArray(leagueOccurrences.status, ["scheduled", "completed"]),
+  ));
+  return rows.flatMap((row) => row.plannedOrdinal === null ? [] : [{ plannedOrdinal: row.plannedOrdinal, localDate: String(row.localDate) }]);
 }
 
 export async function readCanonicalPaymentReport(input: CanonicalPaymentReportInput): Promise<CanonicalPaymentReport> {
