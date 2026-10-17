@@ -141,7 +141,7 @@ describe("CanonicalPaymentEvidenceTable", () => {
     };
     render(<CanonicalPaymentEvidenceTable rows={[row(confirmedSelfPayment)]} variant="bowler" totalWeeksInSeason={32} />);
 
-    expect(screen.getByText("2 weeks paid (includes Weeks 31 and 32)")).toBeInTheDocument();
+    expect(screen.getByText("Week 31 & 32 payment")).toBeInTheDocument();
   });
 
   it("names both weeks of a confirmed double-pay payment", () => {
@@ -173,7 +173,7 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByText("3 weeks paid (includes Week 31)")).toBeInTheDocument();
   });
 
-  it("keeps the single-week label when a FIFO tail or final paired tail is only partially covered", () => {
+  it("names both weeks of a two-week payment even when the server could not prove full coverage", () => {
     const base = row({
       paymentId: 91,
       status: "confirmed_paid",
@@ -185,7 +185,18 @@ describe("CanonicalPaymentEvidenceTable", () => {
       allocations: [],
       isSelfOnlyPayment: true,
       hasMultipleRecipients: false,
+      dispute: { present: false, amountMinor: 0, disputeId: null },
     });
+    const doublePayWithoutServerFlags = {
+      ...base,
+      paymentId: 90,
+      amountMinor: 6_000,
+      allocatedMinor: 6_000,
+      appliedTo: [
+        { plannedOrdinal: 31, occurrenceLocalDate: "2039-04-01", amountMinor: 3_000, currency: "USD", state: "active" as const },
+        { plannedOrdinal: 5, occurrenceLocalDate: "2038-10-01", amountMinor: 3_000, currency: "USD", state: "active" as const },
+      ],
+    };
     const fifoTail = {
       ...base,
       paymentId: 91,
@@ -202,10 +213,13 @@ describe("CanonicalPaymentEvidenceTable", () => {
         { plannedOrdinal: 32, occurrenceLocalDate: "2038-04-08", amountMinor: 1_000, currency: "USD", state: "active" as const, isFinalPairedWeek: true },
       ],
     };
-    render(<CanonicalPaymentEvidenceTable rows={[fifoTail, finalPairedTail]} variant="bowler" totalWeeksInSeason={32} />);
+    const disputedDoublePay = { ...doublePayWithoutServerFlags, paymentId: 93, dispute: { present: true, amountMinor: 0, disputeId: null } };
+    render(<CanonicalPaymentEvidenceTable rows={[doublePayWithoutServerFlags, fifoTail, finalPairedTail, disputedDoublePay]} variant="bowler" totalWeeksInSeason={32} />);
 
-    expect(screen.getByText("Week 1 payment")).toBeInTheDocument();
-    expect(screen.getByText("Week 31 payment")).toBeInTheDocument();
+    expect(screen.getByText("Week 5 & 31 payment")).toBeInTheDocument();
+    expect(screen.getByText("Week 1 & 2 payment")).toBeInTheDocument();
+    expect(screen.getByText("Week 31 & 32 payment")).toBeInTheDocument();
+    expect(screen.getByText("Week 5 payment")).toBeInTheDocument();
     expect(screen.queryByText(/weeks paid/)).not.toBeInTheDocument();
   });
 

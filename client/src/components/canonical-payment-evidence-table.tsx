@@ -116,11 +116,6 @@ function multiWeekPaidPeriod(row: CanonicalPaymentRow, totalWeeksInSeason?: numb
   const finalPairedOrdinals = [...new Set(row.appliedTo
     .filter((allocation) => allocation.isFinalPairedWeek === true)
     .map((allocation) => allocation.plannedOrdinal as number))].sort((left, right) => left - right);
-  // A double-pay collection covers its own week plus one final paired week;
-  // name both weeks rather than counting them.
-  if (ordinals.length === 2 && finalPairedOrdinals.length === 1) {
-    return `Week ${ordinals[0]} & ${ordinals[1]} payment`;
-  }
   const suffix = finalPairedOrdinals.length === 1
     ? ` (includes Week ${finalPairedOrdinals[0]})`
     : finalPairedOrdinals.length === 2
@@ -129,9 +124,31 @@ function multiWeekPaidPeriod(row: CanonicalPaymentRow, totalWeeksInSeason?: numb
   return `${ordinals.length} weeks paid${suffix}`;
 }
 
+// A payment applied to exactly two weeks (such as a double-pay week and its
+// final paired week) names both weeks. This states where the money went, so
+// it does not need the full-coverage proof the "N weeks paid" label requires.
+function twoWeekPaymentPeriod(row: CanonicalPaymentRow): string | null {
+  if (row.hasMultipleRecipients === true
+    || row.status !== "confirmed_paid"
+    || row.source !== "canonical_allocation"
+    || row.reviewRequired
+    || row.unresolved
+    || row.refund.present
+    || row.dispute.present
+    || row.dispute.reviewRequired === true
+    || row.correctionEvidence
+    || !row.appliedTo?.length) return null;
+  const active = row.appliedTo.filter((allocation) => allocation.state === "active");
+  if (active.length !== row.appliedTo.length
+    || active.some((allocation) => !Number.isSafeInteger(allocation.plannedOrdinal) || (allocation.plannedOrdinal ?? 0) <= 0)) return null;
+  const ordinals = [...new Set(active.map((allocation) => allocation.plannedOrdinal as number))].sort((left, right) => left - right);
+  return ordinals.length === 2 ? `Week ${ordinals[0]} & ${ordinals[1]} payment` : null;
+}
+
 function mobilePaymentPeriodLabel(row: CanonicalPaymentRow, totalWeeksInSeason?: number): { period: string; date: string | null } {
   const reference = firstPaymentPeriod(row);
-  const period = multiWeekPaidPeriod(row, totalWeeksInSeason)
+  const period = twoWeekPaymentPeriod(row)
+    ?? multiWeekPaidPeriod(row, totalWeeksInSeason)
     ?? (Number.isSafeInteger(reference.plannedOrdinal) && (reference.plannedOrdinal as number) > 0
       ? `Week ${reference.plannedOrdinal} payment`
       : "Payment");
