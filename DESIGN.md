@@ -659,13 +659,14 @@ component system. This design remains distinct from the admin UI.
   page's existing selection, URL, storage, and payment-intent behavior.
 - **History:** Show a Weeks paid line (`x/y weeks`) above the Season totals,
   using active canonical obligations rather than money or weekly-fee math.
-  Follow it with Transactions. A confirmed self-only payment covering several
-  canonical weeks names that count, and includes the server-confirmed final
-  paired week when present. A double-pay payment covering exactly its own
-  week and one final paired week names both weeks instead (`Week 5 & 31
-  payment`). Keep single-week, shared, credit, and review rows'
-  existing truthful labels. Keep the real transaction evidence and detail
-  actions.
+  Follow it with Transactions. Each row is one payment the bowler made,
+  labelled by the league week it was made in (`Week 7 payment`: the latest
+  league night on or before the payment date), with the date paid and the
+  full amount, whatever it covered. Bowlers never see credit, allocation, or
+  collection wording; how a payment was applied stays in admin views.
+  Payment details show league, week, date, payer, and method, plus refund,
+  dispute, and review notices, and the per-bowler split only for a payment
+  that covered someone else. Keep the detail and receipt actions.
 - **Profile:** Present account details as rows and use focused dialogs for
   editing details, changing a password, managing saved payment methods and
   payment-partner links, and requesting deletion. Put Request deletion below

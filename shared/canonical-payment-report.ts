@@ -195,6 +195,21 @@ export interface CanonicalPaymentRow {
   initiatingPayerBowlerId?: number | null;
   /** Safe display-only actor name; never includes email or provider identity. */
   paidByName?: string | null;
+  /** Bowler-facing label: the league week in which the payment was made. */
+  paymentWeekOrdinal?: number | null;
+}
+
+export type LeaguePaymentWeek = { plannedOrdinal: number; localDate: string };
+
+/**
+ * The league week a payment was made in: the latest league night on or before
+ * the payment's league-local date, or the first week for an earlier payment.
+ */
+export function leaguePaymentWeekOrdinal(weeks: readonly LeaguePaymentWeek[], paymentLocalDate: string): number | null {
+  const ordered = [...weeks].sort((left, right) => left.localDate.localeCompare(right.localDate) || left.plannedOrdinal - right.plannedOrdinal);
+  if (ordered.length === 0) return null;
+  const onOrBefore = ordered.filter((week) => week.localDate <= paymentLocalDate.slice(0, 10));
+  return (onOrBefore[onOrBefore.length - 1] ?? ordered[0]).plannedOrdinal;
 }
 
 /** Selects an F5 source label from the current rotating-credit disposition. */

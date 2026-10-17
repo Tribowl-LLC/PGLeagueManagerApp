@@ -361,6 +361,12 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
     ? "Payment confirmed"
     : (evidence.reviewRequired || evidence.dispute.reviewRequired === true ? "Review required" : bowlerDisplayStatus);
   const showBowlerAppliedSection = evidence.hasMultipleRecipients === true;
+  const showBowlerSettlementEvidence = evidence.refund.present
+    || (evidence.creditRefunds?.heldAmountMinor ?? 0) > 0
+    || evidence.dispute.present
+    || evidence.reviewRequired
+    || evidence.dispute.reviewRequired === true
+    || Boolean(evidence.correctionEvidence);
 
   const openReceipt = async () => {
     if (evidence.paymentId === null) return;
@@ -518,13 +524,11 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
               {bowlerConfirmed && <span data-payment-details-part="hero-icon" aria-hidden="true"><Check size={24} /></span>}
               <strong>{formatBowlerCurrency(evidence.amountMinor, evidence.currency)}</strong>
               <span>{bowlerHeroStatus}</span>
-              {unusedShareCredit && <small>Unused share credit</small>}
-              {heldShareCredit && <small>Share credit refund on hold</small>}
-              {refundedShareCredit && <small>Refunded share credit</small>}
             </div>
 
             <dl data-payment-details-part="details">
               {leagueName && <div><dt>League</dt><dd>{leagueName}</dd></div>}
+              {Number.isSafeInteger(evidence.paymentWeekOrdinal) && (evidence.paymentWeekOrdinal as number) > 0 && <div><dt>Week</dt><dd>Week {evidence.paymentWeekOrdinal}</dd></div>}
               <div><dt>Date</dt><dd>{formatBowlerLocalDate(evidence.authoritativeLocalDate)}</dd></div>
               {evidence.paidByName && <div><dt>Paid by</dt><dd>{evidence.paidByName}</dd></div>}
               <div><dt>Method</dt><dd>{paymentTypeLabel(evidence.paymentType, payment?.checkNumber)}</dd></div>
@@ -559,25 +563,16 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
               )}
             </section>}
 
-            {showAdditionalSettlementEvidence && (
+            {showBowlerSettlementEvidence && (
               <section data-payment-details-part="evidence" aria-label="Additional settlement evidence">
-                {evidence.unallocatedMinor > 0 && !unusedShareCredit && !refundedShareCredit && <p>Unallocated: {formatCurrency(evidence.unallocatedMinor, evidence.currency)}</p>}
                 {evidence.refund.present && <p>Refunded: {formatCurrency(evidence.refund.amountMinor, evidence.currency)}</p>}
                 {(evidence.creditRefunds?.heldAmountMinor ?? 0) > 0 && <p>Refund on hold: {formatCurrency(evidence.creditRefunds?.heldAmountMinor ?? 0, evidence.currency)}</p>}
-                {(evidence.waivedMinor ?? 0) > 0 && <p>Waived roster amount: {formatCurrency(evidence.waivedMinor ?? 0, evidence.currency)} (not counted as paid)</p>}
                 {evidence.dispute.present && <p>Dispute: {evidence.dispute.state ?? "Review required"}{evidence.dispute.amountMinor > 0 ? ` · ${formatCurrency(evidence.dispute.amountMinor, evidence.currency)}` : ""}</p>}
                 {(evidence.reviewRequired || evidence.dispute.reviewRequired === true) && <p className="font-medium text-destructive">This payment requires review.</p>}
                 {evidence.correctionEvidence?.status === "voided" && <p>Correction: Payment voided.</p>}
               </section>
             )}
 
-            {evidence.collectionEvidence && (
-              <section data-payment-details-part="evidence" aria-label="Collection evidence">
-                <h3>Collection evidence</h3>
-                <p>{evidence.collectionEvidence.grouping === "double_pay" ? "Double payment" : "Regular collection"} at the collection point.</p>
-                <p>Timing: {evidence.collectionEvidence.timing.replaceAll("_", " ")}</p>
-              </section>
-            )}
 
             {(evidence.operationType || evidence.operationStatus) && (
               <section data-payment-details-part="evidence" aria-label="Payment operation evidence">

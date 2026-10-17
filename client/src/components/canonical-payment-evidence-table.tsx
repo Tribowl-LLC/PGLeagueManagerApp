@@ -22,7 +22,6 @@ type Props = {
   totalTransactions?: number;
   variant?: "admin" | "bowler";
   leagueName?: string;
-  totalWeeksInSeason?: number;
 };
 
 function formatLocalDate(value: string, timezone = "UTC"): string {
@@ -83,59 +82,22 @@ function formatMobilePaymentDate(value: string | null | undefined): string | nul
   return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }).format(date);
 }
 
-function multiWeekPaidPeriod(row: CanonicalPaymentRow, totalWeeksInSeason?: number): string | null {
-  if (row.isSelfOnlyPayment !== true
-    || row.hasMultipleRecipients === true
-    || row.status !== "confirmed_paid"
-    || row.source !== "canonical_allocation"
-    || row.reviewRequired
-    || row.unresolved
-    || row.refund.present
-    || row.refund.amountMinor !== 0
-    || (row.refundedAllocationMinor ?? 0) !== 0
-    || (row.waivedMinor ?? 0) !== 0
-    || row.dispute.present
-    || row.dispute.reviewRequired === true
-    || row.correctionEvidence
-    || row.creditRefunds
-    || !Number.isSafeInteger(totalWeeksInSeason)
-    || totalWeeksInSeason === undefined
-    || totalWeeksInSeason <= 0
-    || !row.appliedTo?.length
-    || row.appliedTo.some((allocation) => allocation.state !== "active"
-      || allocation.isFullyCoveredWeek !== true
-      || !Number.isSafeInteger(allocation.plannedOrdinal)
-      || (allocation.plannedOrdinal ?? 0) <= 0
-      || allocation.amountMinor <= 0
-      || (allocation.refundedMinor ?? 0) !== 0
-      || allocation.refundDisposition === "waived")) return null;
-
-  const ordinals = [...new Set(row.appliedTo.map((allocation) => allocation.plannedOrdinal as number))].sort((left, right) => left - right);
-  if (ordinals.length <= 1 || ordinals.length >= totalWeeksInSeason) return null;
-
-  const finalPairedOrdinals = [...new Set(row.appliedTo
-    .filter((allocation) => allocation.isFinalPairedWeek === true)
-    .map((allocation) => allocation.plannedOrdinal as number))].sort((left, right) => left - right);
-  // A double-pay collection covers its own week plus one final paired week;
-  // name both weeks rather than counting them.
-  if (ordinals.length === 2 && finalPairedOrdinals.length === 1) {
-    return `Week ${ordinals[0]} & ${ordinals[1]} payment`;
-  }
-  const suffix = finalPairedOrdinals.length === 1
-    ? ` (includes Week ${finalPairedOrdinals[0]})`
-    : finalPairedOrdinals.length === 2
-      ? ` (includes Weeks ${finalPairedOrdinals[0]} and ${finalPairedOrdinals[1]})`
-      : "";
-  return `${ordinals.length} weeks paid${suffix}`;
+function mobilePaymentPeriodLabel(row: CanonicalPaymentRow): { period: string; date: string | null } {
+  const reference = firstPaymentPeriod(row);
+  const period = Number.isSafeInteger(reference.plannedOrdinal) && (reference.plannedOrdinal as number) > 0
+    ? `Week ${reference.plannedOrdinal} payment`
+    : "Payment";
+  return { period, date: formatMobilePaymentDate(reference.occurrenceLocalDate) ?? formatMobilePaymentDate(row.authoritativeLocalDate) };
 }
 
-function mobilePaymentPeriodLabel(row: CanonicalPaymentRow, totalWeeksInSeason?: number): { period: string; date: string | null } {
-  const reference = firstPaymentPeriod(row);
-  const period = multiWeekPaidPeriod(row, totalWeeksInSeason)
-    ?? (Number.isSafeInteger(reference.plannedOrdinal) && (reference.plannedOrdinal as number) > 0
-      ? `Week ${reference.plannedOrdinal} payment`
-      : "Payment");
-  return { period, date: formatMobilePaymentDate(reference.occurrenceLocalDate) ?? formatMobilePaymentDate(row.authoritativeLocalDate) };
+// Bowlers see each payment as they made it: the league week it was made in,
+// the date paid, and the amount. How it was applied stays in admin views.
+function bowlerPaymentLabel(row: CanonicalPaymentRow): { period: string; date: string | null } {
+  const week = row.paymentWeekOrdinal;
+  return {
+    period: Number.isSafeInteger(week) && (week as number) > 0 ? `Week ${week} payment` : "Payment",
+    date: formatMobilePaymentDate(row.authoritativeLocalDate),
+  };
 }
 
 function statusVariant(row: CanonicalPaymentRow) {
@@ -154,7 +116,7 @@ function statusVariant(row: CanonicalPaymentRow) {
  * row remains visible, including operation evidence without a payment id;
  * selecting its status opens the evidence-only details dialog.
  */
-export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName = "Bowler", title = "Payment history", totalTransactions, variant = "admin", leagueName, totalWeeksInSeason }: Props) {
+export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName = "Bowler", title = "Payment history", totalTransactions, variant = "admin", leagueName }: Props) {
   const [detailsTarget, setDetailsTarget] = useState<CanonicalPaymentRow | null>(null);
   const bowlerPresentation = variant === "bowler";
 
@@ -172,18 +134,11 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
               const displayStatus = paymentEvidenceBowlerDisplayStatus(row);
               const reviewRequired = row.reviewRequired || row.dispute.reviewRequired === true;
               const hasSeparateReviewIndicator = reviewRequired && displayStatus !== "Review required";
-              const paymentPeriod = mobilePaymentPeriodLabel(row, totalWeeksInSeason);
-              const creditLabel = row.source === "prepaid_credit"
-                ? "Unused share credit"
-                : row.source === "held_credit"
-                  ? "Share credit refund on hold"
-                  : row.source === "refunded_credit"
-                    ? "Refunded share credit"
-                    : null;
+              const paymentPeriod = bowlerPaymentLabel(row);
               const statusLabel = displayStatus === "Confirmed paid" && !hasSeparateReviewIndicator
                 ? "Paid"
                 : displayStatus;
-              const accessibleStatus = [displayStatus, creditLabel, hasSeparateReviewIndicator ? "Review required" : null, row.correctionEvidence?.status === "voided" ? "Voided" : null]
+              const accessibleStatus = [displayStatus, hasSeparateReviewIndicator ? "Review required" : null, row.correctionEvidence?.status === "voided" ? "Voided" : null]
                 .filter(Boolean)
                 .join(", ");
               const accessibleDate = paymentPeriod.date ?? formatLocalDate(row.authoritativeLocalDate);
@@ -211,9 +166,9 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
                       {displayStatus === "Confirmed paid" && !hasSeparateReviewIndicator && <Check aria-hidden="true" size={12} />}
                       {statusLabel}
                     </span>
-                    {(creditLabel || hasSeparateReviewIndicator || row.correctionEvidence?.status === "voided") && (
+                    {(hasSeparateReviewIndicator || row.correctionEvidence?.status === "voided") && (
                       <span className="familiar-payment-history-bowler-row__secondary-status">
-                        {[creditLabel, hasSeparateReviewIndicator ? "Review required" : null, row.correctionEvidence?.status === "voided" ? "Voided" : null].filter(Boolean).join(" · ")}
+                        {[hasSeparateReviewIndicator ? "Review required" : null, row.correctionEvidence?.status === "voided" ? "Voided" : null].filter(Boolean).join(" · ")}
                       </span>
                     )}
                   </span>
@@ -239,7 +194,7 @@ export function CanonicalPaymentEvidenceTable({ rows, organizationId, bowlerName
                   const reviewRequired = row.reviewRequired || row.dispute.reviewRequired === true;
                   const hasSeparateReviewIndicator = reviewRequired && displayStatus !== "Review required";
                   const paidByName = row.paidByName;
-                  const paymentPeriod = mobilePaymentPeriodLabel(row, totalWeeksInSeason);
+                  const paymentPeriod = mobilePaymentPeriodLabel(row);
                   return (
                     <TableRow className="familiar-payment-history-table__row" key={`${row.paymentOperationId ?? row.paymentId ?? "unresolved"}:${row.bowlerId}:${index}`}>
                       <TableCell className="whitespace-nowrap">

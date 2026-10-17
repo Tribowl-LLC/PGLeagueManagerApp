@@ -9,8 +9,9 @@ import { storage } from "../storage/index.js";
 import {
   CanonicalPaymentReportIncompatibilityError,
   readCanonicalPaymentReport,
+  readLeaguePaymentWeeks,
 } from "../services/roster-payment-archive-report.js";
-import { canonicalPaymentReportFingerprint, type CanonicalPaymentAppliedToRow } from "@shared/canonical-payment-report";
+import { canonicalPaymentReportFingerprint, leaguePaymentWeekOrdinal, type CanonicalPaymentAppliedToRow } from "@shared/canonical-payment-report";
 
 const router = Router();
 
@@ -222,7 +223,11 @@ router.get("/payments", async (req, res) => {
     // Ordinary users receive their authorized financial rows and safe status
     // labels only. Provider IDs, operation IDs, and immutable execution
     // internals stay within admin/reconciliation scopes.
-    const redact = (row: typeof report.rows[number]) => redactCanonicalPaymentRow(row, req.user?.bowlerId);
+    const paymentWeeks = await readLeaguePaymentWeeks({ organizationId: effectiveOrganizationId, leagueId });
+    const redact = (row: typeof report.rows[number]) => ({
+      ...redactCanonicalPaymentRow(row, req.user?.bowlerId),
+      paymentWeekOrdinal: leaguePaymentWeekOrdinal(paymentWeeks, row.authoritativeLocalDate),
+    });
     const redactedReport = {
       ...report,
       rows: report.rows.map(redact),
