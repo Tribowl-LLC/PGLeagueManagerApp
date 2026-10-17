@@ -144,6 +144,35 @@ describe("CanonicalPaymentEvidenceTable", () => {
     expect(screen.getByText("2 weeks paid (includes Weeks 31 and 32)")).toBeInTheDocument();
   });
 
+  it("names both weeks of a confirmed double-pay payment", () => {
+    const doublePayAppliedTo = [
+      { plannedOrdinal: 31, occurrenceLocalDate: "2027-04-01", amountMinor: 2500, currency: "USD", state: "active" as const, isFinalPairedWeek: true, isFullyCoveredWeek: true },
+      { plannedOrdinal: 5, occurrenceLocalDate: "2026-10-01", amountMinor: 2500, currency: "USD", state: "active" as const, isFullyCoveredWeek: true },
+    ];
+    const tripleAppliedTo = [
+      ...doublePayAppliedTo,
+      { plannedOrdinal: 6, occurrenceLocalDate: "2026-10-08", amountMinor: 2500, currency: "USD", state: "active" as const, isFullyCoveredWeek: true },
+    ];
+    const confirmedSelfPayment = {
+      status: "confirmed_paid" as const,
+      unresolved: false,
+      reviewRequired: false,
+      source: "canonical_allocation" as const,
+      refund: { present: false, amountMinor: 0, providerRefundId: null },
+      dispute: { present: false, amountMinor: 0, disputeId: null },
+      isSelfOnlyPayment: true,
+      hasMultipleRecipients: false,
+      allocations: [],
+    };
+    render(<CanonicalPaymentEvidenceTable rows={[
+      row({ ...confirmedSelfPayment, paymentId: 93, amountMinor: 5000, allocatedMinor: 5000, appliedTo: doublePayAppliedTo }),
+      row({ ...confirmedSelfPayment, paymentId: 94, amountMinor: 7500, allocatedMinor: 7500, appliedTo: tripleAppliedTo }),
+    ]} variant="bowler" totalWeeksInSeason={31} />);
+
+    expect(screen.getByText("Week 5 & 31 payment")).toBeInTheDocument();
+    expect(screen.getByText("3 weeks paid (includes Week 31)")).toBeInTheDocument();
+  });
+
   it("keeps the single-week label when a FIFO tail or final paired tail is only partially covered", () => {
     const base = row({
       paymentId: 91,

@@ -116,6 +116,11 @@ function multiWeekPaidPeriod(row: CanonicalPaymentRow, totalWeeksInSeason?: numb
   const finalPairedOrdinals = [...new Set(row.appliedTo
     .filter((allocation) => allocation.isFinalPairedWeek === true)
     .map((allocation) => allocation.plannedOrdinal as number))].sort((left, right) => left - right);
+  // A double-pay collection covers its own week plus one final paired week;
+  // name both weeks rather than counting them.
+  if (ordinals.length === 2 && finalPairedOrdinals.length === 1) {
+    return `Week ${ordinals[0]} & ${ordinals[1]} payment`;
+  }
   const suffix = finalPairedOrdinals.length === 1
     ? ` (includes Week ${finalPairedOrdinals[0]})`
     : finalPairedOrdinals.length === 2
