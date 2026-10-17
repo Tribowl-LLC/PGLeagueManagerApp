@@ -63,6 +63,8 @@ colors:
   familiar-line: "rgb(100 116 139 / 0.24)"
   familiar-surface: "#ffffff"
   familiar-canvas: "#f1f5f9"
+  familiar-table-header: "#f8fafc"
+  familiar-link-underline: "#c2ccda"
   familiar-nav-active: "#0f172a"
   familiar-nav-active-surface: "rgb(15 23 42 / 0.08)"
   familiar-paid: "#166534"
@@ -251,6 +253,22 @@ in the public and bowler flows. The navy and cool-gray Familiar A surfaces are
 separate from the staff/admin interface's blue-violet active-navigation
 accent.
 
+Manage Payments is a route-scoped exception within the authenticated admin
+shell. Its worksheet and navigation use Instrument Sans, a cool slate canvas,
+white ledger panels, compact table rows, and a white active Manage Payments
+navigation item. The app header, search, organization identity, authorization,
+and every other admin route retain their existing behavior and visual system.
+
+The weekly worksheet places a regular-weight team paid total in the Received
+column footer and updates it from saved receipts and valid current drafts. A
+flat white save dock stays at the bottom of the worksheet scroll area. When a
+positive new manual payment is present, the dock shows a Received date beside
+the week status, defaulted to the selected occurrence’s local calendar date;
+on phones the date remains above a full-width Save week button.
+The page title, subtitle, league and collection-week controls, and divider stay
+together in an opaque sticky header within the Manage Payments scroll pane,
+below the shared application header; team rosters scroll beneath it.
+
 **Key Characteristics:**
 
 - Familiar A uses Instrument Sans, navy structure, cool-gray surfaces, and
@@ -333,13 +351,15 @@ caution, and information roles when adding or redesigning components.
 ## Typography
 
 Familiar A is the default for public account and authenticated bowler pages.
-The staff/admin interface retains its incumbent system-sans stack.
+The staff/admin interface retains its incumbent system-sans stack, except for
+the worksheet and navigation inside the Manage Payments route.
 
 **Familiar A font:** Instrument Sans, with a system-sans fallback.
 
 **Admin font:** `ui-sans-serif, system-ui, sans-serif`. Monospace appears only
 where data presentation requires it, such as selected technical values or
-payment details.
+payment details. Manage Payments uses Instrument Sans within its worksheet and
+navigation only; other staff/admin routes keep the system-sans stack.
 
 **Character:** Familiar A uses clear Instrument Sans headings and compact
 supporting labels. The admin system remains compact and neutral, using modest
@@ -606,15 +626,17 @@ component system. This design remains distinct from the admin UI.
   provider-branded wallet controls in their provider colors.
 - **Overview:** Keep the Payment overview card and Latest payment card.
   Season totals show Paid, Remaining, and Season, with Past Due inserted only
-  when positive. Rotating bowlers see Paid and Past Due only. The next bowling
-  date does not appear between these cards.
+  when positive. The next bowling date does not appear between these cards.
+  The rotating-bowler variant (Paid and Past Due only) is retiring with the
+  rotating bowler type; see `docs/bowler-payment-model.md`.
 - **Pay:** On mobile weekly-payment pages, show the two-column Due now and
   Remaining summary first, followed by Automatic payments when eligible, then
   One-time payment. At desktop widths, keep the page title across the content
   rail; place Automatic payments in the left column and the Due now/Remaining
   summary above One-time payment in the right column. The two amounts stay
-  side by side within the summary at both sizes. Upfront and rotating members
-  use their existing mode-specific layouts.
+  side by side within the summary at both sizes. Upfront leagues use their
+  existing mode-specific layout. A bowler pays by choosing weeks; there is no
+  typed-amount or add-credit control.
   The shipped one-time-pay layout follows the preview's 1 Simple arrangement:
   the selector changes a single coverage sentence as weeks are added. Existing,
   2 Quick choices, and 3 Summary first in the standalone lab remain comparison
@@ -622,10 +644,11 @@ component system. This design remains distinct from the admin UI.
   applicable final weeks. Saved-card selection
   also offers an available device wallet and a new-card path. Upfront leagues
   present one full-balance payment, including partner selection when eligible.
-  Rotating bowlers see a one-time-only payment view without Due now/Remaining
-  summary boxes or automatic-payment setup; its coverage sentence describes
-  the selected number of weeks. Provider-generated wallet confirmation remains
-  native to the provider.
+  The rotating one-time-only payment view is retiring with the rotating bowler
+  type. A bowler with nothing to pay sees one of three server-decided states:
+  "Paid in full, no additional payment needed.", "No payment is due right
+  now.", or the unavailable message that directs them to their league manager.
+  Provider-generated wallet confirmation remains native to the provider.
 - **League switching:** Across Overview, Pay, History, and Profile on mobile and
   desktop, use one centered modal with the preview's title, helper, close action,
   and open/close motion. Each option shows only the league name and season range;
@@ -639,8 +662,8 @@ component system. This design remains distinct from the admin UI.
   Follow it with Transactions. A confirmed self-only payment covering several
   canonical weeks names that count, and includes the server-confirmed final
   paired week when present. Keep single-week, shared, credit, and review rows'
-  existing truthful labels. Rotating bowlers see Paid and Past Due only, with
-  no Weeks paid line. Keep the real transaction evidence and detail actions.
+  existing truthful labels. Keep the real transaction evidence and detail
+  actions.
 - **Profile:** Present account details as rows and use focused dialogs for
   editing details, changing a password, managing saved payment methods and
   payment-partner links, and requesting deletion. Put Request deletion below

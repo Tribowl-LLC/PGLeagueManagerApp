@@ -14,7 +14,7 @@ import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contr
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import { throwIfResNotOk } from "@/lib/queryClient";
-import { financialReadErrorMessage } from "@/lib/financial-utils";
+import { confirmedCollectiblePastDueMinor, effectiveFinancialDebtorBowlerId, financialReadErrorMessage } from "@/lib/financial-utils";
 
 export function PastDueBowlersSection({ enabled = true, organizationId }: { enabled?: boolean; organizationId?: number | null }) {
   const isMobile = useIsMobile();
@@ -58,10 +58,13 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
   const financialRows = financialReportResponse?.data?.leagues?.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId }))) ?? [];
 
   const groupedFinancialRows = [...financialRows.reduce((map, row) => {
-    const key = `${row.leagueId}:${row.payerBowlerId}:none`;
+    const bowlerId = effectiveFinancialDebtorBowlerId(row);
+    if (bowlerId === null) return map;
+    const normalized = { ...row, payerBowlerId: bowlerId };
+    const key = `${row.leagueId}:${bowlerId}:none`;
     const prior = map.get(key);
-    const collectible = row.classification === "past_due" ? row.outstandingMinor : 0;
-    map.set(key, prior ? { ...prior, outstandingMinor: prior.outstandingMinor + row.outstandingMinor, collectiblePastDueMinor: prior.collectiblePastDueMinor + collectible, reviewRequired: prior.reviewRequired || row.reviewRequired, reviewMinor: prior.reviewMinor + (row.reviewRequired ? row.outstandingMinor : 0), classification: prior.reviewRequired || row.reviewRequired ? "review_required" : prior.collectiblePastDueMinor + collectible > 0 ? "past_due" : row.classification } : { ...row, collectiblePastDueMinor: collectible, reviewMinor: row.reviewRequired ? row.outstandingMinor : 0 });
+    const collectible = confirmedCollectiblePastDueMinor(normalized);
+    map.set(key, prior ? { ...prior, outstandingMinor: prior.outstandingMinor + row.outstandingMinor, collectiblePastDueMinor: prior.collectiblePastDueMinor + collectible, reviewRequired: prior.reviewRequired || row.reviewRequired, reviewMinor: prior.reviewMinor + (row.reviewRequired ? row.outstandingMinor : 0), classification: prior.reviewRequired || row.reviewRequired ? "review_required" : prior.collectiblePastDueMinor + collectible > 0 ? "past_due" : row.classification } : { ...normalized, collectiblePastDueMinor: collectible, reviewMinor: row.reviewRequired ? row.outstandingMinor : 0 });
     return map;
   }, new Map<string, (typeof financialRows)[number] & { collectiblePastDueMinor: number; reviewMinor: number }>()).values()]
   const pastDueBowlers = groupedFinancialRows

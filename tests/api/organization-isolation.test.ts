@@ -11,6 +11,7 @@ import {
   paymentAllocations,
   paymentObligations,
   payments,
+  leagues as leaguesTable,
   teams as teamsTable,
   locations as locationsTable,
   teamPaymentSlots,
@@ -288,6 +289,64 @@ describe('Resource authorization boundaries', () => {
       expect([403, 404]).toContain(status);
       expect(data.success).toBe(false);
       expect(JSON.stringify(data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+    });
+
+    it('org A cannot read foreign or org-less weekly Manage Payments worksheets', async () => {
+      expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
+      // Coverage markers: /api/financials/leagues/:leagueId/manage-payments/1?occurrenceId=...
+      // /api/financials/leagues/:leagueId/manage-payments/1/season
+      const paths = [
+        `/api/financials/leagues/${orgBLeagueId}/manage-payments/1`,
+        `/api/financials/leagues/${orgBLeagueId}/manage-payments/1?occurrenceId=00000000-0000-4000-8000-000000000001`,
+        `/api/financials/leagues/${orgBLeagueId}/manage-payments/1/season`,
+      ];
+      for (const path of paths) {
+        const response = await apiGet(path, sessionA);
+        expect([403, 404]).toContain(response.status);
+        expect(response.data.success).toBe(false);
+        expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+      }
+
+      const [orglessLeague] = await db.insert(leaguesTable).values({
+        name: `Vitest Org-less Manage Payments ${Date.now()}`,
+        seasonStart: '2035-09-03 00:00:00',
+        seasonEnd: '2035-10-01 00:00:00',
+        weekDay: 'Monday',
+        organizationId: null,
+      }).returning({ id: leaguesTable.id });
+      expect(orglessLeague?.id).toBeTruthy();
+      if (!orglessLeague) throw new Error('org-less Manage Payments fixture was not created');
+      try {
+        const response = await apiGet(`/api/financials/leagues/${orglessLeague.id}/manage-payments/1/season`, sessionA);
+        expect([403, 404]).toContain(response.status);
+        expect(response.data.success).toBe(false);
+        expect(JSON.stringify(response.data)).not.toContain(`"organizationId":null`);
+      } finally {
+        await db.delete(leaguesTable).where(eq(leaguesTable.id, orglessLeague.id));
+      }
+    });
+
+    it('org A cannot read org B V4 account payment participants', async () => {
+      expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
+      const { status, data } = await apiGet(
+        `/api/financials/leagues/${orgBLeagueId}/interactive-payment-participants/4?payerBowlerId=999999`,
+        sessionA,
+      );
+      expect([403, 404]).toContain(status);
+      expect(data.success).toBe(false);
+      expect(JSON.stringify(data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
+    });
+
+    it('org A cannot quote a manual receipt for an org B league', async () => {
+      expect(orgBLeagueId, 'expected an org B league id to test against').not.toBeNull();
+      const response = await apiPost(
+        `/api/financials/leagues/${orgBLeagueId}/canonical/manual-record/quote/1`,
+        { amountMinor: 1000, payerBowlerId: 1, type: 'cash', organizationId: sessionB.user.organizationId },
+        sessionA,
+      );
+      expect([403, 404]).toContain(response.status);
+      expect(response.data.success).toBe(false);
+      expect(JSON.stringify(response.data)).not.toContain(`"organizationId":${sessionB.user.organizationId}`);
     });
 
     it('org A GET /api/financials/leagues/:leagueId/team-envelope-slips.pdf?organizationId=<orgB> must fail closed for implicit and spoofed scope', async () => {

@@ -26,12 +26,18 @@ const inputVariants = cva(
         default: "",
         compact: "px-1",
       },
+      appearance: {
+        default: "",
+        managePayments:
+          "manage-payments-input h-11 rounded-md border-familiar-line bg-familiar-surface py-2 text-sm text-familiar-ink placeholder:text-familiar-muted focus-visible:ring-familiar-navy",
+      },
     },
     defaultVariants: {
       tone: "default",
       leading: "default",
       trailing: "default",
       padding: "default",
+      appearance: "default",
     },
   },
 )
@@ -41,11 +47,11 @@ interface InputProps
     VariantProps<typeof inputVariants> {}
 
 const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ className, type, tone, leading, trailing, padding, ...props }, ref) => {
+  ({ className, type, tone, leading, trailing, padding, appearance, ...props }, ref) => {
     return (
       <input
         type={type}
-        className={cn(inputVariants({ tone, leading, trailing, padding }), className)}
+        className={cn(inputVariants({ tone, leading, trailing, padding, appearance }), className)}
         ref={ref}
         {...props}
       />

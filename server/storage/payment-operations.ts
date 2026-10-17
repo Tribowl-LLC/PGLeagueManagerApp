@@ -14,6 +14,9 @@ import {
   paymentOperationStandingAutopayParticipants,
   paymentObligations,
   paymentAllocations,
+  paymentAllocationFundingApplications,
+  weeklyPaymentAllocationReleases,
+  weeklyPaymentFundings,
   refundAllocationAdjustments,
   autopayConsents,
   autopayConsentPartners,
@@ -39,6 +42,7 @@ import {
   locationSquareCredentialsSchema,
 } from "@shared/schema";
 import { db } from "../db.js";
+import { accountPaymentOperationSnapshots } from "@shared/schema/account-payment-operations";
 import {
   buildPaymentOperationIdentity,
   INTERACTIVE_REQUEST_KEY_MAX_LENGTH,
@@ -64,6 +68,13 @@ import {
 } from "../services/rotating-credit-operation-snapshot.js";
 import type { RotatingCreditOperationSemanticSnapshot } from "../services/rotating-credit-operation-snapshot.js";
 import type { RotatingCreditOperationSnapshotInput } from "../services/rotating-credit-operation-snapshot.js";
+import {
+  encryptAccountPaymentOperationSnapshot,
+  fingerprintAccountPaymentOperationSnapshot,
+  reconstructAccountPaymentOperationSnapshot,
+  type AccountPaymentOperationSnapshotInput,
+  type AccountPaymentOperationExecutionSnapshot,
+} from "../services/account-payment-operation-snapshot.js";
 import {
   createRotatingCreditRefundSnapshot,
   fingerprintRotatingCreditRefundSnapshot,
@@ -743,6 +754,106 @@ async function validateRosterOperationSnapshotTenantReferences(
   }
 }
 
+async function validateAccountPaymentOperationSnapshotTenantReferences(
+  executor: PaymentOperationTransaction,
+  snapshot: AccountPaymentOperationSnapshotInput,
+): Promise<void> {
+  const bowlerIds = [...new Set([snapshot.payerBowlerId, ...snapshot.fundingPortions.map((portion) => portion.creditedBowlerId)])];
+  const [ownedLeague] = await executor.select({ id: leagues.id }).from(leagues).where(and(
+    eq(leagues.id, snapshot.leagueId), eq(leagues.organizationId, snapshot.organizationId),
+  )).limit(1).for("share");
+  const ownedBowlers = await executor.select({ id: bowlers.id }).from(bowlers).where(and(
+    eq(bowlers.organizationId, snapshot.organizationId), inArray(bowlers.id, bowlerIds),
+  )).for("share");
+  const [ownedActor] = await executor.select({ id: users.id }).from(users).where(and(
+    eq(users.id, snapshot.authorizingUserId), eq(users.organizationId, snapshot.organizationId),
+  )).limit(1).for("share");
+  const ownedLocation = snapshot.locationId === null ? [] : await executor.select({ id: locations.id }).from(locations).where(and(
+    eq(locations.organizationId, snapshot.organizationId), eq(locations.id, snapshot.locationId),
+  )).limit(1).for("share");
+  if (!ownedLeague || ownedBowlers.length !== bowlerIds.length || !ownedActor
+    || ownedLocation.length !== (snapshot.locationId === null ? 0 : 1)) {
+    throw new PaymentOperationValidationError("account funding snapshot references do not belong to the operation tenant");
+  }
+}
+
+async function loadAccountPaymentOperationSnapshot(
+  executor: typeof db | PaymentOperationTransaction,
+  operation: PaymentOperation,
+): Promise<AccountPaymentOperationExecutionSnapshot | undefined> {
+  if (operation.operationType !== "interactive_charge" || operation.leagueId === null) return undefined;
+  const [stored] = await executor.select().from(accountPaymentOperationSnapshots).where(and(
+    eq(accountPaymentOperationSnapshots.operationId, operation.id),
+    eq(accountPaymentOperationSnapshots.organizationId, operation.organizationId),
+    eq(accountPaymentOperationSnapshots.leagueId, operation.leagueId),
+  )).limit(1);
+  if (!stored) return undefined;
+  const [rosterSnapshot] = await executor.select({ operationId: paymentOperationRosterSnapshots.operationId }).from(paymentOperationRosterSnapshots).where(and(
+    eq(paymentOperationRosterSnapshots.operationId, operation.id),
+    eq(paymentOperationRosterSnapshots.organizationId, operation.organizationId),
+    eq(paymentOperationRosterSnapshots.leagueId, operation.leagueId),
+  )).limit(1);
+  const [creditSnapshot] = await executor.select({ operationId: rotatingCreditPaymentOperationSnapshots.operationId }).from(rotatingCreditPaymentOperationSnapshots).where(and(
+    eq(rotatingCreditPaymentOperationSnapshots.operationId, operation.id),
+    eq(rotatingCreditPaymentOperationSnapshots.organizationId, operation.organizationId),
+    eq(rotatingCreditPaymentOperationSnapshots.leagueId, operation.leagueId),
+  )).limit(1);
+  if (rosterSnapshot || creditSnapshot) throw new PaymentOperationImmutableMismatchError();
+  return reconstructAccountPaymentOperationSnapshot({
+    operation,
+    stored,
+  });
+}
+
+/** Persist the additive V4 account funding snapshot without changing retained
+ * V2/V3 roster or rotating-credit snapshot codecs. */
+export async function persistAccountPaymentOperationSnapshot(
+  operation: PaymentOperation,
+  snapshot: AccountPaymentOperationSnapshotInput,
+  transaction: PaymentOperationTransaction,
+): Promise<AccountPaymentOperationExecutionSnapshot> {
+  if (snapshot.operationId !== operation.id
+    || snapshot.organizationId !== operation.organizationId
+    || operation.operationType !== "interactive_charge"
+    || operation.leagueId !== snapshot.leagueId
+    || snapshot.amountMinor !== operation.amountMinor
+    || snapshot.currency !== operation.currency
+    || snapshot.providerName !== operation.providerName
+    || snapshot.providerIdempotencyKey !== operation.providerIdempotencyKey
+    || snapshot.authorizingUserId !== operation.authorizingUserId) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  await validateAccountPaymentOperationSnapshotTenantReferences(transaction, snapshot);
+  const [storedOperation] = await transaction.select().from(paymentOperations).where(and(
+    eq(paymentOperations.id, operation.id), eq(paymentOperations.organizationId, operation.organizationId),
+  )).limit(1).for("share");
+  if (!storedOperation || storedOperation.operationType !== operation.operationType
+    || storedOperation.leagueId !== snapshot.leagueId
+    || storedOperation.targetKey !== operation.targetKey
+    || storedOperation.amountMinor !== operation.amountMinor
+    || storedOperation.currency !== operation.currency
+    || storedOperation.providerName !== operation.providerName
+    || storedOperation.requestFingerprint !== operation.requestFingerprint
+    || storedOperation.providerIdempotencyKey !== operation.providerIdempotencyKey
+    || storedOperation.authorizingUserId !== operation.authorizingUserId) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const encrypted = encryptAccountPaymentOperationSnapshot(snapshot);
+  const [created] = await transaction.insert(accountPaymentOperationSnapshots).values(encrypted)
+    .onConflictDoNothing().returning({ operationId: accountPaymentOperationSnapshots.operationId });
+  if (!created) {
+    const existing = await loadAccountPaymentOperationSnapshot(transaction, operation);
+    if (!existing || existing.snapshotFingerprint !== encrypted.snapshotFingerprint) throw new PaymentOperationImmutableMismatchError();
+    return existing;
+  }
+  if (snapshot.storeCard) await initializeInteractiveCardSaveState(transaction, operation, snapshot);
+  const stored = await loadAccountPaymentOperationSnapshot(transaction, operation);
+  if (!stored || stored.snapshotFingerprint !== fingerprintAccountPaymentOperationSnapshot(snapshot)) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  return stored;
+}
+
 async function loadRosterOperationSnapshot(
   executor: typeof db | PaymentOperationTransaction,
   operation: PaymentOperation,
@@ -1146,7 +1257,7 @@ export function getInteractiveCardSaveResponse(operation: PaymentOperation): {
   return { savedCardId: null, cardSaveStatus: "not_requested" };
 }
 
-async function loadRefundPaymentOperationSnapshot(
+export async function loadRefundPaymentOperationSnapshotInTransaction(
   executor: typeof db | PaymentOperationTransaction,
   operation: PaymentOperation,
 ): Promise<RefundPaymentSemanticSnapshot | undefined> {
@@ -1163,6 +1274,8 @@ async function loadRefundPaymentOperationSnapshot(
     stored,
   });
 }
+
+const loadRefundPaymentOperationSnapshot = loadRefundPaymentOperationSnapshotInTransaction;
 
 async function loadRotatingCreditRefundPaymentOperationSnapshot(
   executor: typeof db | PaymentOperationTransaction,
@@ -1266,6 +1379,23 @@ export async function getRosterOperationSnapshotForOrganization(
   const operation = await getPaymentOperationForOrganization(organizationId, operationId);
   if (!operation) return undefined;
   return loadRosterOperationSnapshot(db, operation);
+}
+
+export async function getAccountPaymentOperationSnapshotForOrganization(
+  organizationId: number,
+  operationId: string,
+): Promise<AccountPaymentOperationExecutionSnapshot | undefined> {
+  const operation = await getPaymentOperationForOrganization(organizationId, operationId);
+  if (!operation) return undefined;
+  return loadAccountPaymentOperationSnapshot(db, operation);
+}
+
+/** Transaction-bound V4 snapshot read used by idempotent request replay. */
+export async function getAccountPaymentOperationSnapshotInTransaction(
+  transaction: PaymentOperationTransaction,
+  operation: PaymentOperation,
+): Promise<AccountPaymentOperationExecutionSnapshot | undefined> {
+  return loadAccountPaymentOperationSnapshot(transaction, operation);
 }
 
 export async function getPaymentOperationForOrganization(
@@ -2144,42 +2274,128 @@ async function applyRefundAllocationAdjustmentsInTransaction(
     allowCreate: boolean;
   },
 ): Promise<void> {
-  if (input.snapshot.snapshotVersion !== 2 || !input.snapshot.disposition || input.snapshot.allocations.length === 0) {
+  if (input.snapshot.snapshotVersion !== 2 && input.snapshot.snapshotVersion !== 3) {
     throw new PaymentOperationImmutableMismatchError();
   }
-  const snapshotFingerprint = fingerprintRefundPaymentSnapshot(input.snapshot);
-  const expected = new Map(input.snapshot.allocations.map((allocation) => [allocation.allocationId, allocation]));
-  if (expected.size !== input.snapshot.allocations.length) {
+  const snapshot = input.snapshot;
+  const isOwnedFundingRefund = snapshot.snapshotVersion === 3;
+  if (!snapshot.disposition
+    || (!isOwnedFundingRefund && snapshot.allocations.length === 0)
+    || (isOwnedFundingRefund && snapshot.fundingSnapshot.length === 0)) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const expectedAllocatedMinor = snapshot.allocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+  if (isOwnedFundingRefund) {
+    const fundingRows = await tx.select().from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, input.operation.organizationId),
+      eq(weeklyPaymentFundings.leagueId, snapshot.leagueId),
+      eq(weeklyPaymentFundings.paymentId, input.payment.id),
+    )).orderBy(asc(weeklyPaymentFundings.portionIndex), asc(weeklyPaymentFundings.id)).for("share");
+    const expectedFunding = new Map(snapshot.fundingSnapshot.map((funding) => [funding.fundingId, funding]));
+    const expectedFundingTotal = snapshot.fundingSnapshot.reduce((sum, funding) => sum + funding.fundingAmountMinor, 0);
+    const expectedUnusedTotal = snapshot.fundingSnapshot.reduce((sum, funding) => sum + funding.unusedCreditMinor, 0);
+    if (expectedFunding.size !== snapshot.fundingSnapshot.length
+      || expectedFundingTotal !== input.operation.amountMinor
+      || expectedAllocatedMinor + expectedUnusedTotal !== input.operation.amountMinor
+      || fundingRows.length !== expectedFunding.size
+      || fundingRows.some((funding) => {
+        const expectedFundingRow = expectedFunding.get(funding.id);
+        return !expectedFundingRow
+          || funding.paymentId !== input.payment.id
+          || funding.creditedBowlerId !== expectedFundingRow.creditedBowlerId
+          || funding.amountMinor !== expectedFundingRow.fundingAmountMinor
+          || funding.currency !== expectedFundingRow.currency;
+      })) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+  } else if (expectedAllocatedMinor !== input.operation.amountMinor) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  const snapshotFingerprint = fingerprintRefundPaymentSnapshot(snapshot);
+  const expected = new Map(snapshot.allocations.map((allocation) => [allocation.allocationId, allocation]));
+  if (expected.size !== snapshot.allocations.length) {
     throw new PaymentOperationImmutableMismatchError();
   }
   const sourceAllocations = await tx.select().from(paymentAllocations).where(and(
     eq(paymentAllocations.organizationId, input.operation.organizationId),
-    eq(paymentAllocations.leagueId, input.snapshot.leagueId),
+    eq(paymentAllocations.leagueId, snapshot.leagueId),
     eq(paymentAllocations.paymentId, input.payment.id),
     inArray(paymentAllocations.id, [...expected.keys()]),
   )).orderBy(asc(paymentAllocations.id)).for("update");
   if (sourceAllocations.length !== expected.size || sourceAllocations.some((allocation) => {
-    const snapshot = expected.get(allocation.id);
-    return !snapshot
-      || allocation.state !== "active"
-      || allocation.obligationId !== snapshot.obligationId
-      || allocation.amountMinor !== snapshot.amountMinor
-      || allocation.currency !== snapshot.currency;
-  }) || sourceAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0) !== input.operation.amountMinor) {
+    const expectedAllocation = expected.get(allocation.id);
+    return !expectedAllocation
+      || (allocation.state !== "active" && !(isOwnedFundingRefund && !input.allowCreate && allocation.state === "voided"))
+      || allocation.obligationId !== expectedAllocation.obligationId
+      || allocation.amountMinor !== expectedAllocation.amountMinor
+      || allocation.currency !== expectedAllocation.currency;
+  }) || sourceAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0) !== expectedAllocatedMinor) {
+    throw new PaymentOperationImmutableMismatchError();
+  }
+  if (isOwnedFundingRefund) {
+    const sourceAllocationIds = sourceAllocations.map((allocation) => allocation.id);
+    const [releases, applications] = sourceAllocationIds.length === 0 ? [[], []] : await Promise.all([
+      tx.select().from(weeklyPaymentAllocationReleases).where(and(
+        eq(weeklyPaymentAllocationReleases.organizationId, input.operation.organizationId),
+        eq(weeklyPaymentAllocationReleases.leagueId, snapshot.leagueId),
+        inArray(weeklyPaymentAllocationReleases.sourceAllocationId, sourceAllocationIds),
+      )),
+      tx.select().from(paymentAllocationFundingApplications).where(and(
+        eq(paymentAllocationFundingApplications.organizationId, input.operation.organizationId),
+        eq(paymentAllocationFundingApplications.leagueId, snapshot.leagueId),
+        inArray(paymentAllocationFundingApplications.allocationId, sourceAllocationIds),
+      )),
+    ]);
+    const releasesByAllocation = new Map<string, typeof releases>();
+    for (const release of releases) releasesByAllocation.set(release.sourceAllocationId, [
+      ...(releasesByAllocation.get(release.sourceAllocationId) ?? []), release,
+    ]);
+    const applicationsByAllocation = new Map<string, typeof applications>();
+    for (const application of applications) applicationsByAllocation.set(application.allocationId, [
+      ...(applicationsByAllocation.get(application.allocationId) ?? []), application,
+    ]);
+    if (sourceAllocations.some((allocation) => {
+      const allocationReleases = releasesByAllocation.get(allocation.id) ?? [];
+      const linkedApplications = applicationsByAllocation.get(allocation.id) ?? [];
+      if (linkedApplications.length !== 1) return true;
+      const [application] = linkedApplications;
+      if (!application
+        || application.paymentId !== input.payment.id
+        || application.genericFundingId === null
+        || application.rotatingFundingId !== null
+        || application.amountMinor !== allocation.amountMinor
+        || application.obligationId !== allocation.obligationId
+        || application.currency !== allocation.currency) return true;
+      if (allocation.state === "active") return allocationReleases.length !== 0;
+      if (input.allowCreate || allocationReleases.length !== 1) return true;
+      const release = allocationReleases[0];
+      return !release
+        || release.fundingApplicationId !== application.id
+        || release.paymentId !== input.payment.id
+        || release.creditedBowlerId !== application.creditedBowlerId
+        || release.sourceObligationId !== allocation.obligationId
+        || release.sourceApplicationAmountMinor !== allocation.amountMinor
+        || release.releasedAmountMinor !== allocation.amountMinor
+        || release.retainedAmountMinor !== 0
+        || release.replacementAllocationId !== null;
+    })) {
+      throw new PaymentOperationImmutableMismatchError();
+    }
+  } else if (sourceAllocations.some((allocation) => allocation.state !== "active")) {
     throw new PaymentOperationImmutableMismatchError();
   }
   for (const allocation of sourceAllocations) {
-    const snapshot = expected.get(allocation.id);
-    if (!snapshot) throw new PaymentOperationImmutableMismatchError();
+    const expectedAllocation = expected.get(allocation.id);
+    if (!expectedAllocation) throw new PaymentOperationImmutableMismatchError();
     const [existing] = await tx.select().from(refundAllocationAdjustments).where(and(
       eq(refundAllocationAdjustments.organizationId, input.operation.organizationId),
-      eq(refundAllocationAdjustments.leagueId, input.snapshot.leagueId),
+      eq(refundAllocationAdjustments.leagueId, snapshot.leagueId),
       eq(refundAllocationAdjustments.sourceAllocationId, allocation.id),
     )).limit(1).for("update");
     if (existing) {
       if (existing.refundOperationId !== input.operation.id
         || existing.amountMinor !== allocation.amountMinor
-        || existing.disposition !== input.snapshot.disposition
+        || existing.disposition !== snapshot.disposition
         || existing.snapshotFingerprint !== snapshotFingerprint) {
         throw new PaymentOperationImmutableMismatchError();
       }
@@ -2188,7 +2404,7 @@ async function applyRefundAllocationAdjustmentsInTransaction(
     if (!input.allowCreate) throw new PaymentOperationImmutableMismatchError();
     await tx.insert(refundAllocationAdjustments).values({
       organizationId: input.operation.organizationId,
-      leagueId: input.snapshot.leagueId,
+      leagueId: snapshot.leagueId,
       refundOperationId: input.operation.id,
       sourceAllocationId: allocation.id,
       amountMinor: allocation.amountMinor,
@@ -2200,19 +2416,19 @@ async function applyRefundAllocationAdjustmentsInTransaction(
   const obligationIds = [...new Set(sourceAllocations.map((allocation) => allocation.obligationId))];
   const obligations = await tx.select().from(paymentObligations).where(and(
     eq(paymentObligations.organizationId, input.operation.organizationId),
-    eq(paymentObligations.leagueId, input.snapshot.leagueId),
+    eq(paymentObligations.leagueId, snapshot.leagueId),
     inArray(paymentObligations.id, obligationIds),
   )).orderBy(asc(paymentObligations.id)).for("update");
   if (obligations.length !== obligationIds.length) throw new PaymentOperationImmutableMismatchError();
   const allAllocations = await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor }).from(paymentAllocations).where(and(
     eq(paymentAllocations.organizationId, input.operation.organizationId),
-    eq(paymentAllocations.leagueId, input.snapshot.leagueId),
+    eq(paymentAllocations.leagueId, snapshot.leagueId),
     eq(paymentAllocations.state, "active"),
     inArray(paymentAllocations.obligationId, obligationIds),
   ));
   const allAdjustments = await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
     eq(refundAllocationAdjustments.organizationId, input.operation.organizationId),
-    eq(refundAllocationAdjustments.leagueId, input.snapshot.leagueId),
+    eq(refundAllocationAdjustments.leagueId, snapshot.leagueId),
     inArray(refundAllocationAdjustments.sourceAllocationId, allAllocations.map((allocation) => allocation.id)),
   ));
   const adjustmentsByAllocationId = new Map(allAdjustments.map((adjustment) => [adjustment.sourceAllocationId, adjustment]));
@@ -2225,7 +2441,7 @@ async function applyRefundAllocationAdjustmentsInTransaction(
       grossAllocatedMinor: linkedAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
       adjustments: linkedAllocations.flatMap((allocation) => {
         const adjustment = adjustmentsByAllocationId.get(allocation.id);
-        return adjustment ? [{ amountMinor: adjustment.amountMinor, disposition: adjustment.disposition }] : [];
+      return adjustment ? [{ amountMinor: adjustment.amountMinor, disposition: adjustment.disposition }] : [];
       }),
     });
     const state = balance.outstandingMinor === 0
@@ -2329,6 +2545,31 @@ function rosterWebhookPaymentRows(
   }];
 }
 
+function accountWebhookPaymentRows(
+  operation: PaymentOperation,
+  snapshot: AccountPaymentOperationExecutionSnapshot,
+  input: ProviderWebhookCompletionEvidence,
+): PaymentOperationLinkedPaymentInput[] {
+  return [{
+    allocationIndex: 0,
+    values: {
+      organizationId: input.organizationId,
+      bowlerId: snapshot.payerBowlerId,
+      leagueId: snapshot.leagueId,
+      amount: operation.amountMinor,
+      status: "paid" as const,
+      type: providerNameToPaymentType(snapshot.providerName),
+      providerPaymentId: input.providerPaymentId,
+      receiptUrl: input.receiptUrl ?? undefined,
+      receiptNumber: input.receiptNumber ?? undefined,
+      receiptEmailMissing: snapshot.providerName === "square" && snapshot.buyerEmail === null,
+      paidByUserId: operation.authorizingUserId,
+      idempotencyKey: operation.id,
+      notes: `Account funding (${snapshot.fundingPortions.length} recipient${snapshot.fundingPortions.length === 1 ? "" : "s"})`,
+    },
+  }];
+}
+
 /**
  * Conclusive signed provider evidence uses the same local invariants and row
  * insertion primitive as executor finalization, but never calls a provider.
@@ -2391,14 +2632,23 @@ export async function finalizeChargeFromWebhookEvidenceInTransaction(
 
   let rows: PaymentOperationLinkedPaymentInput[] = [];
   if (operation.operationType === "interactive_charge") {
-    const snapshot = await loadRosterOperationSnapshot(tx, operation);
-    if (
-      !snapshot
-      || snapshot.locationId !== input.locationId
-      || (snapshot.providerLocationId !== null
-        && snapshot.providerLocationId !== input.providerLocationId)
-    ) throw new PaymentOperationImmutableMismatchError();
-    rows = rosterWebhookPaymentRows(operation, snapshot, input);
+    const accountSnapshot = await loadAccountPaymentOperationSnapshot(tx, operation);
+    if (accountSnapshot) {
+      if (accountSnapshot.locationId !== input.locationId
+        || (accountSnapshot.providerLocationId !== null && accountSnapshot.providerLocationId !== input.providerLocationId)) {
+        throw new PaymentOperationImmutableMismatchError();
+      }
+      rows = accountWebhookPaymentRows(operation, accountSnapshot, input);
+    } else {
+      const snapshot = await loadRosterOperationSnapshot(tx, operation);
+      if (
+        !snapshot
+        || snapshot.locationId !== input.locationId
+        || (snapshot.providerLocationId !== null
+          && snapshot.providerLocationId !== input.providerLocationId)
+      ) throw new PaymentOperationImmutableMismatchError();
+      rows = rosterWebhookPaymentRows(operation, snapshot, input);
+    }
   } else if (operation.operationType === "standing_autopay_charge") {
     const [binding] = await tx.select({ providerLocationId: paymentOperationStandingAutopayBindings.providerLocationId, collectionMode: paymentOperationStandingAutopayBindings.collectionMode, payerBowlerId: autopayConsents.payerBowlerId }).from(paymentOperationStandingAutopayBindings).innerJoin(autopayConsents, and(
       eq(autopayConsents.id, paymentOperationStandingAutopayBindings.consentId),
@@ -2867,7 +3117,7 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
     attempt_count: number | null;
     due_at: string;
   }>(sql`
-    WITH eligible_cutoffs AS (
+    WITH eligible_cutoffs_legacy AS (
       SELECT DISTINCT
         c.organization_id,
         c.league_id,
@@ -3050,6 +3300,102 @@ export async function getNextStandingAutopayWake(): Promise<StandingAutopayWake 
         AND c.state = 'active'
         AND c.payment_mode = 'weekly'
         AND c.revoked_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM weekly_payment_ledger_adoptions adopted
+          WHERE adopted.organization_id = c.organization_id
+            AND adopted.league_id = c.league_id
+        )
+    ), eligible_cutoffs_account AS (
+      SELECT DISTINCT
+        c.organization_id,
+        c.league_id,
+        c.id AS consent_id,
+        c.consent_version,
+        trigger_occurrence.start_at AS cutoff_at,
+        trigger_occurrence.current_revision AS occurrence_revision,
+        preparation.state AS preparation_state,
+        COALESCE(preparation.attempt_count, 0) AS preparation_attempt_count,
+        preparation.next_attempt_at
+      FROM autopay_consents c
+      INNER JOIN weekly_payment_ledger_adoptions adopted
+        ON adopted.organization_id = c.organization_id
+       AND adopted.league_id = c.league_id
+      INNER JOIN league_occurrences trigger_occurrence
+        ON trigger_occurrence.organization_id = c.organization_id
+       AND trigger_occurrence.league_id = c.league_id
+       AND trigger_occurrence.start_at >= c.activated_at
+       AND trigger_occurrence.start_at >= transaction_timestamp()
+      LEFT JOIN standing_autopay_preparation_attempts preparation
+        ON preparation.organization_id = c.organization_id
+       AND preparation.league_id = c.league_id
+       AND preparation.consent_id = c.id
+       AND preparation.consent_version = c.consent_version
+       AND preparation.cutoff_at = trigger_occurrence.start_at
+       AND preparation.occurrence_revision = trigger_occurrence.current_revision
+      WHERE c.state = 'active'
+        AND c.payment_mode = 'weekly'
+        AND c.revoked_at IS NULL
+        AND trigger_occurrence.lifecycle IN ('published', 'locked')
+        AND trigger_occurrence.status IN ('scheduled', 'completed')
+        AND trigger_occurrence.cancelled_at IS NULL
+        AND EXISTS (
+          SELECT 1
+            FROM league_occurrence_billing_terms billable_term
+           WHERE billable_term.organization_id = c.organization_id
+             AND billable_term.league_id = c.league_id
+             AND billable_term.occurrence_id = trigger_occurrence.id
+             AND billable_term.state = 'published'
+             AND billable_term.obligation_policy = 'eligible_bowlers'
+             AND billable_term.default_amount_minor > 0
+             AND billable_term.currency = 'USD'
+             AND billable_term.billing_ordinal IS NOT NULL
+        )
+        AND NOT EXISTS (
+          SELECT 1
+            FROM canonical_collection_group_members paired_member
+            INNER JOIN canonical_collection_groups paired_group
+              ON paired_group.id = paired_member.group_id
+             AND paired_group.organization_id = paired_member.organization_id
+             AND paired_group.league_id = paired_member.league_id
+           WHERE paired_member.organization_id = c.organization_id
+             AND paired_member.league_id = c.league_id
+             AND paired_member.occurrence_id = trigger_occurrence.id
+             AND paired_member.role = 'paired'
+             AND paired_member.active = true
+             AND paired_group.state = 'published'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+            FROM payment_operations blocked
+            INNER JOIN payment_operation_standing_autopay_bindings blocked_binding
+              ON blocked_binding.operation_id = blocked.id
+             AND blocked_binding.organization_id = blocked.organization_id
+             AND blocked_binding.league_id = blocked.league_id
+           WHERE blocked.organization_id = c.organization_id
+             AND blocked.league_id = c.league_id
+             AND blocked.operation_type = 'standing_autopay_charge'
+             AND blocked.status IN ('canceled', 'failed_terminal', 'action_required', 'reconciliation_required')
+             AND blocked_binding.consent_id = c.id
+             AND blocked_binding.consent_version = c.consent_version
+             AND blocked.trigger_occurrence_id = trigger_occurrence.id
+             AND blocked.target_key LIKE concat('standing-autopay:%:', trigger_occurrence.current_revision)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM financial_commands decided
+          WHERE decided.organization_id = c.organization_id
+            AND decided.league_id = c.league_id
+            AND decided.command_type = 'standing_autopay_cutoff'
+            AND decided.idempotency_key = concat(
+              'account:', c.id, ':', c.consent_version, ':',
+              to_char(trigger_occurrence.start_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+            )
+            AND decided.state = 'applied'
+        )
+        AND ${configuredOrganizationScope}
+    ), eligible_cutoffs AS (
+      SELECT * FROM eligible_cutoffs_legacy
+      UNION ALL
+      SELECT * FROM eligible_cutoffs_account
     ), ranked_cutoffs AS (
       SELECT eligible_cutoffs.*,
         row_number() OVER (

@@ -3,8 +3,7 @@ import { z } from "zod";
 import {
   canonicalCashPaymentDeleteRequestSchema,
   canonicalCorrectionRequestSchema,
-  canonicalManualRecordBatchQuoteRequestSchema,
-  canonicalManualRecordBatchRequestSchema,
+  canonicalManualRecordQuoteRequestSchema,
   canonicalManualRecordRequestSchema,
   interactiveObligationChargeRequestV2Schema,
   interactiveObligationQuoteRequestV2Schema,
@@ -17,18 +16,24 @@ import {
   interactivePaymentChargeRequestV3Schema,
   interactivePaymentQuoteRequestV3Schema,
 } from "@shared/interactive-payment-v3-contract";
+import {
+  accountPaymentParticipantsRequestV4QuerySchema,
+  accountPaymentFundingChargeRequestV4Schema,
+  accountPaymentFundingQuoteRequestV4Schema,
+} from "@shared/account-payment-v4-contract";
 import { hasAccessToLeague, hasAdminAccessToLeague, hasPaymentManagerAccessToLeague, requireOrganizationAccess } from "../utils/access-control.js";
 import { canUserPayForBowler } from "../utils/bowler-payment-authz.js";
 import { sendError, sendSuccess } from "../utils/api.js";
 import { createLogger } from "../logger.js";
 import { storage } from "../storage/index.js";
-import { adminWriteLimiter, paymentWriteLimiter } from "../middleware/rate-limit.js";
+import { adminWriteLimiter, paymentQuoteLimiter, paymentWriteLimiter } from "../middleware/rate-limit.js";
 import {
   correctCanonicalAllocation,
   deleteCanonicalCashPayment,
   editCanonicalCashPayment,
   chargeInteractiveObligations,
   quoteInteractiveObligations,
+  quoteCanonicalManualPayment,
   readCanonicalDuePastDue,
   readCanonicalDuePastDueV3,
   readRosterPaymentResponsibility,
@@ -47,6 +52,11 @@ import {
   quoteInteractivePartnerPayments,
   readInteractivePaymentParticipants,
 } from "../services/interactive-partner-payment.js";
+import {
+  chargeAccountPaymentFundingV4,
+  quoteAccountPaymentFundingV4,
+  readInteractivePaymentParticipantsV4,
+} from "../services/account-payment-funding.js";
 import {
   recoverRosterPaymentOperation,
   recoverRosterPaymentOperationByRequestKey,
@@ -171,7 +181,7 @@ function wireObject(value: unknown): WireObject | null {
 function rosterWireResult(value: unknown): Record<string, unknown> {
   const source = wireObject(value) ?? {};
   const base: Record<string, unknown> = {};
-  for (const key of ["contractVersion", "automaticContractVersion", "organizationId", "leagueId", "teamId", "ready", "commandKey", "requestFingerprint", "mode", "restoredObligationId", "payerBowlerId", "amountMinor", "currency", "fingerprint", "originalPaymentId", "replacementPaymentId", "oldAmountMinor", "newAmountMinor", "oldPaymentDate", "newPaymentDate", "allocationMode", "allocationCount", "eligibleRotatingBowlerIds", "deleted", "paymentId", "previousStatus", "deletedAllocationCount", "deletedVoidEvidence", "restoredObligationIds"]) {
+  for (const key of ["contractVersion", "automaticContractVersion", "organizationId", "leagueId", "teamId", "ready", "commandKey", "requestFingerprint", "mode", "restoredObligationId", "payerBowlerId", "amountMinor", "currency", "fingerprint", "type", "checkNumber", "notes", "receipt", "cleared", "receiptId", "receiptRevision", "originalReceiptId", "replacementReceiptId", "affectedBowlerIds", "appliedAmountMinor", "account", "originalPaymentId", "replacementPaymentId", "oldAmountMinor", "newAmountMinor", "oldPaymentDate", "newPaymentDate", "allocationMode", "allocationCount", "eligibleRotatingBowlerIds", "deleted", "paymentId", "previousStatus", "deletedAllocationCount", "deletedVoidEvidence", "restoredObligationIds"]) {
     if (source[key] !== undefined) base[key] = source[key];
   }
   if (source.operationId !== undefined) {
@@ -333,7 +343,7 @@ router.get("/leagues/:leagueId/interactive-payment-participants/3", async (req, 
   } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/interactive-payment-quote/3", paymentWriteLimiter, async (req, res) => {
+router.post("/leagues/:leagueId/interactive-payment-quote/3", paymentQuoteLimiter, async (req, res) => {
   const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user?.bowlerId) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = interactivePaymentQuoteRequestV3Schema.safeParse(req.body);
@@ -355,6 +365,49 @@ router.post("/leagues/:leagueId/interactive-payment-charge/3", paymentWriteLimit
   try {
     const result = await chargeInteractivePartnerPayments({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId: req.user.bowlerId, request: parsed.data });
     return sendSuccess(res, interactivePartnerWireResult(result), result.status === "succeeded" ? 201 : 202);
+  } catch (error) { return handleError(res, error); }
+});
+
+router.get("/leagues/:leagueId/interactive-payment-participants/4", async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = accountPaymentParticipantsRequestV4QuerySchema.safeParse(req.query);
+  if (!parsed.success) return sendError(res, "Invalid account payment participant request", 400, "INVALID_REQUEST");
+  const payerBowlerId = parsed.data.payerBowlerId ?? req.user.bowlerId ?? undefined;
+  if (payerBowlerId === undefined) return sendError(res, "A payer bowler is required", 400, "PAYER_REQUIRED");
+  const league = await paymentScope(req, leagueId, payerBowlerId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    return sendSuccess(res, await readInteractivePaymentParticipantsV4({ organizationId: league.organizationId, leagueId, payerBowlerId }));
+  } catch (error) { return handleError(res, error); }
+});
+
+router.post("/leagues/:leagueId/interactive-payment-quote/4", paymentQuoteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = accountPaymentFundingQuoteRequestV4Schema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid account payment quote request", 400, "INVALID_REQUEST");
+  const payerBowlerId = parsed.data.payerBowlerId ?? req.user.bowlerId ?? undefined;
+  if (payerBowlerId === undefined) return sendError(res, "A payer bowler is required", 400, "PAYER_REQUIRED");
+  const league = await paymentScope(req, leagueId, payerBowlerId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    return sendSuccess(res, await quoteAccountPaymentFundingV4({ organizationId: league.organizationId, leagueId, payerBowlerId, request: parsed.data }));
+  } catch (error) { return handleError(res, error); }
+});
+
+router.post("/leagues/:leagueId/interactive-payment-charge/4", paymentWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user || req.user.role === "payment_manager") return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = accountPaymentFundingChargeRequestV4Schema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid account payment charge request", 400, "INVALID_REQUEST");
+  const payerBowlerId = parsed.data.payerBowlerId ?? req.user.bowlerId ?? undefined;
+  if (payerBowlerId === undefined) return sendError(res, "A payer bowler is required", 400, "PAYER_REQUIRED");
+  const league = await paymentScope(req, leagueId, payerBowlerId);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  try {
+    const result = await chargeAccountPaymentFundingV4({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, payerBowlerId, request: parsed.data });
+    return sendSuccess(res, result, result.status === "succeeded" ? 201 : 202);
   } catch (error) { return handleError(res, error); }
 });
 
@@ -515,7 +568,7 @@ router.get("/leagues/:leagueId/canonical-due-past-due/3", async (req, res) => {
   try { return sendSuccess(res, await readCanonicalDuePastDueV3({ organizationId: league.organizationId, leagueId, bowlerId })); } catch (error) { return handleError(res, error); }
 });
 
-router.post("/leagues/:leagueId/interactive-obligation-quote/2", paymentWriteLimiter, async (req, res) => {
+router.post("/leagues/:leagueId/interactive-obligation-quote/2", paymentQuoteLimiter, async (req, res) => {
   const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
   const parsed = interactiveObligationQuoteRequestV2Schema.safeParse(req.body);
@@ -612,6 +665,22 @@ router.post("/leagues/:leagueId/standing-autopay/1/operations/:operationId/recov
   } catch (error) { return handleError(res, error); }
 });
 
+router.post("/leagues/:leagueId/canonical/manual-record/quote/1", adminWriteLimiter, async (req, res) => {
+  const leagueId = leagueIdParam(String(req.params.leagueId));
+  if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const league = await authorizedLeague(req, leagueId, true);
+  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const parsed = canonicalManualRecordQuoteRequestSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, "Invalid manual payment quote", 400, "INVALID_REQUEST");
+  try {
+    return sendSuccess(res, rosterWireResult(await quoteCanonicalManualPayment({
+      organizationId: league.organizationId,
+      leagueId,
+      request: parsed.data,
+    })));
+  } catch (error) { return handleError(res, error); }
+});
+
 router.post("/leagues/:leagueId/canonical/manual-record/1", adminWriteLimiter, async (req, res) => {
   const leagueId = leagueIdParam(String(req.params.leagueId));
   if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
@@ -620,67 +689,6 @@ router.post("/leagues/:leagueId/canonical/manual-record/1", adminWriteLimiter, a
   const parsed = canonicalManualRecordRequestSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, "Invalid manual payment request", 400, "INVALID_REQUEST");
   try { return sendSuccess(res, rosterWireResult(await recordCanonicalManualPayment({ organizationId: league.organizationId, leagueId, actorUserId: req.user.id, request: parsed.data })), 201); } catch (error) { return handleError(res, error); }
-});
-
-/**
- * Management-only batch quote/record surfaces. A league night may contain
- * more rows than the interactive payment limiter permits, so one bounded
- * request handles the batch while each row still gets an independent,
- * server-authoritative FIFO quote and canonical manual-record transaction.
- */
-router.post("/leagues/:leagueId/canonical/manual-record-batch/quote/1", adminWriteLimiter, async (req, res) => {
-  const leagueId = leagueIdParam(String(req.params.leagueId));
-  if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const league = await authorizedLeague(req, leagueId, true);
-  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const parsed = canonicalManualRecordBatchQuoteRequestSchema.safeParse(req.body);
-  if (!parsed.success) return sendError(res, "Invalid manual payment batch", 400, "INVALID_REQUEST");
-  const rows = [];
-  for (const row of parsed.data.rows) {
-    try {
-      const quote = await quoteInteractiveObligations({
-        organizationId: league.organizationId,
-        leagueId,
-        amountMinor: row.amountMinor,
-        payerBowlerId: row.payerBowlerId,
-      });
-      rows.push({ rowKey: row.rowKey, success: true as const, data: rosterWireResult(quote) });
-    } catch (error) {
-      if (error instanceof RosterPaymentError) rows.push({ rowKey: row.rowKey, success: false as const, error: { code: error.code, message: error.message } });
-      else rows.push({ rowKey: row.rowKey, success: false as const, error: { code: "INTERNAL_ERROR", message: "Unable to quote this payment" } });
-    }
-  }
-  return sendSuccess(res, { contractVersion: "canonical-manual-record-batch-quote/1" as const, leagueId, rows });
-});
-
-router.post("/leagues/:leagueId/canonical/manual-record-batch/1", adminWriteLimiter, async (req, res) => {
-  const leagueId = leagueIdParam(String(req.params.leagueId));
-  if (!leagueId || !req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const league = await authorizedLeague(req, leagueId, true);
-  if (!league || league.organizationId === null) return sendError(res, "Not found", 404, "NOT_FOUND");
-  const parsed = canonicalManualRecordBatchRequestSchema.safeParse(req.body);
-  if (!parsed.success) return sendError(res, "Invalid manual payment batch", 400, "INVALID_REQUEST");
-  const rows = [];
-  for (const row of parsed.data.rows) {
-    try {
-      const result = await recordCanonicalManualPayment({
-        organizationId: league.organizationId,
-        leagueId,
-        actorUserId: req.user.id,
-        request: row,
-      });
-      rows.push({ rowKey: row.rowKey, success: true as const, data: rosterWireResult(result) });
-    } catch (error) {
-      if (error instanceof RosterPaymentReplay) {
-        rows.push({ rowKey: row.rowKey, success: true as const, replay: true as const, data: rosterWireResult(error.result) });
-      } else if (error instanceof RosterPaymentError) {
-        rows.push({ rowKey: row.rowKey, success: false as const, error: { code: error.code, message: error.message } });
-      } else {
-        rows.push({ rowKey: row.rowKey, success: false as const, error: { code: "INTERNAL_ERROR", message: "Unable to record this payment" } });
-      }
-    }
-  }
-  return sendSuccess(res, { contractVersion: "canonical-manual-record-batch/1" as const, leagueId, rows });
 });
 
 router.post("/leagues/:leagueId/canonical/corrections/1", adminWriteLimiter, async (req, res) => {

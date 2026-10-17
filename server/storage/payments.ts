@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import {
   payments, leagues, bowlerLeagues,
   paymentDisputes, paymentOperations, paymentAllocations, financialCommands,
+  paymentVoids, weeklyPaymentWorksheetReceiptRevisions, weeklyPaymentWorksheetReceipts,
   type Payment, type UpdatePayment,
   type PaginatedResult,
 } from "@shared/schema";
@@ -61,6 +62,18 @@ interface AllPaymentFilters {
  * casting untrusted JSON text to an integer.
  */
 export function paymentVisibilityCondition() {
+  const sourceAlias = "payment_visibility_source_receipt_revision";
+  const headAlias = "payment_visibility_head_receipt_revision";
+  const latestAlias = "payment_visibility_latest_receipt_revision";
+  const receiptAlias = "payment_visibility_manual_receipt";
+  const sourceRevision = sql`${weeklyPaymentWorksheetReceiptRevisions} AS ${sql.identifier(sourceAlias)}`;
+  const headRevision = sql`${weeklyPaymentWorksheetReceiptRevisions} AS ${sql.identifier(headAlias)}`;
+  const latestRevision = sql`${weeklyPaymentWorksheetReceiptRevisions} AS ${sql.identifier(latestAlias)}`;
+  const receipt = sql`${weeklyPaymentWorksheetReceipts} AS ${sql.identifier(receiptAlias)}`;
+  const sourceColumn = (column: string) => sql`${sql.identifier(sourceAlias)}.${sql.identifier(column)}`;
+  const headColumn = (column: string) => sql`${sql.identifier(headAlias)}.${sql.identifier(column)}`;
+  const latestColumn = (column: string) => sql`${sql.identifier(latestAlias)}.${sql.identifier(column)}`;
+  const receiptColumn = (column: string) => sql`${sql.identifier(receiptAlias)}.${sql.identifier(column)}`;
   return sql`NOT EXISTS (
     SELECT 1
     FROM ${financialCommands}
@@ -72,6 +85,40 @@ export function paymentVisibilityCondition() {
       AND ${payments.status} = 'voided'
       AND ${financialCommands.result}->>'contractVersion' = 'canonical-cash-payment-edit/1'
       AND ${financialCommands.result}->>'originalPaymentId' = ${payments.id}::text
+  ) AND NOT EXISTS (
+    SELECT 1
+    FROM ${paymentVoids}
+    INNER JOIN ${sourceRevision}
+      ON ${sourceColumn("payment_id")} = ${payments.id}
+      AND ${sourceColumn("organization_id")} = ${payments.organizationId}
+      AND ${sourceColumn("league_id")} = ${payments.leagueId}
+      AND ${sourceColumn("revision_kind")} IN ('manual_record', 'manual_edit')
+    INNER JOIN ${receipt}
+      ON ${receiptColumn("id")} = ${sourceColumn("receipt_id")}
+      AND ${receiptColumn("organization_id")} = ${payments.organizationId}
+      AND ${receiptColumn("league_id")} = ${payments.leagueId}
+      AND ${receiptColumn("payer_bowler_id")} = ${payments.bowlerId}
+      AND ${receiptColumn("receipt_kind")} = 'manual'
+    INNER JOIN ${headRevision}
+      ON ${headColumn("receipt_id")} = ${receiptColumn("id")}
+      AND ${headColumn("organization_id")} = ${payments.organizationId}
+      AND ${headColumn("league_id")} = ${payments.leagueId}
+      AND ${headColumn("receipt_revision")} = (
+        SELECT MAX(${latestColumn("receipt_revision")})
+        FROM ${latestRevision}
+        WHERE ${latestColumn("receipt_id")} = ${receiptColumn("id")}
+          AND ${latestColumn("organization_id")} = ${payments.organizationId}
+          AND ${latestColumn("league_id")} = ${payments.leagueId}
+      )
+    WHERE ${paymentVoids.paymentId} = ${payments.id}
+      AND ${paymentVoids.organizationId} = ${payments.organizationId}
+      AND ${paymentVoids.leagueId} = ${payments.leagueId}
+      AND ${paymentVoids.reason} LIKE ('% (receipt ' || ${receiptColumn("id")}::text || ')')
+      AND ${payments.type} IN ('cash', 'check')
+      AND ${payments.status} = 'voided'
+      AND ${headColumn("receipt_revision")} > ${sourceColumn("receipt_revision")}
+      AND ${headColumn("revision_kind")} IN ('manual_edit', 'manual_clear')
+      AND ${headColumn("payment_id")} IS DISTINCT FROM ${payments.id}
   )`;
 }
 
@@ -113,9 +160,37 @@ export function buildPaymentConditions(filters: AllPaymentFilters, options?: { e
   }
   if (filters.createdAt !== undefined) {
     const businessDate = filters.createdAt.toISOString().slice(0, 10);
+    const receiptRevisionAlias = "payment_filter_receipt_revision";
+    const latestReceiptRevisionAlias = "payment_filter_latest_receipt_revision";
+    const receiptRevision = sql`${weeklyPaymentWorksheetReceiptRevisions} AS ${sql.identifier(receiptRevisionAlias)}`;
+    const latestReceiptRevision = sql`${weeklyPaymentWorksheetReceiptRevisions} AS ${sql.identifier(latestReceiptRevisionAlias)}`;
+    const receiptRevisionColumn = (column: string) => sql`${sql.identifier(receiptRevisionAlias)}.${sql.identifier(column)}`;
+    const latestReceiptRevisionColumn = (column: string) => sql`${sql.identifier(latestReceiptRevisionAlias)}.${sql.identifier(column)}`;
+    const manualReceiptBusinessDate = sql`(
+      SELECT ${receiptRevisionColumn("business_collection_local_date")}
+      FROM ${receiptRevision}
+      INNER JOIN ${weeklyPaymentWorksheetReceipts}
+        ON ${weeklyPaymentWorksheetReceipts.id} = ${receiptRevisionColumn("receipt_id")}
+        AND ${weeklyPaymentWorksheetReceipts.organizationId} = ${payments.organizationId}
+        AND ${weeklyPaymentWorksheetReceipts.leagueId} = ${payments.leagueId}
+        AND ${weeklyPaymentWorksheetReceipts.receiptKind} = 'manual'
+      WHERE ${receiptRevisionColumn("payment_id")} = ${payments.id}
+        AND ${receiptRevisionColumn("organization_id")} = ${payments.organizationId}
+        AND ${receiptRevisionColumn("league_id")} = ${payments.leagueId}
+        AND ${receiptRevisionColumn("revision_kind")} <> 'manual_clear'
+        AND ${receiptRevisionColumn("receipt_revision")} = (
+          SELECT MAX(${latestReceiptRevisionColumn("receipt_revision")})
+          FROM ${latestReceiptRevision}
+          WHERE ${latestReceiptRevisionColumn("receipt_id")} = ${receiptRevisionColumn("receipt_id")}
+            AND ${latestReceiptRevisionColumn("organization_id")} = ${payments.organizationId}
+            AND ${latestReceiptRevisionColumn("league_id")} = ${payments.leagueId}
+        )
+      LIMIT 1
+    )`;
     // Compare the immutable tender timestamp in each league's business
-    // timezone; the server timezone must not affect a calendar-day filter.
-    conditions.push(sql`(${payments.createdAt} AT TIME ZONE 'UTC' AT TIME ZONE COALESCE((SELECT ${leagues.timezone} FROM ${leagues} WHERE ${leagues.id} = ${payments.leagueId}), 'UTC'))::date = ${businessDate}::date`);
+    // timezone, except an adopted manual receipt's immutable worksheet date
+    // is authoritative for its business collection period.
+    conditions.push(sql`COALESCE(${manualReceiptBusinessDate}, (${payments.createdAt} AT TIME ZONE 'UTC' AT TIME ZONE COALESCE((SELECT ${leagues.timezone} FROM ${leagues} WHERE ${leagues.id} = ${payments.leagueId}), 'UTC'))::date) = ${businessDate}::date`);
   }
 
   return conditions;

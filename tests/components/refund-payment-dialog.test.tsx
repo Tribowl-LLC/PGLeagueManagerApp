@@ -139,6 +139,116 @@ describe("RefundPaymentDialog", () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
+  it("refunds a strictly evidenced unused card portion without asking for a debt disposition", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const unusedCredit: NamedPaymentEvidence = {
+      ...refundEvidence,
+      paymentId: 8,
+      amountMinor: 2_000,
+      allocatedMinor: 0,
+      unallocatedMinor: 2_000,
+      source: "prepaid_credit",
+      allocations: [],
+      fundingPortions: [{
+        fundingId: "owned-funding-8",
+        creditedBowlerId: 43,
+        creditedBowlerName: "Partner Bowler",
+        portionIndex: 0,
+        amountMinor: 2_000,
+        availableMinor: 2_000,
+        appliedMinor: 0,
+        refundedCreditMinor: 0,
+        totalRefundedMinor: 0,
+        heldCreditMinor: 0,
+        reviewRequired: false,
+      }],
+    };
+    render(<RefundPaymentDialog payment={payment(8)} refundEvidence={unusedCredit} onClose={() => {}} onConfirm={onConfirm} isPending={false} />);
+
+    const effects = screen.getByRole("region", { name: "Whole payment refund allocation" });
+    expect(effects).toHaveTextContent("Partner Bowler");
+    expect(effects).toHaveTextContent("Unused credit returned");
+    expect(effects).toHaveTextContent("$20.00");
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Process Refund" }));
+    expect(onConfirm).toHaveBeenCalledWith(8, undefined, "still_owed");
+  });
+
+  it("shows unused owners separately from effective debtors for a mixed owned card receipt", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const mixedCredit: NamedPaymentEvidence = {
+      ...refundEvidence,
+      paymentId: 9,
+      allocatedMinor: 1_000,
+      unallocatedMinor: 1_000,
+      source: "canonical_allocation",
+      allocations: [{
+        allocationId: "mixed-allocation-9",
+        obligationId: "mixed-obligation-9",
+        occurrenceId: "mixed-occurrence-9",
+        occurrenceLocalDate: "2034-09-10",
+        plannedOrdinal: 2,
+        bowlerId: 43,
+        bowlerName: "Partner Bowler",
+        amountMinor: 1_000,
+        currency: "USD",
+        state: "active",
+      }],
+      fundingPortions: [{
+        fundingId: "owned-funding-9",
+        creditedBowlerId: 43,
+        creditedBowlerName: "Partner Bowler",
+        portionIndex: 0,
+        amountMinor: 2_000,
+        availableMinor: 1_000,
+        appliedMinor: 1_000,
+        refundedCreditMinor: 0,
+        totalRefundedMinor: 0,
+        heldCreditMinor: 0,
+        reviewRequired: false,
+      }],
+    };
+    render(<RefundPaymentDialog payment={payment(9)} refundEvidence={mixedCredit} onClose={() => {}} onConfirm={onConfirm} isPending={false} />);
+
+    const effects = screen.getByRole("region", { name: "Whole payment refund allocation" });
+    expect(screen.getAllByText("Partner Bowler")).toHaveLength(2);
+    expect(effects).toHaveTextContent("Unused credit returned");
+    expect(effects).toHaveTextContent("Applied to roster amount");
+    expect(effects).toHaveTextContent("$10.00");
+    expect(screen.getAllByRole("radio")).toHaveLength(2);
+    const confirm = screen.getByRole("button", { name: "Process Refund" });
+    expect(confirm).toBeDisabled();
+    await user.click(screen.getByRole("radio", { name: /^Waive this amount/ }));
+    await user.click(confirm);
+    expect(onConfirm).toHaveBeenCalledWith(9, undefined, "waived");
+  });
+
+  it("fails closed when unused card credit lacks a complete credited-owner proof", () => {
+    const invalidCredit: NamedPaymentEvidence = {
+      ...refundEvidence,
+      paymentId: 10,
+      allocatedMinor: 0,
+      unallocatedMinor: 2_000,
+      source: "prepaid_credit",
+      allocations: [],
+      fundingPortions: [{
+        amountMinor: 2_000,
+        availableMinor: 2_000,
+        appliedMinor: 0,
+        refundedCreditMinor: 0,
+        totalRefundedMinor: 0,
+        heldCreditMinor: 0,
+        reviewRequired: false,
+      }],
+    };
+    render(<RefundPaymentDialog payment={payment(10)} refundEvidence={invalidCredit} onClose={() => {}} onConfirm={() => {}} isPending={false} />);
+
+    expect(screen.getByTestId("refund-allocation-evidence-error")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Process Refund" })).toBeDisabled();
+  });
+
   it("enumerates every affected recipient and covered week before refund", () => {
     render(<RefundPaymentDialog payment={payment(7)} refundEvidence={{ ...refundEvidence, paymentId: 7 }} onClose={() => {}} onConfirm={() => {}} isPending={false} />);
     expect(screen.getByRole("region", { name: "Whole payment refund allocation" })).toHaveTextContent("entire payment");

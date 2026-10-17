@@ -143,7 +143,9 @@ export default function ReportsPage() {
     const collected = paymentReport?.totals.grossConfirmedPaidMinor ?? 0;
 
     const canonicalReport = financialLeagues.find((entry) => entry.leagueId === league.id)?.report;
-    const pastDueBalance = canonicalReport?.rows.filter((row) => row.classification === "past_due").reduce((sum, row) => sum + row.outstandingMinor, 0) ?? 0;
+    const pastDueBalance = canonicalReport?.accountProjection
+      ? canonicalReport.totals.collectiblePastDueMinor
+      : canonicalReport?.rows.filter((row) => row.classification === "past_due").reduce((sum, row) => sum + row.outstandingMinor, 0) ?? 0;
     const reviewCount = canonicalReport?.rows.filter((row) => row.reviewRequired).length ?? 0;
 
     return {

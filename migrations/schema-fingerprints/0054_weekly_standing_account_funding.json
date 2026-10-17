@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0054_weekly_standing_account_funding",
+    "hash": "a08976a36bd4b420380bb8339a9219a1b3d972c218d93ac2683f403cffe2ffea",
+    "createdAt": 1790986573310
+  },
+  "digest": "9863ba816a693f1954d0127e9fdf2a6ee5fa7aaa4b82fb90fcb446d46fdddc45",
+  "counts": {
+    "tables": 97,
+    "columns": 1364,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 32,
+    "constraints": 776,
+    "indexes": 428,
+    "types": 1,
+    "functions": 37,
+    "triggers": 76,
+    "policies": 0
+  }
+}

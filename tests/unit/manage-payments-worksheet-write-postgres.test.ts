@@ -1,0 +1,1795 @@
+import { randomUUID } from "node:crypto";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  bowlerLeagues,
+  bowlers,
+  leagueOccurrences,
+  locations,
+  occurrencePaymentResponsibilities,
+  organizations,
+  paymentOperations,
+  paymentObligationOwnerRevisions,
+  paymentAllocationFundingApplications,
+  paymentAllocations,
+  paymentObligations,
+  paymentVoids,
+  payments,
+  rotatingCreditFundings,
+  teams,
+  teamPaymentSlots,
+  users,
+  weeklyPaymentAllocationReleases,
+  weeklyPaymentFundings,
+  weeklyPaymentLedgerAdoptions,
+  weeklyPaymentWeekConfirmations,
+  weeklyPaymentWorksheetReceiptRevisions,
+  weeklyPaymentWorksheetReceipts,
+} from "@shared/schema";
+import {
+  rehydrateManagePaymentsSeasonWeekSnapshot,
+  type ManagePaymentsChangedRow,
+  type ManagePaymentsSeasonSnapshot,
+  type ManagePaymentsSnapshot,
+} from "@shared/manage-payments-contract";
+import { LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION } from "@shared/league-setup-integration";
+import { createLeagueWithCanonicalSetup } from "../../server/services/league-setup-integration.js";
+import { prepareAccountPaymentOperation } from "../../server/services/account-payment-operation-preparation.js";
+import { recoverRosterPaymentOperation } from "../../server/services/roster-payment-recovery.js";
+import {
+  canonicalHistoricalCashAllocationRepairFingerprint,
+  canonicalResponsibilityFingerprint,
+  canonicalRotatingAssignmentFingerprint,
+  canonicalCashPaymentDeleteFingerprint,
+  canonicalCashPaymentEditFingerprint,
+  deleteCanonicalCashPayment,
+  editCanonicalCashPayment,
+  quoteCanonicalManualPayment,
+  recordCanonicalManualPayment,
+  recordOccurrenceResponsibilities,
+  repairHistoricalCashPaymentAllocation,
+  saveRotatingOccurrenceAssignments,
+} from "../../server/services/roster-payment-core.js";
+import {
+  appendManualReceiptRevisionInTransaction,
+  canonicalManualReceiptQuoteFingerprint,
+  createManualReceiptHeadInTransaction,
+} from "../../server/services/manual-payment-receipts.js";
+import { historicalCashAllocationFingerprint } from "@shared/historical-payment-repair";
+import { calculateRosterPaymentTiming } from "@shared/roster-payment-contract";
+import { readOwnedAccountBalancesInTransaction, recordOwnedFundingInTransaction } from "../../server/services/owned-payment-ledger.js";
+import { readManagePaymentsSeasonSnapshot, readManagePaymentsWorksheetSnapshot } from "../../server/services/manage-payments-worksheet-read.js";
+import { managePaymentsSaveRequestFingerprint, saveManagePaymentsWorksheet, ManagePaymentsWorksheetWriteError } from "../../server/services/manage-payments-worksheet-write.js";
+import { readCanonicalPaymentReport, readPaymentReceiptProjection } from "../../server/services/canonical-payment-report.js";
+import { getPaymentsPaginated, getVisiblePaymentByIdForOrganization } from "../../server/storage/payments.js";
+import { getTestDb } from "../setup/test-db.js";
+
+const db = getTestDb();
+let suffix = "";
+let organizationId = 0;
+let leagueId = 0;
+let locationId = 0;
+let actorUserId = 0;
+let teamId = 0;
+let mainBowlerId = 0;
+let substituteBowlerId = 0;
+let thirdBowlerId = 0;
+let selectedOccurrenceId = "";
+let mainLegacyResponsibilityId = "";
+let mainLegacyObligationId = "";
+let unassignedSlotId = "";
+
+async function addBowler(name: string, order: number): Promise<number> {
+  const [bowler] = await db.insert(bowlers).values({ name, organizationId }).returning({ id: bowlers.id });
+  if (!bowler) throw new Error("worksheet bowler fixture was not created");
+  await db.insert(bowlerLeagues).values({ bowlerId: bowler.id, leagueId, teamId, active: true, order });
+  return bowler.id;
+}
+
+async function setupWorksheetFixture(options: {
+  weeklyFeeMinor?: number;
+  allMain?: boolean;
+} = {}): Promise<void> {
+  const weeklyFeeMinor = options.weeklyFeeMinor ?? 2_500;
+  const lineageFeeMinor = Math.round(weeklyFeeMinor * 0.72);
+  const seasonStart = "2032-09-05";
+  const seasonEnd = "2032-09-26";
+  const weekDay = "Sunday";
+  suffix = `${process.env.VITEST_POOL_ID ?? "0"}-${randomUUID()}`;
+  const [organization] = await db.insert(organizations).values({ name: `Worksheet ${suffix}`, slug: `worksheet-${suffix}` }).returning({ id: organizations.id });
+  if (!organization) throw new Error("worksheet organization fixture was not created");
+  organizationId = organization.id;
+  const [actor] = await db.insert(users).values({
+    email: `worksheet-${suffix}@example.test`,
+    password: "worksheet-test-password-hash",
+    name: "Worksheet actor",
+    role: "org_admin",
+    organizationId,
+  }).returning({ id: users.id });
+  if (!actor) throw new Error("worksheet actor fixture was not created");
+  actorUserId = actor.id;
+  const [location] = await db.insert(locations).values({ name: `Worksheet location ${suffix}`, organizationId }).returning({ id: locations.id });
+  if (!location) throw new Error("worksheet location fixture was not created");
+  locationId = location.id;
+  const created = await createLeagueWithCanonicalSetup({
+    scope: { organizationId, actorUserId },
+    league: {
+      name: `Worksheet league ${suffix}`,
+      description: "Manage Payments writer integration fixture",
+      organizationId,
+      locationId: location.id,
+      active: true,
+      seasonStart,
+      seasonEnd,
+      weekDay,
+      totalBowlingWeeks: 4,
+      skipDates: [],
+      cancelledDates: [],
+      doublePayDates: [],
+      competitionStartTime: "19:00",
+      timezone: "America/New_York",
+      weeklyFee: weeklyFeeMinor,
+      lineageFee: lineageFeeMinor,
+      prizeFundFee: weeklyFeeMinor - lineageFeeMinor,
+      paymentMode: "weekly",
+      payingLineupSize: 3,
+      seasonNumber: 1,
+    },
+    setup: { contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION, idempotencyKey: `setup-${suffix}` },
+  });
+  leagueId = created.id;
+  const [team] = await db.insert(teams).values({ name: `Worksheet team ${suffix}`, number: 1, leagueId }).returning({ id: teams.id });
+  if (!team) throw new Error("worksheet team fixture was not created");
+  teamId = team.id;
+  mainBowlerId = await addBowler("Worksheet Main", 0);
+  substituteBowlerId = await addBowler("Worksheet Substitute", 1);
+  thirdBowlerId = await addBowler("Worksheet Other Substitute", 2);
+  const mainBowlerBySlot = [mainBowlerId, substituteBowlerId, thirdBowlerId];
+  const createdSlots = await db.insert(teamPaymentSlots).values([
+    { organizationId, leagueId, teamId, slotIndex: 0, lineupSize: 3, occupant: "main", mainBowlerId, recordedByUserId: actorUserId },
+    { organizationId, leagueId, teamId, slotIndex: 1, lineupSize: 3, occupant: options.allMain ? "main" : "unassigned", mainBowlerId: options.allMain ? mainBowlerBySlot[1] ?? null : null, recordedByUserId: actorUserId },
+    { organizationId, leagueId, teamId, slotIndex: 2, lineupSize: 3, occupant: options.allMain ? "main" : "unassigned", mainBowlerId: options.allMain ? mainBowlerBySlot[2] ?? null : null, recordedByUserId: actorUserId },
+  ]).returning({ id: teamPaymentSlots.id, slotIndex: teamPaymentSlots.slotIndex });
+  const mainSlot = createdSlots.find((slot) => slot.slotIndex === 0);
+  if (!mainSlot) throw new Error("worksheet main slot fixture was not created");
+  const unassignedSlot = createdSlots.find((slot) => slot.slotIndex === 1);
+  if (!unassignedSlot) throw new Error("worksheet slot fixture was not created");
+  unassignedSlotId = unassignedSlot.id;
+  const [occurrence] = await db.select().from(leagueOccurrences).where(and(
+    eq(leagueOccurrences.organizationId, organizationId),
+    eq(leagueOccurrences.leagueId, leagueId),
+  )).orderBy(asc(leagueOccurrences.plannedOrdinal)).limit(1);
+  if (!occurrence?.authoritativeLocalDate) throw new Error("worksheet canonical occurrence fixture was not created");
+  selectedOccurrenceId = occurrence.id;
+  const startAt = occurrence.startAt;
+  const [legacy] = await db.insert(occurrencePaymentResponsibilities).values({
+    organizationId,
+    leagueId,
+    occurrenceId: selectedOccurrenceId,
+    teamId,
+    slotId: mainSlot.id,
+    slotIndex: 0,
+    positionIndex: 0,
+    version: 1,
+    state: "active",
+    responsibilityKind: "main",
+    mainBowlerId,
+    substituteBowlerId: null,
+    payerBowlerId: mainBowlerId,
+    lineagePayerBowlerId: null,
+    prizePayerBowlerId: null,
+    policy: "main_pays_full",
+    worksheetFeeComponent: null,
+    amountMinor: weeklyFeeMinor,
+    lineageAmountMinor: null,
+    prizeFundAmountMinor: null,
+    currency: "USD",
+    dueAt: startAt,
+    pastDueAt: startAt,
+    recordedByUserId: actorUserId,
+  }).returning({ id: occurrencePaymentResponsibilities.id });
+  if (!legacy) throw new Error("worksheet legacy responsibility fixture was not created");
+  mainLegacyResponsibilityId = legacy.id;
+  const [obligation] = await db.insert(paymentObligations).values({
+    organizationId,
+    leagueId,
+    occurrenceId: selectedOccurrenceId,
+    responsibilityId: legacy.id,
+    component: "full",
+    payerBowlerId: mainBowlerId,
+    amountMinor: weeklyFeeMinor,
+    currency: "USD",
+    dueAt: startAt,
+    pastDueAt: startAt,
+    state: "open",
+    createdByUserId: actorUserId,
+  }).returning({ id: paymentObligations.id });
+  if (!obligation) throw new Error("worksheet legacy obligation fixture was not created");
+  mainLegacyObligationId = obligation.id;
+}
+
+beforeEach(() => setupWorksheetFixture());
+
+function saveInput(snapshot: ManagePaymentsSnapshot, changedRows: ManagePaymentsChangedRow[], idempotencyKey: string) {
+  return {
+    organizationId,
+    leagueId,
+    actorUserId,
+    request: {
+      occurrenceId: snapshot.selectedOccurrence.occurrenceId,
+      expectedRevision: snapshot.revision,
+      expectedStateFingerprint: snapshot.stateFingerprint,
+      idempotencyKey,
+      changedRows,
+    },
+  };
+}
+
+function rowChange(snapshot: ManagePaymentsSnapshot, bowlerId: number, overrides: Partial<ManagePaymentsChangedRow> = {}): ManagePaymentsChangedRow {
+  const team = snapshot.teams.find((candidate) => candidate.rows.some((row) => row.bowlerId === bowlerId));
+  const row = team?.rows.find((candidate) => candidate.bowlerId === bowlerId);
+  if (!team || !row) throw new Error(`worksheet row ${bowlerId} is missing`);
+  return {
+    teamId: team.teamId,
+    bowlerId,
+    responsible: row.responsible,
+    feeComponent: row.feeComponent,
+    manualReceiptEdits: [],
+    ...overrides,
+  };
+}
+
+describe("Manage Payments worksheet atomic writer", () => {
+  it("confirms an unconfirmed week while increasing three adopted cash receipts with allocations across four weeks", async () => {
+    const adoptionService = await import("../../server/services/owned-payment-ledger-adoption.js");
+    const pristineInitializer = vi.spyOn(adoptionService, "initializePristineOwnedPaymentLedgerInTransaction")
+      .mockResolvedValue(undefined);
+    try {
+      await setupWorksheetFixture({ weeklyFeeMinor: 2_000, allMain: true });
+    } finally {
+      pristineInitializer.mockRestore();
+    }
+    const occurrences = await db.select().from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, organizationId),
+      eq(leagueOccurrences.leagueId, leagueId),
+    )).orderBy(asc(leagueOccurrences.plannedOrdinal));
+    expect(occurrences).toHaveLength(4);
+    const firstOccurrence = occurrences[0];
+    if (!firstOccurrence?.authoritativeLocalDate) throw new Error("first synthetic occurrence is missing");
+    const throughOccurrence = occurrences[1];
+    if (!throughOccurrence?.authoritativeLocalDate) throw new Error("synthetic adoption cutoff occurrence is missing");
+    const [adoption] = await db.insert(weeklyPaymentLedgerAdoptions).values({
+      organizationId,
+      leagueId,
+      adoptedThroughLocalDate: throughOccurrence.authoritativeLocalDate,
+      preflightFingerprint: `lvweeklyadoptpre:v1:${"a".repeat(64)}`,
+      resultFingerprint: `lvweeklyadopt:v1:${"b".repeat(64)}`,
+      grandfatheredAllocationCount: 0,
+      recordedByUserId: actorUserId,
+    }).returning({ id: weeklyPaymentLedgerAdoptions.id });
+    if (!adoption) throw new Error("synthetic legacy adoption marker was not created");
+    const slots = await db.select().from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, teamId),
+    )).orderBy(asc(teamPaymentSlots.slotIndex));
+    const slotByIndex = new Map(slots.map((slot) => [slot.slotIndex, slot]));
+    const owners = [
+      { bowlerId: mainBowlerId, slotIndex: 0, originalMinor: 17_000, correctedMinor: 20_000, applications: [2_000, 2_000, 2_000, 2_000] },
+      { bowlerId: substituteBowlerId, slotIndex: 1, originalMinor: 27_000, correctedMinor: 30_000, applications: [2_000, 2_000, 2_000, 2_000] },
+      { bowlerId: thirdBowlerId, slotIndex: 2, originalMinor: 7_000, correctedMinor: 10_000, applications: [2_000, 2_000, 2_000, 1_000] },
+    ];
+    const obligations = new Map<string, { obligationId: string; responsibilityId: string; amountMinor: number }>();
+    obligations.set(`${selectedOccurrenceId}:${mainBowlerId}`, {
+      obligationId: mainLegacyObligationId,
+      responsibilityId: mainLegacyResponsibilityId,
+      amountMinor: 2_000,
+    });
+    for (const owner of owners) {
+      for (const occurrence of occurrences) {
+        if (occurrence.id === selectedOccurrenceId && owner.bowlerId === mainBowlerId) continue;
+        const slot = slotByIndex.get(owner.slotIndex);
+        if (!slot) throw new Error(`synthetic slot ${owner.slotIndex} is missing`);
+        const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
+          organizationId,
+          leagueId,
+          occurrenceId: occurrence.id,
+          teamId,
+          slotId: slot.id,
+          slotIndex: owner.slotIndex,
+          positionIndex: owner.slotIndex,
+          version: 1,
+          state: "active",
+          responsibilityKind: "main",
+          mainBowlerId: owner.bowlerId,
+          substituteBowlerId: null,
+          payerBowlerId: owner.bowlerId,
+          lineagePayerBowlerId: null,
+          prizePayerBowlerId: null,
+          policy: "main_pays_full",
+          worksheetFeeComponent: null,
+          amountMinor: 2_000,
+          lineageAmountMinor: null,
+          prizeFundAmountMinor: null,
+          currency: "USD",
+          dueAt: occurrence.startAt,
+          pastDueAt: occurrence.startAt,
+          recordedByUserId: actorUserId,
+        }).returning({ id: occurrencePaymentResponsibilities.id });
+        if (!responsibility) throw new Error("synthetic legacy responsibility was not created");
+        const [obligation] = await db.insert(paymentObligations).values({
+          organizationId,
+          leagueId,
+          occurrenceId: occurrence.id,
+          responsibilityId: responsibility.id,
+          component: "full",
+          payerBowlerId: owner.bowlerId,
+          amountMinor: 2_000,
+          currency: "USD",
+          dueAt: occurrence.startAt,
+          pastDueAt: occurrence.startAt,
+          state: "open",
+          createdByUserId: actorUserId,
+        }).returning({ id: paymentObligations.id });
+        if (!obligation) throw new Error("synthetic legacy obligation was not created");
+        obligations.set(`${occurrence.id}:${owner.bowlerId}`, {
+          obligationId: obligation.id,
+          responsibilityId: responsibility.id,
+          amountMinor: 2_000,
+        });
+      }
+    }
+
+    for (const occurrence of occurrences.slice(2)) {
+      const week = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: occurrence.id });
+      const confirmed = await saveManagePaymentsWorksheet(saveInput(week, [], `adopted-receipt-confirm-${occurrence.plannedOrdinal}-${suffix}`));
+      expect(confirmed.snapshot.weekConfirmed).toBe(true);
+    }
+
+    const originalPaymentIds: number[] = [];
+    const receiptIdByOwner = new Map<number, string>();
+    const oldReceiptRecordedAt = new Date(Date.now() - 60_000).toISOString();
+    const extraReceiptRecordedAt = new Date(Date.now() - 30_000).toISOString();
+    let extraCashPaymentId: number | undefined;
+    let extraCashReceiptId: string | undefined;
+    let extraCashFundingId: string | undefined;
+    let extraCashAllocationId: string | undefined;
+    let extraCashApplicationId: string | undefined;
+    await db.transaction(async (tx) => {
+      const [adoption] = await tx.select().from(weeklyPaymentLedgerAdoptions).where(and(
+        eq(weeklyPaymentLedgerAdoptions.organizationId, organizationId),
+        eq(weeklyPaymentLedgerAdoptions.leagueId, leagueId),
+      )).limit(1);
+      if (!adoption) throw new Error("synthetic league adoption marker is missing");
+      const allocatedByObligation = new Map<string, number>();
+      for (const owner of owners) {
+        const receiptId = await createManualReceiptHeadInTransaction(tx, {
+          organizationId,
+          leagueId,
+          occurrenceId: selectedOccurrenceId,
+          bowlerId: owner.bowlerId,
+          now: oldReceiptRecordedAt,
+        });
+        const [payment] = await tx.insert(payments).values({
+          organizationId,
+          leagueId,
+          bowlerId: owner.bowlerId,
+          amount: owner.originalMinor,
+          currency: "USD",
+          status: "paid",
+          type: "cash",
+          notes: "adopted cash receipt fixture",
+          paidByUserId: actorUserId,
+          createdAt: oldReceiptRecordedAt,
+        }).returning({ id: payments.id });
+        if (!payment) throw new Error("synthetic adopted cash payment was not created");
+        originalPaymentIds.push(payment.id);
+        receiptIdByOwner.set(owner.bowlerId, receiptId);
+        const funding = await recordOwnedFundingInTransaction(tx, {
+          organizationId,
+          leagueId,
+          creditedBowlerId: owner.bowlerId,
+          paymentId: payment.id,
+          portionIndex: 0,
+          amountMinor: owner.originalMinor,
+          currency: "USD",
+          source: "legacy_adoption",
+          authorizationKind: "legacy_payment",
+          authorizationOperationId: null,
+          authorizationItemCount: 0,
+          authorizationFingerprint: `lvweeklyadopt:v1:${"a".repeat(64)}`,
+          adoptionId: adoption.id,
+          recordedByUserId: actorUserId,
+          now: oldReceiptRecordedAt,
+        });
+        await appendManualReceiptRevisionInTransaction(tx, {
+          organizationId,
+          leagueId,
+          actorUserId,
+          receiptId,
+          revision: 1,
+          paymentId: payment.id,
+          amountMinor: owner.originalMinor,
+          businessCollectionLocalDate: firstOccurrence.authoritativeLocalDate,
+          revisionKind: "manual_record",
+          now: oldReceiptRecordedAt,
+        });
+        for (const [weekIndex, occurrence] of occurrences.entries()) {
+          const target = obligations.get(`${occurrence.id}:${owner.bowlerId}`);
+          const allocationAmountMinor = owner.applications[weekIndex];
+          if (!target || !allocationAmountMinor || allocationAmountMinor > target.amountMinor) {
+            throw new Error(`synthetic allocation for payer ${owner.bowlerId}, week ${weekIndex + 1} is invalid`);
+          }
+          const [allocation] = await tx.insert(paymentAllocations).values({
+            organizationId,
+            leagueId,
+            paymentId: payment.id,
+            obligationId: target.obligationId,
+            amountMinor: allocationAmountMinor,
+            currency: "USD",
+            state: "active",
+            allocationKind: "ordinary",
+            recordedByUserId: actorUserId,
+          }).returning({ id: paymentAllocations.id });
+          if (!allocation) throw new Error("synthetic adopted allocation was not created");
+          await tx.insert(paymentAllocationFundingApplications).values({
+            organizationId,
+            leagueId,
+            allocationId: allocation.id,
+            paymentId: payment.id,
+            creditedBowlerId: owner.bowlerId,
+            genericFundingId: funding.id,
+            rotatingFundingId: null,
+            sourceAmountMinor: owner.originalMinor,
+            amountMinor: allocationAmountMinor,
+            currency: "USD",
+            obligationId: target.obligationId,
+            responsibilityId: target.responsibilityId,
+            occurrenceId: occurrence.id,
+            teamId,
+            targetKind: "bowler_responsibility",
+            targetPayerBowlerId: owner.bowlerId,
+            assignmentId: null,
+            appliedByUserId: actorUserId,
+          });
+          const key = target.obligationId;
+          allocatedByObligation.set(key, (allocatedByObligation.get(key) ?? 0) + allocationAmountMinor);
+        }
+      }
+
+      const weekFour = occurrences[3];
+      const weekFourTarget = weekFour ? obligations.get(`${weekFour.id}:${thirdBowlerId}`) : undefined;
+      if (!weekFour || !weekFourTarget) throw new Error("synthetic fourth-week obligation is missing");
+      const extraReceiptDate = extraReceiptRecordedAt;
+      const extraReceiptId = await createManualReceiptHeadInTransaction(tx, {
+        organizationId,
+        leagueId,
+        occurrenceId: selectedOccurrenceId,
+        bowlerId: thirdBowlerId,
+        now: extraReceiptDate,
+      });
+      extraCashReceiptId = extraReceiptId;
+      const [extraPayment] = await tx.insert(payments).values({
+        organizationId,
+        leagueId,
+        bowlerId: thirdBowlerId,
+        amount: 10_000,
+        currency: "USD",
+        status: "paid",
+        type: "cash",
+        notes: "synthetic earlier receipt with partial fourth-week allocation",
+        paidByUserId: actorUserId,
+        createdAt: extraReceiptDate,
+      }).returning({ id: payments.id });
+      if (!extraPayment) throw new Error("synthetic extra cash payment was not created");
+      extraCashPaymentId = extraPayment.id;
+      const extraFunding = await recordOwnedFundingInTransaction(tx, {
+        organizationId,
+        leagueId,
+        creditedBowlerId: thirdBowlerId,
+        paymentId: extraPayment.id,
+        portionIndex: 0,
+        amountMinor: 10_000,
+        currency: "USD",
+        source: "legacy_adoption",
+        authorizationKind: "legacy_payment",
+        authorizationOperationId: null,
+        authorizationItemCount: 0,
+        authorizationFingerprint: `lvweeklyadopt:v1:${"c".repeat(64)}`,
+        adoptionId: adoption.id,
+        recordedByUserId: actorUserId,
+        now: extraReceiptDate,
+      });
+      extraCashFundingId = extraFunding.id;
+      await appendManualReceiptRevisionInTransaction(tx, {
+        organizationId,
+        leagueId,
+        actorUserId,
+        receiptId: extraReceiptId,
+        revision: 1,
+        paymentId: extraPayment.id,
+        amountMinor: 10_000,
+        businessCollectionLocalDate: firstOccurrence.authoritativeLocalDate,
+        revisionKind: "manual_record",
+        now: extraReceiptDate,
+      });
+      const [extraAllocation] = await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId,
+        paymentId: extraPayment.id,
+        obligationId: weekFourTarget.obligationId,
+        amountMinor: 1_000,
+        currency: "USD",
+        state: "active",
+        allocationKind: "ordinary",
+        recordedByUserId: actorUserId,
+        createdAt: extraReceiptDate,
+      }).returning({ id: paymentAllocations.id });
+      if (!extraAllocation) throw new Error("synthetic extra receipt allocation was not created");
+      extraCashAllocationId = extraAllocation.id;
+      const [extraApplication] = await tx.insert(paymentAllocationFundingApplications).values({
+        organizationId,
+        leagueId,
+        allocationId: extraAllocation.id,
+        paymentId: extraPayment.id,
+        creditedBowlerId: thirdBowlerId,
+        genericFundingId: extraFunding.id,
+        rotatingFundingId: null,
+        sourceAmountMinor: 10_000,
+        amountMinor: 1_000,
+        currency: "USD",
+        obligationId: weekFourTarget.obligationId,
+        responsibilityId: weekFourTarget.responsibilityId,
+        occurrenceId: weekFour.id,
+        teamId,
+        targetKind: "bowler_responsibility",
+        targetPayerBowlerId: thirdBowlerId,
+        assignmentId: null,
+        appliedByUserId: actorUserId,
+        createdAt: extraReceiptDate,
+      }).returning({ id: paymentAllocationFundingApplications.id });
+      if (!extraApplication) throw new Error("synthetic extra receipt funding application was not created");
+      extraCashApplicationId = extraApplication.id;
+      allocatedByObligation.set(
+        weekFourTarget.obligationId,
+        (allocatedByObligation.get(weekFourTarget.obligationId) ?? 0) + 1_000,
+      );
+
+      for (const target of obligations.values()) {
+        await tx.update(paymentObligations).set({
+          state: allocatedByObligation.get(target.obligationId) === target.amountMinor ? "settled" : "partially_settled",
+        }).where(eq(paymentObligations.id, target.obligationId));
+      }
+    });
+
+    const initial = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    expect(await db.select().from(weeklyPaymentWeekConfirmations).where(and(
+      eq(weeklyPaymentWeekConfirmations.organizationId, organizationId),
+      eq(weeklyPaymentWeekConfirmations.leagueId, leagueId),
+      eq(weeklyPaymentWeekConfirmations.occurrenceId, selectedOccurrenceId),
+    ))).toHaveLength(0);
+    const initialRows = new Map(initial.teams.flatMap((team) => team.rows).map((row) => [row.bowlerId, row]));
+    if (!extraCashPaymentId || !extraCashReceiptId) throw new Error("synthetic extra receipt is missing");
+    expect(initialRows.get(thirdBowlerId)?.manualReceipts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ receiptId: extraCashReceiptId, paymentId: extraCashPaymentId, amountMinor: 10_000 }),
+    ]));
+    const changedRows = owners.map((owner) => {
+      const row = initialRows.get(owner.bowlerId);
+      const receiptId = receiptIdByOwner.get(owner.bowlerId);
+      const receipt = row?.manualReceipts.find((candidate) => candidate.receiptId === receiptId);
+      if (!row || !receipt) throw new Error(`adopted receipt for payer ${owner.bowlerId} is missing`);
+      return rowChange(initial, owner.bowlerId, {
+        manualReceiptEdits: [{ receiptId: receipt.receiptId, expectedRevision: receipt.revision, amountMinor: owner.correctedMinor }],
+      });
+    });
+    const request = saveInput(initial, changedRows, `adopted-receipt-first-confirm-${suffix}`);
+    const saved = await saveManagePaymentsWorksheet(request);
+    expect(saved.snapshot).toMatchObject({ weekConfirmed: true, revision: 1 });
+    const savedRows = new Map(saved.snapshot.teams.flatMap((team) => team.rows).map((row) => [row.bowlerId, row]));
+    for (const owner of owners) {
+      const before = initialRows.get(owner.bowlerId);
+      const after = savedRows.get(owner.bowlerId);
+      const receiptId = receiptIdByOwner.get(owner.bowlerId);
+      const receipt = after?.manualReceipts.find((candidate) => candidate.receiptId === receiptId);
+      expect(after).toMatchObject({ responsible: before?.responsible, feeMinor: before?.feeMinor });
+      expect(receipt).toMatchObject({
+        receiptId,
+        amountMinor: owner.correctedMinor,
+        revision: 2,
+        businessCollectionLocalDate: initial.selectedOccurrence.localDate,
+      });
+    }
+    const savedExtraReceipt = savedRows.get(thirdBowlerId)?.manualReceipts.find((candidate) => candidate.receiptId === extraCashReceiptId);
+    expect(savedExtraReceipt).toMatchObject({
+      receiptId: extraCashReceiptId,
+      paymentId: extraCashPaymentId,
+      amountMinor: 10_000,
+      revision: 1,
+      businessCollectionLocalDate: initial.selectedOccurrence.localDate,
+    });
+
+    const oldPayments = await db.select().from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+      inArray(payments.id, originalPaymentIds),
+    ));
+    expect(oldPayments).toHaveLength(3);
+    expect(oldPayments.every((payment) => payment.status === "voided")).toBe(true);
+    expect(await db.select().from(paymentVoids).where(and(
+      eq(paymentVoids.organizationId, organizationId),
+      eq(paymentVoids.leagueId, leagueId),
+      inArray(paymentVoids.paymentId, originalPaymentIds),
+    ))).toHaveLength(3);
+    const oldAllocations = await db.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, leagueId),
+      inArray(paymentAllocations.paymentId, originalPaymentIds),
+    ));
+    expect(oldAllocations).toHaveLength(12);
+    expect(oldAllocations.every((allocation) => allocation.state === "voided")).toBe(true);
+    const oldReleases = await db.select().from(weeklyPaymentAllocationReleases).where(and(
+      eq(weeklyPaymentAllocationReleases.organizationId, organizationId),
+      eq(weeklyPaymentAllocationReleases.leagueId, leagueId),
+      inArray(weeklyPaymentAllocationReleases.paymentId, originalPaymentIds),
+    ));
+    expect(oldReleases).toHaveLength(12);
+    expect(oldReleases.reduce((sum, release) => sum + release.releasedAmountMinor, 0)).toBe(23_000);
+    expect(oldReleases.every((release) => release.retainedAmountMinor === 0 && release.replacementAllocationId === null)).toBe(true);
+
+    const replacementPaymentIds = owners.map((owner) => {
+      const receiptId = receiptIdByOwner.get(owner.bowlerId);
+      const receipt = savedRows.get(owner.bowlerId)?.manualReceipts.find((candidate) => candidate.receiptId === receiptId);
+      if (!receipt) throw new Error(`replacement receipt for payer ${owner.bowlerId} is missing`);
+      return receipt.paymentId;
+    });
+    const replacementFundings = await db.select().from(weeklyPaymentFundings).where(and(
+      eq(weeklyPaymentFundings.organizationId, organizationId),
+      eq(weeklyPaymentFundings.leagueId, leagueId),
+      inArray(weeklyPaymentFundings.paymentId, replacementPaymentIds),
+    ));
+    expect(replacementFundings.reduce((sum, funding) => sum + funding.amountMinor, 0)).toBe(60_000);
+    const activeReplacementAllocations = await db.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, leagueId),
+      inArray(paymentAllocations.paymentId, replacementPaymentIds),
+      eq(paymentAllocations.state, "active"),
+    ));
+    expect(activeReplacementAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0)).toBe(16_000);
+
+    if (!extraCashPaymentId || !extraCashFundingId || !extraCashAllocationId || !extraCashApplicationId) {
+      throw new Error("synthetic extra receipt funding evidence is missing");
+    }
+    const weekFour = occurrences[3];
+    const weekFourTarget = weekFour ? obligations.get(`${weekFour.id}:${thirdBowlerId}`) : undefined;
+    if (!weekFourTarget) throw new Error("synthetic fourth-week obligation is missing");
+    const extraReceiptAllocations = await db.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, leagueId),
+      eq(paymentAllocations.paymentId, extraCashPaymentId),
+      eq(paymentAllocations.obligationId, weekFourTarget.obligationId),
+    ));
+    expect(extraReceiptAllocations).toHaveLength(2);
+    expect(extraReceiptAllocations.find((allocation) => allocation.id === extraCashAllocationId)).toMatchObject({
+      amountMinor: 1_000,
+      state: "voided",
+      allocationKind: "ordinary",
+    });
+    const mergedAllocation = extraReceiptAllocations.find((allocation) => allocation.state === "active");
+    if (!mergedAllocation) throw new Error("merged week-four allocation is missing");
+    expect(mergedAllocation).toMatchObject({ amountMinor: 2_000, allocationKind: "ordinary", reviewRequired: false });
+    const mergedApplications = await db.select().from(paymentAllocationFundingApplications).where(and(
+      eq(paymentAllocationFundingApplications.organizationId, organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, leagueId),
+      eq(paymentAllocationFundingApplications.allocationId, mergedAllocation.id),
+    ));
+    expect(mergedApplications).toHaveLength(1);
+    expect(mergedApplications[0]).toMatchObject({
+      paymentId: extraCashPaymentId,
+      creditedBowlerId: thirdBowlerId,
+      genericFundingId: extraCashFundingId,
+      rotatingFundingId: null,
+      sourceAmountMinor: 10_000,
+      amountMinor: 2_000,
+      currency: "USD",
+      obligationId: weekFourTarget.obligationId,
+      responsibilityId: weekFourTarget.responsibilityId,
+      occurrenceId: weekFour.id,
+      teamId,
+      targetKind: "bowler_responsibility",
+      targetPayerBowlerId: thirdBowlerId,
+      assignmentId: null,
+    });
+    const releasedExtraApplication = await db.select().from(paymentAllocationFundingApplications).where(and(
+      eq(paymentAllocationFundingApplications.organizationId, organizationId),
+      eq(paymentAllocationFundingApplications.leagueId, leagueId),
+      eq(paymentAllocationFundingApplications.id, extraCashApplicationId),
+    ));
+    expect(releasedExtraApplication).toHaveLength(1);
+    expect(releasedExtraApplication[0]).toMatchObject({ amountMinor: 1_000, allocationId: extraCashAllocationId });
+    const extraReceiptReleases = await db.select().from(weeklyPaymentAllocationReleases).where(and(
+      eq(weeklyPaymentAllocationReleases.organizationId, organizationId),
+      eq(weeklyPaymentAllocationReleases.leagueId, leagueId),
+      eq(weeklyPaymentAllocationReleases.fundingApplicationId, extraCashApplicationId),
+    ));
+    expect(extraReceiptReleases).toHaveLength(1);
+    expect(extraReceiptReleases[0]).toMatchObject({
+      paymentId: extraCashPaymentId,
+      creditedBowlerId: thirdBowlerId,
+      sourceAllocationId: extraCashAllocationId,
+      sourceApplicationAmountMinor: 1_000,
+      releasedAmountMinor: 1_000,
+      retainedAmountMinor: 0,
+      replacementAllocationId: null,
+      reason: "worksheet_correction",
+    });
+    expect(extraReceiptReleases[0]?.idempotencyKey).toMatch(/^mprel_[0-9a-f]{64}$/);
+
+    const balances = await db.transaction(async (tx) => readOwnedAccountBalancesInTransaction(tx, {
+      organizationId,
+      leagueId,
+      bowlerIds: owners.map((owner) => owner.bowlerId),
+    }));
+    expect(owners.map((owner) => balances.get(owner.bowlerId)?.availableCreditMinor)).toEqual([12_000, 22_000, 12_000]);
+    expect([...balances.values()].every((balance) => balance.confirmedOwedMinor === 0)).toBe(true);
+    const replay = await saveManagePaymentsWorksheet(request);
+    expect(replay).toMatchObject({ replayed: true, snapshot: { revision: 1, weekConfirmed: true } });
+    const replayAllocations = await db.select().from(paymentAllocations).where(and(
+      eq(paymentAllocations.organizationId, organizationId),
+      eq(paymentAllocations.leagueId, leagueId),
+      eq(paymentAllocations.paymentId, extraCashPaymentId),
+      eq(paymentAllocations.obligationId, weekFourTarget.obligationId),
+    ));
+    expect(replayAllocations).toHaveLength(2);
+    expect(replayAllocations.filter((allocation) => allocation.state === "active")).toHaveLength(1);
+    expect(await db.select().from(weeklyPaymentAllocationReleases).where(and(
+      eq(weeklyPaymentAllocationReleases.organizationId, organizationId),
+      eq(weeklyPaymentAllocationReleases.leagueId, leagueId),
+      eq(weeklyPaymentAllocationReleases.fundingApplicationId, extraCashApplicationId),
+    ))).toHaveLength(1);
+  });
+
+  it("records only new manual receipts at receivedDate, preserves existing dates, and keeps the selected occurrence owner", async () => {
+    const initial = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    const selectedLocalDate = initial.selectedOccurrence.localDate;
+    const receivedDate = "2032-09-01";
+    const secondReceivedDate = "2032-09-02";
+
+    const firstRequest = saveInput(initial, [
+      rowChange(initial, mainBowlerId, { newManualReceiptAmountMinor: 321 }),
+    ], `worksheet-received-date-${suffix}`);
+    const customDateRequest = {
+      ...firstRequest,
+      request: { ...firstRequest.request, receivedDate },
+    };
+    expect(managePaymentsSaveRequestFingerprint(customDateRequest.request)).not.toBe(
+      managePaymentsSaveRequestFingerprint({ ...customDateRequest.request, receivedDate: secondReceivedDate }),
+    );
+
+    const firstSave = await saveManagePaymentsWorksheet(customDateRequest);
+    expect(firstSave.snapshot.selectedOccurrence).toMatchObject({
+      occurrenceId: selectedOccurrenceId,
+      localDate: selectedLocalDate,
+    });
+    const firstMainReceipt = firstSave.snapshot.teams.flatMap((team) => team.rows)
+      .find((row) => row.bowlerId === mainBowlerId)?.manualReceipts[0];
+    if (!firstMainReceipt) throw new Error("newly recorded manual receipt is missing");
+    expect(firstMainReceipt).toMatchObject({
+      amountMinor: 321,
+      businessCollectionLocalDate: receivedDate,
+    });
+    const firstReport = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: firstMainReceipt.paymentId });
+    expect(firstReport.rows).toHaveLength(1);
+    expect(firstReport.rows[0]).toMatchObject({
+      paymentId: firstMainReceipt.paymentId,
+      amountMinor: 321,
+      businessDate: receivedDate,
+    });
+    const firstDateList = await getPaymentsPaginated({
+      organizationId,
+      leagueId,
+      bowlerId: mainBowlerId,
+      createdAt: new Date(`${receivedDate}T12:00:00.000Z`),
+    }, 1, 100);
+    expect(firstDateList.items.map((payment) => payment.id)).toContain(firstMainReceipt.paymentId);
+
+    await expect(saveManagePaymentsWorksheet({
+      ...customDateRequest,
+      request: { ...customDateRequest.request, receivedDate: secondReceivedDate },
+    })).rejects.toMatchObject({ code: "idempotency_conflict" });
+
+    const editAndRecordRequest = saveInput(firstSave.snapshot, [
+      rowChange(firstSave.snapshot, mainBowlerId, {
+        manualReceiptEdits: [{ receiptId: firstMainReceipt.receiptId, expectedRevision: firstMainReceipt.revision, amountMinor: 500 }],
+      }),
+      rowChange(firstSave.snapshot, thirdBowlerId, { newManualReceiptAmountMinor: 123 }),
+    ], `worksheet-received-date-edit-${suffix}`);
+    const editAndRecordSave = await saveManagePaymentsWorksheet({
+      ...editAndRecordRequest,
+      request: { ...editAndRecordRequest.request, receivedDate: secondReceivedDate },
+    });
+    expect(editAndRecordSave.snapshot.selectedOccurrence).toMatchObject({ occurrenceId: selectedOccurrenceId, localDate: selectedLocalDate });
+    const editedMainReceipt = editAndRecordSave.snapshot.teams.flatMap((team) => team.rows)
+      .find((row) => row.bowlerId === mainBowlerId)?.manualReceipts[0];
+    const secondNewReceipt = editAndRecordSave.snapshot.teams.flatMap((team) => team.rows)
+      .find((row) => row.bowlerId === thirdBowlerId)?.manualReceipts[0];
+    expect(editedMainReceipt).toMatchObject({
+      receiptId: firstMainReceipt.receiptId,
+      amountMinor: 500,
+      revision: 2,
+      businessCollectionLocalDate: receivedDate,
+    });
+    expect(secondNewReceipt).toMatchObject({ amountMinor: 123, businessCollectionLocalDate: secondReceivedDate });
+
+    const defaultDateSave = await saveManagePaymentsWorksheet(saveInput(editAndRecordSave.snapshot, [
+      rowChange(editAndRecordSave.snapshot, substituteBowlerId, { newManualReceiptAmountMinor: 77 }),
+    ], `worksheet-received-date-omitted-${suffix}`));
+    expect(defaultDateSave.snapshot.selectedOccurrence).toMatchObject({ occurrenceId: selectedOccurrenceId, localDate: selectedLocalDate });
+    expect(defaultDateSave.snapshot.teams.flatMap((team) => team.rows)
+      .find((row) => row.bowlerId === substituteBowlerId)?.manualReceipts[0])
+      .toMatchObject({ amountMinor: 77, businessCollectionLocalDate: selectedLocalDate });
+  });
+
+  it("reads every week from one shared owned-ledger projection and refreshes the selected week after a save", async () => {
+    const serviceDb = (await import("../../server/db.js")).db;
+    const ownedLedger = await import("../../server/services/owned-payment-ledger.js");
+    const rosterPaymentCore = await import("../../server/services/roster-payment-core.js");
+    const transactionSpy = vi.spyOn(serviceDb, "transaction");
+    const ledgerReadSpy = vi.spyOn(ownedLedger, "readOwnedPaymentLedgerReadSnapshotInTransaction");
+    const canonicalProjectionSpy = vi.spyOn(rosterPaymentCore, "readCanonicalDuePastDueV3InTransaction");
+    let season: ManagePaymentsSeasonSnapshot | undefined;
+    try {
+      season = await readManagePaymentsSeasonSnapshot({ organizationId, leagueId });
+      expect(transactionSpy).toHaveBeenCalledTimes(1);
+      expect(transactionSpy).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
+        isolationLevel: "repeatable read",
+        accessMode: "read only",
+      }));
+      expect(ledgerReadSpy).toHaveBeenCalledTimes(1);
+      expect(canonicalProjectionSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      canonicalProjectionSpy.mockRestore();
+      ledgerReadSpy.mockRestore();
+      transactionSpy.mockRestore();
+    }
+    if (!season) throw new Error("Manage Payments season snapshot was not read");
+    expect(Object.keys(season.snapshotsByOccurrence).sort()).toEqual(season.weekOptions.map((week) => week.occurrenceId).sort());
+    expect(season.defaultOccurrenceId).toBeTruthy();
+
+    for (const week of season.weekOptions) {
+      const hydrated = rehydrateManagePaymentsSeasonWeekSnapshot(season, week.occurrenceId);
+      if (hydrated.status !== "ready") throw new Error(`fixture week ${week.occurrenceId} was unexpectedly unavailable`);
+      const individual = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: week.occurrenceId });
+      expect(hydrated.snapshot).toEqual(individual);
+    }
+
+    const selected = rehydrateManagePaymentsSeasonWeekSnapshot(season, selectedOccurrenceId);
+    if (selected.status !== "ready") throw new Error("selected fixture week was unexpectedly unavailable");
+    const saveResponse = await saveManagePaymentsWorksheet(saveInput(selected.snapshot, [
+      rowChange(selected.snapshot, thirdBowlerId, { newManualReceiptAmountMinor: 321 }),
+    ], `season-cache-refresh-${suffix}`));
+    const refreshedSeason = await readManagePaymentsSeasonSnapshot({ organizationId, leagueId });
+    const refreshed = rehydrateManagePaymentsSeasonWeekSnapshot(refreshedSeason, selectedOccurrenceId);
+    if (refreshed.status !== "ready") throw new Error("saved fixture week became unexpectedly unavailable");
+    expect(refreshed.snapshot.revision).toBe(saveResponse.snapshot.revision);
+    expect(refreshed.snapshot.stateFingerprint).toBe(saveResponse.snapshot.stateFingerprint);
+    expect(refreshed.snapshot.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === thirdBowlerId)).toMatchObject({
+      balanceMinor: 321,
+      manualReceipts: [expect.objectContaining({ amountMinor: 321, revision: 1 })],
+    });
+  });
+
+  it("isolates unresolved historical receipt evidence to its week", async () => {
+    const seasonBefore = await readManagePaymentsSeasonSnapshot({ organizationId, leagueId });
+    const badOccurrenceId = seasonBefore.weekOptions.find((week) => week.occurrenceId !== selectedOccurrenceId)?.occurrenceId;
+    const goodOccurrenceId = seasonBefore.weekOptions.find((week) => week.occurrenceId !== badOccurrenceId)?.occurrenceId;
+    if (!badOccurrenceId || !goodOccurrenceId) throw new Error("fixture needs at least two billable weeks");
+    const badWeekSnapshot = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: badOccurrenceId });
+    const thirdBowlerRow = badWeekSnapshot.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === thirdBowlerId);
+    if (!thirdBowlerRow) throw new Error("temporary substitute receipt owner is missing from the historical week");
+    expect(thirdBowlerRow).toMatchObject({ rosterRole: "substitute", responsible: false });
+
+    const memberships = await db.select().from(bowlerLeagues).where(and(
+      eq(bowlerLeagues.leagueId, leagueId),
+      eq(bowlerLeagues.bowlerId, thirdBowlerId),
+    ));
+    expect(memberships).toHaveLength(1);
+    const membership = memberships[0];
+    if (!membership) throw new Error("temporary substitute league membership was not found");
+    expect(membership.active).toBe(true);
+    const responsibilityHistory = await db.select().from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+    ));
+    expect(responsibilityHistory.some((row) => [
+      row.mainBowlerId,
+      row.substituteBowlerId,
+      row.payerBowlerId,
+      row.lineagePayerBowlerId,
+      row.prizePayerBowlerId,
+    ].includes(thirdBowlerId))).toBe(false);
+    const fundingApplicationHistory = await db.select({ id: paymentAllocationFundingApplications.id })
+      .from(paymentAllocationFundingApplications).where(and(
+        eq(paymentAllocationFundingApplications.organizationId, organizationId),
+        eq(paymentAllocationFundingApplications.leagueId, leagueId),
+        eq(paymentAllocationFundingApplications.creditedBowlerId, thirdBowlerId),
+      ));
+    expect(fundingApplicationHistory).toHaveLength(0);
+
+    const saved = await saveManagePaymentsWorksheet(saveInput(badWeekSnapshot, [
+      rowChange(badWeekSnapshot, thirdBowlerId, { newManualReceiptAmountMinor: 1 }),
+    ], `season-cache-owner-isolation-${suffix}`));
+    expect(saved.snapshot.teams.flatMap((team) => team.rows)
+      .find((row) => row.bowlerId === thirdBowlerId)?.manualReceipts).toHaveLength(1);
+
+    const [deactivatedMembership] = await db.update(bowlerLeagues).set({ active: false }).where(and(
+      eq(bowlerLeagues.id, membership.id),
+      eq(bowlerLeagues.active, true),
+    )).returning({ id: bowlerLeagues.id });
+    expect(deactivatedMembership?.id).toBe(membership.id);
+
+    const season = await readManagePaymentsSeasonSnapshot({ organizationId, leagueId });
+    expect(season.snapshotsByOccurrence[badOccurrenceId]).toMatchObject({
+      status: "unavailable",
+      code: "receipt_owner_unresolved",
+    });
+    const good = rehydrateManagePaymentsSeasonWeekSnapshot(season, goodOccurrenceId);
+    if (good.status !== "ready") throw new Error("unaffected fixture week became unavailable");
+    await expect(readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: badOccurrenceId }))
+      .rejects.toMatchObject({ code: "incompatible_canonical_state" });
+    const individualGood = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: goodOccurrenceId });
+    expect(good.snapshot).toEqual(individualGood);
+  });
+
+  it("blocks adopted legacy weekly responsibility, rotating assignment, and allocation repair writers", async () => {
+    const occurrence = (await db.select().from(leagueOccurrences).where(eq(leagueOccurrences.id, selectedOccurrenceId)).limit(1))[0];
+    if (!occurrence) throw new Error("selected weekly occurrence fixture was not found");
+    const timing = calculateRosterPaymentTiming(occurrence.startAt);
+    const responsibility = {
+      occurrenceId: selectedOccurrenceId,
+      teamId,
+      slotIndex: 0,
+      positionIndex: 0,
+      kind: "main" as const,
+      mainBowlerId,
+      substituteBowlerId: null,
+      payerBowlerId: mainBowlerId,
+      policy: "main_pays_full" as const,
+      amountMinor: 2_500,
+      lineageAmountMinor: null,
+      prizeFundAmountMinor: null,
+      ...timing,
+    };
+    const rotatingAssignment = {
+      occurrenceId: selectedOccurrenceId,
+      teamId,
+      slotIndex: 1,
+      expectedRevision: null,
+      actualBowlerId: substituteBowlerId,
+    };
+    const repairTargetAllocations = [{ obligationId: mainLegacyObligationId, amountMinor: 2_500 }];
+    const repairRequestWithoutFingerprint = {
+      paymentId: 1,
+      expectedOldAllocationFingerprint: `lvrepaircashalloc:v1:${"c".repeat(64)}`,
+      expectedTargetAllocationFingerprint: historicalCashAllocationFingerprint(repairTargetAllocations.map((row) => ({
+        ...row,
+        state: "active" as const,
+        allocationKind: "ordinary" as const,
+      }))),
+      targetAllocations: repairTargetAllocations,
+      reason: "test adopted correction guard",
+      idempotencyKey: `legacy-repair-guard-${randomUUID()}`,
+    };
+    const repairRequest = {
+      ...repairRequestWithoutFingerprint,
+      requestFingerprint: canonicalHistoricalCashAllocationRepairFingerprint({
+        organizationId,
+        leagueId,
+        request: repairRequestWithoutFingerprint,
+      }),
+    };
+
+    await expect(recordOccurrenceResponsibilities({
+      organizationId,
+      leagueId,
+      actorUserId,
+      commandKey: `legacy-responsibility-guard-${randomUUID()}`,
+      responsibilities: [responsibility],
+      requestFingerprint: canonicalResponsibilityFingerprint([responsibility]),
+    })).rejects.toMatchObject({ code: "MANAGE_PAYMENTS_REQUIRED" });
+
+    const rotatingRequest = {
+      commandKey: `legacy-rotation-guard-${randomUUID()}`,
+      assignments: [rotatingAssignment],
+      requestFingerprint: "",
+    };
+    rotatingRequest.requestFingerprint = canonicalRotatingAssignmentFingerprint(rotatingRequest);
+    await expect(saveRotatingOccurrenceAssignments({
+      organizationId,
+      leagueId,
+      actorUserId,
+      request: rotatingRequest,
+    })).rejects.toMatchObject({ code: "MANAGE_PAYMENTS_REQUIRED" });
+
+    await expect(repairHistoricalCashPaymentAllocation({
+      organizationId,
+      leagueId,
+      actorUserId,
+      allowlist: { paymentAmountsMinor: { "1": 2_500 } },
+      request: repairRequest,
+    })).rejects.toMatchObject({ code: "MANAGE_PAYMENTS_REQUIRED" });
+  });
+
+  it("records an exact no-debt cash advance, leaves it as owned credit, and replays without duplicating income", async () => {
+    const amountMinor = 1_234;
+    const quote = await quoteCanonicalManualPayment({
+      organizationId,
+      leagueId,
+      request: { payerBowlerId: thirdBowlerId, amountMinor, type: "cash", notes: null },
+    });
+    expect(quote).toMatchObject({ amountMinor, payerBowlerId: thirdBowlerId, type: "cash" });
+    const request = {
+      payerBowlerId: thirdBowlerId,
+      amountMinor,
+      type: "cash" as const,
+      notes: null,
+      idempotencyKey: `manual-advance-${suffix}`,
+      requestFingerprint: canonicalManualReceiptQuoteFingerprint({
+        organizationId,
+        leagueId,
+        payerBowlerId: thirdBowlerId,
+        amountMinor,
+        type: "cash",
+        checkNumber: null,
+        notes: null,
+      }),
+    };
+    const result = await recordCanonicalManualPayment({ organizationId, leagueId, actorUserId, request });
+    if (result.contractVersion !== "canonical-manual-record/2") throw new Error("manual advance used the legacy payment path");
+    expect(result).toMatchObject({
+      contractVersion: "canonical-manual-record/2",
+      amountMinor,
+      payerBowlerId: thirdBowlerId,
+      appliedAmountMinor: 0,
+      account: { availableCreditMinor: amountMinor, confirmedOwedMinor: 0, netBalanceMinor: amountMinor },
+      receipt: { revision: 1, occurrenceId: selectedOccurrenceId },
+    });
+    expect(result.payment).toMatchObject({ bowlerId: thirdBowlerId, amount: amountMinor, type: "cash", status: "paid" });
+    expect(result.allocations).toEqual([]);
+    expect(await db.select().from(weeklyPaymentWeekConfirmations).where(and(
+      eq(weeklyPaymentWeekConfirmations.organizationId, organizationId),
+      eq(weeklyPaymentWeekConfirmations.leagueId, leagueId),
+    ))).toHaveLength(0);
+
+    await expect(recordCanonicalManualPayment({ organizationId, leagueId, actorUserId, request })).rejects.toMatchObject({ code: "IDEMPOTENCY_REPLAY" });
+    const storedPayments = await db.select().from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+      eq(payments.idempotencyKey, request.idempotencyKey),
+    ));
+    expect(storedPayments).toHaveLength(1);
+    await db.transaction(async (tx) => {
+      const balance = (await readOwnedAccountBalancesInTransaction(tx, {
+        organizationId,
+        leagueId,
+        bowlerIds: [thirdBowlerId],
+      })).get(thirdBowlerId);
+      expect(balance?.availableCreditMinor).toBe(amountMinor);
+    });
+  });
+
+  it("reconciles materialized split final targets after the earlier ordinary-week forecast", async () => {
+    const occurrences = await db.select({ id: leagueOccurrences.id, startAt: leagueOccurrences.startAt })
+      .from(leagueOccurrences)
+      .where(and(eq(leagueOccurrences.organizationId, organizationId), eq(leagueOccurrences.leagueId, leagueId)))
+      .orderBy(asc(leagueOccurrences.plannedOrdinal));
+    const currentWeek = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    expect(currentWeek).toMatchObject({ weekConfirmed: false, needsConfirmation: true });
+    await saveManagePaymentsWorksheet(saveInput(currentWeek, [], `final-current-week-confirm-${suffix}`));
+    const finalOccurrences = occurrences.slice(-2);
+    expect(finalOccurrences).toHaveLength(2);
+    const [mainSlot] = await db.select({ id: teamPaymentSlots.id }).from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, organizationId),
+      eq(teamPaymentSlots.leagueId, leagueId),
+      eq(teamPaymentSlots.teamId, teamId),
+      eq(teamPaymentSlots.slotIndex, 0),
+      eq(teamPaymentSlots.occupant, "main"),
+    ));
+    if (!mainSlot) throw new Error("worksheet main payment slot is missing");
+
+    for (const occurrence of finalOccurrences) {
+      const [responsibility] = await db.insert(occurrencePaymentResponsibilities).values({
+        organizationId,
+        leagueId,
+        occurrenceId: occurrence.id,
+        teamId,
+        slotId: mainSlot.id,
+        slotIndex: 0,
+        positionIndex: 0,
+        version: 1,
+        state: "active",
+        responsibilityKind: "split",
+        mainBowlerId,
+        substituteBowlerId,
+        payerBowlerId: mainBowlerId,
+        lineagePayerBowlerId: mainBowlerId,
+        prizePayerBowlerId: substituteBowlerId,
+        policy: "special_split",
+        worksheetFeeComponent: null,
+        amountMinor: 2_500,
+        lineageAmountMinor: 1_800,
+        prizeFundAmountMinor: 700,
+        currency: "USD",
+        dueAt: occurrence.startAt,
+        pastDueAt: occurrence.startAt,
+        recordedByUserId: actorUserId,
+      }).returning({ id: occurrencePaymentResponsibilities.id });
+      if (!responsibility) throw new Error("final-week main responsibility was not created");
+      await db.insert(paymentObligations).values([
+        {
+          organizationId,
+          leagueId,
+          occurrenceId: occurrence.id,
+          responsibilityId: responsibility.id,
+          component: "lineage",
+          payerBowlerId: mainBowlerId,
+          amountMinor: 1_800,
+          currency: "USD",
+          dueAt: occurrence.startAt,
+          pastDueAt: occurrence.startAt,
+          state: "open",
+          createdByUserId: actorUserId,
+        },
+        {
+          organizationId,
+          leagueId,
+          occurrenceId: occurrence.id,
+          responsibilityId: responsibility.id,
+          component: "prize",
+          payerBowlerId: substituteBowlerId,
+          amountMinor: 700,
+          currency: "USD",
+          dueAt: occurrence.startAt,
+          pastDueAt: occurrence.startAt,
+          state: "open",
+          createdByUserId: actorUserId,
+        },
+      ]);
+    }
+
+    const recordAdvance = async (payerBowlerId: number, amountMinor: number, idempotencyKey: string) => {
+      const quote = await quoteCanonicalManualPayment({
+        organizationId,
+        leagueId,
+        request: { payerBowlerId, amountMinor, type: "cash", notes: null },
+      });
+      return recordCanonicalManualPayment({
+        organizationId,
+        leagueId,
+        actorUserId,
+        request: {
+          payerBowlerId,
+          amountMinor,
+          type: "cash",
+          notes: null,
+          idempotencyKey,
+          requestFingerprint: canonicalManualReceiptQuoteFingerprint({
+            organizationId,
+            leagueId,
+            payerBowlerId,
+            amountMinor,
+            type: "cash",
+            checkNumber: null,
+            notes: null,
+          }),
+        },
+      });
+    };
+    const mainAdvance = await recordAdvance(mainBowlerId, 8_600, `final-main-forecast-credit-${suffix}`);
+    const substituteAdvance = await recordAdvance(substituteBowlerId, 1_400, `final-sub-forecast-credit-${suffix}`);
+    expect(mainAdvance).toMatchObject({ appliedAmountMinor: 2_500, account: { availableCreditMinor: 6_100, confirmedOwedMinor: 0 } });
+    expect(substituteAdvance).toMatchObject({ appliedAmountMinor: 0, account: { availableCreditMinor: 1_400, confirmedOwedMinor: 0 } });
+
+    const snapshot = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    const rowsByBowler = new Map(snapshot.teams.flatMap((team) => team.rows).map((row) => [row.bowlerId, row]));
+    expect(rowsByBowler.get(mainBowlerId)?.finalTwoWeeksPaid).toBe(true);
+    expect(rowsByBowler.get(substituteBowlerId)?.finalTwoWeeksPaid).toBe(true);
+
+    const receiptSave = await saveManagePaymentsWorksheet(saveInput(snapshot, [
+      rowChange(snapshot, thirdBowlerId, { newManualReceiptAmountMinor: 321 }),
+    ], `final-week-fresh-receipt-${suffix}`));
+    const afterReceiptSave = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    const afterRowsByBowler = new Map(afterReceiptSave.teams.flatMap((team) => team.rows).map((row) => [row.bowlerId, row]));
+    expect(afterReceiptSave.revision).toBe(receiptSave.snapshot.revision);
+    expect(afterReceiptSave.stateFingerprint).toBe(receiptSave.snapshot.stateFingerprint);
+    expect(afterRowsByBowler.get(thirdBowlerId)).toMatchObject({
+      balanceMinor: 321,
+      manualReceipts: [expect.objectContaining({ amountMinor: 321, revision: 1 })],
+    });
+    expect(afterRowsByBowler.get(mainBowlerId)?.finalTwoWeeksPaid).toBe(true);
+    expect(afterRowsByBowler.get(substituteBowlerId)?.finalTwoWeeksPaid).toBe(true);
+  });
+
+  it("rejects adopted manual tenders for cross-organization and other-league payers at write time", async () => {
+    const siblingLeague = await createLeagueWithCanonicalSetup({
+      scope: { organizationId, actorUserId },
+      league: {
+        name: `Worksheet sibling league ${suffix}`,
+        description: "Manual payer membership isolation fixture",
+        organizationId,
+        locationId,
+        active: true,
+        seasonStart: "2033-09-05",
+        seasonEnd: "2033-09-26",
+        weekDay: "Monday",
+        totalBowlingWeeks: 4,
+        skipDates: [],
+        cancelledDates: [],
+        doublePayDates: [],
+        competitionStartTime: "19:00",
+        timezone: "America/New_York",
+        weeklyFee: 2_500,
+        paymentMode: "weekly",
+        payingLineupSize: 3,
+        seasonNumber: 1,
+      },
+      setup: { contractVersion: LEAGUE_SETUP_INTEGRATION_REQUEST_VERSION, idempotencyKey: `sibling-setup-${suffix}` },
+    });
+    const [siblingTeam] = await db.insert(teams).values({ name: `Worksheet sibling team ${suffix}`, number: 1, leagueId: siblingLeague.id }).returning({ id: teams.id });
+    const [siblingMember] = await db.insert(bowlers).values({ name: "Sibling League Bowler", organizationId }).returning({ id: bowlers.id });
+    if (!siblingTeam || !siblingMember) throw new Error("sibling league payer fixture was not created");
+    await db.insert(bowlerLeagues).values({ bowlerId: siblingMember.id, leagueId: siblingLeague.id, teamId: siblingTeam.id, active: true, order: 0 });
+
+    const [foreignOrganization] = await db.insert(organizations).values({ name: `Foreign ${suffix}`, slug: `foreign-${suffix}` }).returning({ id: organizations.id });
+    if (!foreignOrganization) throw new Error("foreign organization fixture was not created");
+    const [foreignBowler] = await db.insert(bowlers).values({ name: "Foreign Bowler", organizationId: foreignOrganization.id }).returning({ id: bowlers.id });
+    if (!foreignBowler) throw new Error("foreign bowler fixture was not created");
+
+    for (const [index, payerBowlerId] of [siblingMember.id, foreignBowler.id].entries()) {
+      const amountMinor = 1_000 + index;
+      const request = {
+        payerBowlerId,
+        amountMinor,
+        type: "cash" as const,
+        notes: null,
+        idempotencyKey: `manual-invalid-scope-${index}-${suffix}`,
+        requestFingerprint: canonicalManualReceiptQuoteFingerprint({
+          organizationId,
+          leagueId,
+          payerBowlerId,
+          amountMinor,
+          type: "cash",
+          checkNumber: null,
+          notes: null,
+        }),
+      };
+      await expect(recordCanonicalManualPayment({ organizationId, leagueId, actorUserId, request }))
+        .rejects.toMatchObject({ code: "PAYER_SCOPE_MISMATCH" });
+    }
+    expect(await db.select().from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+    ))).toHaveLength(0);
+    expect(await db.select().from(weeklyPaymentWorksheetReceipts).where(and(
+      eq(weeklyPaymentWorksheetReceipts.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceipts.leagueId, leagueId),
+    ))).toHaveLength(0);
+  });
+
+  it("replaces adopted cash totals and moves collection periods through append-only receipt heads", async () => {
+    const amountMinor = 2_500;
+    const quote = await quoteCanonicalManualPayment({
+      organizationId,
+      leagueId,
+      request: { payerBowlerId: thirdBowlerId, amountMinor, type: "cash", notes: "receipt memo" },
+    });
+    const initial = await recordCanonicalManualPayment({
+      organizationId,
+      leagueId,
+      actorUserId,
+      request: {
+        payerBowlerId: thirdBowlerId,
+        amountMinor,
+        type: "cash",
+        notes: "receipt memo",
+        idempotencyKey: `manual-replace-${suffix}`,
+        requestFingerprint: quote.fingerprint,
+      },
+    });
+    if (initial.contractVersion !== "canonical-manual-record/2") throw new Error("manual payment used the legacy record path");
+    const originalReceiptId = initial.receipt.receiptId;
+    const businessDate = initial.receipt.businessCollectionLocalDate;
+    const reason = "Correct the recorded cash total";
+    const editRequest = {
+      paymentId: initial.payment.id,
+      correctionMode: "edit_cash" as const,
+      amountMinor: 4_000,
+      paymentDate: businessDate,
+      reason,
+      idempotencyKey: `manual-edit-${suffix}`,
+      requestFingerprint: "",
+    };
+    editRequest.requestFingerprint = canonicalCashPaymentEditFingerprint(editRequest);
+    const edited = await editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: editRequest });
+    if (edited.contractVersion !== "canonical-cash-payment-edit/2") throw new Error("manual payment used the legacy edit path");
+    expect(edited).toMatchObject({
+      contractVersion: "canonical-cash-payment-edit/2",
+      originalPaymentId: initial.payment.id,
+      oldAmountMinor: amountMinor,
+      newAmountMinor: 4_000,
+      oldPaymentDate: businessDate,
+      newPaymentDate: businessDate,
+      originalReceiptId,
+      replacementReceiptId: originalReceiptId,
+      receiptRevision: 2,
+      payment: { bowlerId: thirdBowlerId, amount: 4_000, status: "paid", notes: "receipt memo" },
+    });
+    const originalRows = await db.select().from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+      eq(payments.id, initial.payment.id),
+    ));
+    expect(originalRows[0]?.status).toBe("voided");
+    const [samePeriodHead] = await db.select().from(weeklyPaymentWorksheetReceipts).where(eq(weeklyPaymentWorksheetReceipts.id, originalReceiptId));
+    expect(samePeriodHead?.occurrenceId).toBe(selectedOccurrenceId);
+    const samePeriodRevisions = await db.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, leagueId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, originalReceiptId),
+    )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision));
+    expect(samePeriodRevisions.map((row) => [row.receiptRevision, row.paymentId, row.amountMinor, row.revisionKind])).toEqual([
+      [1, initial.payment.id, amountMinor, "manual_record"],
+      [2, edited.replacementPaymentId, 4_000, "manual_edit"],
+    ]);
+
+    const [nextOccurrence] = await db.select().from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, organizationId),
+      eq(leagueOccurrences.leagueId, leagueId),
+    )).orderBy(asc(leagueOccurrences.plannedOrdinal)).offset(1).limit(1);
+    if (!nextOccurrence?.authoritativeLocalDate) throw new Error("next canonical collection date is missing");
+    const movedRequest = {
+      paymentId: edited.replacementPaymentId,
+      correctionMode: "edit_cash" as const,
+      amountMinor: 4_000,
+      paymentDate: nextOccurrence.authoritativeLocalDate,
+      reason: "Move cash receipt to the correct collection week",
+      idempotencyKey: `manual-date-move-${suffix}`,
+      requestFingerprint: "",
+    };
+    movedRequest.requestFingerprint = canonicalCashPaymentEditFingerprint(movedRequest);
+    const moved = await editCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: movedRequest });
+    if (moved.contractVersion !== "canonical-cash-payment-edit/2") throw new Error("manual payment date move used the legacy edit path");
+    expect(moved).toMatchObject({
+      contractVersion: "canonical-cash-payment-edit/2",
+      originalPaymentId: edited.replacementPaymentId,
+      oldPaymentDate: businessDate,
+      newPaymentDate: nextOccurrence.authoritativeLocalDate,
+      originalReceiptId,
+      receiptRevision: 1,
+    });
+    expect(moved.replacementReceiptId).not.toBe(originalReceiptId);
+    const [oldReceiptAfterMove] = await db.select().from(weeklyPaymentWorksheetReceipts).where(eq(weeklyPaymentWorksheetReceipts.id, originalReceiptId));
+    const oldHeadRevisions = await db.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, leagueId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, originalReceiptId),
+    )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision));
+    expect(oldReceiptAfterMove?.occurrenceId).toBe(selectedOccurrenceId);
+    expect(oldHeadRevisions.at(-1)).toMatchObject({ paymentId: null, amountMinor: 0, revisionKind: "manual_clear" });
+    const [newReceipt] = await db.select().from(weeklyPaymentWorksheetReceipts).where(eq(weeklyPaymentWorksheetReceipts.id, moved.replacementReceiptId));
+    expect(newReceipt?.occurrenceId).toBe(nextOccurrence.id);
+    const [newHeadRevision] = await db.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, leagueId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, moved.replacementReceiptId),
+    ));
+    expect(newHeadRevision).toMatchObject({ receiptRevision: 1, paymentId: moved.replacementPaymentId, amountMinor: 4_000, revisionKind: "manual_record" });
+
+    const deleteRequest = {
+      paymentId: moved.replacementPaymentId,
+      reason: "Entered against the wrong bowler",
+      idempotencyKey: `manual-clear-${suffix}`,
+      requestFingerprint: "",
+    };
+    deleteRequest.requestFingerprint = canonicalCashPaymentDeleteFingerprint(deleteRequest);
+    const cleared = await deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: deleteRequest });
+    expect(cleared).toMatchObject({
+      contractVersion: "canonical-cash-payment-delete/2",
+      deleted: false,
+      cleared: true,
+      paymentId: moved.replacementPaymentId,
+      receiptId: moved.replacementReceiptId,
+      receiptRevision: 2,
+    });
+    const [lastRevision] = await db.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.leagueId, leagueId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, moved.replacementReceiptId),
+    )).orderBy(desc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision)).limit(1);
+    expect(lastRevision).toMatchObject({ paymentId: null, amountMinor: 0, revisionKind: "manual_clear" });
+    const voidEvidence = await db.select().from(paymentVoids).where(and(
+      eq(paymentVoids.organizationId, organizationId),
+      eq(paymentVoids.leagueId, leagueId),
+      eq(paymentVoids.paymentId, moved.replacementPaymentId),
+    ));
+    expect(voidEvidence).toHaveLength(1);
+    await expect(deleteCanonicalCashPayment({ organizationId, leagueId, actorUserId, request: deleteRequest })).rejects.toMatchObject({ code: "IDEMPOTENCY_REPLAY" });
+  });
+
+  it("confirms legacy rows, versions payer responsibility, replaces and clears exact receipts atomically", async () => {
+    const initial = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    expect(initial.weekConfirmed).toBe(false);
+    expect(initial.needsConfirmation).toBe(true);
+    const before = await db.select().from(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, mainLegacyResponsibilityId));
+    expect(before[0]?.state).toBe("active");
+    expect(await db.select().from(weeklyPaymentWeekConfirmations).where(eq(weeklyPaymentWeekConfirmations.occurrenceId, selectedOccurrenceId))).toHaveLength(0);
+
+    const emptyConfirmation = saveInput(initial, [], "worksheet-empty-confirm-0001");
+    const firstSave = await saveManagePaymentsWorksheet(emptyConfirmation);
+    expect(firstSave.snapshot).toMatchObject({ weekConfirmed: true, needsConfirmation: false, revision: 1 });
+    const legacyAfter = await db.select().from(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, mainLegacyResponsibilityId));
+    expect(legacyAfter[0]?.state).toBe("active");
+    const newResponsibilities = await db.select().from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, selectedOccurrenceId),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+      eq(occurrencePaymentResponsibilities.responsibilityKind, "worksheet"),
+    ));
+    expect(newResponsibilities).toHaveLength(0);
+    const replay = await saveManagePaymentsWorksheet(emptyConfirmation);
+    expect(replay.replayed).toBe(true);
+    expect(replay.snapshot.revision).toBe(1);
+    const oldObligation = await db.select().from(paymentObligations).where(eq(paymentObligations.id, mainLegacyObligationId));
+    expect(oldObligation[0]?.state).toBe("open");
+
+    let current = firstSave.snapshot;
+    const [mainObligation] = await db.select().from(paymentObligations).where(and(
+      eq(paymentObligations.organizationId, organizationId),
+      eq(paymentObligations.leagueId, leagueId),
+      eq(paymentObligations.responsibilityId, mainLegacyResponsibilityId),
+    ));
+    if (!mainObligation) throw new Error("main worksheet obligation is missing");
+    const { rotatingTender } = await db.transaction(async (tx) => {
+      const [createdTender] = await tx.insert(payments).values({
+        organizationId,
+        leagueId,
+        bowlerId: mainBowlerId,
+        amount: 10_000,
+        status: "paid",
+        type: "cash",
+        paidByUserId: actorUserId,
+        notes: "rotating lot release fixture",
+      }).returning({ id: payments.id });
+      if (!createdTender) throw new Error("rotating source tender fixture was not created");
+      const [createdFunding] = await tx.insert(rotatingCreditFundings).values({
+        organizationId,
+        leagueId,
+        bowlerId: mainBowlerId,
+        paymentId: createdTender.id,
+        amountMinor: 10_000,
+        currency: "USD",
+        fundingKind: "cash",
+        idempotencyKey: "rotating-lot-fixture-0001",
+        requestFingerprint: `lvrotcrreq:v1:${"c".repeat(64)}`,
+        quoteFingerprint: `lvrotcrquote:v1:${"d".repeat(64)}`,
+        actorUserId,
+      }).returning({ id: rotatingCreditFundings.id });
+      if (!createdFunding) throw new Error("rotating funding fixture was not created");
+      const [rotationAllocation] = await tx.insert(paymentAllocations).values({
+        organizationId,
+        leagueId,
+        paymentId: createdTender.id,
+        obligationId: mainObligation.id,
+        amountMinor: 2_500,
+        currency: "USD",
+        state: "active",
+        allocationKind: "rotating_credit",
+        recordedByUserId: actorUserId,
+      }).returning({ id: paymentAllocations.id });
+      if (!rotationAllocation) throw new Error("rotating allocation fixture was not created");
+      await tx.insert(paymentAllocationFundingApplications).values({
+        organizationId,
+        leagueId,
+        allocationId: rotationAllocation.id,
+        paymentId: createdTender.id,
+        creditedBowlerId: mainBowlerId,
+        genericFundingId: null,
+        rotatingFundingId: createdFunding.id,
+        sourceAmountMinor: 10_000,
+        amountMinor: 2_500,
+        currency: "USD",
+        obligationId: mainObligation.id,
+        responsibilityId: mainObligation.responsibilityId,
+        occurrenceId: selectedOccurrenceId,
+        teamId,
+        targetKind: "bowler_responsibility",
+        targetPayerBowlerId: mainBowlerId,
+        assignmentId: null,
+        appliedByUserId: actorUserId,
+      });
+      await tx.update(paymentObligations).set({ state: "settled" }).where(eq(paymentObligations.id, mainObligation.id));
+      return { rotatingTender: createdTender };
+    });
+    current = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: selectedOccurrenceId });
+    expect(current.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === mainBowlerId)?.balanceMinor).toBe(7_500);
+
+    const switchToSub = saveInput(current, [
+      rowChange(current, mainBowlerId, { responsible: false }),
+      rowChange(current, substituteBowlerId, { responsible: true }),
+    ], "worksheet-switch-payer-0003");
+    current = (await saveManagePaymentsWorksheet(switchToSub)).snapshot;
+    const switchedRows = current.teams.flatMap((team) => team.rows);
+    expect(switchedRows.find((row) => row.bowlerId === mainBowlerId)).toMatchObject({ responsible: false, balanceMinor: 10_000 });
+    expect(switchedRows.find((row) => row.bowlerId === substituteBowlerId)).toMatchObject({ responsible: true, feeMinor: 2_500, balanceMinor: -2_500 });
+    expect(await db.select().from(weeklyPaymentAllocationReleases).where(and(
+      eq(weeklyPaymentAllocationReleases.organizationId, organizationId),
+      eq(weeklyPaymentAllocationReleases.leagueId, leagueId),
+      eq(weeklyPaymentAllocationReleases.creditedBowlerId, mainBowlerId),
+    ))).toHaveLength(1);
+
+    current = (await saveManagePaymentsWorksheet(saveInput(current, [rowChange(current, substituteBowlerId, { newManualReceiptAmountMinor: 2_500 })], "worksheet-sub-cash-0004"))).snapshot;
+    const subWithReceipt = current.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === substituteBowlerId);
+    const originalSubReceipt = subWithReceipt?.manualReceipts[0];
+    if (!originalSubReceipt) throw new Error("substitute cash receipt is missing");
+    expect(originalSubReceipt).toMatchObject({ amountMinor: 2_500, revision: 1 });
+    const originalSubPaymentId = originalSubReceipt.paymentId;
+    current = (await saveManagePaymentsWorksheet(saveInput(current, [rowChange(current, substituteBowlerId, {
+      manualReceiptEdits: [{ receiptId: originalSubReceipt.receiptId, expectedRevision: originalSubReceipt.revision, amountMinor: 4_000 }],
+    })], "worksheet-sub-cash-edit-0005"))).snapshot;
+    const editedSubReceipt = current.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === substituteBowlerId)?.manualReceipts[0];
+    if (!editedSubReceipt) throw new Error("edited substitute cash receipt is missing");
+    expect(editedSubReceipt).toMatchObject({
+      receiptId: originalSubReceipt.receiptId,
+      amountMinor: 4_000,
+      revision: 2,
+      businessCollectionLocalDate: originalSubReceipt.businessCollectionLocalDate,
+    });
+    const editedReceiptReport = await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: editedSubReceipt.paymentId });
+    expect(editedReceiptReport.rows).toHaveLength(1);
+    expect(editedReceiptReport.rows[0]).toMatchObject({
+      paymentId: editedSubReceipt.paymentId,
+      amountMinor: 4_000,
+      businessDate: originalSubReceipt.businessCollectionLocalDate,
+    });
+    expect(await getVisiblePaymentByIdForOrganization(originalSubPaymentId, organizationId)).toBeUndefined();
+    await expect(readPaymentReceiptProjection({ organizationId, paymentId: originalSubPaymentId })).rejects.toThrow("payment not found");
+    const substitutePaymentList = await getPaymentsPaginated({ organizationId, leagueId, bowlerId: substituteBowlerId }, 1, 100);
+    expect(substitutePaymentList.items.map((payment) => payment.id)).toContain(editedSubReceipt.paymentId);
+    expect(substitutePaymentList.items.map((payment) => payment.id)).not.toContain(originalSubPaymentId);
+    const collectionDateList = await getPaymentsPaginated({
+      organizationId,
+      leagueId,
+      bowlerId: substituteBowlerId,
+      createdAt: new Date(`${originalSubReceipt.businessCollectionLocalDate}T12:00:00.000Z`),
+    }, 1, 100);
+    expect(collectionDateList.items.map((payment) => payment.id)).toContain(editedSubReceipt.paymentId);
+    expect(collectionDateList.items.map((payment) => payment.id)).not.toContain(originalSubPaymentId);
+
+    const unchangedRotatingReceipt = await getVisiblePaymentByIdForOrganization(rotatingTender.id, organizationId);
+    expect(unchangedRotatingReceipt?.id).toBe(rotatingTender.id);
+    expect(current.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === substituteBowlerId)).toMatchObject({
+      balanceMinor: 1_500,
+      manualReceipts: [expect.objectContaining({ receiptId: originalSubReceipt?.receiptId, amountMinor: 4_000, revision: 2 })],
+    });
+
+    current = (await saveManagePaymentsWorksheet(saveInput(current, [rowChange(current, mainBowlerId, {
+      newManualReceiptAmountMinor: 1_000,
+    })], "worksheet-main-cash-0010"))).snapshot;
+
+    const mainReceipt = current.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === mainBowlerId)?.manualReceipts[0];
+    if (!mainReceipt) throw new Error("main cash receipt is missing");
+    const captureAt = new Date();
+    const cardOperation = await prepareAccountPaymentOperation({
+      requestKey: `worksheet-card-arrival-${randomUUID()}`,
+      organizationId,
+      leagueId,
+      payerBowlerId: thirdBowlerId,
+      amountMinor: 5_000,
+      fundingPortions: [{ portionIndex: 0, creditedBowlerId: thirdBowlerId, amountMinor: 5_000 }],
+      recipientEvidence: [{
+        recipientBowlerId: thirdBowlerId,
+        role: "self",
+        paymentLinkId: null,
+        linkFingerprint: null,
+        selection: { kind: "explicit_amount", amountMinor: 5_000 },
+      }],
+      currency: "USD",
+      providerName: "square",
+      locationId,
+      providerLocationId: null,
+      authorizingUserId: actorUserId,
+      sourceKind: "new_card",
+      sourceId: `test-source-${randomUUID()}`,
+      customerId: null,
+      buyerEmail: "worksheet-card@example.test",
+      storeCard: false,
+      quoteFingerprint: `lvaccountfundquote:v4:${randomUUID().replaceAll("-", "").repeat(2)}`,
+      now: captureAt,
+    });
+    const providerPaymentId = `worksheet-card-provider-${cardOperation.id}`;
+    await db.update(paymentOperations).set({
+      status: "reconciliation_required",
+      providerObjectId: providerPaymentId,
+      errorClassification: "provider_unknown",
+      errorCode: "CAPTURE_FINALIZATION_PENDING",
+      attemptCount: 1,
+      nextAttemptAt: null,
+      dispatchClaimedAt: captureAt.toISOString(),
+      startedAt: captureAt.toISOString(),
+      completedAt: captureAt.toISOString(),
+      updatedAt: captureAt.toISOString(),
+    }).where(eq(paymentOperations.id, cardOperation.id));
+    const recoveredCard = await recoverRosterPaymentOperation({
+      organizationId,
+      leagueId,
+      operationId: cardOperation.id,
+      actorUserId,
+      now: captureAt,
+    });
+    expect(recoveredCard.status).toBe("succeeded");
+    const [cardTender] = await db.select({ id: payments.id }).from(payments).where(and(
+      eq(payments.organizationId, organizationId),
+      eq(payments.leagueId, leagueId),
+      eq(payments.paymentOperationId, cardOperation.id),
+    )).limit(1);
+    if (!cardTender) throw new Error("concurrent card tender fixture was not created");
+    await db.transaction(async (tx) => {
+      const [cardReceipt] = await tx.insert(weeklyPaymentWorksheetReceipts).values({
+        organizationId,
+        leagueId,
+        occurrenceId: selectedOccurrenceId,
+        payerBowlerId: thirdBowlerId,
+        receiptKind: "card",
+      }).returning({ id: weeklyPaymentWorksheetReceipts.id });
+      if (!cardReceipt) throw new Error("concurrent card receipt fixture was not created");
+      await tx.insert(weeklyPaymentWorksheetReceiptRevisions).values({
+        organizationId,
+        leagueId,
+        receiptId: cardReceipt.id,
+        receiptRevision: 1,
+        paymentId: cardTender.id,
+        revisionKind: "card_association",
+        amountMinor: 5_000,
+        businessCollectionLocalDate: current.selectedOccurrence.localDate,
+        recordedByUserId: null,
+      });
+    });
+    const combinedCorrection = saveInput(current, [
+      rowChange(current, mainBowlerId, { manualReceiptEdits: [{ receiptId: mainReceipt.receiptId, expectedRevision: mainReceipt.revision, amountMinor: 0 }] }),
+      rowChange(current, thirdBowlerId, { newManualReceiptAmountMinor: 1_000 }),
+    ], "worksheet-clear-and-new-0006");
+    const finalSave = await saveManagePaymentsWorksheet(combinedCorrection);
+    current = finalSave.snapshot;
+    const finalRows = current.teams.flatMap((team) => team.rows);
+    expect(finalRows.find((row) => row.bowlerId === mainBowlerId)).toMatchObject({ manualReceipts: [], balanceMinor: 10_000 });
+    expect(finalRows.find((row) => row.bowlerId === thirdBowlerId)).toMatchObject({ balanceMinor: 6_000 });
+    expect(finalRows.find((row) => row.bowlerId === thirdBowlerId)?.cardReceipts).toHaveLength(1);
+    expect(finalRows.find((row) => row.bowlerId === thirdBowlerId)?.manualReceipts).toHaveLength(1);
+    const sourceRevision = await db.select().from(weeklyPaymentWorksheetReceiptRevisions).where(and(
+      eq(weeklyPaymentWorksheetReceiptRevisions.organizationId, organizationId),
+      eq(weeklyPaymentWorksheetReceiptRevisions.receiptId, mainReceipt.receiptId),
+    )).orderBy(asc(weeklyPaymentWorksheetReceiptRevisions.receiptRevision));
+    expect(sourceRevision.map((revision) => [revision.revisionKind, revision.amountMinor, revision.paymentId])).toEqual([
+      ["manual_record", 1_000, expect.any(Number)],
+      ["manual_clear", 0, null],
+    ]);
+    const clearedMainPaymentId = sourceRevision[0]?.paymentId;
+    if (clearedMainPaymentId === null || clearedMainPaymentId === undefined) throw new Error("cleared worksheet tender id is missing");
+    expect(await getVisiblePaymentByIdForOrganization(clearedMainPaymentId, organizationId)).toBeUndefined();
+    expect((await readCanonicalPaymentReport({ organizationId, leagueId, paymentId: clearedMainPaymentId })).rows).toEqual([]);
+    await expect(readPaymentReceiptProjection({ organizationId, paymentId: clearedMainPaymentId })).rejects.toThrow("payment not found");
+    const afterClearList = await getPaymentsPaginated({ organizationId, leagueId, bowlerId: mainBowlerId }, 1, 100);
+    expect(afterClearList.items.map((payment) => payment.id)).not.toContain(clearedMainPaymentId);
+    current = (await saveManagePaymentsWorksheet(saveInput(current, [rowChange(current, thirdBowlerId, {
+      newManualReceiptAmountMinor: 200,
+    })], "worksheet-additional-cash-0009"))).snapshot;
+    expect(current.teams.flatMap((team) => team.rows).find((row) => row.bowlerId === thirdBowlerId)).toMatchObject({
+      balanceMinor: 6_200,
+      manualReceipts: expect.arrayContaining([
+        expect.objectContaining({ amountMinor: 1_000 }),
+        expect.objectContaining({ amountMinor: 200 }),
+      ]),
+    });
+    const paymentCountBeforeRetry = await db.select({ id: payments.id }).from(payments).where(eq(payments.organizationId, organizationId));
+    const finalReplay = await saveManagePaymentsWorksheet(combinedCorrection);
+    const paymentCountAfterRetry = await db.select({ id: payments.id }).from(payments).where(eq(payments.organizationId, organizationId));
+    expect(finalReplay.replayed).toBe(true);
+    expect(paymentCountAfterRetry).toHaveLength(paymentCountBeforeRetry.length);
+
+    const stale = saveInput(initial, [], "worksheet-stale-conflict-0007");
+    await expect(saveManagePaymentsWorksheet(stale)).rejects.toMatchObject({ code: "state_conflict" });
+    const foreignReceipt = finalRows.find((row) => row.bowlerId === thirdBowlerId)?.manualReceipts[0];
+    if (!foreignReceipt) throw new Error("new cash receipt is missing");
+    await expect(saveManagePaymentsWorksheet(saveInput(current, [rowChange(current, mainBowlerId, {
+      manualReceiptEdits: [{ receiptId: foreignReceipt.receiptId, expectedRevision: foreignReceipt.revision, amountMinor: 500 }],
+    })], "worksheet-foreign-receipt-0008"))).rejects.toBeInstanceOf(ManagePaymentsWorksheetWriteError);
+  });
+
+  it("converts a safe unassigned future team forecast to the selected worksheet payer", async () => {
+    const [occurrence] = await db.select().from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, organizationId),
+      eq(leagueOccurrences.leagueId, leagueId),
+    )).orderBy(asc(leagueOccurrences.plannedOrdinal)).offset(1).limit(1);
+    if (!occurrence?.authoritativeLocalDate) throw new Error("future canonical occurrence fixture was not created");
+    const { forecast, forecastObligation } = await db.transaction(async (tx) => {
+      const [createdForecast] = await tx.insert(occurrencePaymentResponsibilities).values({
+        organizationId,
+        leagueId,
+        occurrenceId: occurrence.id,
+        teamId,
+        slotId: unassignedSlotId,
+        slotIndex: 1,
+        positionIndex: 1,
+        version: 1,
+        state: "active",
+        responsibilityKind: "rotating",
+        mainBowlerId: null,
+        substituteBowlerId: null,
+        payerBowlerId: null,
+        lineagePayerBowlerId: null,
+        prizePayerBowlerId: null,
+        policy: "main_pays_full",
+        worksheetFeeComponent: null,
+        amountMinor: 2_500,
+        lineageAmountMinor: null,
+        prizeFundAmountMinor: null,
+        currency: "USD",
+        dueAt: occurrence.startAt,
+        pastDueAt: occurrence.startAt,
+        recordedByUserId: actorUserId,
+      }).returning({ id: occurrencePaymentResponsibilities.id });
+      if (!createdForecast) throw new Error("unassigned forecast responsibility was not created");
+      const [createdObligation] = await tx.insert(paymentObligations).values({
+        organizationId,
+        leagueId,
+        occurrenceId: occurrence.id,
+        responsibilityId: createdForecast.id,
+        component: "full",
+        payerBowlerId: null,
+        amountMinor: 2_500,
+        currency: "USD",
+        dueAt: occurrence.startAt,
+        pastDueAt: occurrence.startAt,
+        state: "open",
+        createdByUserId: actorUserId,
+      }).returning({ id: paymentObligations.id });
+      if (!createdObligation) throw new Error("unassigned forecast obligation was not created");
+      await tx.insert(paymentObligationOwnerRevisions).values({
+        organizationId,
+        leagueId,
+        obligationId: createdObligation.id,
+        revisionNumber: 1,
+        ownerKind: "team",
+        ownerBowlerId: null,
+        ownerTeamId: teamId,
+        reason: "rotating_materialization",
+        recordedByUserId: actorUserId,
+      });
+      return { forecast: createdForecast, forecastObligation: createdObligation };
+    });
+
+    const snapshot = await readManagePaymentsWorksheetSnapshot({ organizationId, leagueId, occurrenceId: occurrence.id });
+    expect(snapshot).toMatchObject({ weekConfirmed: false, needsConfirmation: true });
+    const saved = await saveManagePaymentsWorksheet(saveInput(snapshot, [
+      rowChange(snapshot, mainBowlerId, { responsible: false }),
+      rowChange(snapshot, substituteBowlerId, { responsible: true }),
+    ], "worksheet-unassigned-forecast-0001"));
+    expect(saved.snapshot).toMatchObject({ weekConfirmed: true, needsConfirmation: false, revision: 1 });
+    expect(saved.snapshot.teams.flatMap((team) => team.rows)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ bowlerId: mainBowlerId, responsible: false }),
+      expect.objectContaining({ bowlerId: substituteBowlerId, responsible: true, feeMinor: 2_500, balanceMinor: -2_500 }),
+    ]));
+    const [retiredForecast] = await db.select().from(paymentObligations).where(eq(paymentObligations.id, forecastObligation.id));
+    const [retiredResponsibility] = await db.select().from(occurrencePaymentResponsibilities).where(eq(occurrencePaymentResponsibilities.id, forecast.id));
+    expect(retiredForecast?.state).toBe("voided");
+    expect(retiredResponsibility?.state).toBe("voided");
+    expect(await db.select().from(occurrencePaymentResponsibilities).where(and(
+      eq(occurrencePaymentResponsibilities.organizationId, organizationId),
+      eq(occurrencePaymentResponsibilities.leagueId, leagueId),
+      eq(occurrencePaymentResponsibilities.occurrenceId, occurrence.id),
+      eq(occurrencePaymentResponsibilities.state, "active"),
+      eq(occurrencePaymentResponsibilities.responsibilityKind, "worksheet"),
+      eq(occurrencePaymentResponsibilities.payerBowlerId, substituteBowlerId),
+    ))).toHaveLength(1);
+  });
+});

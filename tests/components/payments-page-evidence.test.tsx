@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import PaymentsPage, { invalidateRefundPaymentViews } from "@/pages/payments-page";
+import PaymentsPage, { invalidateRefundPaymentViews, refundAffectedBowlerIds } from "@/pages/payments-page";
 import { queryClient } from "@/lib/queryClient";
 import type { CanonicalPaymentReport, CanonicalPaymentRow } from "@shared/canonical-payment-report";
 
@@ -139,6 +139,9 @@ describe("PaymentsPage canonical evidence presentation", () => {
 
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/payments"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/f5/payments"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["manage-payments-snapshot", 7] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 7, "interactive-payment-participants/4"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 7, "interactive-payment-quote/4"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues", 7, "canonical-due-past-due/2"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/7/canonical-due-past-due/2"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/financials/leagues/7/standing-autopay/1"] });
@@ -157,5 +160,32 @@ describe("PaymentsPage canonical evidence presentation", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/bowlers/42/details"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/bowlers/43/details"] });
     invalidate.mockRestore();
+  });
+
+  it("includes allocated debtors and unused-credit owners in refund refreshes", () => {
+    const row: CanonicalPaymentRow = {
+      ...orphanRow,
+      paymentId: 74,
+      source: "canonical_allocation",
+      unresolved: false,
+      fundingPortions: [
+        { creditedBowlerId: 42, amountMinor: 1000, availableMinor: 1000, appliedMinor: 0, refundedCreditMinor: 0, totalRefundedMinor: 0, heldCreditMinor: 0, reviewRequired: false },
+        { creditedBowlerId: 44, amountMinor: 1000, availableMinor: 0, appliedMinor: 1000, refundedCreditMinor: 0, totalRefundedMinor: 0, heldCreditMinor: 0, reviewRequired: false },
+      ],
+      allocations: [{
+        allocationId: "allocation-74",
+        obligationId: "obligation-74",
+        occurrenceId: "occurrence-74",
+        occurrenceLocalDate: "2034-09-03",
+        plannedOrdinal: 1,
+        bowlerId: 43,
+        amountMinor: 1000,
+        currency: "USD",
+        state: "active",
+      }],
+    };
+
+    expect(refundAffectedBowlerIds(row)).toEqual([43, 42, 44]);
+    expect(refundAffectedBowlerIds(null)).toEqual([]);
   });
 });

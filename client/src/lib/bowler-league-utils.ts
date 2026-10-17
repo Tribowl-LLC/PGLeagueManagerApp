@@ -1,4 +1,5 @@
 import type { BowlerLeague, Bowler, League } from "@shared/schema";
+import { orderTeamRosterAssociations } from "@shared/team-roster-presentation";
 
 export function filterActiveBowlerLeagues(
   allLeagues: BowlerLeague[],
@@ -42,21 +43,9 @@ export function getTeamBowlers<B extends Bowler>(
 ): TeamBowlerEntry<B>[] {
   if (!teamId || !bowlerLeagues.length || !bowlers.length) return [];
 
-  const uniqueBowlerAssociations = bowlerLeagues
-    .filter((bl: BowlerLeague) => bl.active && bl.teamId === teamId)
-    .sort(
-      (a: BowlerLeague, b: BowlerLeague) =>
-        new Date(b.joinedAt).getTime() - new Date(a.joinedAt).getTime()
-    )
-    .reduce((acc: BowlerLeague[], bl: BowlerLeague) => {
-      if (!acc.find((existing) => existing.bowlerId === bl.bowlerId)) {
-        acc.push(bl);
-      }
-      return acc;
-    }, [])
-    .sort(
-      (a: BowlerLeague, b: BowlerLeague) => (a.order ?? 0) - (b.order ?? 0)
-    );
+  const uniqueBowlerAssociations = orderTeamRosterAssociations(
+    bowlerLeagues.filter((bl: BowlerLeague) => bl.active && bl.teamId === teamId),
+  );
 
   return uniqueBowlerAssociations
     .map((bl: BowlerLeague) => ({

@@ -7,6 +7,7 @@ import {
   occurrencePaymentResponsibilities,
   teamPaymentSlots,
   teams,
+  weeklyPaymentLedgerAdoptions,
   type League,
   type InsertLeague,
   type UpdateLeague,
@@ -45,6 +46,13 @@ export class LeagueSubstituteConfigurationLockedError extends Error {
   constructor() {
     super('Substitute access and payment regime cannot change after the first canonical responsibility');
     this.name = 'LeagueSubstituteConfigurationLockedError';
+  }
+}
+
+export class LeagueAccountLedgerNotAdoptedError extends Error {
+  constructor() {
+    super('League cannot be restored before it adopts the account payment ledger');
+    this.name = 'LeagueAccountLedgerNotAdoptedError';
   }
 }
 
@@ -289,6 +297,16 @@ export async function restoreLeague(id: number): Promise<League> {
     const [current] = await tx.select({ organizationId: leagues.organizationId }).from(leagues).where(eq(leagues.id, id)).limit(1);
     if (!current) throw new Error(`League with ID ${id} not found`);
     if (current.organizationId !== null) await lockLeagueSchedule(tx, current.organizationId, id);
+    // Bowler checkout exists only for the account ledger. An active league
+    // without an adoption row could not take online payments at all.
+    const [adoption] = current.organizationId === null ? [] : await tx.select({ id: weeklyPaymentLedgerAdoptions.id })
+      .from(weeklyPaymentLedgerAdoptions)
+      .where(and(
+        eq(weeklyPaymentLedgerAdoptions.organizationId, current.organizationId),
+        eq(weeklyPaymentLedgerAdoptions.leagueId, id),
+      ))
+      .limit(1);
+    if (!adoption) throw new LeagueAccountLedgerNotAdoptedError();
     const [updated] = await tx.update(leagues).set({ active: true }).where(eq(leagues.id, id)).returning();
     return updated;
   });

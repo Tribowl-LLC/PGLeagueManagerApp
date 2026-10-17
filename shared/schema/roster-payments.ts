@@ -33,7 +33,7 @@ export type TeamPaymentSlotOccupant = (typeof TEAM_PAYMENT_SLOT_OCCUPANTS)[numbe
 export const TEAM_PAYMENT_POLICIES = ["main_pays_full", "sub_pays_full", "special_split"] as const;
 export type TeamPaymentPolicy = (typeof TEAM_PAYMENT_POLICIES)[number];
 
-export const RESPONSIBILITY_KINDS = ["main", "substitute", "split", "vacant", "rotating"] as const;
+export const RESPONSIBILITY_KINDS = ["main", "substitute", "split", "vacant", "rotating", "worksheet"] as const;
 export type ResponsibilityKind = (typeof RESPONSIBILITY_KINDS)[number];
 export const OBLIGATION_COMPONENTS = ["full", "lineage", "prize"] as const;
 export type ObligationComponent = (typeof OBLIGATION_COMPONENTS)[number];
@@ -217,9 +217,10 @@ export const occurrencePaymentResponsibilities = pgTable("occurrence_payment_res
   leagueId: integer("league_id").notNull(),
   occurrenceId: uuid("occurrence_id").notNull(),
   teamId: integer("team_id").notNull(),
-  slotId: uuid("slot_id").notNull(),
-  slotIndex: integer("slot_index").notNull(),
-  positionIndex: integer("position_index").notNull(),
+  /** Null only for worksheet identities, which are payer/week rows rather than slot mappings. */
+  slotId: uuid("slot_id"),
+  slotIndex: integer("slot_index"),
+  positionIndex: integer("position_index"),
   responsibilityKey: uuid("responsibility_key").notNull().defaultRandom(),
   version: integer("version").notNull().default(1),
   state: text("state", { enum: RESPONSIBILITY_STATES }).notNull().default("active"),
@@ -229,7 +230,9 @@ export const occurrencePaymentResponsibilities = pgTable("occurrence_payment_res
   payerBowlerId: integer("payer_bowler_id"),
   lineagePayerBowlerId: integer("lineage_payer_bowler_id"),
   prizePayerBowlerId: integer("prize_payer_bowler_id"),
-  policy: text("policy", { enum: TEAM_PAYMENT_POLICIES }).notNull(),
+  /** Worksheet responsibility uses an explicit fee component instead of roster policy. */
+  policy: text("policy", { enum: TEAM_PAYMENT_POLICIES }),
+  worksheetFeeComponent: text("worksheet_fee_component", { enum: OBLIGATION_COMPONENTS }),
   amountMinor: integer("amount_minor").notNull(),
   lineageAmountMinor: integer("lineage_amount_minor"),
   prizeFundAmountMinor: integer("prize_fund_amount_minor"),
@@ -250,15 +253,33 @@ export const occurrencePaymentResponsibilities = pgTable("occurrence_payment_res
   lineagePayerFk: foreignKey({ name: "occurrence_payment_responsibilities_lineage_payer_fk", columns: [table.lineagePayerBowlerId, table.organizationId], foreignColumns: [bowlers.id, bowlers.organizationId] }).onDelete("restrict"),
   prizePayerFk: foreignKey({ name: "occurrence_payment_responsibilities_prize_payer_fk", columns: [table.prizePayerBowlerId, table.organizationId], foreignColumns: [bowlers.id, bowlers.organizationId] }).onDelete("restrict"),
   versionUnique: uniqueIndex("occurrence_payment_responsibilities_version_unique").on(table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.slotIndex, table.positionIndex, table.version),
+  worksheetVersionUnique: uniqueIndex("occurrence_payment_responsibilities_worksheet_version_unique").on(table.organizationId, table.leagueId, table.occurrenceId, table.payerBowlerId, table.version).where(sql`${table.responsibilityKind} = 'worksheet'`),
   slotIdentityUnique: uniqueIndex("occurrence_payment_responsibilities_slot_identity_unique").on(table.id, table.organizationId, table.leagueId, table.teamId, table.slotIndex),
   occurrenceSlotIdentityUnique: uniqueIndex("occurrence_payment_responsibilities_occurrence_slot_identity_unique").on(table.id, table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.slotIndex),
   tenantIdentityUnique: uniqueIndex("occurrence_payment_responsibilities_tenant_identity_unique").on(table.id, table.organizationId, table.leagueId),
+  paymentApplicationTargetIdentity: uniqueIndex("occ_pay_resp_app_target_uq").on(table.id, table.organizationId, table.leagueId, table.occurrenceId, table.teamId),
   currentUnique: uniqueIndex("occurrence_payment_responsibilities_current_unique").on(table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.slotIndex, table.positionIndex).where(sql`${table.state} = 'active'`),
+  worksheetCurrentPayerUnique: uniqueIndex("occ_pay_resp_worksheet_current_payer_uq").on(table.organizationId, table.leagueId, table.occurrenceId, table.payerBowlerId).where(sql`${table.state} = 'active' AND ${table.responsibilityKind} = 'worksheet'`),
   keyUnique: uniqueIndex("occurrence_payment_responsibilities_key_unique").on(table.organizationId, table.responsibilityKey, table.version),
   occurrenceIdx: index("occurrence_payment_responsibilities_occurrence_idx").on(table.organizationId, table.leagueId, table.occurrenceId),
   payerIdx: index("occurrence_payment_responsibilities_payer_idx").on(table.organizationId, table.leagueId, table.payerBowlerId),
   stateCheck: check("occurrence_payment_responsibilities_state_check", sql`${table.state} IN (${responsibilityStates}) AND ${table.version} > 0`),
   positionCheck: check("occurrence_payment_responsibilities_position_check", sql`${table.slotIndex} >= 0 AND ${table.positionIndex} >= 0 AND ${table.positionIndex} < 4`),
+  identityShapeCheck: check("occurrence_payment_responsibilities_identity_shape_check", sql`(
+    ${table.responsibilityKind} = 'worksheet'
+    AND ${table.slotId} IS NULL
+    AND ${table.slotIndex} IS NULL
+    AND ${table.positionIndex} IS NULL
+    AND ${table.policy} IS NULL
+    AND ${table.worksheetFeeComponent} IN ('full', 'lineage', 'prize')
+  ) OR (
+    ${table.responsibilityKind} <> 'worksheet'
+    AND ${table.slotId} IS NOT NULL
+    AND ${table.slotIndex} IS NOT NULL
+    AND ${table.positionIndex} IS NOT NULL
+    AND ${table.policy} IS NOT NULL
+    AND ${table.worksheetFeeComponent} IS NULL
+  )`),
   kindCheck: check("occurrence_payment_responsibilities_kind_check", sql`${table.responsibilityKind} IN (${responsibilityKinds}) AND ((
     ${table.responsibilityKind} = 'vacant' AND ${table.mainBowlerId} IS NULL AND ${table.substituteBowlerId} IS NULL AND ${table.payerBowlerId} IS NULL AND ${table.amountMinor} = 0 AND ${table.lineageAmountMinor} IS NULL AND ${table.prizeFundAmountMinor} IS NULL
   ) OR (
@@ -269,6 +290,8 @@ export const occurrencePaymentResponsibilities = pgTable("occurrence_payment_res
     ${table.responsibilityKind} = 'split' AND ${table.mainBowlerId} IS NOT NULL AND ${table.substituteBowlerId} IS NOT NULL AND ${table.mainBowlerId} <> ${table.substituteBowlerId} AND ${table.payerBowlerId} IS NOT NULL AND ${table.amountMinor} > 0
   ) OR (
     ${table.responsibilityKind} = 'rotating' AND ${table.mainBowlerId} IS NULL AND ${table.substituteBowlerId} IS NULL AND ${table.payerBowlerId} IS NULL AND ${table.amountMinor} > 0
+  ) OR (
+    ${table.responsibilityKind} = 'worksheet' AND ${table.mainBowlerId} IS NULL AND ${table.substituteBowlerId} IS NULL AND ${table.payerBowlerId} IS NOT NULL AND ${table.lineagePayerBowlerId} IS NULL AND ${table.prizePayerBowlerId} IS NULL AND ${table.amountMinor} >= 0 AND ${table.worksheetFeeComponent} IS NOT NULL AND ${table.lineageAmountMinor} IS NULL AND ${table.prizeFundAmountMinor} IS NULL
   )) AND ((${table.responsibilityKind} = 'split' AND ${table.lineagePayerBowlerId} IS NOT NULL AND ${table.prizePayerBowlerId} IS NOT NULL AND ${table.lineageAmountMinor} IS NOT NULL AND ${table.prizeFundAmountMinor} IS NOT NULL AND ${table.lineageAmountMinor} >= 0 AND ${table.prizeFundAmountMinor} >= 0 AND ${table.lineageAmountMinor} + ${table.prizeFundAmountMinor} = ${table.amountMinor} AND ${table.amountMinor} > 0) OR (${table.responsibilityKind} <> 'split' AND ${table.lineagePayerBowlerId} IS NULL AND ${table.prizePayerBowlerId} IS NULL AND ${table.lineageAmountMinor} IS NULL AND ${table.prizeFundAmountMinor} IS NULL))`),
   amountCheck: check("occurrence_payment_responsibilities_amount_check", sql`${table.amountMinor} >= 0 AND ${table.currency} = 'USD' AND ${table.pastDueAt} >= ${table.dueAt}`),
 }));
@@ -296,6 +319,8 @@ export const paymentObligations = pgTable("payment_obligations", {
   responsibilityFk: foreignKey({ name: "payment_obligations_responsibility_fk", columns: [table.responsibilityId, table.organizationId, table.leagueId], foreignColumns: [occurrencePaymentResponsibilities.id, occurrencePaymentResponsibilities.organizationId, occurrencePaymentResponsibilities.leagueId] }).onDelete("restrict"),
   payerFk: foreignKey({ name: "payment_obligations_payer_fk", columns: [table.payerBowlerId, table.organizationId], foreignColumns: [bowlers.id, bowlers.organizationId] }).onDelete("restrict"),
   tenantIdentityUnique: uniqueIndex("payment_obligations_tenant_identity_unique").on(table.id, table.organizationId, table.leagueId),
+  paymentApplicationTargetIdentity: uniqueIndex("pay_obl_app_identity_uq").on(table.id, table.organizationId, table.leagueId, table.responsibilityId),
+  paymentApplicationPayerIdentity: uniqueIndex("pay_obl_app_payer_uq").on(table.id, table.organizationId, table.leagueId, table.responsibilityId, table.payerBowlerId),
   responsibilityUnique: uniqueIndex("payment_obligations_responsibility_unique").on(table.organizationId, table.leagueId, table.responsibilityId, table.component),
   openIdx: index("payment_obligations_open_idx").on(table.organizationId, table.leagueId, table.state, table.dueAt),
   payerIdx: index("payment_obligations_payer_idx").on(table.organizationId, table.leagueId, table.payerBowlerId, table.state),
@@ -351,6 +376,8 @@ export const rotatingOccurrenceAssignments = pgTable("rotating_occurrence_assign
   responsibilityFk: foreignKey({ name: "rotating_occurrence_assignments_responsibility_fk", columns: [table.responsibilityId, table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.slotIndex], foreignColumns: [occurrencePaymentResponsibilities.id, occurrencePaymentResponsibilities.organizationId, occurrencePaymentResponsibilities.leagueId, occurrencePaymentResponsibilities.occurrenceId, occurrencePaymentResponsibilities.teamId, occurrencePaymentResponsibilities.slotIndex] }).onDelete("restrict"),
   bowlerFk: foreignKey({ name: "rotating_occurrence_assignments_bowler_fk", columns: [table.actualBowlerId, table.organizationId], foreignColumns: [bowlers.id, bowlers.organizationId] }).onDelete("restrict"),
   identityUnique: uniqueIndex("rotating_occurrence_assignments_identity_unique").on(table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.slotIndex, table.version),
+  paymentApplicationTargetIdentity: uniqueIndex("rot_occ_assign_app_target_uq").on(table.id, table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.responsibilityId, table.actualBowlerId),
+  paymentApplicationIdentity: uniqueIndex("rot_occ_assign_app_identity_uq").on(table.id, table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.responsibilityId),
   versionCheck: check("rotating_occurrence_assignments_version_check", sql`${table.version} > 0 AND (${table.correctionReason} IS NULL OR length(btrim(${table.correctionReason})) BETWEEN 1 AND 500)`),
   occurrenceTeamIdx: index("rotating_occurrence_assignments_occurrence_team_idx").on(table.organizationId, table.leagueId, table.occurrenceId, table.teamId, table.slotIndex, table.version),
 }));
@@ -375,6 +402,7 @@ export const paymentAllocations = pgTable("payment_allocations", {
   paymentFk: foreignKey({ name: "payment_allocations_payment_fk", columns: [table.paymentId, table.organizationId, table.leagueId], foreignColumns: [payments.id, payments.organizationId, payments.leagueId] }).onDelete("restrict"),
   obligationFk: foreignKey({ name: "payment_allocations_obligation_fk", columns: [table.obligationId, table.organizationId, table.leagueId], foreignColumns: [paymentObligations.id, paymentObligations.organizationId, paymentObligations.leagueId] }).onDelete("restrict"),
   tenantIdentityUnique: uniqueIndex("payment_allocations_tenant_identity_unique").on(table.id, table.organizationId, table.leagueId),
+  fundingApplicationIdentity: uniqueIndex("pay_alloc_app_identity_uq").on(table.id, table.organizationId, table.leagueId, table.paymentId, table.obligationId, table.amountMinor, table.currency),
   // Ordinary tenders retain the one active child per payment/obligation rule.
   // Credit application reversals append a new credit child for the same pair;
   // their sum is conserved by the deferred rotating-credit ledger guard.
@@ -412,6 +440,7 @@ export const paymentAllocationCorrections = pgTable("payment_allocation_correcti
   sourceObligationFk: foreignKey({ name: "payment_allocation_corrections_source_obligation_fk", columns: [table.sourceObligationId, table.organizationId, table.leagueId], foreignColumns: [paymentObligations.id, paymentObligations.organizationId, paymentObligations.leagueId] }).onDelete("restrict"),
   targetObligationFk: foreignKey({ name: "payment_allocation_corrections_target_obligation_fk", columns: [table.targetObligationId, table.organizationId, table.leagueId], foreignColumns: [paymentObligations.id, paymentObligations.organizationId, paymentObligations.leagueId] }).onDelete("restrict"),
   tenantIdentityUnique: uniqueIndex("payment_allocation_corrections_tenant_identity_unique").on(table.id, table.organizationId, table.leagueId),
+  adoptionLineageIdentity: uniqueIndex("pay_alloc_corr_app_lineage_uq").on(table.id, table.organizationId, table.leagueId, table.paymentId, table.sourceAllocationId, table.replacementAllocationId, table.amountMinor),
   sourceUnique: uniqueIndex("payment_allocation_corrections_source_unique").on(table.organizationId, table.leagueId, table.sourceAllocationId),
   replacementUnique: uniqueIndex("payment_allocation_corrections_replacement_unique").on(table.organizationId, table.leagueId, table.replacementAllocationId),
   paymentTargetUnique: uniqueIndex("payment_allocation_corrections_payment_target_unique").on(table.organizationId, table.leagueId, table.paymentId, table.targetObligationId),
@@ -453,7 +482,7 @@ export const refundAllocationAdjustments = pgTable("refund_allocation_adjustment
   sourceAllocationUnique: uniqueIndex("refund_allocation_adjustments_source_allocation_unique").on(table.organizationId, table.leagueId, table.sourceAllocationId),
   amountCheck: check("refund_allocation_adjustments_amount_check", sql`${table.amountMinor} > 0`),
   dispositionCheck: check("refund_allocation_adjustments_disposition_check", sql`${table.disposition} IN (${refundPaymentDispositions})`),
-  fingerprintCheck: check("refund_allocation_adjustments_fingerprint_check", sql`${table.snapshotFingerprint} ~ '^lvpayexecrf:v2:[0-9a-f]{64}$'`),
+  fingerprintCheck: check("refund_allocation_adjustments_fingerprint_check", sql`${table.snapshotFingerprint} ~ '^lvpayexecrf:v[23]:[0-9a-f]{64}$'`),
 }));
 
 /** Whole-tender correction evidence. A cash/check correction voids the
@@ -703,6 +732,7 @@ export const paymentOperationRosterSnapshotItems = pgTable("payment_operation_ro
   leagueTenantFk: leagueTenantFk(table, "payment_operation_roster_snapshot_items_league_tenant_fk"),
   operationItemUnique: uniqueIndex("payment_operation_roster_snapshot_items_operation_item_unique").on(table.operationId, table.organizationId, table.leagueId, table.obligationId),
   operationAllocationIndexUnique: uniqueIndex("payment_operation_roster_snapshot_items_operation_allocation_index_unique").on(table.operationId, table.organizationId, table.leagueId, table.allocationIndex),
+  fundingAuthorizationIdentity: uniqueIndex("pay_op_snap_item_auth_uq").on(table.operationId, table.organizationId, table.leagueId, table.allocationIndex, table.amountMinor),
   // Finalized items are immutable provider evidence, not live reservations.
   // They must not prevent a later exact operation from collecting a remaining
   // partial balance on the same obligation.

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, or, sql, type ExtractTablesWithRelations } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, ne, or, sql, type ExtractTablesWithRelations } from "drizzle-orm";
 import type { NodePgTransaction } from "drizzle-orm/node-postgres";
 import {
   bowlers,
@@ -21,6 +21,7 @@ import {
   paymentOperationRosterSnapshotItems,
   paymentOperationStandingAutopayBindings,
   paymentOperations,
+  weeklyPaymentWeekConfirmations,
   rotatingOccurrenceAssignments,
   teamPaymentPolicies,
   teamPaymentSlots,
@@ -30,6 +31,7 @@ import {
 import type * as schema from "@shared/schema";
 import { calculateRosterPaymentTiming } from "@shared/roster-payment-contract";
 import { appendTeamPaymentObligationOwnerInTransaction, resolvePaymentObligationOwnersInTransaction } from "./roster-obligation-owners.js";
+import { isOccurrenceConfirmedInOwnedLedger, readOwnedLedgerAdoptionInTransaction } from "./owned-payment-ledger.js";
 
 type PaymentOperationTransaction = NodePgTransaction<typeof schema, ExtractTablesWithRelations<typeof schema>>;
 
@@ -329,7 +331,7 @@ type RosterMaterializationPlan = {
   occurrence: typeof leagueOccurrences.$inferSelect;
   team: typeof teams.$inferSelect;
   slot: typeof teamPaymentSlots.$inferSelect;
-  current: typeof occurrencePaymentResponsibilities.$inferSelect | undefined;
+  current: LegacyRosterResponsibility | undefined;
   currentObligations: Array<typeof paymentObligations.$inferSelect>;
   kind: "main" | "vacant" | "rotating" | null;
   mainBowlerId: number | null;
@@ -339,6 +341,24 @@ type RosterMaterializationPlan = {
   pastDueAt: string;
   action: "none" | "void" | "create" | "repair" | "reschedule";
 };
+
+type LegacyRosterResponsibility = typeof occurrencePaymentResponsibilities.$inferSelect & {
+  slotId: string;
+  slotIndex: number;
+  positionIndex: number;
+  policy: TeamPaymentPolicy;
+  responsibilityKind: Exclude<typeof occurrencePaymentResponsibilities.$inferSelect.responsibilityKind, "worksheet">;
+};
+
+function hasLegacyRosterIdentity(
+  row: typeof occurrencePaymentResponsibilities.$inferSelect,
+): row is LegacyRosterResponsibility {
+  return row.responsibilityKind !== "worksheet"
+    && row.slotId !== null
+    && row.slotIndex !== null
+    && row.positionIndex !== null
+    && row.policy !== null;
+}
 
 function materializationSlotKey(occurrenceId: string, teamId: number, slotIndex: number, positionIndex: number): string {
   return `${occurrenceId}:${teamId}:${slotIndex}:${positionIndex}`;
@@ -404,13 +424,22 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
     paymentMode: leagues.paymentMode,
   }).from(leagues).where(and(eq(leagues.id, input.leagueId), eq(leagues.organizationId, input.organizationId))).limit(1);
   if (!league?.payingLineupSize) return false;
-  const occurrences = await tx.select().from(leagueOccurrences).where(and(
+  const fetchedOccurrences = await tx.select().from(leagueOccurrences).where(and(
     eq(leagueOccurrences.organizationId, input.organizationId),
     eq(leagueOccurrences.leagueId, input.leagueId),
     inArray(leagueOccurrences.id, occurrenceIds),
     inArray(leagueOccurrences.lifecycle, ["published", "locked"] as const),
     inArray(leagueOccurrences.status, ["scheduled", "completed"] as const),
   )).orderBy(asc(leagueOccurrences.plannedOrdinal), asc(leagueOccurrences.id));
+  const adoption = await readOwnedLedgerAdoptionInTransaction(tx, input);
+  const explicitConfirmations = fetchedOccurrences.length === 0 ? [] : await tx.select({ occurrenceId: weeklyPaymentWeekConfirmations.occurrenceId }).from(weeklyPaymentWeekConfirmations).where(and(
+    eq(weeklyPaymentWeekConfirmations.organizationId, input.organizationId),
+    eq(weeklyPaymentWeekConfirmations.leagueId, input.leagueId),
+    inArray(weeklyPaymentWeekConfirmations.occurrenceId, fetchedOccurrences.map((row) => row.id)),
+  ));
+  const explicitlyConfirmedIds = new Set(explicitConfirmations.map((row) => row.occurrenceId));
+  const occurrences = fetchedOccurrences.filter((occurrence) => occurrence.authoritativeLocalDate !== null
+    && !isOccurrenceConfirmedInOwnedLedger(adoption, occurrence.authoritativeLocalDate, explicitlyConfirmedIds.has(occurrence.id)));
   if (occurrences.length === 0) return false;
 
   const rosterTeams = await tx.select().from(teams).where(and(eq(teams.leagueId, input.leagueId), eq(teams.active, true))).orderBy(asc(teams.id));
@@ -450,6 +479,11 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
     eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
     inArray(occurrencePaymentResponsibilities.occurrenceId, occurrences.map((row) => row.id)),
     inArray(occurrencePaymentResponsibilities.teamId, selectedTeamIds),
+    ne(occurrencePaymentResponsibilities.responsibilityKind, "worksheet"),
+    isNotNull(occurrencePaymentResponsibilities.slotId),
+    isNotNull(occurrencePaymentResponsibilities.slotIndex),
+    isNotNull(occurrencePaymentResponsibilities.positionIndex),
+    isNotNull(occurrencePaymentResponsibilities.policy),
   )).orderBy(
     asc(occurrencePaymentResponsibilities.occurrenceId),
     asc(occurrencePaymentResponsibilities.teamId),
@@ -458,9 +492,10 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
     desc(occurrencePaymentResponsibilities.version),
     asc(occurrencePaymentResponsibilities.id),
   ).for("update");
-  const currentBySlot = new Map<string, typeof occurrencePaymentResponsibilities.$inferSelect>();
-  const latestBySlot = new Map<string, typeof occurrencePaymentResponsibilities.$inferSelect>();
+  const currentBySlot = new Map<string, LegacyRosterResponsibility>();
+  const latestBySlot = new Map<string, LegacyRosterResponsibility>();
   for (const row of responsibilityRows) {
+    if (!hasLegacyRosterIdentity(row)) throw new Error("LEGACY_RESPONSIBILITY_IDENTITY_INVALID");
     const key = materializationSlotKey(row.occurrenceId, row.teamId, row.slotIndex, row.positionIndex);
     if (row.state === "active" && !currentBySlot.has(key)) currentBySlot.set(key, row);
     if (!latestBySlot.has(key)) latestBySlot.set(key, row);
@@ -811,8 +846,9 @@ export async function materializeRosterPaymentOccurrencesInTransaction(
       .returning();
     insertedResponsibilities.push(...inserted);
   }
-  const insertedByPlan = new Map<string, typeof occurrencePaymentResponsibilities.$inferSelect>();
+  const insertedByPlan = new Map<string, LegacyRosterResponsibility>();
   for (const responsibility of insertedResponsibilities) {
+    if (!hasLegacyRosterIdentity(responsibility)) throw new Error("LEGACY_RESPONSIBILITY_IDENTITY_INVALID");
     const key = materializationSlotKey(responsibility.occurrenceId, responsibility.teamId, responsibility.slotIndex, responsibility.positionIndex) + `:${responsibility.version}`;
     insertedByPlan.set(key, responsibility);
   }

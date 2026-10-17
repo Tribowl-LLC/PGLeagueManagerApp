@@ -47,12 +47,13 @@ interface SheetContentProps
   extends React.ComponentPropsWithoutRef<typeof SheetPrimitive.Content>,
     VariantProps<typeof sheetVariants> {
   variant?: "default" | "sidebar"
+  appearance?: "default" | "managePayments"
 }
 
 const SheetContent = React.forwardRef<
   React.ElementRef<typeof SheetPrimitive.Content>,
   SheetContentProps
->(({ side = "right", variant, className, children, ...props }, ref) => (
+>(({ side = "right", variant, appearance = "default", className, children, ...props }, ref) => (
   <SheetPortal>
     <SheetOverlay />
     <SheetPrimitive.Content
@@ -61,6 +62,7 @@ const SheetContent = React.forwardRef<
         sheetVariants({ side }),
         variant === "sidebar" &&
           "p-0 bg-navigation-deep text-navigation-300 border-navigation-800 [&>button]:text-navigation-400 [&>button]:hover:text-white",
+        appearance === "managePayments" && "font-familiar",
         className,
       )}
       {...props}

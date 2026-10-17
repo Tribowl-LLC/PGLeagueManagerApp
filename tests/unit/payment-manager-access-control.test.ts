@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   getBowlersByIds: vi.fn(),
   getTeam: vi.fn(),
   getPaymentById: vi.fn(),
+  getPaymentByIdForOrganization: vi.fn(),
+  dbSelect: vi.fn(),
+  dbResults: [] as unknown[][],
 }));
 
 vi.mock('../../server/storage', () => ({
@@ -20,16 +23,33 @@ vi.mock('../../server/storage', () => ({
     getBowlersByIds: (...args: unknown[]) => mocks.getBowlersByIds(...args),
     getTeam: (...args: unknown[]) => mocks.getTeam(...args),
     getPaymentById: (...args: unknown[]) => mocks.getPaymentById(...args),
+    getPaymentByIdForOrganization: (...args: unknown[]) => mocks.getPaymentByIdForOrganization(...args),
   },
 }));
+
+vi.mock('../../server/db.js', () => ({ db: { select: (...args: unknown[]) => mocks.dbSelect(...args) } }));
 
 import {
   getPaymentManagerAccessibleBowlerIds,
   hasAccessToLeague,
   hasPaymentManagerAccessToLeague,
   hasPaymentManagerAccessToPayment,
+  hasAccessToPayment,
+  hasReceiptReadAccessToPayment,
   isPaymentManager,
 } from '../../server/utils/access-control';
+
+function dbResult(rows: unknown[]) {
+  const query = {
+    from: () => query,
+    innerJoin: () => query,
+    leftJoin: () => query,
+    where: () => query,
+    limit: () => Promise.resolve(rows),
+    then: (resolve: (value: unknown[]) => unknown, reject?: (error: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject),
+  };
+  return query;
+}
 
 const makeReq = (overrides: Partial<NonNullable<Request['user']>> = {}): Request => {
   const user: NonNullable<Request['user']> = {
@@ -65,6 +85,8 @@ beforeEach(() => {
     { id: 3, organizationId: 20, locationId: 100 },
     { id: 4, organizationId: 10, locationId: null },
   ]);
+  mocks.dbResults = [];
+  mocks.dbSelect.mockImplementation(() => dbResult(mocks.dbResults.shift() ?? []));
 });
 
 describe('payment-manager location authorization', () => {
@@ -113,5 +135,25 @@ describe('payment-manager location authorization', () => {
     mocks.getLeague.mockResolvedValue({ id: 9, organizationId: null, locationId: 100 });
     mocks.getPaymentById.mockResolvedValue({ id: 9, leagueId: 9 });
     await expect(hasPaymentManagerAccessToPayment(makeReq(), 9)).resolves.toBe(false);
+  });
+});
+
+describe('read-only payment receipt authorization', () => {
+  it('allows the exact typed rotating team-assignment beneficiary to read a scoped receipt', async () => {
+    const req = makeReq({ id: 445, role: 'user', organizationId: 10, bowlerId: 45 });
+    mocks.getPaymentByIdForOrganization.mockResolvedValue({ id: 91, leagueId: 1, bowlerId: 42, paidByUserId: 100 });
+    mocks.dbResults = [[], [{ id: 'typed-team-funding-application' }]];
+
+    await expect(hasReceiptReadAccessToPayment(req, 91)).resolves.toBe(true);
+    expect(mocks.dbSelect).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not grant mutation access to an owned-source typed allocation beneficiary', async () => {
+    const req = makeReq({ id: 446, role: 'user', organizationId: 10, bowlerId: 45 });
+    mocks.getPaymentByIdForOrganization.mockResolvedValue({ id: 92, leagueId: 1, bowlerId: 42, paidByUserId: 100 });
+    mocks.getLeague.mockResolvedValue({ id: 1, organizationId: 10, locationId: 100 });
+
+    await expect(hasAccessToPayment(req, 92)).resolves.toBe(false);
+    expect(mocks.dbSelect).not.toHaveBeenCalled();
   });
 });

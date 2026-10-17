@@ -299,8 +299,14 @@ async function readRecoveryOperation(response: Response): Promise<RecoveryOperat
   return body?.data ?? body?.error?.details ?? body ?? {};
 }
 
-function classifyRosterResponse(operation: RecoveryOperation): ResponseDecision {
+export function classifyRosterResponse(operation: RecoveryOperation): ResponseDecision {
   const status = operation.status?.toLowerCase();
+  if (operation.contractVersion === 'account-payment-funding-charge/4') {
+    if (status === 'succeeded') return 'success';
+    if (status === 'reconciliation_required') return 'recover';
+    if (isTerminalRosterPaymentFailure(status)) return 'terminal_failure';
+    return 'preserve';
+  }
   if (operation.contractVersion === 'interactive-obligation-charge/2') {
     if (status === 'succeeded') return 'success';
     if (status === 'reconciliation_required') return 'recover';

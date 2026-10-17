@@ -39,6 +39,7 @@ import { isRotatingCreditFinalizationRecoveryEligible } from "./rotating-credit-
 import { getPaymentProvider } from "./payment-provider-factory.js";
 import { getProviderCustomerId } from "./payment-utils.js";
 import { providerNameToPaymentType, emailSchema } from "@shared/schema/constants";
+import { applyOwnedFundingFifoInTransaction, readOwnedLedgerAdoptionInTransaction, OwnedPaymentLedgerError } from "./owned-payment-ledger.js";
 import {
   RotatingCreditLedgerError,
   applyRotatingCreditToConfirmedObligationsInTransaction,
@@ -576,14 +577,26 @@ export async function recordRotatingCreditManualFunding(input: {
     if (!funding) throw new RotatingCreditError("FUNDING_RECORD_FAILED", 500);
     let applicationIds: string[];
     try {
-      applicationIds = await applyRotatingCreditToConfirmedObligationsInTransaction(tx, {
+      const adoption = await readOwnedLedgerAdoptionInTransaction(tx, {
         organizationId: input.organizationId,
         leagueId: input.leagueId,
-        bowlerId: input.request.bowlerId,
-        actorUserId: input.actorUserId,
       });
+      applicationIds = adoption
+        ? await applyOwnedFundingFifoInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          bowlerId: input.request.bowlerId,
+          actorUserId: input.actorUserId,
+        })
+        : await applyRotatingCreditToConfirmedObligationsInTransaction(tx, {
+          organizationId: input.organizationId,
+          leagueId: input.leagueId,
+          bowlerId: input.request.bowlerId,
+          actorUserId: input.actorUserId,
+        });
     } catch (error) {
       if (error instanceof RotatingCreditLedgerError) throw new RotatingCreditError(error.code, 409);
+      if (error instanceof OwnedPaymentLedgerError) throw new RotatingCreditError(error.code, 409);
       throw error;
     }
     return { fundingId: funding.id, paymentId: payment.id, applicationIds, replay: false };

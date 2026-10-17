@@ -2,14 +2,6 @@
 import { formatCurrency } from "@/lib/utils";
 import { Link } from "wouter";
 
-interface DoublePayInfo {
-  dates: string[];
-  perWeekExtra: number;
-  totalExtra: number;
-  pastExtra: number;
-  isPaid: boolean;
-}
-
 interface PaymentSummaryCardsProps {
   totalWeeksInSeason: number;
   fullSeasonAmount: number;
@@ -21,7 +13,6 @@ interface PaymentSummaryCardsProps {
   waivedAmount?: number;
   amountPastDue: number;
   remainingBalance: number;
-  doublePay: DoublePayInfo;
   onPayPastDue: () => void;
   onPayRemaining: () => void;
   pastDueHref?: string;

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { and, asc, eq, sql } from "drizzle-orm";
 import {
@@ -11,8 +12,13 @@ import {
   leagues,
   locations,
   organizations,
+  paymentAllocationFundingApplications,
+  rotatingCreditFundings,
   teams,
   users,
+  weeklyPaymentFundings,
+  weeklyPaymentLedgerAdoptions,
+  weeklyPaymentWorksheetReceipts,
   type InsertLeague,
   type PaymentMode,
 } from "@shared/schema";
@@ -26,6 +32,7 @@ import {
   LEAGUE_SETUP_FALL_AUDIT_REASON,
 } from "../../server/services/league-setup-integration";
 import { type FallDraftFailureStage } from "../../server/services/fall-draft-generation";
+import { deriveOwnedPaymentAdoptionCutoff } from "../../server/services/owned-payment-ledger-adoption";
 import { LeagueCanonicalScheduleLockedError, updateLeague } from "../../server/storage/leagues";
 import { deleteOrganization } from "../../server/storage/organizations";
 import { getTestDb } from "../setup/test-db";
@@ -120,6 +127,7 @@ async function organizationCounts(organizationId: number) {
     "league_occurrence_billing_term_revisions",
     "league_schedule_exception_revisions",
     "league_occurrence_generation_discrepancies",
+    "weekly_payment_ledger_adoptions",
   ] as const;
   const result: Record<string, number> = {};
   for (const name of names) {
@@ -127,6 +135,41 @@ async function organizationCounts(organizationId: number) {
     result[name] = Number(counted.rows[0]?.count ?? 0);
   }
   return result;
+}
+
+async function expectPristineOwnedPaymentLedger(organizationId: number, leagueId: number, actorUserId: number) {
+  const [marker] = await db.select().from(weeklyPaymentLedgerAdoptions).where(and(
+    eq(weeklyPaymentLedgerAdoptions.organizationId, organizationId),
+    eq(weeklyPaymentLedgerAdoptions.leagueId, leagueId),
+  ));
+  expect(marker).toBeDefined();
+  if (!marker) return;
+  expect(marker).toMatchObject({ organizationId, leagueId, recordedByUserId: actorUserId, grandfatheredAllocationCount: 0 });
+  expect(marker.preflightFingerprint).toMatch(/^lvweeklyadoptpre:v1:[0-9a-f]{64}$/);
+  expect(marker.resultFingerprint).toMatch(/^lvweeklyadopt:v1:[0-9a-f]{64}$/);
+  const scheduleRows = await db.select({
+    localDate: leagueOccurrences.authoritativeLocalDate,
+    lifecycle: leagueOccurrences.lifecycle,
+    status: leagueOccurrences.status,
+    state: leagueOccurrenceBillingTerms.state,
+    obligationPolicy: leagueOccurrenceBillingTerms.obligationPolicy,
+    billingOrdinal: leagueOccurrenceBillingTerms.billingOrdinal,
+  }).from(leagueOccurrenceBillingTerms).innerJoin(leagueOccurrences, eq(
+    leagueOccurrences.id,
+    leagueOccurrenceBillingTerms.occurrenceId,
+  )).where(and(
+    eq(leagueOccurrenceBillingTerms.organizationId, organizationId),
+    eq(leagueOccurrenceBillingTerms.leagueId, leagueId),
+  ));
+  const firstBillableDate = scheduleRows.filter((row) => (row.lifecycle === "published" || row.lifecycle === "locked")
+    && row.status !== "cancelled" && row.state === "published" && row.obligationPolicy === "eligible_bowlers"
+    && row.billingOrdinal !== null).map((row) => row.localDate).sort((left, right) => left.localeCompare(right))[0];
+  if (!firstBillableDate) throw new Error("new league has no published billable date");
+  expect(marker.adoptedThroughLocalDate).toBe(deriveOwnedPaymentAdoptionCutoff([firstBillableDate], "1900-01-01"));
+  expect(await db.select().from(weeklyPaymentFundings).where(eq(weeklyPaymentFundings.leagueId, leagueId))).toHaveLength(0);
+  expect(await db.select().from(paymentAllocationFundingApplications).where(eq(paymentAllocationFundingApplications.leagueId, leagueId))).toHaveLength(0);
+  expect(await db.select().from(rotatingCreditFundings).where(eq(rotatingCreditFundings.leagueId, leagueId))).toHaveLength(0);
+  expect(await db.select().from(weeklyPaymentWorksheetReceipts).where(eq(weeklyPaymentWorksheetReceipts.leagueId, leagueId))).toHaveLength(0);
 }
 
 async function nonRolloverEvidenceCounts() {
@@ -206,6 +249,7 @@ describe("authoritative league setup integration", () => {
       .orderBy(asc(leagueOccurrences.authoritativeLocalDate));
     expect(persistedOccurrences.map((row) => row.localDate)).toEqual(expectedDates);
     expect(persistedOccurrences.every((row) => row.lifecycle === "published" && row.generationRunId !== null)).toBe(true);
+    await expectPristineOwnedPaymentLedger(f.organizationId, result.id, f.actorUserId);
   });
 
   it.each([
@@ -227,6 +271,33 @@ describe("authoritative league setup integration", () => {
       }),
       setup: setup(++sequence),
     })).rejects.toMatchObject({ code: "generator_fatal_error" });
+    expect(await organizationCounts(f.organizationId)).toEqual(before);
+  });
+
+  it("rolls back a new league when pristine owned-ledger initialization fails after marker insertion", async () => {
+    const f = await fixture("owned-ledger-init-rollback");
+    const before = await organizationCounts(f.organizationId);
+    const token = randomUUID().replaceAll("-", "");
+    const functionName = `setup_adoption_fail_${token}`;
+    const triggerName = `setup_adoption_fail_${token}`;
+    try {
+      await db.execute(sql.raw(`CREATE FUNCTION public.${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.organization_id = ${f.organizationId} THEN RAISE EXCEPTION 'setup adoption test fault'; END IF;
+          RETURN NEW;
+        END;
+      $$`));
+      await db.execute(sql.raw(`CREATE TRIGGER ${triggerName} AFTER INSERT ON public.weekly_payment_ledger_adoptions
+        FOR EACH ROW EXECUTE FUNCTION public.${functionName}()`));
+      await expect(createLeagueWithCanonicalSetup({
+        scope: { organizationId: f.organizationId, actorUserId: f.actorUserId },
+        league: fallLeague(f),
+        setup: setup(++sequence),
+      })).rejects.toMatchObject({ cause: { message: "setup adoption test fault" } });
+    } finally {
+      await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${triggerName} ON public.weekly_payment_ledger_adoptions`));
+      await db.execute(sql.raw(`DROP FUNCTION IF EXISTS public.${functionName}()`));
+    }
     expect(await organizationCounts(f.organizationId)).toEqual(before);
   });
 
@@ -260,6 +331,7 @@ describe("authoritative league setup integration", () => {
     expect(terms.every((row) => row.obligationPolicy === "eligible_bowlers" || row.obligationPolicy === "none")).toBe(true);
     expect(exceptions).toHaveLength(1);
     expect(exceptions[0]).toMatchObject({ lifecycle: "published", localDate: "2032-10-10" });
+    await expectPristineOwnedPaymentLedger(f.organizationId, result.id, f.actorUserId);
   });
 
   it("creates and publishes a canonical schedule for a future Winter league", async () => {
@@ -346,6 +418,11 @@ describe("authoritative league setup integration", () => {
     expect([left.setupIntegration.mode, right.setupIntegration.mode].sort()).toEqual(["created", "idempotent_retry"]);
     const retry = await createLeagueWithCanonicalSetup(request);
     expect(retry.setupIntegration).toMatchObject({ mode: "idempotent_retry", writesPerformed: false });
+    await expectPristineOwnedPaymentLedger(f.organizationId, left.id, f.actorUserId);
+    expect(await db.select().from(weeklyPaymentLedgerAdoptions).where(and(
+      eq(weeklyPaymentLedgerAdoptions.organizationId, f.organizationId),
+      eq(weeklyPaymentLedgerAdoptions.leagueId, left.id),
+    ))).toHaveLength(1);
     await expect(createLeagueWithCanonicalSetup({ ...request, league: { ...request.league, weeklyFee: 2_100 } }))
       .rejects.toMatchObject({ code: "idempotency_conflict" });
     expect(await db.select().from(leagues).where(eq(leagues.organizationId, f.organizationId))).toHaveLength(1);
@@ -424,6 +501,7 @@ describe("authoritative league setup integration", () => {
       sourceConfirmation: confirmedSource,
     });
     expect(created.result).toMatchObject({ previousSeasonId: source.id, active: true, canonicalGeneration: { mode: "applied" } });
+    await expectPristineOwnedPaymentLedger(f.organizationId, created.result.id, f.actorUserId);
     expect(created.result.canonicalGeneration?.durableIds.occurrenceIds)
       .not.toEqual(sourceOccurrenceIds);
     expect(created.result.canonicalGeneration?.durableIds.occurrenceIds.some((id) => sourceOccurrenceIds.includes(id)))
@@ -490,6 +568,11 @@ describe("authoritative league setup integration", () => {
       sourceConfirmation: confirmedSource,
     });
     expect(retry.result).toMatchObject({ id: created.result.id, setupIntegration: { mode: "idempotent_retry", writesPerformed: false } });
+    await expectPristineOwnedPaymentLedger(f.organizationId, retry.result.id, f.actorUserId);
+    expect(await db.select().from(weeklyPaymentLedgerAdoptions).where(and(
+      eq(weeklyPaymentLedgerAdoptions.organizationId, f.organizationId),
+      eq(weeklyPaymentLedgerAdoptions.leagueId, retry.result.id),
+    ))).toHaveLength(1);
   });
 
   it.each([
@@ -515,6 +598,7 @@ describe("authoritative league setup integration", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ id: source.id, active: true });
     expect(await db.select().from(leagueScheduleCommands).where(eq(leagueScheduleCommands.organizationId, f.organizationId))).toHaveLength(0);
+    expect(await db.select().from(weeklyPaymentLedgerAdoptions).where(eq(weeklyPaymentLedgerAdoptions.organizationId, f.organizationId))).toHaveLength(0);
   });
 
   it("fails stale carried-source confirmation without archiving or creating a successor", async () => {

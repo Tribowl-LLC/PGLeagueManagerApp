@@ -66,6 +66,150 @@ async function get(path: string, currentUser?: ReturnType<typeof user>) {
 }
 
 describe("F5 canonical payment report route", () => {
+  it("keeps owned funding portions scoped to the credited recipient without leaking source or payer metadata", () => {
+    const row: CanonicalPaymentRow = {
+      paymentId: 91,
+      leagueId: 7,
+      bowlerId: 42,
+      amountMinor: 3_000,
+      currency: "USD",
+      status: "confirmed_paid",
+      paymentType: "square",
+      businessDate: "2038-01-01",
+      authoritativeLocalDate: "2038-01-01",
+      providerPaymentId: "foreign-provider-payment",
+      paymentOperationId: "foreign-operation-id",
+      operationType: "interactive_charge",
+      operationStatus: "succeeded",
+      allocatedMinor: 700,
+      unallocatedMinor: 2_300,
+      reviewRequired: false,
+      source: "canonical_allocation",
+      refund: { present: false, amountMinor: 0, providerRefundId: null },
+      creditRefunds: { completedAmountMinor: 0, heldAmountMinor: 0, reviewRequired: false, providerRefundIds: ["foreign-refund-id"] },
+      dispute: { present: false, amountMinor: 0, disputeId: null },
+      unresolved: false,
+      receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded" },
+      allocations: [
+        {
+          allocationId: "foreign-allocation-id",
+          obligationId: "foreign-obligation-id",
+          occurrenceId: "foreign-occurrence-id",
+          bowlerId: 43,
+          bowlerName: "Credited Partner",
+          fundedByBowlerId: 43,
+          amountMinor: 500,
+          refundedMinor: 0,
+          effectiveAmountMinor: 500,
+          currency: "USD",
+          state: "active",
+          fundingApplications: [{ applicationId: "foreign-application-id", fundingId: "foreign-funding-id", creditedBowlerId: 43, sourceKind: "generic", sourceAmountMinor: 2_000, amountMinor: 500 }],
+        },
+        {
+          allocationId: "other-allocation-id",
+          obligationId: "other-obligation-id",
+          occurrenceId: "other-occurrence-id",
+          bowlerId: 44,
+          bowlerName: "Other Credited Partner",
+          fundedByBowlerId: 44,
+          amountMinor: 200,
+          refundedMinor: 0,
+          effectiveAmountMinor: 200,
+          currency: "USD",
+          state: "active",
+          fundingApplications: [{ applicationId: "other-application-id", fundingId: "other-funding-id", creditedBowlerId: 44, sourceKind: "generic", sourceAmountMinor: 1_000, amountMinor: 200 }],
+        },
+      ],
+      fundingPortions: [
+        { fundingId: "own-funding-id", creditedBowlerId: 43, creditedBowlerName: "Credited Partner", portionIndex: 0, amountMinor: 2_000, availableMinor: 1_500, appliedMinor: 500, refundedCreditMinor: 0, totalRefundedMinor: 0, heldCreditMinor: 0, reviewRequired: false },
+        { fundingId: "other-funding-id", creditedBowlerId: 44, creditedBowlerName: "Other Credited Partner", portionIndex: 1, amountMinor: 1_000, availableMinor: 800, appliedMinor: 200, refundedCreditMinor: 0, totalRefundedMinor: 0, heldCreditMinor: 0, reviewRequired: false },
+      ],
+      initiatingPayerBowlerId: 42,
+      paidByName: "Initiating Payer",
+    };
+
+    const partnerView = financialRoute.redactCanonicalPaymentRow(row, 43);
+    expect(partnerView).toMatchObject({ amountMinor: 2_000, allocatedMinor: 500, unallocatedMinor: 1_500, paidByName: null });
+    expect(partnerView.fundingPortions).toEqual([{
+      amountMinor: 2_000,
+      availableMinor: 1_500,
+      appliedMinor: 500,
+      refundedCreditMinor: 0,
+      totalRefundedMinor: 0,
+      heldCreditMinor: 0,
+      reviewRequired: false,
+    }]);
+    expect(partnerView.allocations).toEqual([]);
+    const serializedPartner = JSON.stringify(partnerView);
+    for (const secret of [
+      "foreign-provider-payment", "foreign-operation-id", "foreign-refund-id", "foreign-funding-id",
+      "other-funding-id", "other-application-id", "Other Credited Partner", "Initiating Payer",
+      "foreign-allocation-id", "foreign-obligation-id", "foreign-occurrence-id",
+    ]) expect(serializedPartner).not.toContain(secret);
+
+    const otherPartnerView = financialRoute.redactCanonicalPaymentRow(row, 44);
+    expect(otherPartnerView).toMatchObject({ amountMinor: 1_000, allocatedMinor: 200, unallocatedMinor: 800 });
+    expect(JSON.stringify(otherPartnerView)).not.toContain("Credited Partner");
+  });
+
+  it("scopes whole-card refund totals to each credited portion without counting the same spent share twice", () => {
+    const row: CanonicalPaymentRow = {
+      paymentId: 92,
+      leagueId: 7,
+      bowlerId: 42,
+      amountMinor: 3_000,
+      currency: "USD",
+      status: "refunded",
+      paymentType: "square",
+      businessDate: "2038-01-01",
+      authoritativeLocalDate: "2038-01-01",
+      providerPaymentId: "whole-provider-refund",
+      paymentOperationId: "whole-operation-refund",
+      operationType: "interactive_charge",
+      operationStatus: "succeeded",
+      allocatedMinor: 1_000,
+      refundedAllocationMinor: 1_000,
+      waivedMinor: 0,
+      effectiveAllocatedMinor: 0,
+      unallocatedMinor: 0,
+      reviewRequired: false,
+      source: "canonical_allocation",
+      refund: { present: true, amountMinor: 3_000, providerRefundId: "refund-secret" },
+      dispute: { present: false, amountMinor: 0, disputeId: null },
+      unresolved: false,
+      receipt: { contractVersion: "payment-receipt/1", availability: "unavailable", receiptUrl: null, receiptNumber: null, deliveryEvidence: "delivery_not_recorded" },
+      allocations: [{ allocationId: "spent-source-allocation", obligationId: "spent-source-obligation", occurrenceId: "spent-source-occurrence", bowlerId: 43, bowlerName: "Spent Source Owner", amountMinor: 1_000, refundedMinor: 1_000, effectiveAmountMinor: 0, refundDisposition: "still_owed", currency: "USD", state: "active" }],
+      fundingPortions: [
+        { fundingId: "mixed-source", creditedBowlerId: 43, creditedBowlerName: "Spent Source Owner", portionIndex: 0, amountMinor: 2_000, availableMinor: 0, appliedMinor: 1_000, refundedCreditMinor: 1_000, totalRefundedMinor: 2_000, heldCreditMinor: 0, reviewRequired: false },
+        { fundingId: "fully-spent-source", creditedBowlerId: 44, creditedBowlerName: "Fully Spent Source Owner", portionIndex: 1, amountMinor: 1_000, availableMinor: 0, appliedMinor: 1_000, refundedCreditMinor: 0, totalRefundedMinor: 1_000, heldCreditMinor: 0, reviewRequired: false },
+      ],
+      initiatingPayerBowlerId: 42,
+      paidByName: "Initiating Payer",
+    };
+
+    const mixedOwner = financialRoute.redactCanonicalPaymentRow(row, 43);
+    expect(mixedOwner).toMatchObject({ amountMinor: 2_000, refund: { present: true, amountMinor: 2_000 }, refundedAllocationMinor: 1_000 });
+    expect(mixedOwner.fundingPortions).toEqual([expect.objectContaining({
+      amountMinor: 2_000,
+      appliedMinor: 1_000,
+      refundedCreditMinor: 1_000,
+      totalRefundedMinor: 2_000,
+    })]);
+    expect(JSON.stringify(mixedOwner)).not.toContain("fully-spent-source");
+    expect(JSON.stringify(mixedOwner)).not.toContain("refund-secret");
+
+    const fullySpentOwner = financialRoute.redactCanonicalPaymentRow(row, 44);
+    expect(fullySpentOwner).toMatchObject({ amountMinor: 1_000, refund: { present: true, amountMinor: 1_000 }, refundedAllocationMinor: 0 });
+    expect(fullySpentOwner.fundingPortions).toEqual([expect.objectContaining({
+      amountMinor: 1_000,
+      appliedMinor: 1_000,
+      refundedCreditMinor: 0,
+      totalRefundedMinor: 1_000,
+    })]);
+    expect(JSON.stringify(fullySpentOwner)).not.toContain("spent-source-obligation");
+    expect(JSON.stringify(fullySpentOwner)).not.toContain("Spent Source Owner");
+  });
+
   it("shows rotating credit refund history only to the funding tender owner", () => {
     const row: CanonicalPaymentRow = {
       paymentId: 21,

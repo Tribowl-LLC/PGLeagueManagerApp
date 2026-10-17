@@ -114,6 +114,7 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
   // Memoize mutation callbacks with proper dependencies
   const onSuccess = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["/api/bowlers"] });
+    queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot"] });
     toast({
       title: bowler ? "Bowler updated" : "Bowler created",
       description: bowler
@@ -135,6 +136,7 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
     queryClient.invalidateQueries({ queryKey: ["/api/bowlers"] });
     queryClient.invalidateQueries({ queryKey: ["/api/bowler-leagues"] });
     queryClient.invalidateQueries({ queryKey: ["/api/teams"] });
+    queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot"] });
     if (bowler) {
       queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowler.id}/details`] });
       queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowler.id}`] });
@@ -176,6 +178,7 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/bowlers"] });
       queryClient.invalidateQueries({ queryKey: ["/api/bowler-leagues"] });
+      queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot"] });
       if (defaultTeamId) {
         queryClient.invalidateQueries({ queryKey: [`/api/teams/${defaultTeamId}/details`] });
       }
@@ -224,6 +227,7 @@ function BowlerFormInner({ open, onClose, defaultTeamId, bowler, firstLeagueId, 
       if (result === null) return;
       queryClient.invalidateQueries({ queryKey: ["/api/bowlers"] });
       queryClient.invalidateQueries({ queryKey: ["/api/bowler-leagues"] });
+      queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot"] });
       if (bowler) {
         queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowler.id}/details`] });
         queryClient.invalidateQueries({ queryKey: [`/api/bowlers/${bowler.id}`] });

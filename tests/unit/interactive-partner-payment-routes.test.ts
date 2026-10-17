@@ -25,6 +25,8 @@ const mocks = vi.hoisted(() => {
     manual: vi.fn(),
     correct: vi.fn(),
     recoverByRequestKey: vi.fn(),
+    paymentQuoteLimiter: vi.fn((_req: unknown, _res: unknown, next: () => void) => next()),
+    paymentWriteLimiter: vi.fn((_req: unknown, _res: unknown, next: () => void) => next()),
     RosterPaymentError: MockRosterPaymentError,
     RosterPaymentReplay: MockRosterPaymentReplay,
   };
@@ -43,7 +45,8 @@ vi.mock("../../server/utils/bowler-payment-authz.js", () => ({
 }));
 vi.mock("../../server/middleware/rate-limit.js", () => ({
   adminWriteLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
-  paymentWriteLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
+  paymentQuoteLimiter: mocks.paymentQuoteLimiter,
+  paymentWriteLimiter: mocks.paymentWriteLimiter,
 }));
 vi.mock("../../server/services/roster-payment-core.js", () => ({
   readRosterPaymentResponsibility: vi.fn(),
@@ -201,6 +204,18 @@ describe("interactive partner payment v3 route boundaries", () => {
     }
     expect(mocks.quote).not.toHaveBeenCalled();
     expect(mocks.charge).not.toHaveBeenCalled();
+  });
+
+  it("meters quotes separately so they do not spend the charge allowance", async () => {
+    mocks.quote.mockResolvedValue({ contractVersion: "interactive-payment-quote/3", recipients: [], allocations: [] });
+    const quoteResponse = await request("/leagues/7/interactive-payment-quote/3", user("user", 11, 42), { method: "POST", body: JSON.stringify({ recipients: [recipient(43)] }) });
+    expect(quoteResponse.status).toBe(200);
+    expect(mocks.paymentQuoteLimiter).toHaveBeenCalledOnce();
+    expect(mocks.paymentWriteLimiter).not.toHaveBeenCalled();
+
+    await request("/leagues/7/interactive-payment-charge/3", user("user", 11, 42), { method: "POST", body: JSON.stringify({}) });
+    expect(mocks.paymentWriteLimiter).toHaveBeenCalledOnce();
+    expect(mocks.paymentQuoteLimiter).toHaveBeenCalledOnce();
   });
 
   it("projects safe quote and charge responses without provider, source, or partner-evidence internals", async () => {

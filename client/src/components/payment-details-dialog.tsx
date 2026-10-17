@@ -120,6 +120,9 @@ function invalidateCashEditViews(leagueId: number, bowlerId: number): Promise<un
   const requests = [
     queryClient.invalidateQueries({ queryKey: ["/api/payments"] }),
     queryClient.invalidateQueries({ queryKey: ["/api/financials/f5/payments"] }),
+    queryClient.invalidateQueries({ queryKey: ["manage-payments-snapshot", leagueId] }),
+    queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-participants/4"] }),
+    queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "interactive-payment-quote/4"] }),
     queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "canonical-due-past-due/2"] }),
     queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }),
     queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/standing-autopay/1`] }),
@@ -176,7 +179,16 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
       && evidence.operationType === null
       && evidence.operationStatus === null
       && !evidence.refund.present
+      && evidence.refund.amountMinor === 0
+      && evidence.refund.providerRefundId === null
+      && (!evidence.creditRefunds || (evidence.creditRefunds.completedAmountMinor === 0
+        && evidence.creditRefunds.heldAmountMinor === 0
+        && !evidence.creditRefunds.reviewRequired
+        && evidence.creditRefunds.providerRefundIds.length === 0))
       && !evidence.dispute.present
+      && evidence.dispute.amountMinor === 0
+      && evidence.dispute.disputeId === null
+      && !evidence.dispute.reviewRequired
       && payment.providerPaymentId === null
       // The payment list sanitizer omits this internal operation ID. Canonical evidence must still prove it is null.
       && payment.paymentOperationId == null
@@ -190,11 +202,105 @@ export function PaymentDetailsDialog({ payment, evidence, canCorrect, organizati
   const concreteManualCashEvidence = concreteManualTenderEvidence
     && payment?.type === "cash"
     && evidence?.paymentType === "cash";
+  const cashFundingIds = new Set<string>();
+  const cashOwnerPortionIndexes = new Set<string>();
+  const cashFundingPortionIdentitiesAreUnique = evidence?.fundingPortions?.every((portion) => {
+    if (typeof portion.fundingId !== "string" || portion.fundingId.length === 0
+      || !Number.isSafeInteger(portion.creditedBowlerId) || (portion.creditedBowlerId ?? 0) <= 0
+      || !Number.isSafeInteger(portion.portionIndex) || (portion.portionIndex ?? -1) < 0) return false;
+    const ownerPortionKey = `${portion.creditedBowlerId}:${portion.portionIndex}`;
+    if (cashFundingIds.has(portion.fundingId) || cashOwnerPortionIndexes.has(ownerPortionKey)) return false;
+    cashFundingIds.add(portion.fundingId);
+    cashOwnerPortionIndexes.add(ownerPortionKey);
+    return true;
+  }) === true;
+  const ownedCashAllocationHistoryIsValid = Boolean(evidence
+    && evidence.allocations.every((allocation) => allocation.state !== null
+      && Number.isSafeInteger(allocation.amountMinor)
+      && allocation.amountMinor > 0
+      && Number.isSafeInteger(allocation.bowlerId)
+      && allocation.bowlerId > 0)
+    && evidence.allocations.filter((allocation) => allocation.state === "active")
+      .reduce((sum, allocation) => sum + allocation.amountMinor, 0) === evidence.allocatedMinor);
+  const ownedManualCashEditEvidence = Boolean(
+    canCorrect
+      && payment
+      && payment.id > 0
+      && evidence
+      && evidence.paymentId === payment.id
+      && evidence.leagueId === payment.leagueId
+      && evidence.bowlerId === payment.bowlerId
+      && payment.type === "cash"
+      && evidence.paymentType === "cash"
+      && evidence.status === "confirmed_paid"
+      && payment.status === "paid"
+      && evidence.fundingPortions !== undefined
+      && evidence.fundingPortions.length > 0
+      && cashFundingPortionIdentitiesAreUnique
+      && Number.isSafeInteger(evidence.amountMinor)
+      && Number.isSafeInteger(evidence.allocatedMinor)
+      && evidence.allocatedMinor >= 0
+      && Number.isSafeInteger(evidence.unallocatedMinor)
+      && evidence.unallocatedMinor >= 0
+      && (evidence.allocatedMinor === 0
+        ? evidence.source === "prepaid_credit"
+        : evidence.source === "canonical_allocation")
+      && evidence.fundingPortions.every((portion) => Number.isSafeInteger(portion.amountMinor)
+        && portion.amountMinor > 0
+        && typeof portion.fundingId === "string"
+        && portion.fundingId.length > 0
+        && Number.isSafeInteger(portion.portionIndex)
+        && (portion.portionIndex ?? -1) >= 0
+        && Number.isSafeInteger(portion.creditedBowlerId)
+        && (portion.creditedBowlerId ?? 0) > 0
+        && Number.isSafeInteger(portion.availableMinor)
+        && Number.isSafeInteger(portion.appliedMinor)
+        && portion.availableMinor >= 0
+        && portion.appliedMinor >= 0
+        && portion.availableMinor + portion.appliedMinor === portion.amountMinor
+        && portion.refundedCreditMinor === 0
+        && portion.totalRefundedMinor === 0
+        && portion.heldCreditMinor === 0
+        && !portion.reviewRequired)
+      && evidence.fundingPortions.reduce((sum, portion) => sum + portion.amountMinor, 0) === evidence.amountMinor
+      && evidence.fundingPortions.reduce((sum, portion) => sum + portion.availableMinor, 0) === evidence.unallocatedMinor
+      && evidence.fundingPortions.reduce((sum, portion) => sum + portion.appliedMinor, 0) === evidence.allocatedMinor
+      && evidence.amountMinor === payment.amount
+      && evidence.allocatedMinor + evidence.unallocatedMinor === payment.amount
+      && ownedCashAllocationHistoryIsValid
+      && (evidence.appliedTo?.length ?? 0) === 0
+      && !evidence.unresolved
+      && !evidence.reviewRequired
+      && evidence.providerPaymentId === null
+      && evidence.paymentOperationId === null
+      && evidence.operationType === null
+      && evidence.operationStatus === null
+      && !evidence.refund.present
+      && evidence.refund.amountMinor === 0
+      && evidence.refund.providerRefundId === null
+      && evidence.creditRefunds?.completedAmountMinor === 0
+      && evidence.creditRefunds.heldAmountMinor === 0
+      && !evidence.creditRefunds.reviewRequired
+      && evidence.creditRefunds.providerRefundIds.length === 0
+      && !evidence.dispute.present
+      && evidence.dispute.amountMinor === 0
+      && evidence.dispute.disputeId === null
+      && !evidence.dispute.reviewRequired
+      && payment.providerPaymentId === null
+      // The payment list sanitizer omits this internal operation ID. Canonical evidence must still prove it is null.
+      && payment.paymentOperationId == null
+      && payment.refundedAt === null
+      && payment.squareRefundId === null
+      && payment.refundReason === null
+      && payment.disputeId === null
+      && payment.disputedAt === null,
+  );
   const canEditCash = Boolean(
-    concreteManualCashEvidence
+    (concreteManualCashEvidence
       && payment?.status === "paid"
       && evidence?.status === "confirmed_paid"
-      && evidence?.allocations.every((allocation) => allocation.state === "active"),
+      && evidence?.allocations.every((allocation) => allocation.state === "active"))
+      || ownedManualCashEditEvidence,
   );
 
   useEffect(() => {

@@ -1,21 +1,33 @@
 import { describe, expect, it, vi } from "vitest";
-import type { FinancialReadRowContract, FinancialReadRowContractV3 } from "../../shared/financial-contract";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { FinancialReadAccountProjectionRow, FinancialReadRowContract, FinancialReadRowContractV3 } from "../../shared/financial-contract";
 import type { LeagueOccurrenceScheduleOccurrence } from "../../shared/league-occurrence-schedule";
 
-vi.mock("../../server/storage/index.js", () => ({ storage: {} }));
+vi.mock("../../server/storage/index.js", () => ({ storage: { getLeague: vi.fn() } }));
 vi.mock("../../server/services/league-occurrence-schedule.js", () => ({ loadLeagueOccurrenceSchedule: vi.fn() }));
+vi.mock("../../server/db.js", () => ({ db: { select: vi.fn() } }));
 vi.mock("../../server/services/roster-payment-core.js", () => ({
   readCanonicalDuePastDue: vi.fn(),
+  readCanonicalDuePastDueV3: vi.fn(),
   readRosterPaymentResponsibility: vi.fn(),
+  readTeamEnvelopeRosterReadContext: vi.fn(),
 }));
+
+import { db } from "../../server/db.js";
+import { loadLeagueOccurrenceSchedule } from "../../server/services/league-occurrence-schedule.js";
+import { readCanonicalDuePastDueV3, readRosterPaymentResponsibility, readTeamEnvelopeRosterReadContext } from "../../server/services/roster-payment-core.js";
+import { storage } from "../../server/storage/index.js";
 
 import {
   buildTeamEnvelopeReport,
+  readTeamEnvelopeReport,
   renderTeamEnvelopePdf,
   TeamEnvelopeReportError,
 } from "../../server/services/team-envelope-report";
 
-type BuildInput = Parameters<typeof buildTeamEnvelopeReport>[0];
+type BuildInput = Omit<Parameters<typeof buildTeamEnvelopeReport>[0], "roster"> & {
+  roster: Awaited<ReturnType<typeof readRosterPaymentResponsibility>>;
+};
 
 function occurrence(id: string, localDate: string, ordinal: number): LeagueOccurrenceScheduleOccurrence {
   return {
@@ -223,6 +235,140 @@ function twoFuturePairedWeeksInput(): BuildInput {
   return input;
 }
 
+function twoPublishedDoublePayGroupsInput(feeMinor: number): BuildInput {
+  const input = reportInput();
+  const localDates = [
+    "2026-09-02",
+    "2026-09-09",
+    "2026-09-16",
+    "2026-09-23",
+    "2026-09-30",
+    "2026-10-07",
+  ];
+  const occurrences = localDates.map((localDate, index) => occurrence(`week-${index + 1}`, localDate, index + 1));
+  const groups = [
+    { groupId: "double-pay-trigger-1", triggerIndex: 1, pairedIndex: 4 },
+    { groupId: "double-pay-trigger-2", triggerIndex: 2, pairedIndex: 5 },
+  ];
+  for (const group of groups) {
+    occurrences[group.triggerIndex].collectionGroups = [{
+      groupId: group.groupId,
+      groupOrdinal: group.triggerIndex,
+      kind: "double_pay",
+      role: "trigger",
+      pairedOccurrenceId: occurrences[group.pairedIndex].occurrenceId,
+      pairedLocalDate: occurrences[group.pairedIndex].authoritativeLocalDate,
+      state: "published",
+      currentRevision: 1,
+    }];
+    occurrences[group.pairedIndex].collectionGroups = [{
+      groupId: group.groupId,
+      groupOrdinal: group.triggerIndex,
+      kind: "double_pay",
+      role: "paired",
+      pairedOccurrenceId: occurrences[group.triggerIndex].occurrenceId,
+      pairedLocalDate: occurrences[group.triggerIndex].authoritativeLocalDate,
+      state: "published",
+      currentRevision: 1,
+    }];
+  }
+  const rows = occurrences.map((item) => financialRow(
+    101,
+    item.occurrenceId,
+    `${item.authoritativeLocalDate}T22:30:00.000Z`,
+    0,
+    10,
+    feeMinor,
+  ));
+  input.schedule.occurrences = occurrences;
+  input.roster.occurrences = occurrences.map((item) => ({ id: item.occurrenceId, startAt: item.startAt, status: item.status }));
+  input.financial.asOf = "2026-09-09T16:00:00.000Z";
+  input.financial.rows = rows;
+  input.financial.totals = {
+    amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+    allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+    outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+    collectiblePastDueMinor: 0,
+    reviewCount: 0,
+    settledCount: 0,
+    voidedCount: 0,
+  };
+  return input;
+}
+
+function adoptedTwoPublishedDoublePayGroupsInput(feeMinor: number): BuildInput {
+  const input = twoPublishedDoublePayGroupsInput(feeMinor);
+  const rows: FinancialReadRowContractV3[] = input.financial.rows.map((sourceRow) => {
+    const weekIndex = Number(sourceRow.occurrenceId.slice("week-".length)) - 1;
+    const week = input.schedule.occurrences[weekIndex];
+    if (!week) throw new Error(`missing adopted double-pay fixture ${sourceRow.occurrenceId}`);
+    const isSettledTrigger = weekIndex === 1;
+    const isConfirmedPrior = weekIndex === 0 || isSettledTrigger;
+    const outstandingMinor = isSettledTrigger ? 0 : feeMinor;
+    const allocatedMinor = isSettledTrigger ? feeMinor : 0;
+    const projectedCreditMinor = weekIndex === 0 || weekIndex === 2 || weekIndex === 4 ? feeMinor : 0;
+    const state = outstandingMinor === 0 ? "settled" : "open";
+    return {
+      ...sourceRow,
+      state,
+      allocatedMinor,
+      grossAllocatedMinor: allocatedMinor,
+      outstandingMinor,
+      stillOwed: outstandingMinor > 0,
+      classification: isConfirmedPrior
+        ? weekIndex === 0 ? "past_due" : "settled"
+        : weekIndex === 2 ? "due" : "future",
+      owner: { kind: "bowler", bowlerId: 101 },
+      slotIndex: null,
+      responsibilityKind: "worksheet",
+      actualBowlerId: null,
+      occurrenceLocalDate: week.authoritativeLocalDate,
+      plannedOrdinal: week.plannedOrdinal ?? weekIndex + 1,
+      billingOrdinal: week.billing?.billingOrdinal ?? week.plannedOrdinal ?? weekIndex + 1,
+      accountProjection: {
+        owner: { kind: "bowler", bowlerId: 101 },
+        effectiveDebtorBowlerId: 101,
+        confirmationStatus: isConfirmedPrior ? "confirmed" : "forecast",
+        projectedCreditMinor,
+      },
+    };
+  });
+  input.roster.ready = false;
+  input.roster.incompleteTeamIds = [10];
+  input.financial = {
+    contractVersion: "canonical-due-past-due/3",
+    orderVersion: "due-at,owner,occurrence,obligation/3",
+    organizationId: 11,
+    leagueId: 7,
+    authoritativeSource: "payment_obligations",
+    asOf: "2026-09-16T16:00:00.000Z",
+    rows,
+    totals: {
+      amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+      allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+      outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+      collectiblePastDueMinor: 0,
+      reviewCount: 0,
+      settledCount: rows.filter((row) => row.state === "settled").length,
+      voidedCount: 0,
+    },
+    accountProjection: {
+      contractVersion: "owned-account-projection/1",
+      accounts: [{
+        bowlerId: 101,
+        amountPaidMinor: feeMinor * 4,
+        availableCreditMinor: feeMinor * 3,
+        confirmedDebtMinor: feeMinor,
+        netBalanceMinor: feeMinor * 2,
+        confirmedPastDueMinor: 0,
+        seasonRemainingMinor: feeMinor * 2,
+        reviewRequired: false,
+      }],
+    },
+  };
+  return input;
+}
+
 function reportInput(): BuildInput {
   const occurrences = [
     occurrence("week-1", "2026-09-09", 1),
@@ -333,7 +479,461 @@ function reportInput(): BuildInput {
   };
 }
 
+interface AdoptedRowOptions {
+  amountMinor: number;
+  allocatedMinor?: number;
+  outstandingMinor?: number;
+  waivedMinor?: number;
+  projectedCreditMinor?: number;
+  confirmationStatus: "confirmed" | "forecast";
+  classification?: FinancialReadRowContract["classification"];
+}
+
+function adoptedRow(
+  sourceBowlerId: number,
+  effectiveDebtorBowlerId: number,
+  occurrenceId: string,
+  options: AdoptedRowOptions,
+): FinancialReadRowContractV3 {
+  const input = reportInput();
+  const occurrenceIndex = input.schedule.occurrences.findIndex((item) => item.occurrenceId === occurrenceId);
+  const week = input.schedule.occurrences[occurrenceIndex];
+  if (!week) throw new Error(`missing adopted fixture occurrence ${occurrenceId}`);
+  const allocatedMinor = options.allocatedMinor ?? 0;
+  const outstandingMinor = options.outstandingMinor ?? options.amountMinor - allocatedMinor;
+  const waivedMinor = options.waivedMinor ?? 0;
+  const state = outstandingMinor <= 0 ? "settled" : allocatedMinor > 0 ? "partially_settled" : "open";
+  const base = financialRow(
+    sourceBowlerId,
+    occurrenceId,
+    `${week.authoritativeLocalDate}T22:30:00.000Z`,
+    allocatedMinor,
+    10,
+    options.amountMinor,
+  );
+  return {
+    ...base,
+    state,
+    grossAllocatedMinor: allocatedMinor,
+    waivedMinor,
+    stillOwed: outstandingMinor > 0,
+    outstandingMinor,
+    classification: options.classification ?? (week.authoritativeLocalDate < "2026-09-16" ? "past_due" : week.authoritativeLocalDate === "2026-09-16" ? "due" : "future"),
+    owner: { kind: "bowler", bowlerId: sourceBowlerId },
+    slotIndex: null,
+    responsibilityKind: "substitute",
+    actualBowlerId: null,
+    occurrenceLocalDate: week.authoritativeLocalDate,
+    plannedOrdinal: week.plannedOrdinal ?? occurrenceIndex + 1,
+    billingOrdinal: week.billing?.billingOrdinal ?? week.plannedOrdinal ?? occurrenceIndex + 1,
+    accountProjection: {
+      owner: { kind: "bowler", bowlerId: sourceBowlerId },
+      effectiveDebtorBowlerId,
+      confirmationStatus: options.confirmationStatus,
+      projectedCreditMinor: options.projectedCreditMinor ?? 0,
+    },
+  };
+}
+
+function adoptedEnvelopeInput(): BuildInput {
+  const input = reportInput();
+  input.roster.ready = false;
+  input.roster.incompleteTeamIds = [10];
+  input.roster.teams[0].slots = [
+    { teamId: 10, slotIndex: 0, occupant: "unassigned", mainBowlerId: null },
+    { teamId: 10, slotIndex: 1, occupant: "vacant", mainBowlerId: null },
+  ];
+  input.roster.substituteBowlerOptions.push(
+    { id: 103, name: "Sam Substitute", teamId: 10 },
+    { id: 104, name: "Avery Credit", teamId: 10 },
+    { id: 105, name: "Riley Partial Waiver", teamId: 10 },
+    { id: 106, name: "Casey Waived Only", teamId: 10 },
+    { id: 107, name: "Taylor Rotation", teamId: 20 },
+  );
+  const rotatingTeam = input.roster.teams.find((team) => team.id === 20);
+  if (!rotatingTeam || !rotatingTeam.slots[0]) throw new Error("missing rotating team fixture");
+  rotatingTeam.slots[0] = { teamId: 20, slotIndex: 0, occupant: "rotating", mainBowlerId: null };
+  Object.assign(rotatingTeam, { eligibleRotatingBowlerIds: [107] });
+  const rows = [
+    adoptedRow(101, 103, "week-1", {
+      amountMinor: 1_000,
+      outstandingMinor: 1_000,
+      projectedCreditMinor: 1_000,
+      confirmationStatus: "confirmed",
+      classification: "past_due",
+    }),
+    adoptedRow(101, 103, "week-2", {
+      amountMinor: 2_000,
+      projectedCreditMinor: 500,
+      confirmationStatus: "forecast",
+      classification: "due",
+    }),
+    adoptedRow(101, 103, "week-3", {
+      amountMinor: 2_000,
+      confirmationStatus: "forecast",
+    }),
+    adoptedRow(104, 104, "week-2", {
+      amountMinor: 2_000,
+      projectedCreditMinor: 2_000,
+      confirmationStatus: "forecast",
+      classification: "due",
+    }),
+    adoptedRow(104, 104, "week-3", {
+      amountMinor: 2_000,
+      projectedCreditMinor: 2_000,
+      confirmationStatus: "forecast",
+    }),
+    adoptedRow(105, 105, "week-3", {
+      amountMinor: 2_000,
+      allocatedMinor: 1_000,
+      outstandingMinor: 0,
+      waivedMinor: 1_000,
+      confirmationStatus: "confirmed",
+    }),
+    adoptedRow(106, 106, "week-3", {
+      amountMinor: 2_000,
+      outstandingMinor: 0,
+      waivedMinor: 2_000,
+      confirmationStatus: "confirmed",
+    }),
+  ];
+  const rotatingRow = adoptedRow(107, 107, "week-2", {
+    amountMinor: 2_000,
+    projectedCreditMinor: 1_000,
+    confirmationStatus: "forecast",
+    classification: "due",
+  });
+  rows.push({
+    ...rotatingRow,
+    teamId: 20,
+    payerBowlerId: null,
+    owner: { kind: "team", teamId: 20 },
+    slotIndex: 0,
+    responsibilityKind: "rotating",
+    actualBowlerId: 107,
+    accountProjection: {
+      owner: { kind: "team", teamId: 20 },
+      effectiveDebtorBowlerId: 107,
+      confirmationStatus: "forecast",
+      projectedCreditMinor: 1_000,
+    },
+  });
+  const unassignedTeamRow = adoptedRow(108, 108, "week-3", {
+    amountMinor: 2_000,
+    confirmationStatus: "forecast",
+  });
+  rows.push({
+    ...unassignedTeamRow,
+    teamId: 20,
+    payerBowlerId: null,
+    owner: { kind: "team", teamId: 20 },
+    slotIndex: 1,
+    responsibilityKind: "rotating",
+    actualBowlerId: null,
+    accountProjection: {
+      owner: { kind: "team", teamId: 20 },
+      effectiveDebtorBowlerId: null,
+      confirmationStatus: "forecast",
+      projectedCreditMinor: 0,
+    },
+  });
+  const account = (bowlerId: number, amountPaidMinor: number, availableCreditMinor: number, confirmedDebtMinor: number, seasonRemainingMinor: number): FinancialReadAccountProjectionRow => ({
+    bowlerId,
+    amountPaidMinor,
+    availableCreditMinor,
+    confirmedDebtMinor,
+    netBalanceMinor: availableCreditMinor - confirmedDebtMinor,
+    confirmedPastDueMinor: 0,
+    seasonRemainingMinor,
+    reviewRequired: false,
+  });
+  input.financial = {
+    contractVersion: "canonical-due-past-due/3",
+    orderVersion: "due-at,owner,occurrence,obligation/3",
+    organizationId: 11,
+    leagueId: 7,
+    authoritativeSource: "payment_obligations",
+    asOf: "2026-09-16T16:00:00.000Z",
+    rows,
+    totals: {
+      amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+      allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+      outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+      collectiblePastDueMinor: 0,
+      reviewCount: 0,
+      settledCount: rows.filter((row) => row.state === "settled").length,
+      voidedCount: 0,
+    },
+    accountProjection: {
+      contractVersion: "owned-account-projection/1",
+      accounts: [
+        account(103, 1_500, 1_500, 1_000, 1_500),
+        account(104, 5_000, 5_000, 0, 0),
+        account(105, 1_000, 0, 0, 0),
+        account(106, 0, 0, 0, 0),
+        account(107, 1_000, 1_000, 0, 1_000),
+      ],
+    },
+  };
+  return input;
+}
+
 describe("team envelope report", () => {
+  it("resolves a historical account holder name in one organization-scoped batch", async () => {
+    const input = adoptedEnvelopeInput();
+    input.roster.substituteBowlerOptions = input.roster.substituteBowlerOptions.filter((bowler) => bowler.id !== 103);
+    vi.mocked(storage.getLeague).mockResolvedValue(input.league as never);
+    vi.mocked(loadLeagueOccurrenceSchedule).mockResolvedValue(input.schedule);
+    vi.mocked(readTeamEnvelopeRosterReadContext).mockResolvedValue(input.roster as never);
+    vi.mocked(readCanonicalDuePastDueV3).mockResolvedValue(input.financial as never);
+
+    const where = vi.fn().mockResolvedValue([{ id: 103, name: "Former Sam" }]);
+    const from = vi.fn().mockReturnValue({ where });
+    vi.mocked(db.select).mockReturnValue({ from } as never);
+
+    const report = await readTeamEnvelopeReport({ organizationId: 11, leagueId: 7 });
+
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(from).toHaveBeenCalledTimes(1);
+    expect(where).toHaveBeenCalledTimes(1);
+    const scopedFilter = new PgDialect().sqlToQuery(where.mock.calls[0]?.[0]);
+    expect(scopedFilter.sql).toContain('"bowlers"."organization_id"');
+    expect(scopedFilter.params).toEqual([11, 103]);
+    expect(report.teams.find((team) => team.teamId === 10)?.rows).toContainEqual(expect.objectContaining({
+      bowlerId: 103,
+      bowlerName: "Former Sam",
+    }));
+  });
+
+  it("builds an adopted worksheet report from roster context without assignment projection", async () => {
+    const input = adoptedEnvelopeInput();
+    const worksheetRow = input.financial.rows.find((row) => row.occurrenceId === "week-2" && row.payerBowlerId === 101);
+    if (!worksheetRow || !("owner" in worksheetRow)) throw new Error("missing worksheet-owned account row");
+    worksheetRow.responsibilityKind = "worksheet";
+    worksheetRow.slotIndex = null;
+    worksheetRow.actualBowlerId = null;
+
+    vi.mocked(storage.getLeague).mockResolvedValue(input.league as never);
+    vi.mocked(loadLeagueOccurrenceSchedule).mockResolvedValue(input.schedule);
+    vi.mocked(readTeamEnvelopeRosterReadContext).mockResolvedValue(input.roster as never);
+    vi.mocked(readCanonicalDuePastDueV3).mockResolvedValue(input.financial as never);
+
+    const report = await readTeamEnvelopeReport({ organizationId: 11, leagueId: 7 });
+
+    expect(readTeamEnvelopeRosterReadContext).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7 });
+    expect(report.ownedAccountProjection).toBe(true);
+    expect(report.teams.find((team) => team.teamId === 10)?.rows).toContainEqual(expect.objectContaining({ bowlerId: 103 }));
+  });
+
+  it("projects owned credit for responsible substitutes without requiring a filled legacy lineup", () => {
+    const report = buildTeamEnvelopeReport(adoptedEnvelopeInput());
+    const team = report.teams.find((candidate) => candidate.teamId === 10);
+    const substitute = team?.rows.find((row) => row.bowlerId === 103);
+    const creditHolder = team?.rows.find((row) => row.bowlerId === 104);
+    const partialWaiver = team?.rows.find((row) => row.bowlerId === 105);
+
+    expect(report.ownedAccountProjection).toBe(true);
+    expect(substitute).toMatchObject({
+      bowlerName: "Sam Substitute",
+      weeklyDueMinor: 4_000,
+      ytdDueMinor: 1_000,
+      ytdPaidMinor: 1_500,
+      remainingCreditMinor: 500,
+      pastDueMinor: 0,
+      dueTodayMinor: 3_500,
+      finalWeekPaid: false,
+    });
+    expect(creditHolder).toMatchObject({
+      bowlerName: "Avery Credit",
+      ytdPaidMinor: 5_000,
+      remainingCreditMinor: 5_000,
+      weeklyDueMinor: 4_000,
+      dueTodayMinor: 0,
+      finalWeekPaid: true,
+    });
+    expect(partialWaiver).toMatchObject({
+      bowlerName: "Riley Partial Waiver",
+      ytdPaidMinor: 1_000,
+      finalWeekPaid: false,
+    });
+    expect(team?.rows.some((row) => row.bowlerId === 106)).toBe(false);
+    expect(team?.showFinalWeekPaid).toBe(true);
+    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows.find((row) => row.bowlerId === 107)).toMatchObject({
+      bowlerId: 107,
+      bowlerName: "Taylor Rotation",
+      weeklyDueMinor: 2_000,
+      ytdPaidMinor: 1_000,
+      remainingCreditMinor: 1_000,
+      dueTodayMinor: 1_000,
+    });
+    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows).toHaveLength(2);
+    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows.every((row) => row.ownerKind !== "team")).toBe(true);
+    expect(report.teams.find((candidate) => candidate.teamId === 20)?.rows.some((row) => row.bowlerId === 108)).toBe(false);
+  });
+
+  it("shows legacy roster members in official order, keeps legacy Main rows as extras, and places vacancies first", async () => {
+    const input = reportInput();
+    Object.assign(input.roster, {
+      rosterDisplayMembersByTeam: [
+        {
+          teamId: 10,
+          members: [
+            { bowlerId: 102, displayName: "Laurie Example", activeProfile: true },
+            { bowlerId: 103, displayName: "Zero Balance Member", activeProfile: true },
+            { bowlerId: 104, displayName: "Inactive Display Member", activeProfile: false },
+          ],
+        },
+        {
+          teamId: 20,
+          members: [
+            { bowlerId: 201, displayName: "Morgan Example", activeProfile: true },
+            { bowlerId: 202, displayName: "No Account Member", activeProfile: true },
+          ],
+        },
+      ],
+    });
+
+    const report = buildTeamEnvelopeReport(input);
+    const teamOne = report.teams.find((team) => team.teamId === 10);
+    const teamTwo = report.teams.find((team) => team.teamId === 20);
+
+    expect(teamOne?.rows.map((row) => row.bowlerId)).toEqual([102, 103, 104, 101]);
+    expect(teamOne?.rows[1]).toMatchObject({
+      bowlerName: "Zero Balance Member",
+      weeklyDueMinor: 0,
+      ytdDueMinor: 0,
+      ytdPaidMinor: 0,
+      remainingCreditMinor: 0,
+      pastDueMinor: 0,
+      dueTodayMinor: 0,
+    });
+    expect(teamTwo?.rows.map((row) => [row.bowlerId, row.bowlerName, row.slotIndex])).toEqual([
+      [null, "VACANT", 1],
+      [201, "Morgan Example", undefined],
+      [202, "No Account Member", undefined],
+    ]);
+    expect(teamTwo?.rows[0]).toMatchObject({
+      weeklyDueMinor: 0,
+      ytdDueMinor: 0,
+      ytdPaidMinor: 0,
+      remainingCreditMinor: 0,
+      pastDueMinor: 0,
+      dueTodayMinor: 0,
+      finalWeekPaid: true,
+    });
+    const bytes = await renderTeamEnvelopePdf(report);
+    expect(Buffer.from(bytes.subarray(0, 4)).toString("ascii")).toBe("%PDF");
+  });
+
+  it("keeps adopted money on its resolved team and renders current roster placeholders without expanding financial membership", async () => {
+    const input = adoptedEnvelopeInput();
+    expect(input.roster.teams.find((team) => team.id === 10)?.slots).toContainEqual({
+      teamId: 10,
+      slotIndex: 0,
+      occupant: "unassigned",
+      mainBowlerId: null,
+    });
+    expect(input.roster.teams.find((team) => team.id === 10)?.slots).toContainEqual({
+      teamId: 10,
+      slotIndex: 1,
+      occupant: "vacant",
+      mainBowlerId: null,
+    });
+    const movedSubstitute = input.roster.substituteBowlerOptions.find((bowler) => bowler.id === 103);
+    if (!movedSubstitute) throw new Error("missing transferred bowler fixture");
+    movedSubstitute.teamId = 20;
+    Object.assign(input.roster, {
+      rosterDisplayMembersByTeam: [
+        {
+          teamId: 10,
+          members: [
+            { bowlerId: 104, displayName: "Avery Credit", activeProfile: true },
+            { bowlerId: 105, displayName: "Riley Partial Waiver", activeProfile: true },
+            { bowlerId: 106, displayName: "Casey Waived Only", activeProfile: false },
+          ],
+        },
+        {
+          teamId: 20,
+          members: [
+            { bowlerId: 107, displayName: "Taylor Rotation", activeProfile: true },
+            { bowlerId: 103, displayName: "Sam's Current Team", activeProfile: true },
+          ],
+        },
+      ],
+    });
+
+    const report = buildTeamEnvelopeReport(input);
+    const historicalTeam = report.teams.find((team) => team.teamId === 10);
+    const currentTeam = report.teams.find((team) => team.teamId === 20);
+    const waivedOnlyPlaceholder = historicalTeam?.rows.find((row) => row.bowlerId === 106);
+    const transferredRows = report.teams.flatMap((team) => team.rows
+      .filter((row) => row.bowlerId === 103)
+      .map((row) => ({ teamId: team.teamId, row })));
+
+    expect(historicalTeam?.rows.map((row) => row.bowlerName)).toEqual([
+      "Unassigned",
+      "VACANT",
+      "Avery Credit",
+      "Riley Partial Waiver",
+      "Casey Waived Only",
+      "Sam's Current Team",
+    ]);
+    expect(historicalTeam?.rows.slice(0, 2)).toMatchObject([
+      {
+        bowlerName: "Unassigned",
+        slotIndex: 0,
+        weeklyDueMinor: 0,
+        ytdDueMinor: 0,
+        ytdPaidMinor: 0,
+        remainingCreditMinor: 0,
+        pastDueMinor: 0,
+        dueTodayMinor: 0,
+        finalWeekPaid: true,
+      },
+      {
+        bowlerName: "VACANT",
+        slotIndex: 1,
+        weeklyDueMinor: 0,
+        ytdDueMinor: 0,
+        ytdPaidMinor: 0,
+        remainingCreditMinor: 0,
+        pastDueMinor: 0,
+        dueTodayMinor: 0,
+        finalWeekPaid: true,
+      },
+    ]);
+    expect(waivedOnlyPlaceholder).toMatchObject({
+      weeklyDueMinor: 0,
+      ytdDueMinor: 0,
+      ytdPaidMinor: 0,
+      remainingCreditMinor: 0,
+      pastDueMinor: 0,
+      dueTodayMinor: 0,
+      finalWeekPaid: true,
+    });
+    expect(currentTeam?.rows.map((row) => row.bowlerName)).toEqual([
+      "VACANT",
+      "Taylor Rotation",
+      "Sam's Current Team",
+    ]);
+    expect(transferredRows).toHaveLength(2);
+    expect(transferredRows
+      .filter(({ row }) => row.ytdDueMinor > 0 || row.ytdPaidMinor > 0 || row.dueTodayMinor > 0)
+      .map(({ teamId }) => teamId)).toEqual([10]);
+    expect(transferredRows.find(({ teamId }) => teamId === 20)?.row).toMatchObject({
+      weeklyDueMinor: 0,
+      ytdDueMinor: 0,
+      ytdPaidMinor: 0,
+      remainingCreditMinor: 0,
+      pastDueMinor: 0,
+      dueTodayMinor: 0,
+      finalWeekPaid: true,
+    });
+
+    const bytes = await renderTeamEnvelopePdf(report);
+    expect(Buffer.from(bytes.subarray(0, 4)).toString("ascii")).toBe("%PDF");
+  });
+
   it("uses the selected week's fees, prior YTD due, all effective payments, and due-through-today balance", () => {
     const report = buildTeamEnvelopeReport(reportInput());
 
@@ -343,18 +943,18 @@ describe("team envelope report", () => {
     expect(report.teams[0]).toMatchObject({ teamNumber: 1, showFinalWeekPaid: true });
     expect(report.teams[0].rows[0]).toMatchObject({
       bowlerName: "Jillian Example",
-      weeklyDueMinor: 2_000,
+      weeklyDueMinor: 4_000,
       ytdDueMinor: 2_000,
       ytdPaidMinor: 0,
       remainingCreditMinor: 0,
       pastDueMinor: 2_000,
-      dueTodayMinor: 4_000,
+      dueTodayMinor: 6_000,
       finalWeekPaid: false,
     });
     expect(report.teams[0].rows[1]).toMatchObject({
       ytdDueMinor: 2_000,
       ytdPaidMinor: 6_000,
-      remainingCreditMinor: 2_000,
+      remainingCreditMinor: 4_000,
       pastDueMinor: 0,
       dueTodayMinor: 0,
       finalWeekPaid: true,
@@ -378,12 +978,267 @@ describe("team envelope report", () => {
     input.financial.asOf = "2026-09-30T16:00:00.000Z";
     const week4 = buildTeamEnvelopeReport(input).teams[0].rows[0];
     expect(week4).toMatchObject({
-      weeklyDueMinor: 2_000,
+      weeklyDueMinor: 4_000,
       ytdDueMinor: 6_000,
       ytdPaidMinor: 7_000,
       remainingCreditMinor: 1_000,
       pastDueMinor: 0,
-      dueTodayMinor: 1_000,
+      dueTodayMinor: 3_000,
+    });
+  });
+
+  it.each([2_000, 2_500, 3_000])("moves both published double-pay pairs to their trigger collection weeks for %d-minor fees", (feeMinor) => {
+    const input = twoPublishedDoublePayGroupsInput(feeMinor);
+
+    const trigger1 = buildTeamEnvelopeReport(input);
+    expect(trigger1).toMatchObject({ occurrenceId: "week-2", weekLabel: "2" });
+    expect(trigger1.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: feeMinor * 2,
+      ytdDueMinor: feeMinor,
+      pastDueMinor: feeMinor,
+      dueTodayMinor: feeMinor * 3,
+    });
+
+    input.financial.asOf = "2026-09-16T16:00:00.000Z";
+    const trigger2 = buildTeamEnvelopeReport(input);
+    expect(trigger2).toMatchObject({ occurrenceId: "week-3", weekLabel: "3" });
+    expect(trigger2.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: feeMinor * 2,
+      ytdDueMinor: feeMinor * 3,
+      pastDueMinor: feeMinor * 3,
+      dueTodayMinor: feeMinor * 5,
+    });
+
+    input.financial.asOf = "2026-09-23T16:00:00.000Z";
+    const afterTrigger2 = buildTeamEnvelopeReport(input);
+    expect(afterTrigger2).toMatchObject({ occurrenceId: "week-4", weekLabel: "4" });
+    expect(afterTrigger2.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: feeMinor,
+      ytdDueMinor: feeMinor * 5,
+      pastDueMinor: feeMinor * 5,
+      dueTodayMinor: feeMinor * 6,
+    });
+
+    input.financial.asOf = "2026-09-30T16:00:00.000Z";
+    const paired1 = buildTeamEnvelopeReport(input);
+    expect(paired1).toMatchObject({ occurrenceId: "week-5", weekLabel: "5" });
+    expect(paired1.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: 0,
+      ytdDueMinor: feeMinor * 6,
+      pastDueMinor: feeMinor * 6,
+      dueTodayMinor: feeMinor * 6,
+    });
+
+    input.financial.asOf = "2026-10-07T16:00:00.000Z";
+    const paired2 = buildTeamEnvelopeReport(input);
+    expect(paired2).toMatchObject({ occurrenceId: "week-6", weekLabel: "6" });
+    expect(paired2.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: 0,
+      ytdDueMinor: feeMinor * 6,
+      pastDueMinor: feeMinor * 6,
+      dueTodayMinor: feeMinor * 6,
+    });
+  });
+
+  it("reserves legacy allocations on paired weeks until their trigger positions", () => {
+    const input = twoPublishedDoublePayGroupsInput(2_000);
+    input.financial.asOf = "2026-09-02T16:00:00.000Z";
+    for (const occurrenceId of ["week-5", "week-6"]) {
+      const row = input.financial.rows.find((candidate) => candidate.occurrenceId === occurrenceId);
+      if (!row) throw new Error("missing future paired allocation fixture");
+      row.allocatedMinor = row.amountMinor;
+      row.grossAllocatedMinor = row.amountMinor;
+      row.outstandingMinor = 0;
+      row.stillOwed = false;
+      row.state = "settled";
+      row.classification = "settled";
+    }
+
+    const report = buildTeamEnvelopeReport(input);
+    expect(report).toMatchObject({ occurrenceId: "week-1", weekLabel: "1" });
+    expect(report.teams[0].rows[0]).toMatchObject({
+      weeklyDueMinor: 2_000,
+      ytdDueMinor: 0,
+      ytdPaidMinor: 4_000,
+      remainingCreditMinor: 0,
+      dueTodayMinor: 2_000,
+    });
+  });
+
+  it.each([
+    ["paid", 2_000, 2_000, 0, false, 2, 3],
+    ["partial credit", 1_000, 1_000, 0, false, 2, 4],
+    ["waived", 0, 0, 1_000, false, 1.5, 4.5],
+    ["voided", 0, 0, 0, true, 1, 4],
+  ] as const)("keeps %s group obligations in weekly and due amounts", (_label, triggerAllocatedMinor, pairedAllocatedMinor, waivedMinor, voided, expectedWeeklyMultiplier, expectedDueMultiplier) => {
+    const feeMinor = 2_000;
+    const input = twoPublishedDoublePayGroupsInput(feeMinor);
+    input.financial.asOf = "2026-09-16T16:00:00.000Z";
+    const triggerRow = input.financial.rows.find((row) => row.occurrenceId === "week-3");
+    const pairedRow = input.financial.rows.find((row) => row.occurrenceId === "week-6");
+    if (!triggerRow || !pairedRow) throw new Error("missing second double-pay group fixtures");
+
+    for (const [row, allocatedMinor] of [[triggerRow, triggerAllocatedMinor], [pairedRow, pairedAllocatedMinor]] as const) {
+      row.allocatedMinor = allocatedMinor;
+      row.grossAllocatedMinor = allocatedMinor;
+      row.outstandingMinor = feeMinor - allocatedMinor;
+      row.stillOwed = row.outstandingMinor > 0;
+      row.state = row.outstandingMinor === 0 ? "settled" : allocatedMinor > 0 ? "partially_settled" : "open";
+      row.classification = row.outstandingMinor === 0 ? "settled" : "due";
+    }
+    if (voided) {
+      pairedRow.state = "voided";
+      pairedRow.outstandingMinor = 0;
+      pairedRow.stillOwed = false;
+    } else if (waivedMinor > 0) {
+      pairedRow.waivedMinor = waivedMinor;
+      pairedRow.outstandingMinor -= waivedMinor;
+      pairedRow.stillOwed = pairedRow.outstandingMinor > 0;
+    }
+
+    const row = buildTeamEnvelopeReport(input).teams[0].rows[0];
+    expect(row.weeklyDueMinor).toBe(feeMinor * expectedWeeklyMultiplier);
+    expect(row.dueTodayMinor).toBe(feeMinor * expectedDueMultiplier);
+  });
+
+  it.each([2_000, 2_500, 3_000])("includes a forecast paired obligation in YTD when its trigger is already due at fee %d", (feeMinor) => {
+    const report = buildTeamEnvelopeReport(adoptedTwoPublishedDoublePayGroupsInput(feeMinor));
+    const row = report.teams[0].rows.find((candidate) => candidate.bowlerId === 101);
+
+    expect(report).toMatchObject({ occurrenceId: "week-3", weekLabel: "3", ownedAccountProjection: true });
+    expect(row).toMatchObject({
+      weeklyDueMinor: feeMinor * 2,
+      ytdDueMinor: feeMinor * 3,
+      ytdPaidMinor: feeMinor * 4,
+      // netBalance (2 fees) reserves the pulled-forward pair's gross
+      // outstanding (1 fee); confirmed debt is already excluded from netBalance.
+      remainingCreditMinor: feeMinor,
+      pastDueMinor: 0,
+      dueTodayMinor: feeMinor,
+    });
+  });
+
+  it("keeps partially projected forecast debt collectible after its published trigger", () => {
+    const input = adoptedTwoPublishedDoublePayGroupsInput(2_000);
+    const pair1 = input.financial.rows.find((row) => row.occurrenceId === "week-5");
+    const trigger2 = input.financial.rows.find((row) => row.occurrenceId === "week-3");
+    const account = input.financial.accountProjection?.accounts[0];
+    if (!pair1?.accountProjection || !trigger2?.accountProjection || !account) {
+      throw new Error("missing partial forecast projection fixtures");
+    }
+    pair1.accountProjection.projectedCreditMinor = 1_000;
+    trigger2.accountProjection.projectedCreditMinor = 0;
+    Object.assign(account, {
+      amountPaidMinor: 5_000,
+      availableCreditMinor: 3_000,
+      confirmedDebtMinor: 2_000,
+      netBalanceMinor: 1_000,
+      confirmedPastDueMinor: 0,
+      seasonRemainingMinor: 7_000,
+    });
+
+    const report = buildTeamEnvelopeReport(input);
+    const row = report.teams[0].rows.find((candidate) => candidate.bowlerId === 101);
+    expect(row).toMatchObject({
+      weeklyDueMinor: 4_000,
+      ytdDueMinor: 6_000,
+      ytdPaidMinor: 5_000,
+      remainingCreditMinor: 0,
+      pastDueMinor: 1_000,
+      dueTodayMinor: 5_000,
+    });
+  });
+
+  it("rejects published double-pay evidence whose paired target is missing or not billable", () => {
+    const missingTarget = twoPublishedDoublePayGroupsInput(2_000);
+    missingTarget.schedule.occurrences = missingTarget.schedule.occurrences.filter((item) => item.occurrenceId !== "week-6");
+    expect(() => buildTeamEnvelopeReport(missingTarget)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "COLLECTION_GROUP_INVALID", status: 503 }),
+    );
+
+    const nonbillableTarget = twoPublishedDoublePayGroupsInput(2_000);
+    const pairedWeek = nonbillableTarget.schedule.occurrences.find((item) => item.occurrenceId === "week-6");
+    if (!pairedWeek?.billing) throw new Error("missing paired target billing fixture");
+    pairedWeek.billing.obligationPolicy = "none";
+    expect(() => buildTeamEnvelopeReport(nonbillableTarget)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "COLLECTION_GROUP_INVALID", status: 503 }),
+    );
+  });
+
+  it("rejects conflicting published reciprocal double-pay evidence", () => {
+    const input = twoPublishedDoublePayGroupsInput(2_000);
+    const pairedWeek = input.schedule.occurrences.find((item) => item.occurrenceId === "week-5");
+    if (!pairedWeek?.collectionGroups?.[0]) throw new Error("missing reciprocal paired evidence fixture");
+    pairedWeek.collectionGroups[0].pairedOccurrenceId = "week-3";
+
+    expect(() => buildTeamEnvelopeReport(input)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "COLLECTION_GROUP_INVALID", status: 503 }),
+    );
+  });
+
+  it.each(["paired date", "collection order"] as const)("rejects published double-pay evidence with invalid %s", (invalidEvidence) => {
+    const input = twoPublishedDoublePayGroupsInput(2_000);
+    const triggerWeek = input.schedule.occurrences.find((item) => item.occurrenceId === "week-2");
+    const triggerGroup = triggerWeek?.collectionGroups?.[0];
+    if (!triggerGroup) throw new Error("missing first trigger evidence fixture");
+    if (invalidEvidence === "paired date") {
+      triggerGroup.pairedLocalDate = "2026-10-01";
+    } else {
+      triggerGroup.pairedOccurrenceId = "week-1";
+      triggerGroup.pairedLocalDate = "2026-09-02";
+    }
+
+    expect(() => buildTeamEnvelopeReport(input)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "COLLECTION_GROUP_INVALID", status: 503 }),
+    );
+  });
+
+  it("ignores revoked double-pay evidence when assigning collection positions", () => {
+    const input = twoPublishedDoublePayGroupsInput(2_000);
+    for (const occurrenceId of ["week-2", "week-5"]) {
+      const occurrence = input.schedule.occurrences.find((item) => item.occurrenceId === occurrenceId);
+      if (!occurrence?.collectionGroups?.[0]) throw new Error("missing revoked double-pay group fixture");
+      occurrence.collectionGroups[0].state = "revoked";
+    }
+
+    const report = buildTeamEnvelopeReport(input);
+    expect(report).toMatchObject({ occurrenceId: "week-2", weekLabel: "2" });
+    expect(report.teams[0].rows[0]).toMatchObject({ weeklyDueMinor: 2_000, ytdDueMinor: 2_000, dueTodayMinor: 4_000 });
+  });
+
+  it("applies collection positions to legacy rotating slots", () => {
+    const input = twoPublishedDoublePayGroupsInput(2_000);
+    input.financial.asOf = "2026-09-16T16:00:00.000Z";
+    const team = input.roster.teams.find((candidate) => candidate.id === 20);
+    if (!team) throw new Error("missing rotating team fixture");
+    team.slots[0] = { teamId: 20, slotIndex: 0, occupant: "rotating", mainBowlerId: null };
+    Object.assign(team, { eligibleRotatingBowlerIds: [201] });
+    const rows: FinancialReadRowContractV3[] = input.financial.rows.map((row, index) => ({
+      ...row,
+      teamId: 20,
+      payerBowlerId: null,
+      owner: { kind: "team", teamId: 20 },
+      slotIndex: 0,
+      responsibilityKind: "rotating",
+      actualBowlerId: 201,
+      occurrenceLocalDate: input.schedule.occurrences[index]?.authoritativeLocalDate ?? "",
+      plannedOrdinal: index + 1,
+      billingOrdinal: index + 1,
+    }));
+    input.financial = {
+      ...input.financial,
+      contractVersion: "canonical-due-past-due/3",
+      orderVersion: "due-at,owner,occurrence,obligation/3",
+      rows,
+    };
+
+    const rotatingRow = buildTeamEnvelopeReport(input).teams[1].rows.find((row) => row.ownerKind === "team");
+    expect(rotatingRow).toMatchObject({
+      bowlerName: "Rotating slot 1 · Morgan Example",
+      weeklyDueMinor: 4_000,
+      ytdDueMinor: 6_000,
+      pastDueMinor: 6_000,
+      dueTodayMinor: 10_000,
     });
   });
 
@@ -411,6 +1266,33 @@ describe("team envelope report", () => {
     expect(row).toMatchObject({ pastDueMinor: 2_000, dueTodayMinor: 2_000 });
   });
 
+  it("preserves the legacy final-week waived-balance result", () => {
+    const input = reportInput();
+    for (const row of input.financial.rows) {
+      row.allocatedMinor = row.amountMinor;
+      row.grossAllocatedMinor = row.amountMinor;
+      row.outstandingMinor = 0;
+      row.stillOwed = false;
+      row.state = "settled";
+      row.classification = "settled";
+    }
+    const waivedFinal = input.financial.rows.find((row) => row.payerBowlerId === 102 && row.occurrenceId === "week-3");
+    if (!waivedFinal) throw new Error("missing waived final obligation fixture");
+    waivedFinal.allocatedMinor = 0;
+    waivedFinal.grossAllocatedMinor = 0;
+    waivedFinal.waivedMinor = waivedFinal.amountMinor;
+    waivedFinal.outstandingMinor = 0;
+    waivedFinal.stillOwed = false;
+    waivedFinal.state = "settled";
+    waivedFinal.classification = "settled";
+
+    const report = buildTeamEnvelopeReport(input);
+    const row = report.teams[0].rows[1];
+
+    expect(row).toMatchObject({ bowlerId: 102, finalWeekPaid: true });
+    expect(report.teams[0].showFinalWeekPaid).toBe(false);
+  });
+
   it("applies the same envelope amounts to an owner-aware rotating slot", () => {
     const input = weekThreeFourSeventyDollarInput();
     const team = input.roster.teams.find((candidate) => candidate.id === 20);
@@ -423,6 +1305,7 @@ describe("team envelope report", () => {
       payerBowlerId: null,
       owner: { kind: "team", teamId: 20 },
       slotIndex: 0,
+      responsibilityKind: "rotating",
       actualBowlerId: 201,
       occurrenceLocalDate: input.schedule.occurrences[index].authoritativeLocalDate,
       plannedOrdinal: index + 1,
@@ -435,7 +1318,8 @@ describe("team envelope report", () => {
       rows,
     };
 
-    const row = buildTeamEnvelopeReport(input).teams.find((candidate) => candidate.teamId === 20)?.rows[0];
+    const row = buildTeamEnvelopeReport(input).teams.find((candidate) => candidate.teamId === 20)?.rows
+      .find((candidate) => candidate.ownerKind === "team");
     expect(row).toMatchObject({
       bowlerName: "Rotating slot 1 · Morgan Example",
       weeklyDueMinor: 2_000,
@@ -446,28 +1330,28 @@ describe("team envelope report", () => {
     });
   });
 
-  it("keeps a full payment toward a future final week out of remaining credit", () => {
+  it("makes the full paired payment available at its trigger week", () => {
     const input = futureFinalPartialPaymentInput();
     const row = buildTeamEnvelopeReport(input).teams[0].rows[0];
 
     expect(row).toMatchObject({
-      weeklyDueMinor: 2_000,
+      weeklyDueMinor: 4_000,
       ytdDueMinor: 8_000,
       ytdPaidMinor: 10_000,
-      remainingCreditMinor: 0,
+      remainingCreditMinor: 2_000,
       pastDueMinor: 0,
       dueTodayMinor: 2_000,
     });
   });
 
-  it("excludes allocations reserved for more than one future paired week", () => {
+  it("includes an earlier triggered pair in YTD while the second pair is current", () => {
     const row = buildTeamEnvelopeReport(twoFuturePairedWeeksInput()).teams[0].rows[0];
 
     expect(row).toMatchObject({
-      ytdDueMinor: 8_000,
+      ytdDueMinor: 10_000,
       ytdPaidMinor: 12_000,
-      remainingCreditMinor: 0,
-      weeklyDueMinor: 2_000,
+      remainingCreditMinor: 2_000,
+      weeklyDueMinor: 4_000,
       dueTodayMinor: 2_000,
     });
   });
@@ -479,6 +1363,70 @@ describe("team envelope report", () => {
     expect(() => buildTeamEnvelopeReport(input)).toThrowError(
       expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "FINANCIAL_REVIEW_REQUIRED", status: 409 }),
     );
+  });
+
+  it("fails closed when a displayed legacy roster substitute has unresolved financial review", () => {
+    const input = reportInput();
+    Object.assign(input.roster, {
+      rosterDisplayMembersByTeam: [{
+        teamId: 10,
+        members: [{ bowlerId: 103, displayName: "Substitute Example", activeProfile: true }],
+      }],
+    });
+    const obligation = financialRow(103, "week-1", "2026-09-09T22:30:00.000Z", 0, 10);
+    obligation.reviewRequired = true;
+    Object.assign(input.financial, { rows: [...input.financial.rows, obligation] });
+
+    expect(() => buildTeamEnvelopeReport(input)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "FINANCIAL_REVIEW_REQUIRED", status: 409 }),
+    );
+  });
+
+  it("does not fail closed for review rows tied only to roster metadata outside report teams", () => {
+    const input = reportInput();
+    Object.assign(input.roster, {
+      rosterDisplayMembersByTeam: [{
+        teamId: 999,
+        members: [{ bowlerId: 999, displayName: "Unreported Team Member", activeProfile: true }],
+      }],
+    });
+    const obligation = financialRow(999, "week-1", "2026-09-09T22:30:00.000Z", 0, 999);
+    obligation.reviewRequired = true;
+    Object.assign(input.financial, { rows: [...input.financial.rows, obligation] });
+
+    expect(() => buildTeamEnvelopeReport(input)).not.toThrow();
+  });
+
+  it("fails closed on review for a current rotating team obligation", () => {
+    const input = adoptedEnvelopeInput();
+    const row = input.financial.rows.find((candidate) => "owner" in candidate && candidate.owner.kind === "team" && candidate.actualBowlerId === null);
+    if (!row || !("owner" in row)) throw new Error("missing unassigned rotating obligation fixture");
+    row.slotIndex = 0;
+    row.reviewRequired = true;
+
+    expect(() => buildTeamEnvelopeReport(input)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "FINANCIAL_REVIEW_REQUIRED", status: 409 }),
+    );
+  });
+
+  it("rejects roster and financial evidence from different league scopes", () => {
+    const input = reportInput();
+    input.financial.leagueId = 8;
+
+    expect(() => buildTeamEnvelopeReport(input)).toThrowError(
+      expect.objectContaining<Partial<TeamEnvelopeReportError>>({ code: "REPORT_SCOPE_INVALID", status: 503 }),
+    );
+  });
+
+  it("propagates failures from the canonical financial read", async () => {
+    const input = adoptedEnvelopeInput();
+    const failure = new Error("financial evidence read failed");
+    vi.mocked(storage.getLeague).mockResolvedValue(input.league as never);
+    vi.mocked(loadLeagueOccurrenceSchedule).mockResolvedValue(input.schedule);
+    vi.mocked(readTeamEnvelopeRosterReadContext).mockResolvedValue(input.roster as never);
+    vi.mocked(readCanonicalDuePastDueV3).mockRejectedValue(failure);
+
+    await expect(readTeamEnvelopeReport({ organizationId: 11, leagueId: 7 })).rejects.toBe(failure);
   });
 
   it("requires a complete active paying lineup", () => {

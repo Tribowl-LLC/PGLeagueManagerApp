@@ -28,6 +28,24 @@ describe("rotating credit ledger safety guards", () => {
     expect(joinedRead).not.toMatch(/\.for\("update"\)/);
   });
 
+  it("can reverse only exact worksheet obligations or one source payment within an assignment", () => {
+    const reversalStart = applicationSource.indexOf("export async function reverseRotatingCreditApplicationsForAssignmentChangeInTransaction");
+    const reversalSource = applicationSource.slice(reversalStart);
+    const writerSource = readFileSync(new URL("../../server/services/manage-payments-worksheet-write.ts", import.meta.url), "utf8");
+
+    expect(reversalSource).toContain("if (input.obligationIds?.length === 0) return [];");
+    expect(reversalSource).toContain("predicates.push(inArray(rotatingCreditApplications.obligationId, [...new Set(input.obligationIds)]));");
+    expect(reversalSource).toContain("eq(rotatingCreditApplications.organizationId, input.organizationId),");
+    expect(reversalSource).toContain("eq(rotatingCreditApplications.leagueId, input.leagueId),");
+    expect(reversalSource).toContain("eq(rotatingCreditApplications.assignmentId, input.assignmentId),");
+    expect(reversalSource).toContain("if (input.paymentId !== undefined) predicates.push(eq(rotatingCreditApplications.paymentId, input.paymentId));");
+    expect(reversalSource).toContain(".where(and(...predicates))");
+    expect(writerSource).toContain("const obligationIds = obligations.map((row) => row.id);");
+    expect(writerSource).toContain("inArray(rotatingCreditApplications.obligationId, obligationIds)");
+    expect(writerSource).toContain("obligationIds,");
+    expect(writerSource).toContain("inArray(paymentObligations.id, obligationIds)");
+  });
+
   it("keeps unresolved action-required refund value out of spendable credit", () => {
     expect(isRotatingCreditRefundHeldStatus("action_required")).toBe(true);
     expect(isRotatingCreditRefundHeldStatus("provider_unknown")).toBe(true);

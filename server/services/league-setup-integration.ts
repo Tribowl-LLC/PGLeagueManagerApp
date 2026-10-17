@@ -40,6 +40,7 @@ import { lockLeagueSchedule, type LeagueScheduleTransaction } from "../storage/l
 import { publishCanonicalDraftInTransaction } from "./fall-draft-review.js";
 import { persistCanonicalCollectionGroupsInTransaction, type PersistCanonicalCollectionGroupsResult } from "./canonical-collection-groups.js";
 import { CanonicalCollectionGroupingError } from "@shared/canonical-collection-groups";
+import { initializePristineOwnedPaymentLedgerInTransaction } from "./owned-payment-ledger-adoption.js";
 
 export const LEAGUE_SETUP_FALL_AUDIT_REASON = "Generate canonical Fall drafts during authoritative league setup";
 export const LEAGUE_SETUP_FUTURE_SEASON_AUDIT_REASON = "Generate canonical future-season drafts during authoritative league setup";
@@ -532,6 +533,11 @@ async function createLeagueInTransaction(input: {
     reason: LEAGUE_SETUP_FUTURE_SEASON_AUDIT_REASON,
     generation: canonicalGeneration,
   });
+  await initializePristineOwnedPaymentLedgerInTransaction(input.tx, {
+    organizationId: input.scope.organizationId,
+    leagueId: league.id,
+    actorUserId: input.scope.actorUserId,
+  });
   return { result: setupResult(league, canonicalSchedule, "created", true), affectedBowlerIds: [] };
 }
 
@@ -774,6 +780,11 @@ async function createNewSeasonInTransaction(input: {
     setupKey: commandKey,
     reason: LEAGUE_SETUP_FUTURE_SEASON_AUDIT_REASON,
     generation: canonicalGeneration,
+  });
+  await initializePristineOwnedPaymentLedgerInTransaction(input.tx, {
+    organizationId: input.scope.organizationId,
+    leagueId: league.id,
+    actorUserId: input.scope.actorUserId,
   });
   const [archived] = await input.tx.update(leagues).set({ active: false }).where(and(
     eq(leagues.id, source.id),

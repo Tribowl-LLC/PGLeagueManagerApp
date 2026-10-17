@@ -19,7 +19,11 @@ const mocks = vi.hoisted(() => {
   canPay: vi.fn(),
   readDue: vi.fn(),
   quote: vi.fn(),
+  quoteManual: vi.fn(),
   charge: vi.fn(),
+  readAccountParticipants: vi.fn(),
+  quoteAccountFunding: vi.fn(),
+  chargeAccountFunding: vi.fn(),
   saveRoster: vi.fn(),
   manual: vi.fn(),
   correct: vi.fn(),
@@ -57,12 +61,14 @@ vi.mock("../../server/utils/bowler-payment-authz.js", () => ({
 }));
 vi.mock("../../server/middleware/rate-limit.js", () => ({
   adminWriteLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
+  paymentQuoteLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
   paymentWriteLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 vi.mock("../../server/services/roster-payment-core.js", () => ({
   readRosterPaymentResponsibility: vi.fn(),
   readCanonicalDuePastDue: (...args: unknown[]) => mocks.readDue(...args),
   quoteInteractiveObligations: (...args: unknown[]) => mocks.quote(...args),
+  quoteCanonicalManualPayment: (...args: unknown[]) => mocks.quoteManual(...args),
   chargeInteractiveObligations: (...args: unknown[]) => mocks.charge(...args),
   saveTeamRoster: (...args: unknown[]) => mocks.saveRoster(...args),
   recordOccurrenceResponsibilities: vi.fn(),
@@ -73,6 +79,16 @@ vi.mock("../../server/services/roster-payment-core.js", () => ({
   repairHistoricalCashPaymentAllocation: (...args: unknown[]) => mocks.repairHistoricalCash(...args),
   RosterPaymentError: mocks.RosterPaymentError,
   RosterPaymentReplay: mocks.RosterPaymentReplay,
+}));
+vi.mock("../../server/services/account-payment-funding.js", () => ({
+  readInteractivePaymentParticipantsV4: (...args: unknown[]) => mocks.readAccountParticipants(...args),
+  quoteAccountPaymentFundingV4: (...args: unknown[]) => mocks.quoteAccountFunding(...args),
+  chargeAccountPaymentFundingV4: (...args: unknown[]) => mocks.chargeAccountFunding(...args),
+}));
+vi.mock("../../server/services/interactive-partner-payment.js", () => ({
+  chargeInteractivePartnerPayments: vi.fn(),
+  quoteInteractivePartnerPayments: vi.fn(),
+  readInteractivePaymentParticipants: vi.fn(),
 }));
 vi.mock("../../server/services/roster-payment-recovery.js", () => ({
   recoverRosterPaymentOperation: vi.fn(),
@@ -130,6 +146,10 @@ beforeEach(() => {
   mocks.hasPaymentManager.mockResolvedValue(false);
   mocks.canPay.mockResolvedValue({ allowed: true });
   mocks.quote.mockResolvedValue({ contractVersion: "interactive-obligation-quote/2", automaticContractVersion: "automatic-fifo-payment/1", obligations: [{ id: "00000000-0000-4000-8000-000000000001", payerBowlerId: 42 }], amountMinor: 1000, currency: "USD", fingerprint: "quote" });
+  mocks.quoteManual.mockResolvedValue({ contractVersion: "canonical-manual-record-quote/1", payerBowlerId: 42, amountMinor: 1000, type: "cash", fingerprint: "manual-quote" });
+  mocks.readAccountParticipants.mockResolvedValue({ contractVersion: "interactive-payment-participants/4", payerBowlerId: 42 });
+  mocks.quoteAccountFunding.mockResolvedValue({ contractVersion: "account-payment-funding-quote/4", payerBowlerId: 42 });
+  mocks.chargeAccountFunding.mockResolvedValue({ contractVersion: "account-payment-funding-charge/4", operationId: "operation-1", status: "succeeded", providerPaymentId: "payment-1" });
 });
 
 describe("roster payment route authorization", () => {
@@ -162,6 +182,73 @@ describe("roster payment route authorization", () => {
     const response = await request("/leagues/7/canonical-due-past-due/2", user("user", 11, 42));
     expect(response.status).toBe(200);
     expect(mocks.readDue).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, payerBowlerId: 42 });
+  });
+
+  it("lets an authorized administrator select the payer for V4 checkout", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    const admin = user("org_admin", 11);
+    const participants = await request("/leagues/7/interactive-payment-participants/4?payerBowlerId=42", admin);
+    expect(participants.status).toBe(200);
+    expect(mocks.readAccountParticipants).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, payerBowlerId: 42 });
+
+    const selection = { payerBowlerId: 42, recipients: [{ bowlerId: 42, selection: { kind: "explicit_amount", amountMinor: 1000 } }] };
+    const quote = await request("/leagues/7/interactive-payment-quote/4", admin, { method: "POST", body: JSON.stringify(selection) });
+    expect(quote.status).toBe(200);
+    expect(mocks.quoteAccountFunding).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, payerBowlerId: 42, request: selection });
+
+    const chargeRequest = {
+      ...selection,
+      sourceId: "synthetic-provider-token",
+      sourceKind: "new_card",
+      storeCard: false,
+      idempotencyKey: testRequestKey("admin-v4-charge"),
+      quoteFingerprint: `lvaccountfundquote:v4:${"a".repeat(64)}`,
+    };
+    const charge = await request("/leagues/7/interactive-payment-charge/4", admin, { method: "POST", body: JSON.stringify(chargeRequest) });
+    expect(charge.status).toBe(201);
+    expect(mocks.chargeAccountFunding).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, actorUserId: 1, payerBowlerId: 42, request: chargeRequest });
+  });
+
+  it("does not allow ordinary users to select a different V4 payer", async () => {
+    const ownUser = user("user", 11, 42);
+    const selection = { payerBowlerId: 43, recipients: [{ bowlerId: 43, selection: { kind: "explicit_amount", amountMinor: 1000 } }] };
+    expect((await request("/leagues/7/interactive-payment-participants/4?payerBowlerId=43", ownUser)).status).toBe(404);
+    expect((await request("/leagues/7/interactive-payment-quote/4", ownUser, { method: "POST", body: JSON.stringify(selection) })).status).toBe(404);
+    expect((await request("/leagues/7/interactive-payment-charge/4", ownUser, {
+      method: "POST",
+      body: JSON.stringify({ ...selection, sourceId: "synthetic-provider-token", idempotencyKey: testRequestKey("other-payer"), quoteFingerprint: `lvaccountfundquote:v4:${"b".repeat(64)}` }),
+    })).status).toBe(404);
+    expect(mocks.readAccountParticipants).not.toHaveBeenCalled();
+    expect(mocks.quoteAccountFunding).not.toHaveBeenCalled();
+    expect(mocks.chargeAccountFunding).not.toHaveBeenCalled();
+  });
+
+  it("requires an administrator to select a payer when their account has no linked bowler", async () => {
+    mocks.hasAdmin.mockResolvedValue(true);
+    const admin = user("org_admin", 11);
+    expect((await request("/leagues/7/interactive-payment-participants/4", admin)).status).toBe(400);
+    expect((await request("/leagues/7/interactive-payment-quote/4", admin, {
+      method: "POST",
+      body: JSON.stringify({ recipients: [{ bowlerId: 42, selection: { kind: "explicit_amount", amountMinor: 1000 } }] }),
+    })).status).toBe(400);
+    expect(mocks.readAccountParticipants).not.toHaveBeenCalled();
+    expect(mocks.quoteAccountFunding).not.toHaveBeenCalled();
+  });
+
+  it("keeps payment managers out of V4 card charge even with a selected payer", async () => {
+    mocks.hasPaymentManager.mockResolvedValue(true);
+    const response = await request("/leagues/7/interactive-payment-charge/4", user("payment_manager", 11), {
+      method: "POST",
+      body: JSON.stringify({
+        payerBowlerId: 42,
+        recipients: [{ bowlerId: 42, selection: { kind: "explicit_amount", amountMinor: 1000 } }],
+        sourceId: "synthetic-provider-token",
+        idempotencyKey: testRequestKey("manager-v4-charge"),
+        quoteFingerprint: `lvaccountfundquote:v4:${"c".repeat(64)}`,
+      }),
+    });
+    expect(response.status).toBe(404);
+    expect(mocks.chargeAccountFunding).not.toHaveBeenCalled();
   });
 
   it("does not disclose another bowler through due reads or cross-tenant leagues", async () => {
@@ -343,8 +430,33 @@ describe("roster payment route authorization", () => {
     mocks.hasPaymentManager.mockResolvedValue(true);
     const payload = { commandKey: "roster-1", requestFingerprint: "fp", lineupSize: 3, slots: [{ slotIndex: 0, occupant: "vacant" }, { slotIndex: 1, occupant: "vacant" }, { slotIndex: 2, occupant: "vacant" }] };
     expect((await request("/leagues/7/roster-payment-responsibility/1/teams/9", user("payment_manager"), { method: "POST", body: JSON.stringify(payload) })).status).toBe(404);
-    mocks.manual.mockResolvedValue({ records: [] });
-    expect((await request("/leagues/7/canonical/manual-record/1", user("payment_manager"), { method: "POST", body: JSON.stringify({ amountMinor: 1000, payerBowlerId: 42, type: "cash", idempotencyKey: "m-1", requestFingerprint: "q" }) })).status).toBe(201);
+    mocks.manual.mockResolvedValue({
+      contractVersion: "canonical-manual-record/2",
+      payment: {
+        id: 123,
+        bowlerId: 42,
+        leagueId: 7,
+        amount: 1000,
+        currency: "USD",
+        createdAt: "2035-09-01T12:00:00.000Z",
+        status: "paid",
+        type: "cash",
+      },
+      allocations: [],
+      records: [],
+    });
+    const manualResponse = await request("/leagues/7/canonical/manual-record/1", user("payment_manager"), {
+      method: "POST",
+      body: JSON.stringify({ amountMinor: 1000, payerBowlerId: 42, type: "cash", idempotencyKey: "m-1", requestFingerprint: "q" }),
+    });
+    expect(manualResponse.status).toBe(201);
+    await expect(manualResponse.json()).resolves.toMatchObject({
+      data: {
+        contractVersion: "canonical-manual-record/2",
+        payment: { id: 123, bowlerId: 42, amount: 1000, status: "paid", type: "cash" },
+        records: [],
+      },
+    });
     expect((await request("/leagues/7/canonical/corrections/1", user("payment_manager"), { method: "POST", body: JSON.stringify({ paymentId: 12, reason: "duplicate", idempotencyKey: "c-1", requestFingerprint: "q" }) })).status).toBe(404);
     expect(mocks.saveRoster).not.toHaveBeenCalled();
     expect(mocks.manual).toHaveBeenCalled();
@@ -370,101 +482,22 @@ describe("roster payment route authorization", () => {
     expect(mocks.charge).not.toHaveBeenCalled();
   });
 
-  it("quotes a bounded batch with one management request instead of one limiter hit per row", async () => {
-    mocks.hasAdmin.mockResolvedValue(true);
-    const rows = Array.from({ length: 31 }, (_, index) => ({
-      rowKey: `batch-row-${String(index).padStart(12, "0")}`,
-      amountMinor: 1000,
-      payerBowlerId: 42 + index,
-    }));
-    const response = await request("/leagues/7/canonical/manual-record-batch/quote/1", user("admin", 11), {
+  it("quotes single cash/check receipts against their exact method identity for payment managers", async () => {
+    mocks.hasPaymentManager.mockResolvedValue(true);
+    mocks.quoteManual.mockResolvedValue({ contractVersion: "canonical-manual-record-quote/1", payerBowlerId: 42, amountMinor: 1000, type: "check", checkNumber: "0042", fingerprint: "manual-quote" });
+
+    const response = await request("/leagues/7/canonical/manual-record/quote/1", user("payment_manager"), {
       method: "POST",
-      body: JSON.stringify({ rows }),
+      body: JSON.stringify({ amountMinor: 1000, payerBowlerId: 42, type: "check", checkNumber: " 0042 ", notes: "note" }),
     });
+
     expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body.data.contractVersion).toBe("canonical-manual-record-batch-quote/1");
-    expect(body.data.rows).toHaveLength(31);
-    expect(body.data.rows[0]).toMatchObject({ rowKey: rows[0].rowKey, success: true });
-    expect(mocks.quote).toHaveBeenCalledTimes(31);
-  });
-
-  it("returns independent mixed outcomes and rejects duplicate row idempotency keys", async () => {
-    mocks.hasAdmin.mockResolvedValue(true);
-    mocks.manual.mockImplementation(async (input: { request: { payerBowlerId: number } }) => {
-      if (input.request.payerBowlerId === 43) throw new mocks.RosterPaymentError("EXCESS_PAYMENT", "The payment amount exceeds the remaining eligible balance", 422);
-      return { contractVersion: "canonical-manual-record/1", records: [] };
+    expect((await response.json()).data).toMatchObject({ type: "check", checkNumber: "0042", fingerprint: "manual-quote" });
+    expect(mocks.quoteManual).toHaveBeenCalledWith({
+      organizationId: 11,
+      leagueId: 7,
+      request: { amountMinor: 1000, payerBowlerId: 42, type: "check", checkNumber: "0042", notes: "note" },
     });
-    const common = { amountMinor: 1000, type: "cash", requestFingerprint: "quote-fingerprint" };
-    const successKey = testRequestKey("success");
-    const failureKey = testRequestKey("failure");
-    const mixed = await request("/leagues/7/canonical/manual-record-batch/1", user("admin", 11), {
-      method: "POST",
-      body: JSON.stringify({ rows: [
-        { ...common, rowKey: successKey, payerBowlerId: 42, idempotencyKey: successKey },
-        { ...common, rowKey: failureKey, payerBowlerId: 43, idempotencyKey: failureKey },
-      ] }),
-    });
-    expect(mixed.status).toBe(200);
-    await expect(mixed.json()).resolves.toMatchObject({ data: { rows: [
-      { rowKey: successKey, success: true },
-      { rowKey: failureKey, success: false, error: { code: "EXCESS_PAYMENT" } },
-    ] } });
-
-    const duplicateKey = testRequestKey("duplicate");
-    const duplicate = await request("/leagues/7/canonical/manual-record-batch/1", user("admin", 11), {
-      method: "POST",
-      body: JSON.stringify({ rows: [
-        { ...common, rowKey: duplicateKey, payerBowlerId: 42, idempotencyKey: duplicateKey },
-        { ...common, rowKey: duplicateKey, payerBowlerId: 43, idempotencyKey: duplicateKey },
-      ] }),
-    });
-    expect(duplicate.status).toBe(400);
-    expect(mocks.manual).toHaveBeenCalledTimes(2);
-  });
-
-  it("rejects check numbers on cash rows at the batch boundary", async () => {
-    mocks.hasAdmin.mockResolvedValue(true);
-    const rowKey = testRequestKey("cash-row");
-    const idempotencyKey = testRequestKey("cash-command");
-    const response = await request("/leagues/7/canonical/manual-record-batch/1", user("admin", 11), {
-      method: "POST",
-      body: JSON.stringify({ rows: [{
-        rowKey,
-        amountMinor: 1000,
-        payerBowlerId: 42,
-        type: "cash",
-        checkNumber: "123",
-        idempotencyKey,
-        requestFingerprint: "quote-fingerprint",
-      }] }),
-    });
-    expect(response.status).toBe(400);
-    expect(mocks.manual).not.toHaveBeenCalled();
-  });
-
-  it("rejects duplicate payers even when their row keys are distinct", async () => {
-    mocks.hasAdmin.mockResolvedValue(true);
-    const firstKey = testRequestKey("payer-one");
-    const secondKey = testRequestKey("payer-two");
-    const response = await request("/leagues/7/canonical/manual-record-batch/1", user("admin", 11), {
-      method: "POST",
-      body: JSON.stringify({ rows: [
-        { rowKey: firstKey, amountMinor: 1000, payerBowlerId: 42, type: "cash", idempotencyKey: firstKey, requestFingerprint: "quote-fingerprint" },
-        { rowKey: secondKey, amountMinor: 1000, payerBowlerId: 42, type: "cash", idempotencyKey: secondKey, requestFingerprint: "quote-fingerprint" },
-      ] }),
-    });
-    expect(response.status).toBe(400);
-    expect(mocks.manual).not.toHaveBeenCalled();
-  });
-
-  it("keeps the batch route tenant and league scoped", async () => {
-    const response = await request("/leagues/7/canonical/manual-record-batch/quote/1", user("user", 11, 42), {
-      method: "POST",
-      body: JSON.stringify({ rows: [{ rowKey: testRequestKey("unauthorized"), amountMinor: 1000, payerBowlerId: 42 }] }),
-    });
-    expect(response.status).toBe(404);
-    expect(mocks.quote).not.toHaveBeenCalled();
   });
 
   it("keeps request-key recovery bound to the authenticated league and actor", async () => {

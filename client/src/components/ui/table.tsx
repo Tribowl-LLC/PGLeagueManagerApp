@@ -5,12 +5,15 @@ import { cn } from "@/lib/utils"
 
 const Table = React.forwardRef<
   HTMLTableElement,
-  React.HTMLAttributes<HTMLTableElement>
->(({ className, ...props }, ref) => (
-  <div className="relative w-full overflow-auto">
+  React.HTMLAttributes<HTMLTableElement> & { appearance?: "default" | "managePayments" }
+>(({ className, appearance = "default", ...props }, ref) => (
+  <div className={cn(
+    "relative w-full",
+    appearance === "managePayments" ? "manage-payments-table-scroll" : "overflow-auto",
+  )}>
     <table
       ref={ref}
-      className={cn("w-full caption-bottom text-sm", className)}
+      className={cn("w-full caption-bottom text-sm", appearance === "managePayments" && "manage-payments-table", className)}
       {...props}
     />
   </div>
@@ -19,19 +22,27 @@ Table.displayName = "Table"
 
 const TableHeader = React.forwardRef<
   HTMLTableSectionElement,
-  React.HTMLAttributes<HTMLTableSectionElement>
->(({ className, ...props }, ref) => (
-  <thead ref={ref} className={cn("[&_tr]:border-b", className)} {...props} />
+  React.HTMLAttributes<HTMLTableSectionElement> & { appearance?: "default" | "managePayments" }
+>(({ className, appearance = "default", ...props }, ref) => (
+  <thead ref={ref} className={cn(
+    "[&_tr]:border-b",
+    appearance === "managePayments" && "manage-payments-table-header",
+    className,
+  )} {...props} />
 ))
 TableHeader.displayName = "TableHeader"
 
 const TableBody = React.forwardRef<
   HTMLTableSectionElement,
-  React.HTMLAttributes<HTMLTableSectionElement>
->(({ className, ...props }, ref) => (
+  React.HTMLAttributes<HTMLTableSectionElement> & { appearance?: "default" | "managePayments" }
+>(({ className, appearance = "default", ...props }, ref) => (
   <tbody
     ref={ref}
-    className={cn("[&_tr:last-child]:border-0", className)}
+    className={cn(
+      "[&_tr:last-child]:border-0",
+      appearance === "managePayments" && "manage-payments-table-body",
+      className,
+    )}
     {...props}
   />
 ))
@@ -53,11 +64,16 @@ const tableRowVariants = cva(
         default: "",
         muted: "opacity-60",
       },
+      appearance: {
+        default: "",
+        managePayments: "manage-payments-table-row",
+      },
     },
     defaultVariants: {
       variant: "default",
       hover: "default",
       state: "default",
+      appearance: "default",
     },
   },
 )
@@ -65,29 +81,43 @@ const tableRowVariants = cva(
 const TableRow = React.forwardRef<
   HTMLTableRowElement,
   React.HTMLAttributes<HTMLTableRowElement> & VariantProps<typeof tableRowVariants>
->(({ className, variant, hover, state, ...props }, ref) => (
+>(({ className, variant, hover, state, appearance, ...props }, ref) => (
   <tr
     ref={ref}
-    className={cn(tableRowVariants({ variant, hover, state }), className)}
+    className={cn(tableRowVariants({ variant, hover, state, appearance }), className)}
     {...props}
   />
 ))
 TableRow.displayName = "TableRow"
 
+const tableHeadVariants = cva(
+  "h-12 px-4 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0",
+  {
+    variants: {
+      appearance: {
+        default: "",
+        managePayments: "manage-payments-table-head text-familiar-muted font-semibold",
+      },
+    },
+    defaultVariants: { appearance: "default" },
+  },
+)
+
 const TableHead = React.forwardRef<
   HTMLTableCellElement,
   React.ThHTMLAttributes<HTMLTableCellElement> & {
     columnWidth?: "weekday" | "name" | "date"
+    appearance?: "default" | "managePayments"
   }
->(({ className, columnWidth, ...props }, ref) => (
+>(({ className, columnWidth, appearance = "default", ...props }, ref) => (
   <th
     ref={ref}
     className={cn(
-      "h-12 px-4 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0",
+      tableHeadVariants({ appearance }),
       columnWidth === "weekday" && "w-[12%]",
       columnWidth === "name" && "w-[20%]",
       columnWidth === "date" && "w-[15%]",
-      className
+      className,
     )}
     {...props}
   />
@@ -125,6 +155,16 @@ const tableCellVariants = cva(
         comfortable: "py-6",
         spacious: "py-8",
       },
+      appearance: {
+        default: "",
+        managePayments: "manage-payments-table-cell p-1 text-sm text-familiar-ink",
+        managePaymentsResponsible: "manage-payments-table-cell manage-payments-cell-responsible p-1 text-sm text-familiar-ink",
+        managePaymentsBowler: "manage-payments-table-cell manage-payments-cell-bowler p-1 text-sm text-familiar-ink",
+        managePaymentsBalance: "manage-payments-table-cell manage-payments-cell-balance p-1 text-sm text-familiar-ink",
+        managePaymentsFee: "manage-payments-table-cell manage-payments-cell-fee p-1 text-sm text-familiar-ink",
+        managePaymentsReceived: "manage-payments-table-cell manage-payments-received-cell p-1 text-sm text-familiar-ink",
+        managePaymentsFinal: "manage-payments-table-cell manage-payments-cell-final p-1 text-sm text-familiar-ink",
+      },
     },
     defaultVariants: {
       tone: "default",
@@ -132,6 +172,7 @@ const tableCellVariants = cva(
       font: "default",
       size: "default",
       density: "default",
+      appearance: "default",
     },
   },
 )
@@ -139,10 +180,10 @@ const tableCellVariants = cva(
 const TableCell = React.forwardRef<
   HTMLTableCellElement,
   React.TdHTMLAttributes<HTMLTableCellElement> & VariantProps<typeof tableCellVariants>
->(({ className, tone, weight, font, size, density, ...props }, ref) => (
+>(({ className, tone, weight, font, size, density, appearance, ...props }, ref) => (
   <td
     ref={ref}
-    className={cn(tableCellVariants({ tone, weight, font, size, density }), className)}
+    className={cn(tableCellVariants({ tone, weight, font, size, density, appearance }), className)}
     {...props}
   />
 ))

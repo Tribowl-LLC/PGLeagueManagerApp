@@ -1,10 +1,11 @@
 import { Switch, Route } from "wouter";
 import * as Sentry from "@sentry/react";
 import { isSessionExpiredError, queryClient, prefetchQueries, redirectToLoginForExpiredSession } from "./lib/queryClient";
+import { preloadBowlerScreens } from "./lib/bowler-screen-queries";
 import { logger } from "@/lib/logger";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
-import { lazy, Suspense, useEffect, FC, ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, FC, ReactNode } from "react";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ProtectedRoute, type RouteRequirement } from "@/components/protected-route";
 import { useLocation } from "wouter";
@@ -18,7 +19,6 @@ import LoginPage from "@/pages/login-page";
 const HomePage = lazy(() => import("@/pages/home-page"));
 const LeaguesPage = lazy(() => import("@/pages/leagues-page"));
 const LeagueViewPage = lazy(() => import("@/pages/league-view-page"));
-const ManagePaymentsPage = lazy(() => import("@/pages/manage-payments-page"));
 const LeagueSchedulePage = lazy(() => import("@/pages/league-schedule-page"));
 const TeamsPage = lazy(() => import("@/pages/teams-page"));
 const TeamViewPage = lazy(() => import("@/pages/team-view-page"));
@@ -27,6 +27,7 @@ const BowlerViewPage = lazy(() => import("@/pages/bowler-view-page"));
 const BowlerScoresPage = lazy(() => import("@/pages/bowler-scores-page"));
 const LeagueScoresPage = lazy(() => import("@/pages/league-scores-page"));
 const PaymentsPage = lazy(() => import("@/pages/payments-page"));
+const AdminWeeklyPaymentsPage = lazy(() => import("@/pages/admin-weekly-payments-page"));
 const PaymentHistoryPage = lazy(() => import("@/pages/payment-history-page"));
 const MakePaymentPage = lazy(() => import("@/pages/make-payment-page"));
 const ReportsPage = lazy(() => import("@/pages/reports-page"));
@@ -149,7 +150,9 @@ function Router() {
     Sentry.setTags(identity.tags);
   }, [userData?.data]);
 
+  const preloadedBowlerIdRef = useRef<number | null>(null);
   useEffect(() => {
+    if (!userData?.data) preloadedBowlerIdRef.current = null;
     if (userData?.data) {
       const user = userData.data;
       const isAdmin = user.role === 'system_admin' || user.role === 'org_admin';
@@ -157,6 +160,12 @@ function Router() {
         prefetchQueries('admin').catch((error) => logger.error('App', 'Failed to prefetch admin queries', error));
       } else if (user.bowlerId) {
         prefetchQueries('bowler').catch((error) => logger.error('App', 'Failed to prefetch bowler queries', error));
+        // Once per signed-in bowler: load the dashboard, Pay, and payment
+        // history data in the background so each opens from memory.
+        if (!user.mustChangePassword && preloadedBowlerIdRef.current !== user.bowlerId) {
+          preloadedBowlerIdRef.current = user.bowlerId;
+          preloadBowlerScreens(queryClient, user.bowlerId).catch((error) => logger.error('App', 'Failed to preload bowler screens', error));
+        }
       }
     }
   }, [userData]);
@@ -198,7 +207,6 @@ function Router() {
         <Route path="/home">{guard('staff', <HomePage />)}</Route>
         <Route path="/locations">{guard('orgAdmin', <LocationsPage />)}</Route>
         <Route path="/leagues">{guard('staff', <LeaguesPage />)}</Route>
-        <Route path="/leagues/:leagueId/payments/manage">{guard('paymentManager', <ManagePaymentsPage />)}</Route>
         <Route path="/leagues/:leagueId">{guard('staff', <LeagueViewPage />)}</Route>
         <Route path="/leagues/:leagueId/schedule">{guard('staff', <LeagueSchedulePage />)}</Route>
         <Route path="/leagues/:leagueId/teams">{guard('paymentManager', <TeamsPage />)}</Route>
@@ -209,6 +217,7 @@ function Router() {
         <Route path="/bowlers/:bowlerId/scores">{guard('staff', <BowlerScoresPage />)}</Route>
 
         {/* Organization Admin routes */}
+        <Route path="/manage-payments">{guard('orgAdmin', <AdminWeeklyPaymentsPage />)}</Route>
         <Route path="/payments">{guard('paymentManager', <PaymentsPage />)}</Route>
         <Route path="/reports">{guard('paymentManager', <ReportsPage />)}</Route>
         <Route path="/reports/leagues/:leagueId/past-due">{guard('paymentManager', <LeaguePastDuePage />)}</Route>

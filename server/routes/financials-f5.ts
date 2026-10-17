@@ -35,12 +35,17 @@ function pageQuery(value: unknown, fallback: number): number | undefined | null 
  */
 export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCanonicalPaymentReport>>["rows"][number], viewerBowlerId: number | null | undefined) {
   const ownAllocations = row.allocations.filter((allocation) => allocation.bowlerId === viewerBowlerId);
+  const ownFundingPortions = (row.fundingPortions ?? []).filter((portion) => portion.creditedBowlerId === viewerBowlerId);
+  const isFundingOwner = ownFundingPortions.length > 0;
   const isInitiatingPayer = row.initiatingPayerBowlerId !== null
     && row.initiatingPayerBowlerId !== undefined
     && row.initiatingPayerBowlerId === viewerBowlerId;
+  const fundingRecipientIds = (row.fundingPortions ?? []).flatMap((portion) => portion.creditedBowlerId === undefined ? [] : [portion.creditedBowlerId]);
+  const allRecipientIds = [...row.allocations.map((allocation) => allocation.bowlerId), ...fundingRecipientIds];
   const isSelfOnlyPayment = isInitiatingPayer
     && row.allocations.length > 0
-    && row.allocations.every((allocation) => allocation.bowlerId === viewerBowlerId);
+    && row.allocations.every((allocation) => allocation.bowlerId === viewerBowlerId)
+    && fundingRecipientIds.every((bowlerId) => bowlerId === viewerBowlerId);
   const visibleAllocations = isInitiatingPayer ? row.allocations : ownAllocations;
   const nonVoidedVisibleAllocations = visibleAllocations.filter((allocation) => allocation.state !== "voided");
   const activeVisibleAllocations = visibleAllocations.filter((allocation) => allocation.state === "active");
@@ -50,19 +55,44 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
   const authorizedWaivedAmount = activeVisibleAllocations.reduce((sum, allocation) => sum + (allocation.refundDisposition === "waived" ? (allocation.refundedMinor ?? 0) : 0), 0);
   const authorizedEffectiveAmount = activeVisibleAllocations.reduce((sum, allocation) => sum + (allocation.effectiveAmountMinor ?? allocation.amountMinor), 0);
   const hasCanonicalOwnership = activeVisibleAllocations.length > 0;
-  const safeAmount = isInitiatingPayer ? row.amountMinor : visibleTenderAmount;
-  const safeRefundAmount = isInitiatingPayer ? row.refund.amountMinor : 0;
+  const ownFundingAmount = ownFundingPortions.reduce((sum, portion) => sum + portion.amountMinor, 0);
+  const ownFundingAvailable = ownFundingPortions.reduce((sum, portion) => sum + portion.availableMinor, 0);
+  const ownFundingRefunded = ownFundingPortions.reduce((sum, portion) => sum + portion.refundedCreditMinor, 0);
+  const ownFundingTotalRefunded = ownFundingPortions.reduce((sum, portion) => sum + portion.totalRefundedMinor, 0);
+  const ownFundingHeld = ownFundingPortions.reduce((sum, portion) => sum + portion.heldCreditMinor, 0);
+  // Pending snapshot rows carry only the recipient's planned share; do not
+  // treat the operation's parent tender amount as recipient-owned value.
+  const ownPendingOperationAmount = !isInitiatingPayer
+    && !isFundingOwner
+    && row.paymentId === null
+    && row.paymentOperationId !== null
+    && row.unresolved
+    ? visibleAllocations
+      .filter((allocation) => allocation.allocationId === null && allocation.state === null && allocation.bowlerId === viewerBowlerId)
+      .reduce((sum, allocation) => sum + allocation.amountMinor, 0)
+    : 0;
+  const safeAmount = isInitiatingPayer ? row.amountMinor : isFundingOwner ? ownFundingAmount : visibleTenderAmount;
+  const safeRefundAmount = isInitiatingPayer ? row.refund.amountMinor : isFundingOwner ? ownFundingTotalRefunded : authorizedRefundedAmount;
+  const safeRefundPresent = isInitiatingPayer
+    ? row.refund.present
+    : isFundingOwner ? ownFundingTotalRefunded > 0 : authorizedRefundedAmount > 0;
   const safeDisputeAmount = isInitiatingPayer ? row.dispute.amountMinor : 0;
+  const safeUnresolved = isInitiatingPayer
+    ? row.unresolved
+    : isFundingOwner ? ownFundingPortions.some((portion) => portion.reviewRequired) : false;
   const canOpenReceipt = isInitiatingPayer
     && row.paymentId !== null
     && ["confirmed_paid", "refunded", "disputed"].includes(row.status);
   const hasMultipleRecipients = isInitiatingPayer
-    ? new Set(row.allocations.map((allocation) => allocation.bowlerId)).size > 1
+    ? new Set(allRecipientIds).size > 1
     : undefined;
   const {
     initiatingPayerBowlerId: _initiatingPayerBowlerId,
     hasMultipleRecipients: _hasMultipleRecipients,
+    paidByName: _paidByName,
     creditRefunds,
+    fundingPortions: _fundingPortions,
+    correctionEvidence,
     ...safeRow
   } = row;
   const appliedTo: CanonicalPaymentAppliedToRow[] = visibleAllocations.map((allocation) => ({
@@ -78,32 +108,70 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     currency: allocation.currency,
     state: allocation.state,
   }));
+  const safeFundingPortions = ownFundingPortions.map((portion) => ({
+    amountMinor: portion.amountMinor,
+    availableMinor: portion.availableMinor,
+    appliedMinor: portion.appliedMinor,
+    refundedCreditMinor: portion.refundedCreditMinor,
+    totalRefundedMinor: portion.totalRefundedMinor,
+    heldCreditMinor: portion.heldCreditMinor,
+    reviewRequired: portion.reviewRequired,
+  }));
+  const ownActiveAllocated = activeVisibleAllocations.reduce((sum, allocation) => sum + allocation.amountMinor, 0);
+  const scopedSource = isInitiatingPayer
+    ? row.source
+    : isFundingOwner
+      ? ownActiveAllocated > 0
+        ? "canonical_allocation"
+        : ownFundingAvailable > 0
+          ? "prepaid_credit"
+          : ownFundingHeld > 0
+            ? "held_credit"
+            : ownFundingRefunded === ownFundingAmount && ownFundingAmount > 0
+              ? "refunded_credit"
+              : ownFundingPortions.some((portion) => portion.appliedMinor > 0)
+                ? "canonical_allocation"
+                : "refunded_credit"
+      : visibleAllocations.length > 0 ? "canonical_allocation" : "unresolved_operation";
+  const scopedCreditRefunds = isFundingOwner && !isInitiatingPayer ? {
+    completedAmountMinor: ownFundingRefunded,
+    heldAmountMinor: ownFundingHeld,
+    reviewRequired: ownFundingPortions.some((portion) => portion.reviewRequired),
+    providerRefundIds: [] as string[],
+  } : undefined;
   return {
     ...safeRow,
     bowlerId: viewerBowlerId ?? row.bowlerId,
     amountMinor: safeAmount,
-    allocatedMinor: hasCanonicalOwnership ? authorizedAmount : Math.min(row.allocatedMinor, safeAmount),
-    grossAllocatedMinor: hasCanonicalOwnership ? authorizedAmount : Math.min(row.grossAllocatedMinor ?? row.allocatedMinor, safeAmount),
+    allocatedMinor: hasCanonicalOwnership ? authorizedAmount : isFundingOwner ? 0 : Math.min(row.allocatedMinor, safeAmount),
+    grossAllocatedMinor: hasCanonicalOwnership ? authorizedAmount : isFundingOwner ? 0 : Math.min(row.grossAllocatedMinor ?? row.allocatedMinor, safeAmount),
     refundedAllocationMinor: authorizedRefundedAmount,
     waivedMinor: authorizedWaivedAmount,
     effectiveAllocatedMinor: authorizedEffectiveAmount,
-    unallocatedMinor: isInitiatingPayer ? row.unallocatedMinor : Math.min(row.unallocatedMinor, visibleTenderAmount),
+    unallocatedMinor: isInitiatingPayer ? row.unallocatedMinor : isFundingOwner ? ownFundingAvailable : ownPendingOperationAmount,
     providerPaymentId: null,
     paymentOperationId: null,
     operationType: null,
     operationStatus: null,
+    paidByName: isInitiatingPayer ? row.paidByName ?? null : null,
+    source: scopedSource,
+    unresolved: safeUnresolved,
+    reviewRequired: isInitiatingPayer ? row.reviewRequired : isFundingOwner ? ownFundingPortions.some((portion) => portion.reviewRequired) : false,
     sharedTransaction: null,
     // Allocation IDs/obligation identities are audit-only. Ordinary
     // payment history receives the tender summary and balance, never the
     // internal child allocation evidence or interactive controls.
     allocations: [],
     appliedTo,
+    fundingPortions: safeFundingPortions,
     hasMultipleRecipients: hasMultipleRecipients ?? false,
     isSelfOnlyPayment,
     ...(isInitiatingPayer && creditRefunds ? { creditRefunds } : {}),
-    refund: { ...row.refund, amountMinor: safeRefundAmount, providerRefundId: null },
+    ...(scopedCreditRefunds ? { creditRefunds: scopedCreditRefunds } : {}),
+    refund: { ...row.refund, present: safeRefundPresent, amountMinor: safeRefundAmount, providerRefundId: null },
     dispute: { ...row.dispute, amountMinor: safeDisputeAmount, disputeId: null },
-    receipt: { ...row.receipt, availability: isInitiatingPayer ? row.receipt.availability : "unavailable", canOpenReceipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: [], sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null } },
+    receipt: { ...row.receipt, source: scopedSource, availability: isInitiatingPayer ? row.receipt.availability : "unavailable", canOpenReceipt, paymentId: null, paymentOperationId: null, operationStatus: null, amountMinor: safeAmount, allocations: [], sharedTransaction: null, canResend: false, receiptUrl: null, receiptNumber: null, refund: { ...(row.receipt.refund ?? row.refund), present: safeRefundPresent, amountMinor: safeRefundAmount, providerRefundId: null }, dispute: { ...(row.receipt.dispute ?? row.dispute), amountMinor: safeDisputeAmount, disputeId: null }, unresolved: safeUnresolved },
+    ...(isInitiatingPayer && correctionEvidence ? { correctionEvidence } : {}),
   };
 }
 

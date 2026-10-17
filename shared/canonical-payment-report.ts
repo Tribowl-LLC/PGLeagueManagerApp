@@ -85,6 +85,8 @@ export interface CanonicalPaymentAllocationRow {
   bowlerId: number;
   /** Safe tenant-scoped display name; only payer/admin projections expose it. */
   bowlerName?: string | null;
+  /** Internal/admin source owner; F5 drops it from all ordinary-reader allocations. */
+  fundedByBowlerId?: number | null;
   amountMinor: number;
   /** Original allocation remains immutable; these fields describe its refund effect. */
   refundedMinor?: number;
@@ -96,6 +98,34 @@ export interface CanonicalPaymentAllocationRow {
   isFullyCoveredWeek?: boolean;
   currency: string;
   state: "active" | "voided" | "reversed" | null;
+  /** Exact owned-ledger source links are admin evidence; F5 removes them for ordinary readers. */
+  fundingApplications?: CanonicalPaymentFundingApplicationEvidence[];
+}
+
+export interface CanonicalPaymentFundingApplicationEvidence {
+  applicationId?: string;
+  fundingId?: string;
+  creditedBowlerId?: number;
+  sourceKind?: "generic" | "rotating";
+  sourceAmountMinor?: number;
+  amountMinor: number;
+}
+
+/** Internal/admin evidence for one immutable owned-funding portion. Ordinary
+ * F5 projections keep only the current viewer's amount/status summary. */
+export interface CanonicalPaymentFundingPortionRow {
+  fundingId?: string;
+  creditedBowlerId?: number;
+  creditedBowlerName?: string | null;
+  portionIndex?: number;
+  amountMinor: number;
+  availableMinor: number;
+  appliedMinor: number;
+  refundedCreditMinor: number;
+  /** Total original tender returned for this source after a proven whole-card refund. May overlap appliedMinor because it describes the tender refund, not current debt payment. */
+  totalRefundedMinor: number;
+  heldCreditMinor: number;
+  reviewRequired: boolean;
 }
 
 /**
@@ -153,6 +183,8 @@ export interface CanonicalPaymentRow {
   allocations: CanonicalPaymentAllocationRow[];
   /** Safe ordinary-reader summary of the owned canonical applications. */
   appliedTo?: CanonicalPaymentAppliedToRow[];
+  /** Admin-only full source evidence; ordinary F5 responses contain only the viewer's own portions. */
+  fundingPortions?: CanonicalPaymentFundingPortionRow[];
   /** True only for an initiating payer whose tender has allocations for multiple bowlers. */
   hasMultipleRecipients?: boolean;
   /** Safe ordinary-reader flag derived from payer/allocation identities. */

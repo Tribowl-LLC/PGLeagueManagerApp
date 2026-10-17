@@ -190,8 +190,10 @@ export async function resolveSingleTenantContext(
   });
 }
 
-/** Resolve the full durable row for legacy branding and route compatibility. */
-export async function resolveConfiguredOrganization(): Promise<Organization> {
+let pinnedOrganization: Organization | undefined;
+let pinnedOrganizationLoad: Promise<Organization> | undefined;
+
+async function loadConfiguredOrganization(): Promise<Organization> {
   const result = await resolveSingleTenantContext();
   if (!result.ok) throw result.error;
   const organization = await (await import('../storage/index.js')).storage.getOrganization(result.context.organizationId);
@@ -202,6 +204,47 @@ export async function resolveConfiguredOrganization(): Promise<Organization> {
     );
   }
   return organization;
+}
+
+/**
+ * Resolve the full durable row for legacy branding and route compatibility.
+ *
+ * The deployment serves exactly one business, so the row is validated against
+ * the database singleton invariant once and then pinned for the life of the
+ * process; requests do not repeat the lookup. A failed load is never pinned,
+ * so the next request retries. Organization lifecycle changes are not
+ * application operations in singleton mode: Business Settings edits re-pin
+ * through `pinConfiguredOrganization`, and any change made directly in the
+ * database takes effect on the next process start.
+ */
+export async function resolveConfiguredOrganization(): Promise<Organization> {
+  if (pinnedOrganization) return pinnedOrganization;
+  pinnedOrganizationLoad ??= loadConfiguredOrganization()
+    .then((organization) => {
+      pinnedOrganization = organization;
+      return organization;
+    })
+    .finally(() => {
+      pinnedOrganizationLoad = undefined;
+    });
+  return pinnedOrganizationLoad;
+}
+
+/**
+ * Replace the pinned row after this process saved the configured
+ * organization, so branding edits are visible without a restart. A row for
+ * any other organization, or an inactive one, is ignored and leaves the
+ * existing pin in place.
+ */
+export function pinConfiguredOrganization(organization: Organization): void {
+  if (!pinnedOrganization || organization.id !== pinnedOrganization.id || !organization.active) return;
+  pinnedOrganization = organization;
+}
+
+/** Test-only: forget the pinned row so each case starts from the database. */
+export function resetPinnedOrganizationForTests(): void {
+  pinnedOrganization = undefined;
+  pinnedOrganizationLoad = undefined;
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   paymentDisputeReplayAudits,
   paymentDisputes,
   paymentOperations,
+  accountPaymentOperationSnapshots,
   payments,
   refundPaymentOperationSnapshots,
   paymentOperationRosterSnapshots,
@@ -246,17 +247,28 @@ async function findDisputeOperation(
     status: paymentOperations.status,
     amountMinor: paymentOperations.amountMinor,
     currency: paymentOperations.currency,
+    accountSnapshotOperationId: accountPaymentOperationSnapshots.operationId,
+    accountLocationId: accountPaymentOperationSnapshots.locationId,
+    accountProviderLocationId: accountPaymentOperationSnapshots.providerLocationId,
+    rosterSnapshotOperationId: paymentOperationRosterSnapshots.operationId,
     rosterLocationId: paymentOperationRosterSnapshots.locationId,
     rosterProviderLocationId: paymentOperationRosterSnapshots.providerLocationId,
     standingProviderLocationId: paymentOperationStandingAutopayBindings.providerLocationId,
   }).from(paymentOperations)
+    .leftJoin(
+      accountPaymentOperationSnapshots,
+      and(
+        eq(accountPaymentOperationSnapshots.operationId, paymentOperations.id),
+        eq(accountPaymentOperationSnapshots.organizationId, paymentOperations.organizationId),
+        eq(accountPaymentOperationSnapshots.leagueId, paymentOperations.leagueId),
+      ),
+    )
     .leftJoin(
       paymentOperationRosterSnapshots,
       and(
         eq(paymentOperationRosterSnapshots.operationId, paymentOperations.id),
         eq(paymentOperationRosterSnapshots.organizationId, paymentOperations.organizationId),
         eq(paymentOperationRosterSnapshots.leagueId, paymentOperations.leagueId),
-        eq(paymentOperationRosterSnapshots.snapshotKind, "interactive"),
       ),
     )
     .leftJoin(
@@ -277,13 +289,17 @@ async function findDisputeOperation(
   if (candidates.length !== 1) return { kind: "ambiguous" };
   const operation = candidates[0];
   if (!operation) return { kind: "not_owned" };
+  if (operation.accountSnapshotOperationId !== null && operation.rosterSnapshotOperationId !== null) return { kind: "mismatch" };
   const locationMatches = operation.operationType === "standing_autopay_charge"
     ? operation.standingProviderLocationId === row.providerLocationId
-    : operation.rosterLocationId === row.locationId
-      && (
-        operation.rosterProviderLocationId === null
-        || operation.rosterProviderLocationId === row.providerLocationId
-      );
+    : operation.accountSnapshotOperationId !== null
+      ? operation.accountLocationId === row.locationId
+        && (operation.accountProviderLocationId === null || operation.accountProviderLocationId === row.providerLocationId)
+      : operation.rosterLocationId === row.locationId
+        && (
+          operation.rosterProviderLocationId === null
+          || operation.rosterProviderLocationId === row.providerLocationId
+        );
   if (
     operation.status !== "succeeded"
     || !locationMatches

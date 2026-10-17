@@ -1,0 +1,25 @@
+{
+  "formatVersion": 2,
+  "algorithm": "sha256",
+  "migration": {
+    "tag": "0056_owned_payment_release_reopen_guard",
+    "hash": "915947f262890e96241afcd0847cf1fe2b7dffa5ce314476c32493dccf1d33c3",
+    "createdAt": 1791039398315
+  },
+  "digest": "23c3c9035cfe88e6d53620465f38d8779ca6cb55bbbd0cedc5582ef75cc0a7c4",
+  "counts": {
+    "tables": 97,
+    "columns": 1364,
+    "nonTableRelations": 0,
+    "rewriteRules": 0,
+    "unsupportedPublicObjects": 0,
+    "extensions": 0,
+    "sequences": 32,
+    "constraints": 776,
+    "indexes": 428,
+    "types": 1,
+    "functions": 38,
+    "triggers": 76,
+    "policies": 0
+  }
+}

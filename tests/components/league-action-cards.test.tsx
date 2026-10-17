@@ -8,14 +8,10 @@ describe("LeagueActionCards", () => {
 
     expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual([
       expect.stringContaining("Roster Management"),
-      expect.stringContaining("Manage Payments"),
-      expect.stringContaining("Payment Records"),
       expect.stringContaining("League Schedule"),
     ]);
-    expect(screen.getByRole("link", { name: /Manage Payments/i })).toHaveAttribute(
-      "href",
-      "/leagues/19073/payments/manage",
-    );
+    expect(screen.queryByRole("link", { name: /Manage Payments/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Payment Records/i })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /League Schedule/i })).toHaveAttribute(
       "href",
       "/leagues/19073/schedule",
@@ -36,13 +32,5 @@ describe("LeagueActionCards", () => {
     render(<LeagueActionCards leagueId={7} canManageRoster={false} canManagePayments />);
     expect(screen.getByRole('link', { name: /Team Rosters/i })).toHaveAttribute('href', '/leagues/7/teams');
     expect(screen.queryByText('Roster Management')).not.toBeInTheDocument();
-  });
-
-  it("does not expose payment cards when payment management is denied", () => {
-    render(<LeagueActionCards leagueId={7} canManageRoster canManagePayments={false} />);
-
-    expect(screen.getByRole("link", { name: /Roster Management/i })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Manage Payments/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Payment Records/i })).not.toBeInTheDocument();
   });
 });

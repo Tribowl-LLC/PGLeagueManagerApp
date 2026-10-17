@@ -24,8 +24,9 @@ locations and adult leagues.
   and handle operational oversight.
 - **Organization administrators** run the business's locations, leagues,
   seasons, teams, bowlers, users, communications, and integrations.
-- **Payment managers** handle payment operations and reporting within their
-  assigned organization and location.
+- **Payment managers** review payment records and reporting within their
+  assigned organization and location. Recording payments is an organization
+  administrator action in Manage Payments.
 - **Bowlers and ordinary users** register, establish an account, access the
   leagues connected to their bowler profile, make payments, view payment
   history, and manage their account profile.
