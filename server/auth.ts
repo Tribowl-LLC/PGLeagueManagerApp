@@ -192,6 +192,11 @@ export async function setupAuth(app: Express) {
       // Keep it out of the request process so Neon can reach its idle window;
       // cleanup can run through a deliberate low-frequency maintenance path.
       pruneSessionInterval: false,
+      // The cookie is not rolling, so the browser drops it a fixed 24 hours
+      // after the session was last saved no matter how often the row is
+      // touched. Extending the row on every request therefore only added a
+      // database write per request without lengthening any real session.
+      disableTouch: true,
       tableName: 'session',
     }),
     cookie: {

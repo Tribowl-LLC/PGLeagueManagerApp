@@ -9,12 +9,16 @@ import {
   leagues,
   paymentOperations,
   payments,
+  teamPaymentSlots,
   type AccountPaymentFundingPortionV4,
   type PaymentOperation,
 } from "@shared/schema";
 import {
   accountPaymentFundingQuoteResponseV4Schema,
+  isNoPaymentDueV4,
+  isSeasonPaidInFullV4,
   resolveAccountPaymentFundingChargeAmountV4,
+  resolveAccountPaymentFundingCollectionTargetsV4,
   type AccountPaymentFundingQuoteRequestV4,
   type AccountPaymentFundingQuoteResponseV4,
   type AccountPaymentFundingSelectionV4,
@@ -44,6 +48,7 @@ import { confirmedPastDueMinor as projectConfirmedPastDueMinor, effectiveCollect
 import {
   readOwnedAccountBalancesInTransaction,
   readOwnedLedgerAdoptionInTransaction,
+  readOwnedPaymentLedgerReadSnapshotInTransaction,
   readConfirmedOwnedObligationsInTransaction,
 } from "./owned-payment-ledger.js";
 import { prepareAccountPaymentOperation } from "./account-payment-operation-preparation.js";
@@ -72,6 +77,9 @@ type ForecastParticipant = {
     selectedWeeks: Array<{ weeks: number; amountMinor: number }>;
     fullSeasonMinor: number;
   };
+  holdsLineupSpot: boolean;
+  seasonPaidInFull: boolean;
+  noPaymentDue: boolean;
 };
 
 type AccountContext = {
@@ -292,15 +300,47 @@ export function forecastProjection(input: {
   };
 }
 
+/**
+ * Display reads and standalone quotes do not take the league lock: one
+ * repeatable-read snapshot already gives them a consistent view, and holding
+ * the exclusive lock made every payer in a league wait on each other's page
+ * loads. A charge never trusts these results; it recomputes the quote under
+ * the league lock and rejects a stale fingerprint.
+ */
+const ACCOUNT_CONTEXT_SNAPSHOT_READ = { isolationLevel: "repeatable read", accessMode: "read only" } as const;
+
+/** The season is fully published when no schedulable occurrence is still a
+ * draft and the published schedule reaches the league's season end date. A
+ * published week that was later cancelled still proves publication coverage;
+ * it is excluded only from payment demand. */
+async function isSeasonFullyPublishedInTransaction(
+  tx: PaymentOperationTransaction,
+  input: { organizationId: number; leagueId: number },
+): Promise<boolean> {
+  const [row] = await tx.select({
+    seasonEnd: sql<string>`${leagues.seasonEnd}::date::text`,
+    draftCount: sql<number>`count(${leagueOccurrences.id}) FILTER (WHERE ${leagueOccurrences.lifecycle} = 'draft' AND ${leagueOccurrences.status} = 'scheduled')::int`,
+    lastPublishedDate: sql<string | null>`max(${leagueOccurrences.authoritativeLocalDate}) FILTER (WHERE ${leagueOccurrences.lifecycle} IN ('published', 'locked') AND ${leagueOccurrences.status} IN ('scheduled', 'completed', 'cancelled'))::text`,
+  }).from(leagues).leftJoin(leagueOccurrences, and(
+    eq(leagueOccurrences.leagueId, leagues.id),
+    eq(leagueOccurrences.organizationId, input.organizationId),
+  )).where(and(
+    eq(leagues.id, input.leagueId),
+    eq(leagues.organizationId, input.organizationId),
+  )).groupBy(leagues.id);
+  if (!row || row.lastPublishedDate === null) return false;
+  return row.draftCount === 0 && row.lastPublishedDate >= row.seasonEnd;
+}
+
 async function accountContextInTransaction(
   tx: PaymentOperationTransaction,
   input: { organizationId: number; leagueId: number; payerBowlerId: number },
-  options: { lock?: boolean; now?: string } = {},
+  options: { lock?: boolean; now?: string; snapshotRead?: boolean } = {},
 ): Promise<AccountContext> {
-  if (options.lock !== false) await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
+  if (options.lock !== false && !options.snapshotRead) await lockLeagueSchedule(tx, input.organizationId, input.leagueId);
   const now = options.now ?? await transactionNow(tx);
   const adoption = await readOwnedLedgerAdoptionInTransaction(tx, input);
-  const resolved = await resolveParticipantsInTransaction(tx, { ...input, now });
+  const resolved = await resolveParticipantsInTransaction(tx, { ...input, now, lockRows: !options.snapshotRead });
   const base = {
     contractVersion: "interactive-payment-participants/4" as const,
     organizationId: input.organizationId,
@@ -317,11 +357,25 @@ async function accountContextInTransaction(
   }
 
   const recipientIds = resolved.participants.map((participant) => participant.bowlerId);
+  // Load the league's ledger evidence once; reading debts and balances
+  // separately repeated the same evidence queries for each.
+  const ledgerScope = { organizationId: input.organizationId, leagueId: input.leagueId };
+  const ledger = await readOwnedPaymentLedgerReadSnapshotInTransaction(tx, ledgerScope, adoption);
   const [debts, balances] = await Promise.all([
-    readConfirmedOwnedObligationsInTransaction(tx, { ...input, bowlerIds: recipientIds }),
-    readOwnedAccountBalancesInTransaction(tx, { ...input, bowlerIds: recipientIds }),
+    readConfirmedOwnedObligationsInTransaction(tx, { ...ledgerScope, bowlerIds: recipientIds }, ledger),
+    readOwnedAccountBalancesInTransaction(tx, { ...ledgerScope, bowlerIds: recipientIds }, ledger),
   ]);
   const candidatesByOwner = await addConfirmedLedgerCandidates(tx, input, resolved.participants, debts);
+  const [lineupSpotRows, seasonFullyPublished] = await Promise.all([
+    recipientIds.length === 0 ? Promise.resolve([]) : tx.select({ bowlerId: teamPaymentSlots.mainBowlerId }).from(teamPaymentSlots).where(and(
+      eq(teamPaymentSlots.organizationId, input.organizationId),
+      eq(teamPaymentSlots.leagueId, input.leagueId),
+      eq(teamPaymentSlots.occupant, "main"),
+      inArray(teamPaymentSlots.mainBowlerId, recipientIds),
+    )),
+    isSeasonFullyPublishedInTransaction(tx, input),
+  ]);
+  const lineupSpotHolderIds = new Set(lineupSpotRows.map((row) => row.bowlerId));
   const debtByOwner = new Map<number, number>();
   const obligationIdsByOwner = new Map<number, Set<string>>();
   for (const debt of debts) {
@@ -347,6 +401,8 @@ async function accountContextInTransaction(
     const balance = balances.get(participant.bowlerId);
     const ownerDebts = debts.filter((debt) => debt.debtorBowlerId === participant.bowlerId);
     reviewHeldConfirmedDebtById.set(participant.bowlerId, ownerDebts.some((debt) => debt.reviewRequired && debt.outstandingMinor > 0));
+    const holdsLineupSpot = lineupSpotHolderIds.has(participant.bowlerId);
+    const reviewHeld = ownerDebts.some((debt) => debt.reviewRequired);
     const response: ForecastParticipant = {
       bowlerId: participant.bowlerId,
       name: participant.name,
@@ -363,6 +419,21 @@ async function accountContextInTransaction(
         selectedWeeks: projected.selectedWeeks,
         fullSeasonMinor: projected.fullSeasonMinor,
       },
+      holdsLineupSpot,
+      seasonPaidInFull: isSeasonPaidInFullV4({
+        holdsLineupSpot,
+        seasonFullyPublished,
+        fullSeasonMinor: projected.fullSeasonMinor,
+        availableCreditMinor: balance?.availableCreditMinor ?? 0,
+        confirmedPaidMinor: ownerDebts.reduce((sum, debt) => sum + debt.paidMinor, 0),
+        reviewHeld,
+      }),
+      noPaymentDue: isNoPaymentDueV4({
+        holdsLineupSpot,
+        fullSeasonMinor: projected.fullSeasonMinor,
+        availableCreditMinor: balance?.availableCreditMinor ?? 0,
+        reviewHeld,
+      }),
     };
     recipients.push(response);
     recipientById.set(response.bowlerId, response);
@@ -398,7 +469,10 @@ export async function readInteractivePaymentParticipantsV4(input: {
   leagueId: number;
   payerBowlerId: number;
 }): Promise<AccountPaymentParticipantsResponseV4> {
-  return db.transaction(async (tx) => (await accountContextInTransaction(tx, input)).response);
+  return db.transaction(
+    async (tx) => (await accountContextInTransaction(tx, input, { snapshotRead: true })).response,
+    ACCOUNT_CONTEXT_SNAPSHOT_READ,
+  );
 }
 
 function selectedCollectionTargets(
@@ -406,21 +480,17 @@ function selectedCollectionTargets(
   participant: ForecastParticipant,
   paymentMode: "weekly" | "upfront",
 ): { collectionTargetMinor: number; forecastCollectionTargetMinor: number } {
-  if (selection.kind === "explicit_amount") return { collectionTargetMinor: 0, forecastCollectionTargetMinor: 0 };
-  if (selection.kind === "confirmed_debt_balance") return { collectionTargetMinor: participant.confirmedDebtMinor, forecastCollectionTargetMinor: 0 };
-  if (paymentMode === "upfront" && selection.scope === "selected_weeks") {
+  const targets = resolveAccountPaymentFundingCollectionTargetsV4({
+    selection,
+    paymentMode,
+    confirmedDebtMinor: participant.confirmedDebtMinor,
+    forecastTargets: participant.forecastTargets,
+  });
+  if (targets.ok) return { collectionTargetMinor: targets.collectionTargetMinor, forecastCollectionTargetMinor: targets.forecastCollectionTargetMinor };
+  if (targets.reason === "UPFRONT_FULL_BALANCE_REQUIRED") {
     throw new RosterPaymentError("UPFRONT_FULL_BALANCE_REQUIRED", "Upfront checkout must use the full-season forecast target", 422);
   }
-  const collectionTargetMinor = selection.scope === "current_collection"
-    ? participant.forecastTargets.currentCollectionMinor
-    : selection.scope === "full_season"
-      ? participant.forecastTargets.fullSeasonMinor
-      : participant.forecastTargets.selectedWeeks.find((item) => item.weeks === selection.weeks)?.amountMinor ?? -1;
-  if (collectionTargetMinor < 0) throw new RosterPaymentError("WEEKS_SELECTION_INVALID", "The selected forecast weeks are unavailable", 409);
-  return {
-    collectionTargetMinor,
-    forecastCollectionTargetMinor: Math.max(0, collectionTargetMinor - participant.confirmedDebtMinor),
-  };
+  throw new RosterPaymentError("WEEKS_SELECTION_INVALID", "The selected forecast weeks are unavailable", 409);
 }
 
 export async function quoteAccountPaymentFundingV4(input: {
@@ -432,7 +502,7 @@ export async function quoteAccountPaymentFundingV4(input: {
 }): Promise<AccountPaymentFundingQuoteResponseV4> {
   assertRequestPayerMatches(input);
   const run = async (tx: PaymentOperationTransaction) => {
-    const context = await accountContextInTransaction(tx, input, { lock: !input.transaction });
+    const context = await accountContextInTransaction(tx, input, input.transaction ? { lock: false } : { snapshotRead: true });
     if (context.response.accountingMode !== "confirmed_account_v4") {
       throw new RosterPaymentError("ACCOUNT_PAYMENT_V4_REQUIRED", "This league uses legacy payment checkout", 409);
     }
@@ -480,7 +550,7 @@ export async function quoteAccountPaymentFundingV4(input: {
     });
     return quote;
   };
-  return input.transaction ? run(input.transaction) : db.transaction(run);
+  return input.transaction ? run(input.transaction) : db.transaction(run, ACCOUNT_CONTEXT_SNAPSHOT_READ);
 }
 
 export type AccountPaymentChargeResultV4 = {

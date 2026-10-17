@@ -163,46 +163,6 @@ export const canonicalManualRecordQuoteRequestSchema = z.object({
   if (value.type === "cash" && value.checkNumber !== undefined) ctx.addIssue({ code: "custom", path: ["checkNumber"], message: "checkNumber is only valid for check entries" });
 });
 
-const manualBatchRowKeySchema = z.string().trim().min(16).max(109).regex(/^[A-Za-z0-9_-]+$/);
-const canonicalManualRecordBatchRowSchema = canonicalManualRecordRequestSchema.extend({ rowKey: manualBatchRowKeySchema }).superRefine((value, ctx) => {
-  if (value.type === "cash" && value.checkNumber !== undefined) {
-    ctx.addIssue({ code: "custom", path: ["checkNumber"], message: "checkNumber is only valid for check entries" });
-  }
-});
-
-/** Bounded management-batch contracts keep league-night entry to one quote
- * request regardless of roster size. FIFO identities remain server-derived. */
-export const canonicalManualRecordBatchQuoteRequestSchema = z.object({
-  rows: z.array(z.object({
-    rowKey: manualBatchRowKeySchema,
-    amountMinor: z.number().int().positive(),
-    payerBowlerId: z.number().int().positive(),
-    type: z.enum(["cash", "check"]).optional().default("cash"),
-    checkNumber: z.string().trim().min(1).max(128).optional(),
-    notes: z.string().max(1000).nullable().optional(),
-  }).strict().superRefine((row, ctx) => {
-    if (row.type === "check" && !row.checkNumber) ctx.addIssue({ code: "custom", path: ["checkNumber"], message: "checkNumber is required for check entries" });
-    if (row.type === "cash" && row.checkNumber !== undefined) ctx.addIssue({ code: "custom", path: ["checkNumber"], message: "checkNumber is only valid for check entries" });
-  })).min(1).max(200),
-}).strict().superRefine((value, ctx) => {
-  const payerIds = value.rows.map((row) => row.payerBowlerId);
-  if (new Set(payerIds).size !== payerIds.length) ctx.addIssue({ code: "custom", path: ["rows"], message: "Each payer may appear only once per payment batch" });
-  const rowKeys = value.rows.map((row) => row.rowKey);
-  if (new Set(rowKeys).size !== rowKeys.length) ctx.addIssue({ code: "custom", path: ["rows"], message: "Each payment row requires a distinct row key" });
-});
-
-export const canonicalManualRecordBatchRequestSchema = z.object({
-  rows: z.array(canonicalManualRecordBatchRowSchema).min(1).max(200),
-}).strict().superRefine((value, ctx) => {
-  const keys = value.rows.map((row) => row.idempotencyKey);
-  if (new Set(keys).size !== keys.length) ctx.addIssue({ code: "custom", path: ["rows"], message: "Each payment row requires a distinct idempotency key" });
-  const payerIds = value.rows.map((row) => row.payerBowlerId);
-  if (new Set(payerIds).size !== payerIds.length) ctx.addIssue({ code: "custom", path: ["rows"], message: "Each payer may appear only once per payment batch" });
-  for (const [index, row] of value.rows.entries()) {
-    if (row.rowKey !== row.idempotencyKey) ctx.addIssue({ code: "custom", path: ["rows", index, "rowKey"], message: "rowKey must match idempotencyKey" });
-  }
-});
-
 export const canonicalCorrectionRequestSchema = z.object({
   paymentId: z.number().int().positive(),
   correctionMode: z.enum(["void_only", "edit_cash"]).default("void_only"),
@@ -411,7 +371,5 @@ export type CanonicalDuePastDueResponseV2 = {
 };
 export type CanonicalManualRecordRequest = z.infer<typeof canonicalManualRecordRequestSchema>;
 export type CanonicalManualRecordQuoteRequest = z.infer<typeof canonicalManualRecordQuoteRequestSchema>;
-export type CanonicalManualRecordBatchQuoteRequest = z.infer<typeof canonicalManualRecordBatchQuoteRequestSchema>;
-export type CanonicalManualRecordBatchRequest = z.infer<typeof canonicalManualRecordBatchRequestSchema>;
 export type CanonicalCorrectionRequest = z.infer<typeof canonicalCorrectionRequestSchema>;
 export type CanonicalCashPaymentDeleteRequest = z.infer<typeof canonicalCashPaymentDeleteRequestSchema>;

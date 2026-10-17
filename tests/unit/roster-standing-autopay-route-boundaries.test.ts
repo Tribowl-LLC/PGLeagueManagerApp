@@ -29,7 +29,10 @@ vi.mock("../../server/utils/access-control.js", () => ({
   requireOrganizationAccess: (req: { user?: { organizationId?: number | null }; organizationContextId?: number }, organizationId: number | null) =>
     organizationId !== null && (req.organizationContextId ?? req.user?.organizationId) === organizationId,
 }));
-vi.mock("../../server/middleware/rate-limit.js", () => ({ paymentWriteLimiter: mocks.paymentWriteLimiter }));
+vi.mock("../../server/middleware/rate-limit.js", () => ({
+  paymentQuoteLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
+  paymentWriteLimiter: mocks.paymentWriteLimiter,
+}));
 vi.mock("../../server/services/roster-standing-autopay.js", () => ({
   activateStandingAutopayConsent: vi.fn(),
   quoteStandingAutopay: (...args: unknown[]) => mocks.quote(...args),

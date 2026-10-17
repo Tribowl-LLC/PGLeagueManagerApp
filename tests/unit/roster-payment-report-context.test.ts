@@ -146,26 +146,55 @@ describe("team envelope roster read context", () => {
     expect(standardV2Read.teams[0]?.slots.map((slot) => slot.slotIndex)).toEqual([0, 2]);
   });
 
-  it("keeps the standard V2 read fail-closed for an assignment without an active responsibility", async () => {
-    const staleAssignment = {
-      id: "assignment-29",
-      organizationId,
-      leagueId,
-      occurrenceId,
-      teamId,
-      slotId: "slot-3",
-      slotIndex: 3,
-      responsibilityId: "voided-responsibility",
-      version: 1,
-      actualBowlerId: 103,
-      correctionReason: null,
-      recordedByUserId: 1,
-      createdAt: "2026-10-01T12:00:00.000Z",
-    };
+  const staleAssignment = {
+    id: "assignment-29",
+    organizationId,
+    leagueId,
+    occurrenceId,
+    teamId,
+    slotId: "slot-3",
+    slotIndex: 3,
+    responsibilityId: "voided-responsibility",
+    version: 1,
+    actualBowlerId: 103,
+    correctionReason: null,
+    recordedByUserId: 1,
+    createdAt: "2026-10-01T12:00:00.000Z",
+  };
+  const occurrenceRow = { id: occurrenceId, startAt: "2026-09-29T23:00:00.000Z", occurrenceLocalDate: "2026-09-29", plannedOrdinal: 3, status: "scheduled" };
+
+  it("reports a week as unassigned when Manage Payments retired the rotating responsibility", async () => {
     setQueryRows([
       ...metadataRows(),
-      [{ id: occurrenceId, startAt: "2026-09-29T23:00:00.000Z", occurrenceLocalDate: "2026-09-29", plannedOrdinal: 3, status: "scheduled" }],
+      [occurrenceRow],
       [],
+      [],
+      [staleAssignment],
+    ]);
+
+    const read = await readRosterPaymentResponsibilityV2({ organizationId, leagueId });
+
+    expect(read.rotationAssignments).toEqual([{
+      occurrenceId,
+      teamId,
+      slotIndex: 3,
+      responsibilityId: null,
+      obligationIds: [],
+      assignmentId: null,
+      actualBowlerId: null,
+      revision: null,
+      assignedAt: null,
+      recordedByUserId: null,
+    }]);
+    expect(queryState.fromTables).toContain(rotatingOccurrenceAssignments);
+  });
+
+  it("keeps the standard V2 read fail-closed for an assignment that names a different active responsibility", async () => {
+    setQueryRows([
+      ...metadataRows(),
+      [occurrenceRow],
+      [],
+      [{ id: "active-responsibility", occurrenceId, teamId, slotIndex: 3, state: "active" }],
       [],
       [staleAssignment],
     ]);
@@ -175,6 +204,5 @@ describe("team envelope roster read context", () => {
       message: "A rotating assignment does not match the current canonical responsibility",
       status: 503,
     });
-    expect(queryState.fromTables).toContain(rotatingOccurrenceAssignments);
   });
 });

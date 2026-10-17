@@ -2,16 +2,6 @@ import { getApiErrorCode, getApiErrorStatus, isSessionExpiredError } from "@/lib
 import type { CanonicalDuePastDueRowV2 } from "@shared/roster-payment-contract";
 import type { FinancialReadAccountProjectionRow, FinancialReadRowContract } from "@shared/financial-contract";
 
-/** Presentation-only shape retained for the payment-history display. Amounts
- * and due status come from the canonical financial API, not this module. */
-export interface DoublePayStatus {
-  dates: string[];
-  perWeekExtra: number;
-  totalExtra: number;
-  pastExtra: number;
-  isPaid: boolean;
-}
-
 export interface BowlerViewFinancials {
   weeksDue: number;
   totalSeasonDues: number;

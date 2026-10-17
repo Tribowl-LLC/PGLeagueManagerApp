@@ -728,10 +728,14 @@ export async function readRosterPaymentResponsibilityV2(input: { organizationId:
   const rotationAssignments = occurrenceRows.flatMap((occurrence) => rotatingSlots.map((slot) => {
     const key = `${occurrence.id}:${slot.teamId}:${slot.slotIndex}`;
     const responsibility = responsibilityByKey.get(key);
-    const assignment = assignmentByKey.get(key);
-    if (assignment && (!responsibility || assignment.responsibilityId !== responsibility.id)) {
+    const recordedAssignment = assignmentByKey.get(key);
+    if (recordedAssignment && responsibility && recordedAssignment.responsibilityId !== responsibility.id) {
       throw new RosterPaymentError("ROTATING_ASSIGNMENT_EVIDENCE_INVALID", "A rotating assignment does not match the current canonical responsibility", 503);
     }
+    // Saving a week in Manage Payments retires the slot's responsibility and
+    // records worksheet rows in its place. The earlier rotating assignment is
+    // history for that week, not a current assignment.
+    const assignment = responsibility ? recordedAssignment : undefined;
     return {
       occurrenceId: occurrence.id,
       teamId: slot.teamId,

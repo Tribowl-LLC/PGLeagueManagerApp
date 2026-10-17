@@ -181,7 +181,12 @@ In [`server/app.ts`](../server/app.ts), the important request stages are:
    required `APP_ORGANIZATION_ID`; the hostname and browser input never select
    it. Explicit legacy hosts redirect browser GET/HEAD requests to the
    canonical domain and reject mutations. Liveness and signed provider
-   callbacks remain outside this resolution boundary.
+   callbacks remain outside this resolution boundary. The organization row is
+   validated against the database once and then pinned for the life of the
+   process, so requests do not repeat the lookup; Business Settings saves
+   re-pin it, and a change made directly in the database needs a restart.
+   Fingerprinted `/assets` files are public and are served ahead of this
+   stage and the session store.
 2. Security headers, compression, and body parsers are installed. Body-size
    limits are intentionally restrictive, and webhook requests retain the exact
    raw bytes required for signature verification.

@@ -1,6 +1,7 @@
 import { useState, useEffect, FC, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PageLoadingState } from "@/components/page-states";
+import { BowlerScreenSkeleton } from "@/components/bowler-screen-skeleton";
 import { LeagueBottomSheet } from "@/components/league-bottom-sheet";
 import { BowlerLayout } from "@/components/bowler-layout";
 import { DEFAULT_WEEKLY_FEE_CENTS } from "@shared/schema";
@@ -151,7 +152,7 @@ const BowlerDashboardPage: FC = () => {
   }, [noBowlerProfile]);
 
   if (isStillLoadingChain && !league) {
-    return <PageLoadingState message="Loading dashboard data..." />;
+    return <BowlerScreenSkeleton screen="dashboard" message="Loading dashboard data..." bowlerName={bowler?.name} />;
   }
 
   if (userError) {

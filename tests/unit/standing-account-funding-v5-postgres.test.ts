@@ -208,6 +208,12 @@ describe("V5 standing account funding finalization", () => {
       accountingMode: "confirmed_account_v4",
       recipients: [{ bowlerId: payerBowlerId, confirmedDebtMinor: 0, confirmedPastDueMinor: 0 }],
     });
+    if (participants.accountingMode !== "confirmed_account_v4") throw new Error("V5 standing fixture did not use adopted account funding");
+    const payerRecipient = participants.recipients.find((recipient) => recipient.bowlerId === payerBowlerId);
+    expect(typeof payerRecipient?.holdsLineupSpot).toBe("boolean");
+    // The payer still owes forecast weeks, so the season cannot be paid in full.
+    expect(payerRecipient?.forecastTargets.fullSeasonMinor).toBeGreaterThan(payerRecipient?.availableCreditMinor ?? 0);
+    expect(payerRecipient?.seasonPaidInFull).toBe(false);
     const now = new Date();
     const operation = await prepareStandingAutopayCutoff({
       organizationId,

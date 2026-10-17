@@ -65,7 +65,6 @@ describe('staff routes', () => {
     '/leagues',
     '/leagues/7',
     '/manage-payments',
-    '/leagues/7/payments/manage',
     '/leagues/7/schedule',
     '/leagues/7/teams',
     '/leagues/7/scores',

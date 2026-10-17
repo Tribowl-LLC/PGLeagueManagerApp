@@ -240,6 +240,7 @@ function invalidatePaymentViews(
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/3`] });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/leagues", leagueId, "canonical-due-past-due/3"] });
   void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] });
+  void queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/2`] });
   void queryClient.invalidateQueries({ queryKey: ["/api/financials/due-past-due"] });
   void queryClient.invalidateQueries({ queryKey: ["/api/bowlers"] });
   for (const row of changedRows) {

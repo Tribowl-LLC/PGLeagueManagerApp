@@ -626,15 +626,17 @@ component system. This design remains distinct from the admin UI.
   provider-branded wallet controls in their provider colors.
 - **Overview:** Keep the Payment overview card and Latest payment card.
   Season totals show Paid, Remaining, and Season, with Past Due inserted only
-  when positive. Rotating bowlers see Paid and Past Due only. The next bowling
-  date does not appear between these cards.
+  when positive. The next bowling date does not appear between these cards.
+  The rotating-bowler variant (Paid and Past Due only) is retiring with the
+  rotating bowler type; see `docs/bowler-payment-model.md`.
 - **Pay:** On mobile weekly-payment pages, show the two-column Due now and
   Remaining summary first, followed by Automatic payments when eligible, then
   One-time payment. At desktop widths, keep the page title across the content
   rail; place Automatic payments in the left column and the Due now/Remaining
   summary above One-time payment in the right column. The two amounts stay
-  side by side within the summary at both sizes. Upfront and rotating members
-  use their existing mode-specific layouts.
+  side by side within the summary at both sizes. Upfront leagues use their
+  existing mode-specific layout. A bowler pays by choosing weeks; there is no
+  typed-amount or add-credit control.
   The shipped one-time-pay layout follows the preview's 1 Simple arrangement:
   the selector changes a single coverage sentence as weeks are added. Existing,
   2 Quick choices, and 3 Summary first in the standalone lab remain comparison
@@ -642,10 +644,11 @@ component system. This design remains distinct from the admin UI.
   applicable final weeks. Saved-card selection
   also offers an available device wallet and a new-card path. Upfront leagues
   present one full-balance payment, including partner selection when eligible.
-  Rotating bowlers see a one-time-only payment view without Due now/Remaining
-  summary boxes or automatic-payment setup; its coverage sentence describes
-  the selected number of weeks. Provider-generated wallet confirmation remains
-  native to the provider.
+  The rotating one-time-only payment view is retiring with the rotating bowler
+  type. A bowler with nothing to pay sees one of three server-decided states:
+  "Paid in full, no additional payment needed.", "No payment is due right
+  now.", or the unavailable message that directs them to their league manager.
+  Provider-generated wallet confirmation remains native to the provider.
 - **League switching:** Across Overview, Pay, History, and Profile on mobile and
   desktop, use one centered modal with the preview's title, helper, close action,
   and open/close motion. Each option shows only the league name and season range;
@@ -659,8 +662,8 @@ component system. This design remains distinct from the admin UI.
   Follow it with Transactions. A confirmed self-only payment covering several
   canonical weeks names that count, and includes the server-confirmed final
   paired week when present. Keep single-week, shared, credit, and review rows'
-  existing truthful labels. Rotating bowlers see Paid and Past Due only, with
-  no Weeks paid line. Keep the real transaction evidence and detail actions.
+  existing truthful labels. Keep the real transaction evidence and detail
+  actions.
 - **Profile:** Present account details as rows and use focused dialogs for
   editing details, changing a password, managing saved payment methods and
   payment-partner links, and requesting deletion. Put Request deletion below

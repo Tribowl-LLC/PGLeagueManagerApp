@@ -110,6 +110,7 @@ The current allowlist entries are:
 | Effective path | Why it's safe |
 |----------------|---------------|
 | `/uploads/avatars` | `app.use('/uploads/avatars', express.static(...))` in `server/index.ts`. `express.static` is read-only — it only responds to GET/HEAD and falls through for POST/PUT/PATCH/DELETE, so no CSRF-protectable mutation is possible. |
+| `/assets` | `app.use('/assets', express.static(...))` in `server/app.ts`, production only. Serves the fingerprinted build output ahead of business context and the session store. `express.static` is read-only — it only responds to GET/HEAD and falls through for POST/PUT/PATCH/DELETE, so no CSRF-protected method can reach a state-changing handler through it. |
 | `/{*splat}` | `app.use("/{*splat}", ...)` SPA catchalls in `server/vite.ts` (dev-mode Vite middleware and prod static fallback). Both handlers respond with HTML for unknown paths and don't mutate any server state. The named braced wildcard is required by Express 5 and preserves the previous catch-all behavior. |
 
 The guard runs as a standalone step in
@@ -162,6 +163,7 @@ The non-`/api` mounts are:
 - `manifestRouter` — only `GET /manifest.json` (and `GET /api/org-context`,
   which is under `/api` and read-only).
 - `/uploads/avatars` — `express.static`, GET only.
+- `/assets` — `express.static` for the production build output, GET only.
 - `/.well-known/*` — three GET endpoints (Apple App Site Association,
   Android assetlinks, Apple Pay merchant-id verification).
 - `/loaderio-...` — load-test verification GET.

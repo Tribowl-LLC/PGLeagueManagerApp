@@ -121,6 +121,7 @@ export default function TeamsPage() {
         queryClient.invalidateQueries({ queryKey: ["/api/bowlers"] }),
         queryClient.invalidateQueries({ predicate: ({ queryKey }) => typeof queryKey[0] === "string" && queryKey[0].startsWith("/api/bowlers/") && queryKey[0].includes("/details") }),
         queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/1`] }),
+        queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/roster-payment-responsibility/2`] }),
         queryClient.invalidateQueries({ queryKey: [`/api/financials/leagues/${leagueId}/canonical-due-past-due/2`] }),
         queryClient.invalidateQueries({ predicate: ({ queryKey }) => (
           (queryKey[0] === "/api/financials/leagues" && queryKey[1] === leagueId && queryKey[2] === "canonical-due-past-due/2")

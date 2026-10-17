@@ -6,7 +6,7 @@ import { adminWriteLimiter } from '../middleware/rate-limit';
 import { storage } from '../storage';
 import { sendError, sendSuccess, handleZodError, sanitizeOrg } from '../utils/api';
 import { validateDataUri } from '../utils/image-magic-bytes';
-import { configuredOrganizationId } from '../services/single-tenant-context';
+import { configuredOrganizationId, pinConfiguredOrganization } from '../services/single-tenant-context';
 
 const router = Router();
 
@@ -60,6 +60,7 @@ router.patch('/', requireSystemAdmin, adminWriteLimiter, async (req, res) => {
     }
 
     const updated = await storage.updateOrganization(organizationId, validatedData);
+    pinConfiguredOrganization(updated);
     return sendSuccess(res, sanitizeOrg(updated));
   } catch (error) {
     if (error instanceof z.ZodError) return handleZodError(res, error);

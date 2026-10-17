@@ -51,12 +51,30 @@ export function testBypassSkip(req: Request): boolean {
   return req.header('x-test-rate-limit-bypass') === TEST_BYPASS_HEADER_VALUE;
 }
 
+// Payment routes sit behind authentication, so their budgets are per account.
+// Keying by address made every bowler on one bowling center's network share a
+// single allowance.
 export const paymentWriteLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 30,
+  max: 60,
+  keyGenerator: userKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false,
-  store: createSharedRateLimitStore('payment-write'),
+  // This namespace starts fresh instead of inheriting persisted per-address 30-per-15-minute buckets.
+  store: createSharedRateLimitStore('payment-write-user-60-15m'),
+  message: rateLimitMessage("Too many payment requests, please try again later"),
+  skip: testBypassSkip,
+});
+
+// Quotes move no money and the Pay page requests a new one whenever the
+// selection changes, so they must not spend the charge allowance above.
+export const paymentQuoteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  keyGenerator: userKeyGenerator,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: createSharedRateLimitStore('payment-quote'),
   message: rateLimitMessage("Too many payment requests, please try again later"),
   skip: testBypassSkip,
 });

@@ -56,7 +56,6 @@ describe("PaymentHistoryContent", () => {
       totalPaidAmount={3000}
       amountPastDue={6000}
       remainingBalance={27000}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
       canonicalPaymentLoading={false}
       canonicalPaymentError={null}
       canonicalRows={[]}
@@ -95,7 +94,6 @@ describe("PaymentHistoryContent", () => {
       totalPaidAmount={3000}
       amountPastDue={6000}
       remainingBalance={27000}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
       canonicalPaymentLoading={false}
       canonicalPaymentError={null}
       canonicalRows={[]}
@@ -127,7 +125,6 @@ describe("PaymentHistoryContent", () => {
       totalPaidAmount={9000}
       amountPastDue={0}
       remainingBalance={0}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: true }}
       canonicalPaymentLoading={false}
       canonicalPaymentError={null}
       canonicalRows={[]}
@@ -146,7 +143,6 @@ describe("PaymentHistoryContent", () => {
       bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
       totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
       weeksPaid={1} totalPaidAmount={3000} amountPastDue={6000} remainingBalance={27000}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
       canonicalPaymentLoading={false} canonicalPaymentError={new Error("report unavailable")}
       onCanonicalReportRetry={retry}
     />);
@@ -163,7 +159,6 @@ describe("PaymentHistoryContent", () => {
       bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
       totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
       weeksPaid={1} totalPaidAmount={3000} amountPastDue={6000} remainingBalance={27000}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
       canonicalPaymentLoading={false} canonicalPaymentError={null} canonicalRows={[]}
       canonicalReportPage={1} canonicalReportTotalPages={2} onCanonicalReportPageChange={onPageChange}
     />);
@@ -179,7 +174,6 @@ describe("PaymentHistoryContent", () => {
       bowlerLeagues={[]} leagueMap={new Map()} onSelectLeague={vi.fn()}
       totalWeeksInSeason={10} fullSeasonAmount={30000} weeksDueCount={3} totalSeasonDues={9000}
       weeksPaid={1} totalPaidAmount={3000} amountPastDue={6000} remainingBalance={27000}
-      doublePay={{ dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false }}
       canonicalPaymentLoading={false} canonicalPaymentError={null} canonicalRows={[]}
       canonicalReportPage={2} canonicalReportTotalPages={2} onCanonicalReportPageChange={onPageChange}
     />);
@@ -206,7 +200,6 @@ describe("PaymentHistoryContent", () => {
       totalPaidAmount: 3000,
       amountPastDue: 6000,
       remainingBalance: 27000,
-      doublePay: { dates: [], perWeekExtra: 0, totalExtra: 0, pastExtra: 0, isPaid: false },
       canonicalPaymentLoading: false,
       canonicalPaymentError: null,
       canonicalRows: [],
@@ -261,7 +254,7 @@ describe("PaymentHistoryContent", () => {
     expect(screen.queryByRole("button", { name: "Pay due now and enable automatic payments" })).not.toBeInTheDocument();
 
     resolveStatus({ data: { state: "active", partnerBowlerIds: [] } });
-    await waitFor(() => expect(screen.getByText("Enabled")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("On")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "Pay due now and enable automatic payments" })).not.toBeInTheDocument();
   });
 
@@ -280,7 +273,7 @@ describe("PaymentHistoryContent", () => {
     expect(screen.queryByRole("button", { name: "Pay due now and enable automatic payments" })).not.toBeInTheDocument();
 
     resolveStatus({ data: { state: "active", partnerBowlerIds: [] } });
-    await waitFor(() => expect(screen.getByText("Enabled")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("On")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "Pay due now and enable automatic payments" })).not.toBeInTheDocument();
   });
 
@@ -331,22 +324,84 @@ describe("PaymentHistoryContent", () => {
     expect(screen.queryByRole("button", { name: "Add new card" })).not.toBeInTheDocument();
   });
 
-  it("shows the next scheduled automatic-payment date without implementation copy", async () => {
+  it("lists the next automatic payments under Coming up without implementation copy", async () => {
+    const upcoming = [
+      { cutoffAt: "2030-01-10T00:30:00.000Z", collectionMode: "weekly", amountMinor: 2500, billingOrdinals: [4] },
+      { cutoffAt: "2030-01-17T00:30:00.000Z", collectionMode: "double_pay", amountMinor: 5000, billingOrdinals: [5, 31] },
+      { cutoffAt: "2030-01-24T00:30:00.000Z", collectionMode: "weekly", amountMinor: 2500, billingOrdinals: [6] },
+    ];
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => String(queryKey[0]).endsWith("/quote")
-      ? ({ data: { cutoffAt: "2030-01-10T00:30:00.000Z", amountMinor: 2500, collectionMode: "weekly" } })
+      ? ({ data: { cutoffAt: upcoming[0].cutoffAt, amountMinor: 2500, collectionMode: "weekly", upcoming, paidAheadThroughOrdinal: null, overdueMinor: 0 } })
+      : ({ data: { state: "active", partnerBowlerIds: [], paymentMethod: { brand: "MASTERCARD", last4: "1166" } } }) } } });
+    render(<QueryClientProvider client={queryClient}><StandingAutopayCard
+      league={{ ...league, payingLineupSize: 4 }} bowlerId={42}
+      savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
+      cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
+    /></QueryClientProvider>);
+    expect(await screen.findByText("Week 4")).toBeInTheDocument();
+    expect(screen.getByText("Coming up")).toBeInTheDocument();
+    expect(screen.queryByText("Next automatic payment")).not.toBeInTheDocument();
+    expect(screen.getByText("Weeks 5 + 31")).toBeInTheDocument();
+    expect(screen.getByText("Week 6")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    expect(screen.getByText("$50")).toBeInTheDocument();
+    expect(screen.getByText(/^Next · /)).toBeInTheDocument();
+    expect(screen.getByText(/· Double pay$/)).toBeInTheDocument();
+    expect(screen.getByText("January 9, 2030")).toBeInTheDocument();
+    expect(screen.getByText("On")).toBeInTheDocument();
+    expect(screen.getByText("Mastercard •••• 1166")).toBeInTheDocument();
+    expect(screen.getByText("Mastercard ending in 1166")).toBeInTheDocument();
+    expect(screen.getByText("Pays each bowling night")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change card" })).toHaveTextContent("Change");
+    expect(screen.getByRole("button", { name: "Turn off automatic payments" })).toBeInTheDocument();
+    expect(screen.queryByText("Double-pay weeks")).not.toBeInTheDocument();
+    expect(screen.queryByText(/exact remaining roster obligations|consent version/i)).not.toBeInTheDocument();
+    expect(csrfFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows paid-ahead weeks and pauses the list while a balance is overdue", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => String(queryKey[0]).endsWith("/quote")
+      ? ({ data: { cutoffAt: "2030-01-10T00:30:00.000Z", amountMinor: 0, collectionMode: "weekly", upcoming: [{ cutoffAt: "2030-01-17T00:30:00.000Z", collectionMode: "weekly", amountMinor: 2500, billingOrdinals: [14] }], paidAheadThroughOrdinal: 13, overdueMinor: 2500 } })
       : ({ data: { state: "active", partnerBowlerIds: [], paymentMethod: { brand: "Visa", last4: "4242" } } }) } } });
     render(<QueryClientProvider client={queryClient}><StandingAutopayCard
       league={{ ...league, payingLineupSize: 4 }} bowlerId={42}
       savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
       cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
     /></QueryClientProvider>);
-    await waitFor(() => expect(screen.getByText("$25")).toBeInTheDocument());
-    expect(screen.getByText("· Jan 9")).toBeInTheDocument();
-    expect(screen.getByText("Next automatic payment")).toBeInTheDocument();
-    expect(screen.getByText("Visa ending in 4242")).toBeInTheDocument();
-    expect(screen.queryByText("Double-pay weeks")).not.toBeInTheDocument();
-    expect(screen.queryByText(/exact remaining roster obligations|consent version/i)).not.toBeInTheDocument();
-    expect(csrfFetchMock).not.toHaveBeenCalled();
+    expect(await screen.findByText("Week 14")).toBeInTheDocument();
+    expect(screen.getByText("Paid ahead through Week 13")).toBeInTheDocument();
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("$25 overdue");
+  });
+
+  it("explains automatic payments before setup", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ data: { state: "none", partnerBowlerIds: [] } }) } } });
+    render(<QueryClientProvider client={queryClient}><StandingAutopayCard
+      league={{ ...league, payingLineupSize: 4, weeklyFee: 2500, competitionStartTime: "18:30" }} bowlerId={42}
+      savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
+      cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
+      dueNowMinor={0} dueNowDataAvailable
+    /></QueryClientProvider>);
+    expect(await screen.findByText("Never think about league fees again.")).toBeInTheDocument();
+    expect(screen.getByText("$25 charged at 6:30 PM on bowling night")).toBeInTheDocument();
+    expect(screen.getByText("Weeks you pay ahead are skipped")).toBeInTheDocument();
+    expect(screen.getByText("Turn off anytime")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Set up automatic payments" })).toBeEnabled();
+  });
+
+  it("warns instead of claiming a saved card when the active payment method cannot be confirmed", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async ({ queryKey }) => String(queryKey[0]).endsWith("/quote")
+      ? ({ data: { cutoffAt: "2030-01-10T00:30:00.000Z", amountMinor: 2500, collectionMode: "weekly" } })
+      : ({ data: { state: "active", partnerBowlerIds: [], paymentMethod: null } }) } } });
+    render(<QueryClientProvider client={queryClient}><StandingAutopayCard
+      league={{ ...league, payingLineupSize: 4 }} bowlerId={42}
+      savedCards={[savedCard]} bowlerHasEmail={true} card={null} isInitialized={false}
+      cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
+    /></QueryClientProvider>);
+    expect(await screen.findByText("Card could not be confirmed")).toBeInTheDocument();
+    expect(screen.getByText("Choose a card so automatic payments can go through.")).toBeInTheDocument();
+    expect(screen.queryByText("Used for automatic payments")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change card" })).toBeEnabled();
   });
 
   it("shows the recovery message when the next automatic payment is blocked", async () => {
@@ -360,7 +415,7 @@ describe("PaymentHistoryContent", () => {
       cardEditorMode={null} initializeCard={vi.fn()} cleanupCard={vi.fn()} onCardEditorModeChange={vi.fn()}
     /></QueryClientProvider>);
     await waitFor(() => expect(screen.getByText("Unavailable")).toBeInTheDocument());
-    expect(screen.getByText("Next automatic payment")).toBeInTheDocument();
+    expect(screen.getByText("Coming up")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Pay older unpaid obligations with a one-time payment before automatic payments can resume.");
     expect(screen.getByRole("alert")).not.toHaveTextContent("409:");
   });

@@ -2,9 +2,12 @@ import type {
   AccountPaymentFundingSelectionV4,
   AccountPaymentParticipantsResponseV4,
 } from "@shared/account-payment-v4-contract";
-import { accountPaymentParticipantsResponseV4Schema } from "@shared/account-payment-v4-contract";
+import {
+  accountPaymentParticipantsResponseV4Schema,
+  resolveAccountPaymentFundingChargeAmountV4,
+  resolveAccountPaymentFundingCollectionTargetsV4,
+} from "@shared/account-payment-v4-contract";
 import { makeApiError } from "@/lib/api-error";
-import type { InteractivePaymentParticipant, InteractivePaymentMode } from "@/lib/interactive-payment-v3";
 
 export type ConfirmedAccountPaymentParticipantsV4 = Extract<
   AccountPaymentParticipantsResponseV4,
@@ -14,6 +17,35 @@ export type ConfirmedAccountPaymentParticipantsV4 = Extract<
 export interface AccountPaymentRecipientSelectionV4 {
   bowlerId: number;
   selection: AccountPaymentFundingSelectionV4;
+}
+
+export type AccountPaymentMode = ConfirmedAccountPaymentParticipantsV4["paymentMode"];
+
+export interface AccountPaymentWeeklyOption {
+  weeks: number;
+  amountMinor: number;
+}
+
+/** One recipient as the bowler payment chooser displays it. */
+export interface AccountPaymentChooserParticipant {
+  bowlerId: number;
+  name: string;
+  role: "self" | "partner";
+  remainingMinor: number;
+  pastDueMinor: number;
+  weeklyOptions: AccountPaymentWeeklyOption[];
+  eligible: boolean;
+  reason: string | null;
+  /** Server-proven: payments and credit cover the whole published season. */
+  seasonPaidInFull: boolean;
+  /** Server-proven: a roster member without a lineup spot who owes nothing. */
+  noPaymentDue: boolean;
+  /** Exact amount currently due before standing automatic payments can start. */
+  dueNowMinor?: number;
+  /** Number of weeks represented by the due-now amount. */
+  catchUpWeeks?: number;
+  /** Server-authoritative amount required to bring the payer current. */
+  catchUpAmountMinor?: number;
 }
 
 export function accountPaymentParticipantsQueryKey(leagueId: number, payerBowlerId: number) {
@@ -55,22 +87,39 @@ function netTargetMinor(targetMinor: number, availableCreditMinor: number): numb
   return Math.max(0, targetMinor - availableCreditMinor);
 }
 
-/** Adapt only for the existing recipient chooser and balance labels. Every
- * amount remains sourced from the V4 participant response; quotes still come
+type AccountPaymentRecipientV4 = ConfirmedAccountPaymentParticipantsV4["recipients"][number];
+
+interface PricedAccountWeeklyOption {
+  /** Dense chooser ordinal, counting only options with a positive new charge. */
+  weeks: number;
+  amountMinor: number;
+  /** Original V4 ordinal used to request this gross target from the server. */
+  targetWeeks: number;
+}
+
+function pricedAccountWeeklyOptions(recipient: AccountPaymentRecipientV4): PricedAccountWeeklyOption[] {
+  return recipient.forecastTargets.selectedWeeks
+    .map((option) => ({
+      targetWeeks: option.weeks,
+      amountMinor: netTargetMinor(option.amountMinor, recipient.availableCreditMinor),
+    }))
+    .filter((option) => option.amountMinor > 0)
+    .map((option, index) => ({ ...option, weeks: index + 1 }));
+}
+
+/** Shape the V4 participant response for the recipient chooser and balance
+ * labels. Every amount remains sourced from that response; quotes still come
  * from the V4 server endpoint. */
 export function accountParticipantsForPaymentChooser(
   response: ConfirmedAccountPaymentParticipantsV4,
-): InteractivePaymentParticipant[] {
+): AccountPaymentChooserParticipant[] {
   return response.recipients.map((recipient) => {
     const creditMinor = recipient.availableCreditMinor;
     const fullBalanceMinor = netTargetMinor(recipient.forecastTargets.fullSeasonMinor, creditMinor);
     const currentCollectionMinor = netTargetMinor(recipient.forecastTargets.currentCollectionMinor, creditMinor);
     const weeklyOptions = response.paymentMode === "upfront"
       ? [{ weeks: 1, amountMinor: fullBalanceMinor }]
-      : recipient.forecastTargets.selectedWeeks.map((option) => ({
-        weeks: option.weeks,
-        amountMinor: netTargetMinor(option.amountMinor, creditMinor),
-      }));
+      : pricedAccountWeeklyOptions(recipient).map(({ weeks, amountMinor }) => ({ weeks, amountMinor }));
     const hasPreset = weeklyOptions.some((option) => option.amountMinor > 0)
       || currentCollectionMinor > 0
       || fullBalanceMinor > 0;
@@ -84,14 +133,16 @@ export function accountParticipantsForPaymentChooser(
       weeklyOptions,
       eligible,
       reason: eligible ? null : "No balance or forecast is currently available",
+      seasonPaidInFull: recipient.seasonPaidInFull,
+      noPaymentDue: recipient.noPaymentDue,
       dueNowMinor: currentCollectionMinor,
       catchUpAmountMinor: currentCollectionMinor,
-      catchUpWeeks: weeklyOptions[0]?.weeks ?? 1,
+      catchUpWeeks: recipient.forecastTargets.selectedWeeks[0]?.weeks ?? 1,
     };
   });
 }
 
-/** Build exact V4 server selection semantics from the existing preset UI. */
+/** Build exact V4 server selection semantics from the preset UI. */
 export function buildAccountPaymentSelectionsV4(input: {
   response: ConfirmedAccountPaymentParticipantsV4;
   selected: Readonly<Record<number, boolean>>;
@@ -114,16 +165,60 @@ export function buildAccountPaymentSelectionsV4(input: {
       } else if (input.response.paymentMode === "upfront") {
         selection = { kind: "forecast_collection_target", scope: "full_season" };
       } else {
-        const availableWeeks = recipient.forecastTargets.selectedWeeks;
+        const availableWeeks = pricedAccountWeeklyOptions(recipient);
         if (availableWeeks.length === 0) return [];
-        const maxWeeks = availableWeeks.at(-1)?.weeks ?? 1;
+        const maxWeeks = availableWeeks.length;
         const requestedWeeks = input.weeksByBowlerId[recipient.bowlerId] ?? 1;
         const weeks = Math.min(Math.max(1, Math.trunc(requestedWeeks)), maxWeeks);
-        selection = { kind: "forecast_collection_target", scope: "selected_weeks", weeks };
+        const selectedOption = availableWeeks[weeks - 1];
+        if (!selectedOption) return [];
+        selection = { kind: "forecast_collection_target", scope: "selected_weeks", weeks: selectedOption.targetWeeks };
       }
       return [{ bowlerId: recipient.bowlerId, selection }];
     })
     .sort((left, right) => left.bowlerId - right.bowlerId);
+}
+
+export interface AccountPaymentQuotePreviewV4 {
+  amountMinor: number;
+  recipients: Array<{ bowlerId: number; name: string; role: "self" | "partner"; amountMinor: number }>;
+}
+
+/** Work out the total for the current choices from the participant response
+ * already on the page, using the same shared rules as the server quote. It is
+ * display-only: it carries no fingerprint, so a payment still needs the
+ * authoritative quote. Returns null when any choice cannot be priced. */
+export function previewAccountPaymentQuoteV4(
+  response: ConfirmedAccountPaymentParticipantsV4,
+  selections: readonly AccountPaymentRecipientSelectionV4[],
+): AccountPaymentQuotePreviewV4 | null {
+  if (selections.length === 0) return null;
+  const recipientById = new Map(response.recipients.map((recipient) => [recipient.bowlerId, recipient]));
+  const recipients: AccountPaymentQuotePreviewV4["recipients"] = [];
+  for (const { bowlerId, selection } of selections) {
+    const recipient = recipientById.get(bowlerId);
+    if (!recipient) return null;
+    const targets = resolveAccountPaymentFundingCollectionTargetsV4({
+      selection,
+      paymentMode: response.paymentMode,
+      confirmedDebtMinor: recipient.confirmedDebtMinor,
+      forecastTargets: recipient.forecastTargets,
+    });
+    if (!targets.ok) return null;
+    recipients.push({
+      bowlerId,
+      name: recipient.name,
+      role: recipient.role,
+      amountMinor: resolveAccountPaymentFundingChargeAmountV4({
+        selection,
+        confirmedDebtMinor: recipient.confirmedDebtMinor,
+        availableCreditMinor: recipient.availableCreditMinor,
+        collectionTargetMinor: targets.collectionTargetMinor,
+        forecastCollectionTargetMinor: targets.forecastCollectionTargetMinor,
+      }),
+    });
+  }
+  return { amountMinor: recipients.reduce((sum, recipient) => sum + recipient.amountMinor, 0), recipients };
 }
 
 export function defaultSelectedAccountRecipients(
@@ -136,6 +231,42 @@ export function defaultSelectedAccountRecipients(
   return selected;
 }
 
-export function accountPaymentMode(response: ConfirmedAccountPaymentParticipantsV4): InteractivePaymentMode {
-  return response.paymentMode;
+export function isInteractivePaymentQuoteCurrent(
+  displayedQuote: { fingerprint: string; amountMinor: number; selectionKey: string } | null,
+  quote: { fingerprint: string; amountMinor: number } | null | undefined,
+  selectionKey: string,
+): boolean {
+  return displayedQuote !== null
+    && quote !== null
+    && quote !== undefined
+    && displayedQuote.selectionKey === selectionKey
+    && displayedQuote.fingerprint === quote.fingerprint
+    && displayedQuote.amountMinor === quote.amountMinor;
+}
+
+export function clampInteractivePaymentWeeks(
+  participant: Pick<AccountPaymentChooserParticipant, "weeklyOptions">,
+  weeks: number,
+): number {
+  const maxWeeks = participant.weeklyOptions.at(-1)?.weeks ?? 0;
+  if (maxWeeks <= 0) return 1;
+  return Math.min(Math.max(1, Math.trunc(weeks)), maxWeeks);
+}
+
+export function initialInteractivePaymentWeeks(
+  participant: Pick<AccountPaymentChooserParticipant, "weeklyOptions">,
+  paymentMode: AccountPaymentMode,
+): number {
+  if (paymentMode === "upfront") return participant.weeklyOptions.at(-1)?.weeks ?? 1;
+  return clampInteractivePaymentWeeks(participant, 1);
+}
+
+export function participantAmountForSelection(
+  participant: Pick<AccountPaymentChooserParticipant, "weeklyOptions" | "remainingMinor">,
+  weeks: number,
+  paymentMode: AccountPaymentMode,
+): number {
+  if (paymentMode === "upfront") return participant.remainingMinor;
+  const option = participant.weeklyOptions.find((candidate) => candidate.weeks === weeks);
+  return option?.amountMinor ?? 0;
 }
