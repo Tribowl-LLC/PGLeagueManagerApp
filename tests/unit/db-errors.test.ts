@@ -10,6 +10,10 @@ describe("isTransientDatabaseError", () => {
     expect(isTransientDatabaseError(drizzleError)).toBe(true);
   });
 
+  it("recognizes pg's idle-connection termination message", () => {
+    expect(isTransientDatabaseError(new Error("Connection terminated unexpectedly"))).toBe(true);
+  });
+
   it('recognizes an ECONNABORTED code through a Drizzle cause', () => {
     const socketError = Object.assign(new Error('read ECONNABORTED'), { code: 'ECONNABORTED' });
     const drizzleError = new Error('Failed query: SELECT 1', { cause: socketError });

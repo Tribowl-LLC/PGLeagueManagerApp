@@ -3,6 +3,7 @@ import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "@shared/schema";
 import { env } from "./config";
 import { createLogger } from './logger';
+import { isTransientDatabaseError } from './utils/db-errors';
 
 const log = createLogger("Database");
 
@@ -50,6 +51,7 @@ export function createDbClient(databaseUrl: string): DbClient {
 // warm floor means a page opened after a quiet half minute reuses connections
 // instead of every request opening its own. `allowExitOnIdle` stops that floor
 // from holding open a script that imports this pool and never ends it.
+// TCP keepalive stops the network path from silently cutting that idle floor.
 export const pool = new pg.Pool({
   connectionString: env.DATABASE_URL,
   max: 50,
@@ -57,19 +59,32 @@ export const pool = new pg.Pool({
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
   allowExitOnIdle: true,
+  keepAlive: true,
 });
 export const db = drizzle({ client: pool, schema });
 
 let isShuttingDown = false;
 
-pool.on('error', (err, client) => {
-  log.error('Unexpected error on idle client', err);
+// The server closing an idle connection (Neon compute suspend, a pooler
+// restart, a dropped socket) is routine: pg discards that client and the next
+// checkout opens a fresh one. An error during a query reaches the caller
+// instead, so only unexpected idle-client failures are reported as errors.
+function logIdleClientError(message: string, err: Error): void {
+  if (isTransientDatabaseError(err)) {
+    log.warn(`${message} (connection dropped; client discarded)`, err.message);
+    return;
+  }
+  log.error(message, err);
+}
+
+pool.on('error', (err) => {
+  logIdleClientError('Unexpected error on idle client', err);
 });
 
 pool.on('connect', (client) => {
   log.info('New client connected to pool');
   client.on('error', (err) => {
-    log.error('Error on client', err);
+    logIdleClientError('Error on client', err);
   });
 });
 
