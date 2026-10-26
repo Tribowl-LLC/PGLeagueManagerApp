@@ -89,7 +89,7 @@
     "ipaddr.js": "^2.4.0",
     "libphonenumber-js": "^1.13.13",
     "lucide-react": "^1.24.0",
-    "multer": "^2.3.0",
+    "multer": "^2.5.0",
     "nanoid": "^5.1.16",
     "passport": "^0.7.0",
     "passport-local": "^1.0.0",
@@ -99,14 +99,14 @@
     "react-dom": "^19.2.7",
     "react-hook-form": "^7.89.0",
     "react-icons": "^5.7.0",
-    "sanitize-html": "^2.17.7",
+    "sanitize-html": "^2.18.1",
     "square": "^44.2.0",
     "tailwind-merge": "^3.6.0",
     "tailwindcss-animate": "^1.0.7",
     "takumi-pdf": "0.14.3",
     "twilio": "^6.1.1",
     "wouter": "^3.13.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -145,8 +145,8 @@
     "tsx": "^4.23.15",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "typescript-eslint": "^8.71.0",
-    "vite": "^8.3.2",
-    "vitest": "^4.1.11"
+    "vite": "^8.3.5",
+    "vitest": "^4.1.12"
   },
   "optionalDependencies": {
     "bufferutil": "^4.1.0"
