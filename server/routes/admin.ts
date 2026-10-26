@@ -101,7 +101,7 @@ router.get('/dashboard', requireAdmin, async (req, res) => {
     const leagues = await storage.getLeagues(organizationId);
     const [bowlers, teams, payments] = await Promise.all([
       storage.getBowlers({ organizationId, includeUnassigned: true }),
-      Promise.all(leagues.map((league) => storage.getTeams(league.id))).then((rows) => rows.flat()),
+      storage.getTeamsForLeagues(leagues.map((league) => league.id)),
       storage.getAllPaymentsSystemAdmin({ organizationId }),
     ]);
     
