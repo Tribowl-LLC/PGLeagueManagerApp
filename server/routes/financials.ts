@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { createLogger } from "../logger.js";
 import { LeagueOccurrenceScheduleError } from "../services/league-occurrence-schedule.js";
-import { readCanonicalDuePastDue, RosterPaymentError } from "../services/roster-payment-core.js";
+import { readCanonicalDuePastDue, readOrganizationCanonicalDuePastDue, RosterPaymentError } from "../services/roster-payment-core.js";
 import {
   readTeamEnvelopeReport,
   renderTeamEnvelopePdf,
@@ -83,7 +83,12 @@ router.get("/due-past-due", async (req, res) => {
   const user = req.user;
   const leagues = (await storage.getLeagues(organizationId)).filter((league) => !isPaymentManager(user) || league.locationId === user.locationId);
   try {
-    const reports = await Promise.all(leagues.map(async (league) => ({ leagueId: league.id, name: league.name, report: await readCanonicalDuePastDue({ organizationId, leagueId: league.id }) })));
+    const reportByLeagueId = new Map((await readOrganizationCanonicalDuePastDue({ organizationId, leagueIds: leagues.map((league) => league.id) }))
+      .map(({ leagueId, report }) => [leagueId, report]));
+    const reports = leagues.flatMap((league) => {
+      const report = reportByLeagueId.get(league.id);
+      return report ? [{ leagueId: league.id, name: league.name, report }] : [];
+    });
     return sendSuccess(res, { contractVersion: "canonical-due-past-due/2" as const, orderVersion: "due-at,payer,occurrence,obligation/2" as const, organizationId, authoritativeSource: "payment_obligations" as const, leagues: reports });
   } catch (error) {
     if (error instanceof RosterPaymentError) return sendError(res, error.message, error.status, error.code);

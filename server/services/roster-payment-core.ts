@@ -1455,286 +1455,311 @@ export async function saveRotatingOccurrenceAssignments(input: {
   });
 }
 
+async function beginCanonicalDuePastDueSnapshot(tx: RosterPaymentTransaction): Promise<string> {
+  await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+  const asOfResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS as_of`);
+  return (asOfResult.rows[0] as { as_of?: string } | undefined)?.as_of ?? new Date().toISOString();
+}
+
 export async function readCanonicalDuePastDue(input: { organizationId: number; leagueId: number; payerBowlerId?: number }): Promise<FinancialReadContract> {
   await leagueScope(input.organizationId, input.leagueId);
+  return db.transaction(async (tx) => readCanonicalDuePastDueInTransaction(tx, input, await beginCanonicalDuePastDueSnapshot(tx)));
+}
+
+// The organization report reads every league from one connection and one
+// snapshot. Opening a transaction per league in parallel held one pooled
+// connection per league for a single request, which starved concurrent
+// requests and pushed the admin home page past the proxy timeout.
+export async function readOrganizationCanonicalDuePastDue(input: { organizationId: number; leagueIds: number[] }): Promise<Array<{ leagueId: number; report: FinancialReadContract }>> {
+  if (input.leagueIds.length === 0) return [];
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
-    const asOfResult = await tx.execute(sql`SELECT transaction_timestamp()::text AS as_of`);
-    const asOf = (asOfResult.rows[0] as { as_of?: string } | undefined)?.as_of ?? new Date().toISOString();
-    const now = new Date(asOf).getTime();
-    const accountAdoption = await readOwnedLedgerAdoptionInTransaction(tx, {
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-    });
-    const conditions = [eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)];
-    if (input.payerBowlerId !== undefined && !accountAdoption) {
-      conditions.push(eq(paymentObligations.payerBowlerId, input.payerBowlerId));
-      conditions.push(isCurrentBowlerOwnedObligationSql({
-        organizationId: input.organizationId,
-        leagueId: input.leagueId,
-        obligationId: paymentObligations.id,
-        payerBowlerId: paymentObligations.payerBowlerId,
-        bowlerId: input.payerBowlerId,
-      }));
+    const asOf = await beginCanonicalDuePastDueSnapshot(tx);
+    const reports: Array<{ leagueId: number; report: FinancialReadContract }> = [];
+    for (const leagueId of input.leagueIds) {
+      reports.push({ leagueId, report: await readCanonicalDuePastDueInTransaction(tx, { organizationId: input.organizationId, leagueId }, asOf) });
     }
-    let obligations = await tx.select().from(paymentObligations).where(and(...conditions)).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentObligations.id));
-    let ownerByObligationId: Map<string, EffectivePaymentObligationOwner> | null = null;
-    if ((accountAdoption || input.payerBowlerId === undefined) && obligations.length > 0) {
-      ownerByObligationId = await resolvePaymentObligationOwnersInTransaction(tx, {
-        organizationId: input.organizationId,
-        leagueId: input.leagueId,
-        obligations,
-      });
-      if (!accountAdoption && input.payerBowlerId === undefined) {
-        obligations = obligations.filter((obligation) => ownerByObligationId?.get(obligation.id)?.kind === "bowler");
-      }
-    }
-    const responsibilities = obligations.length === 0 ? [] : await tx.select({
-      id: occurrencePaymentResponsibilities.id,
-      teamId: occurrencePaymentResponsibilities.teamId,
-      slotIndex: occurrencePaymentResponsibilities.slotIndex,
-      occurrenceId: occurrencePaymentResponsibilities.occurrenceId,
-      responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind,
-    }).from(occurrencePaymentResponsibilities).where(and(
-      eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
-      eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
-      inArray(occurrencePaymentResponsibilities.id, obligations.map((obligation) => obligation.responsibilityId)),
-    ));
-    const teamByResponsibilityId = new Map(responsibilities.map((responsibility) => [responsibility.id, responsibility.teamId]));
-    const responsibilityById = new Map(responsibilities.map((responsibility) => [responsibility.id, responsibility]));
-    if (responsibilities.length !== new Set(obligations.map((obligation) => obligation.responsibilityId)).size) {
-      throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its canonical responsibility", 503);
-    }
-    const effectiveDebtorByResponsibilityId = new Map<string, number | null>();
-    const collectionOrderByOccurrence = new Map<string, { effectiveCollectionAt: string; memberOrdinal: number; billingOrdinal: number }>();
-    let occurrenceLocalDateById = new Map<string, string>();
-    let occurrenceStatusById = new Map<string, { status: string; lifecycle: string }>();
-    let plannedOrdinalByOccurrence = new Map<string, number>();
-    let billingOrdinalByOccurrence = new Map<string, number>();
-    if (accountAdoption && obligations.length > 0) {
-      const occurrenceIds = [...new Set(obligations.map((obligation) => obligation.occurrenceId))];
-      const occurrenceRows = await tx.select({
-        id: leagueOccurrences.id,
-        occurrenceLocalDate: leagueOccurrences.authoritativeLocalDate,
-        status: leagueOccurrences.status,
-        lifecycle: leagueOccurrences.lifecycle,
-        plannedOrdinal: leagueOccurrences.plannedOrdinal,
-      }).from(leagueOccurrences).where(and(
-        eq(leagueOccurrences.organizationId, input.organizationId),
-        eq(leagueOccurrences.leagueId, input.leagueId),
-        inArray(leagueOccurrences.id, occurrenceIds),
-      ));
-      const occurrenceById = new Map(occurrenceRows.map((row) => [row.id, row]));
-      occurrenceLocalDateById = new Map(occurrenceRows.flatMap((row) => row.occurrenceLocalDate === null ? [] : [[row.id, row.occurrenceLocalDate] as const]));
-      occurrenceStatusById = new Map(occurrenceRows.map((row) => [row.id, { status: row.status, lifecycle: row.lifecycle }]));
-      plannedOrdinalByOccurrence = new Map(occurrenceRows.flatMap((row) => row.plannedOrdinal === null ? [] : [[row.id, row.plannedOrdinal] as const]));
-      const billingTerms = await tx.select({
-        occurrenceId: leagueOccurrenceBillingTerms.occurrenceId,
-        billingOrdinal: leagueOccurrenceBillingTerms.billingOrdinal,
-      }).from(leagueOccurrenceBillingTerms).where(and(
-        eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
-        eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
-        eq(leagueOccurrenceBillingTerms.state, "published"),
-        inArray(leagueOccurrenceBillingTerms.occurrenceId, occurrenceIds),
-      ));
-      const billingTermsByOccurrence = new Map<string, typeof billingTerms>();
-      for (const term of billingTerms) {
-        billingTermsByOccurrence.set(term.occurrenceId, [...(billingTermsByOccurrence.get(term.occurrenceId) ?? []), term]);
-      }
-      if (occurrenceIds.some((occurrenceId) => !occurrenceLocalDateById.has(occurrenceId))) {
-        throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An adopted account obligation has no authoritative occurrence date", 503);
-      }
-      const targetOccurrenceIds = [...new Set(obligations
-        .filter((obligation) => obligation.state === "open" || obligation.state === "partially_settled")
-        .filter((obligation) => {
-          const occurrence = occurrenceById.get(obligation.occurrenceId);
-          return occurrence?.lifecycle === "published" || occurrence?.lifecycle === "locked"
-            ? occurrence.status === "scheduled" || occurrence.status === "completed"
-            : false;
-        })
-        .map((obligation) => obligation.occurrenceId))];
-      const billingByOccurrence = new Map<string, number>();
-      for (const occurrenceId of targetOccurrenceIds) {
-        const terms = billingTermsByOccurrence.get(occurrenceId) ?? [];
-        if (terms.length !== 1 || terms[0]?.billingOrdinal === null || terms[0]?.billingOrdinal === undefined) {
-          throw new RosterPaymentError("ROTATING_BILLING_ORDER_MISSING", "An adopted account obligation has no unique published collection order", 503);
-        }
-        billingByOccurrence.set(occurrenceId, terms[0].billingOrdinal);
-      }
-      billingOrdinalByOccurrence = billingByOccurrence;
-      const seeds = targetOccurrenceIds.map((occurrenceId) => {
-        const sample = obligations.find((obligation) => obligation.occurrenceId === occurrenceId
-          && (obligation.state === "open" || obligation.state === "partially_settled"));
-        const billingOrdinal = billingByOccurrence.get(occurrenceId);
-        if (!sample || billingOrdinal === undefined) throw new RosterPaymentError("ROTATING_BILLING_ORDER_MISSING", "An adopted account obligation has no published collection order", 503);
-        return { occurrenceId, dueAt: sample.dueAt, billingOrdinal };
-      });
-      for (const [occurrenceId, order] of await readPublishedCollectionOrderInTransaction(tx, {
-        organizationId: input.organizationId,
-        leagueId: input.leagueId,
-        occurrences: seeds,
-      })) collectionOrderByOccurrence.set(occurrenceId, order);
-      const teamIds = [...new Set(responsibilities.map((responsibility) => responsibility.teamId))];
-      const assignments = occurrenceIds.length === 0 || teamIds.length === 0 ? [] : await tx.select().from(rotatingOccurrenceAssignments).where(and(
-        eq(rotatingOccurrenceAssignments.organizationId, input.organizationId),
-        eq(rotatingOccurrenceAssignments.leagueId, input.leagueId),
-        inArray(rotatingOccurrenceAssignments.occurrenceId, occurrenceIds),
-        inArray(rotatingOccurrenceAssignments.teamId, teamIds),
-      )).orderBy(asc(rotatingOccurrenceAssignments.occurrenceId), asc(rotatingOccurrenceAssignments.teamId), asc(rotatingOccurrenceAssignments.slotIndex), desc(rotatingOccurrenceAssignments.version));
-      const latestAssignmentBySlot = new Map<string, typeof assignments[number]>();
-      for (const assignment of assignments) {
-        const key = `${assignment.occurrenceId}:${assignment.teamId}:${assignment.slotIndex}`;
-        if (!latestAssignmentBySlot.has(key)) latestAssignmentBySlot.set(key, assignment);
-      }
-      for (const responsibility of responsibilities) {
-        const assignment = latestAssignmentBySlot.get(`${responsibility.occurrenceId}:${responsibility.teamId}:${responsibility.slotIndex}`);
-        if (assignment && assignment.responsibilityId !== responsibility.id) {
-          const hasCurrentTeamLiability = obligations.some((obligation) => obligation.responsibilityId === responsibility.id
-            && (obligation.state === "open" || obligation.state === "partially_settled")
-            && ownerByObligationId?.get(obligation.id)?.kind === "team");
-          if (hasCurrentTeamLiability) {
-            throw new RosterPaymentError("ROTATING_ASSIGNMENT_EVIDENCE_INVALID", "An active team obligation does not match its current assignment responsibility", 503);
-          }
-          continue;
-        }
-        effectiveDebtorByResponsibilityId.set(responsibility.id, assignment?.actualBowlerId ?? null);
-      }
-    }
-    const allocations = obligations.length === 0 ? [] : await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
-      eq(paymentAllocations.organizationId, input.organizationId),
-      eq(paymentAllocations.leagueId, input.leagueId),
-      eq(paymentAllocations.state, "active"),
-      inArray(paymentAllocations.obligationId, obligations.map((obligation) => obligation.id)),
-    ));
-    const adjustments = allocations.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
-      eq(refundAllocationAdjustments.organizationId, input.organizationId),
-      eq(refundAllocationAdjustments.leagueId, input.leagueId),
-      inArray(refundAllocationAdjustments.sourceAllocationId, allocations.map((allocation) => allocation.id)),
-    ));
-    const adjustmentsByAllocationId = new Map(adjustments.map((adjustment) => [adjustment.sourceAllocationId, adjustment]));
-    const rawRows = obligations.map((obligation) => {
-      const owner = accountAdoption ? ownerByObligationId?.get(obligation.id) : null;
-      const responsibility = responsibilityById.get(obligation.responsibilityId);
-      if (!responsibility) throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its canonical responsibility", 503);
-      if (accountAdoption && !owner) throw new RosterPaymentError("OWNER_EVIDENCE_INVALID", "An adopted obligation is missing canonical owner evidence", 503);
-      if (!accountAdoption && obligation.payerBowlerId === null) {
-        throw new RosterPaymentError("OWNER_EVIDENCE_INVALID", "A legacy due response cannot include a team-owned obligation", 503);
-      }
-      const effectiveDebtorBowlerId = accountAdoption
-        ? owner?.kind === "bowler" ? owner.bowlerId : effectiveDebtorByResponsibilityId.get(obligation.responsibilityId) ?? null
-      : obligation.payerBowlerId;
-      const linked = allocations.filter((allocation) => allocation.obligationId === obligation.id);
-      const balance = canonicalObligationBalance({
-        amountMinor: obligation.amountMinor,
-        state: obligation.state,
-        grossAllocatedMinor: linked.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
-        adjustments: linked.flatMap((allocation) => {
-          const adjustment = adjustmentsByAllocationId.get(allocation.id);
-          return adjustment ? [{ amountMinor: adjustment.amountMinor, disposition: adjustment.disposition }] : [];
-        }),
-      });
-      const reviewRequired = linked.some((allocation) => allocation.reviewRequired);
-      return {
-        ...obligation,
-        owner,
-        effectiveDebtorBowlerId,
-        currency: "USD" as const,
-        teamId: responsibility.teamId,
-        allocatedMinor: balance.effectiveAllocatedMinor,
-        grossAllocatedMinor: balance.grossAllocatedMinor,
-        refundedMinor: balance.refundedMinor,
-        waivedMinor: balance.waivedMinor,
-        stillOwed: balance.stillOwed,
-        outstandingMinor: balance.outstandingMinor,
-        reviewRequired,
-      };
-    });
-    const projectionInputs = accountAdoption ? rawRows.flatMap((row) => {
-      const occurrenceLocalDate = occurrenceLocalDateById.get(row.occurrenceId);
-      const collectionOrder = collectionOrderByOccurrence.get(row.occurrenceId);
-      if (!occurrenceLocalDate || !row.owner) {
-        throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An adopted obligation is missing collection projection evidence", 503);
-      }
-      return [{
-        obligationId: row.id,
-        occurrenceId: row.occurrenceId,
-        occurrenceLocalDate,
-        dueAt: new Date(row.dueAt).toISOString(),
-        effectiveCollectionAt: collectionOrder?.effectiveCollectionAt ?? new Date(row.dueAt).toISOString(),
-        memberOrdinal: collectionOrder?.memberOrdinal ?? 0,
-        billingOrdinal: collectionOrder?.billingOrdinal ?? billingOrdinalByOccurrence.get(row.occurrenceId) ?? plannedOrdinalByOccurrence.get(row.occurrenceId) ?? 0,
-        owner: row.owner,
-        effectiveDebtorBowlerId: row.effectiveDebtorBowlerId,
-        forecastEligible: (() => {
-          const occurrence = occurrenceStatusById.get(row.occurrenceId);
-          return Boolean(occurrence
-            && (occurrence.lifecycle === "published" || occurrence.lifecycle === "locked")
-            && (occurrence.status === "scheduled" || occurrence.status === "completed"));
-        })(),
-        state: row.state,
-        outstandingMinor: row.outstandingMinor,
-        reviewRequired: row.reviewRequired,
-      }];
-    }) : [];
-    const accountProjectionResult = accountAdoption ? await readOwnedAccountFinancialProjectionInTransaction(tx, {
-      organizationId: input.organizationId,
-      leagueId: input.leagueId,
-      asOf,
-      rows: projectionInputs,
-      ...(input.payerBowlerId === undefined ? {} : { bowlerId: input.payerBowlerId }),
-    }) : null;
-    if (accountAdoption && !accountProjectionResult) {
-      throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Owned account adoption evidence changed during the financial read", 503);
-    }
-    const rows = rawRows.flatMap((row) => {
-      const reviewRequired = accountProjectionResult?.reviewRequiredByObligationId.get(row.id) ?? row.reviewRequired;
-      if (accountAdoption && row.effectiveDebtorBowlerId === null) return [];
-      if (accountAdoption && input.payerBowlerId !== undefined && row.effectiveDebtorBowlerId !== input.payerBowlerId) return [];
-      const payerBowlerId = accountAdoption ? row.effectiveDebtorBowlerId : row.payerBowlerId;
-      if (payerBowlerId === null) return [];
-      const classification = reviewRequired
-        ? "review_required" as const
-        : row.state === "voided"
-          ? "voided" as const
-          : row.outstandingMinor === 0
-            ? "settled" as const
-            : now < new Date(row.dueAt).getTime()
-              ? "future" as const
-              : now < new Date(row.pastDueAt).getTime()
-                ? "due" as const
-                : "past_due" as const;
-      const { owner: _owner, effectiveDebtorBowlerId: _effectiveDebtorBowlerId, ...responseRow } = row;
-      const rowProjection = accountProjectionResult?.rowsByObligationId.get(row.id);
-      if (accountProjectionResult && !rowProjection) throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An adopted obligation has no account projection", 503);
-      return [{
-        ...responseRow,
-        payerBowlerId,
-        classification,
-        reviewRequired,
-        ...(rowProjection ? { accountProjection: rowProjection } : {}),
-      }];
-    });
-    return {
-    contractVersion: "canonical-due-past-due/2" as const,
-    orderVersion: "due-at,payer,occurrence,obligation/2" as const,
+    return reports;
+  });
+}
+
+async function readCanonicalDuePastDueInTransaction(
+  tx: RosterPaymentTransaction,
+  input: { organizationId: number; leagueId: number; payerBowlerId?: number },
+  asOf: string,
+): Promise<FinancialReadContract> {
+  const now = new Date(asOf).getTime();
+  const accountAdoption = await readOwnedLedgerAdoptionInTransaction(tx, {
     organizationId: input.organizationId,
     leagueId: input.leagueId,
-    authoritativeSource: "payment_obligations" as const,
-    asOf,
-    rows,
-    ...(accountProjectionResult ? { accountProjection: accountProjectionResult.accountProjection } : {}),
-    totals: {
-      amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
-      allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
-      outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
-      collectiblePastDueMinor: accountProjectionResult?.collectiblePastDueMinor
-        ?? rows.filter((row) => row.classification === "past_due" && !row.reviewRequired).reduce((sum, row) => sum + row.outstandingMinor, 0),
-      reviewCount: rows.filter((row) => row.reviewRequired).length,
-      settledCount: rows.filter((row) => row.classification === "settled").length,
-      voidedCount: rows.filter((row) => row.classification === "voided").length,
-    },
+  });
+  const conditions = [eq(paymentObligations.organizationId, input.organizationId), eq(paymentObligations.leagueId, input.leagueId)];
+  if (input.payerBowlerId !== undefined && !accountAdoption) {
+    conditions.push(eq(paymentObligations.payerBowlerId, input.payerBowlerId));
+    conditions.push(isCurrentBowlerOwnedObligationSql({
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      obligationId: paymentObligations.id,
+      payerBowlerId: paymentObligations.payerBowlerId,
+      bowlerId: input.payerBowlerId,
+    }));
+  }
+  let obligations = await tx.select().from(paymentObligations).where(and(...conditions)).orderBy(asc(paymentObligations.dueAt), asc(paymentObligations.payerBowlerId), asc(paymentObligations.occurrenceId), asc(paymentObligations.id));
+  let ownerByObligationId: Map<string, EffectivePaymentObligationOwner> | null = null;
+  if ((accountAdoption || input.payerBowlerId === undefined) && obligations.length > 0) {
+    ownerByObligationId = await resolvePaymentObligationOwnersInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      obligations,
+    });
+    if (!accountAdoption && input.payerBowlerId === undefined) {
+      obligations = obligations.filter((obligation) => ownerByObligationId?.get(obligation.id)?.kind === "bowler");
+    }
+  }
+  const responsibilities = obligations.length === 0 ? [] : await tx.select({
+    id: occurrencePaymentResponsibilities.id,
+    teamId: occurrencePaymentResponsibilities.teamId,
+    slotIndex: occurrencePaymentResponsibilities.slotIndex,
+    occurrenceId: occurrencePaymentResponsibilities.occurrenceId,
+    responsibilityKind: occurrencePaymentResponsibilities.responsibilityKind,
+  }).from(occurrencePaymentResponsibilities).where(and(
+    eq(occurrencePaymentResponsibilities.organizationId, input.organizationId),
+    eq(occurrencePaymentResponsibilities.leagueId, input.leagueId),
+    inArray(occurrencePaymentResponsibilities.id, obligations.map((obligation) => obligation.responsibilityId)),
+  ));
+  const teamByResponsibilityId = new Map(responsibilities.map((responsibility) => [responsibility.id, responsibility.teamId]));
+  const responsibilityById = new Map(responsibilities.map((responsibility) => [responsibility.id, responsibility]));
+  if (responsibilities.length !== new Set(obligations.map((obligation) => obligation.responsibilityId)).size) {
+    throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its canonical responsibility", 503);
+  }
+  const effectiveDebtorByResponsibilityId = new Map<string, number | null>();
+  const collectionOrderByOccurrence = new Map<string, { effectiveCollectionAt: string; memberOrdinal: number; billingOrdinal: number }>();
+  let occurrenceLocalDateById = new Map<string, string>();
+  let occurrenceStatusById = new Map<string, { status: string; lifecycle: string }>();
+  let plannedOrdinalByOccurrence = new Map<string, number>();
+  let billingOrdinalByOccurrence = new Map<string, number>();
+  if (accountAdoption && obligations.length > 0) {
+    const occurrenceIds = [...new Set(obligations.map((obligation) => obligation.occurrenceId))];
+    const occurrenceRows = await tx.select({
+      id: leagueOccurrences.id,
+      occurrenceLocalDate: leagueOccurrences.authoritativeLocalDate,
+      status: leagueOccurrences.status,
+      lifecycle: leagueOccurrences.lifecycle,
+      plannedOrdinal: leagueOccurrences.plannedOrdinal,
+    }).from(leagueOccurrences).where(and(
+      eq(leagueOccurrences.organizationId, input.organizationId),
+      eq(leagueOccurrences.leagueId, input.leagueId),
+      inArray(leagueOccurrences.id, occurrenceIds),
+    ));
+    const occurrenceById = new Map(occurrenceRows.map((row) => [row.id, row]));
+    occurrenceLocalDateById = new Map(occurrenceRows.flatMap((row) => row.occurrenceLocalDate === null ? [] : [[row.id, row.occurrenceLocalDate] as const]));
+    occurrenceStatusById = new Map(occurrenceRows.map((row) => [row.id, { status: row.status, lifecycle: row.lifecycle }]));
+    plannedOrdinalByOccurrence = new Map(occurrenceRows.flatMap((row) => row.plannedOrdinal === null ? [] : [[row.id, row.plannedOrdinal] as const]));
+    const billingTerms = await tx.select({
+      occurrenceId: leagueOccurrenceBillingTerms.occurrenceId,
+      billingOrdinal: leagueOccurrenceBillingTerms.billingOrdinal,
+    }).from(leagueOccurrenceBillingTerms).where(and(
+      eq(leagueOccurrenceBillingTerms.organizationId, input.organizationId),
+      eq(leagueOccurrenceBillingTerms.leagueId, input.leagueId),
+      eq(leagueOccurrenceBillingTerms.state, "published"),
+      inArray(leagueOccurrenceBillingTerms.occurrenceId, occurrenceIds),
+    ));
+    const billingTermsByOccurrence = new Map<string, typeof billingTerms>();
+    for (const term of billingTerms) {
+      billingTermsByOccurrence.set(term.occurrenceId, [...(billingTermsByOccurrence.get(term.occurrenceId) ?? []), term]);
+    }
+    if (occurrenceIds.some((occurrenceId) => !occurrenceLocalDateById.has(occurrenceId))) {
+      throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An adopted account obligation has no authoritative occurrence date", 503);
+    }
+    const targetOccurrenceIds = [...new Set(obligations
+      .filter((obligation) => obligation.state === "open" || obligation.state === "partially_settled")
+      .filter((obligation) => {
+        const occurrence = occurrenceById.get(obligation.occurrenceId);
+        return occurrence?.lifecycle === "published" || occurrence?.lifecycle === "locked"
+          ? occurrence.status === "scheduled" || occurrence.status === "completed"
+          : false;
+      })
+      .map((obligation) => obligation.occurrenceId))];
+    const billingByOccurrence = new Map<string, number>();
+    for (const occurrenceId of targetOccurrenceIds) {
+      const terms = billingTermsByOccurrence.get(occurrenceId) ?? [];
+      if (terms.length !== 1 || terms[0]?.billingOrdinal === null || terms[0]?.billingOrdinal === undefined) {
+        throw new RosterPaymentError("ROTATING_BILLING_ORDER_MISSING", "An adopted account obligation has no unique published collection order", 503);
+      }
+      billingByOccurrence.set(occurrenceId, terms[0].billingOrdinal);
+    }
+    billingOrdinalByOccurrence = billingByOccurrence;
+    const seeds = targetOccurrenceIds.map((occurrenceId) => {
+      const sample = obligations.find((obligation) => obligation.occurrenceId === occurrenceId
+        && (obligation.state === "open" || obligation.state === "partially_settled"));
+      const billingOrdinal = billingByOccurrence.get(occurrenceId);
+      if (!sample || billingOrdinal === undefined) throw new RosterPaymentError("ROTATING_BILLING_ORDER_MISSING", "An adopted account obligation has no published collection order", 503);
+      return { occurrenceId, dueAt: sample.dueAt, billingOrdinal };
+    });
+    for (const [occurrenceId, order] of await readPublishedCollectionOrderInTransaction(tx, {
+      organizationId: input.organizationId,
+      leagueId: input.leagueId,
+      occurrences: seeds,
+    })) collectionOrderByOccurrence.set(occurrenceId, order);
+    const teamIds = [...new Set(responsibilities.map((responsibility) => responsibility.teamId))];
+    const assignments = occurrenceIds.length === 0 || teamIds.length === 0 ? [] : await tx.select().from(rotatingOccurrenceAssignments).where(and(
+      eq(rotatingOccurrenceAssignments.organizationId, input.organizationId),
+      eq(rotatingOccurrenceAssignments.leagueId, input.leagueId),
+      inArray(rotatingOccurrenceAssignments.occurrenceId, occurrenceIds),
+      inArray(rotatingOccurrenceAssignments.teamId, teamIds),
+    )).orderBy(asc(rotatingOccurrenceAssignments.occurrenceId), asc(rotatingOccurrenceAssignments.teamId), asc(rotatingOccurrenceAssignments.slotIndex), desc(rotatingOccurrenceAssignments.version));
+    const latestAssignmentBySlot = new Map<string, typeof assignments[number]>();
+    for (const assignment of assignments) {
+      const key = `${assignment.occurrenceId}:${assignment.teamId}:${assignment.slotIndex}`;
+      if (!latestAssignmentBySlot.has(key)) latestAssignmentBySlot.set(key, assignment);
+    }
+    for (const responsibility of responsibilities) {
+      const assignment = latestAssignmentBySlot.get(`${responsibility.occurrenceId}:${responsibility.teamId}:${responsibility.slotIndex}`);
+      if (assignment && assignment.responsibilityId !== responsibility.id) {
+        const hasCurrentTeamLiability = obligations.some((obligation) => obligation.responsibilityId === responsibility.id
+          && (obligation.state === "open" || obligation.state === "partially_settled")
+          && ownerByObligationId?.get(obligation.id)?.kind === "team");
+        if (hasCurrentTeamLiability) {
+          throw new RosterPaymentError("ROTATING_ASSIGNMENT_EVIDENCE_INVALID", "An active team obligation does not match its current assignment responsibility", 503);
+        }
+        continue;
+      }
+      effectiveDebtorByResponsibilityId.set(responsibility.id, assignment?.actualBowlerId ?? null);
+    }
+  }
+  const allocations = obligations.length === 0 ? [] : await tx.select({ id: paymentAllocations.id, obligationId: paymentAllocations.obligationId, amountMinor: paymentAllocations.amountMinor, reviewRequired: paymentAllocations.reviewRequired }).from(paymentAllocations).where(and(
+    eq(paymentAllocations.organizationId, input.organizationId),
+    eq(paymentAllocations.leagueId, input.leagueId),
+    eq(paymentAllocations.state, "active"),
+    inArray(paymentAllocations.obligationId, obligations.map((obligation) => obligation.id)),
+  ));
+  const adjustments = allocations.length === 0 ? [] : await tx.select({ sourceAllocationId: refundAllocationAdjustments.sourceAllocationId, amountMinor: refundAllocationAdjustments.amountMinor, disposition: refundAllocationAdjustments.disposition }).from(refundAllocationAdjustments).where(and(
+    eq(refundAllocationAdjustments.organizationId, input.organizationId),
+    eq(refundAllocationAdjustments.leagueId, input.leagueId),
+    inArray(refundAllocationAdjustments.sourceAllocationId, allocations.map((allocation) => allocation.id)),
+  ));
+  const adjustmentsByAllocationId = new Map(adjustments.map((adjustment) => [adjustment.sourceAllocationId, adjustment]));
+  const rawRows = obligations.map((obligation) => {
+    const owner = accountAdoption ? ownerByObligationId?.get(obligation.id) : null;
+    const responsibility = responsibilityById.get(obligation.responsibilityId);
+    if (!responsibility) throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An obligation is missing its canonical responsibility", 503);
+    if (accountAdoption && !owner) throw new RosterPaymentError("OWNER_EVIDENCE_INVALID", "An adopted obligation is missing canonical owner evidence", 503);
+    if (!accountAdoption && obligation.payerBowlerId === null) {
+      throw new RosterPaymentError("OWNER_EVIDENCE_INVALID", "A legacy due response cannot include a team-owned obligation", 503);
+    }
+    const effectiveDebtorBowlerId = accountAdoption
+      ? owner?.kind === "bowler" ? owner.bowlerId : effectiveDebtorByResponsibilityId.get(obligation.responsibilityId) ?? null
+    : obligation.payerBowlerId;
+    const linked = allocations.filter((allocation) => allocation.obligationId === obligation.id);
+    const balance = canonicalObligationBalance({
+      amountMinor: obligation.amountMinor,
+      state: obligation.state,
+      grossAllocatedMinor: linked.reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+      adjustments: linked.flatMap((allocation) => {
+        const adjustment = adjustmentsByAllocationId.get(allocation.id);
+        return adjustment ? [{ amountMinor: adjustment.amountMinor, disposition: adjustment.disposition }] : [];
+      }),
+    });
+    const reviewRequired = linked.some((allocation) => allocation.reviewRequired);
+    return {
+      ...obligation,
+      owner,
+      effectiveDebtorBowlerId,
+      currency: "USD" as const,
+      teamId: responsibility.teamId,
+      allocatedMinor: balance.effectiveAllocatedMinor,
+      grossAllocatedMinor: balance.grossAllocatedMinor,
+      refundedMinor: balance.refundedMinor,
+      waivedMinor: balance.waivedMinor,
+      stillOwed: balance.stillOwed,
+      outstandingMinor: balance.outstandingMinor,
+      reviewRequired,
     };
   });
+  const projectionInputs = accountAdoption ? rawRows.flatMap((row) => {
+    const occurrenceLocalDate = occurrenceLocalDateById.get(row.occurrenceId);
+    const collectionOrder = collectionOrderByOccurrence.get(row.occurrenceId);
+    if (!occurrenceLocalDate || !row.owner) {
+      throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An adopted obligation is missing collection projection evidence", 503);
+    }
+    return [{
+      obligationId: row.id,
+      occurrenceId: row.occurrenceId,
+      occurrenceLocalDate,
+      dueAt: new Date(row.dueAt).toISOString(),
+      effectiveCollectionAt: collectionOrder?.effectiveCollectionAt ?? new Date(row.dueAt).toISOString(),
+      memberOrdinal: collectionOrder?.memberOrdinal ?? 0,
+      billingOrdinal: collectionOrder?.billingOrdinal ?? billingOrdinalByOccurrence.get(row.occurrenceId) ?? plannedOrdinalByOccurrence.get(row.occurrenceId) ?? 0,
+      owner: row.owner,
+      effectiveDebtorBowlerId: row.effectiveDebtorBowlerId,
+      forecastEligible: (() => {
+        const occurrence = occurrenceStatusById.get(row.occurrenceId);
+        return Boolean(occurrence
+          && (occurrence.lifecycle === "published" || occurrence.lifecycle === "locked")
+          && (occurrence.status === "scheduled" || occurrence.status === "completed"));
+      })(),
+      state: row.state,
+      outstandingMinor: row.outstandingMinor,
+      reviewRequired: row.reviewRequired,
+    }];
+  }) : [];
+  const accountProjectionResult = accountAdoption ? await readOwnedAccountFinancialProjectionInTransaction(tx, {
+    organizationId: input.organizationId,
+    leagueId: input.leagueId,
+    asOf,
+    rows: projectionInputs,
+    ...(input.payerBowlerId === undefined ? {} : { bowlerId: input.payerBowlerId }),
+  }) : null;
+  if (accountAdoption && !accountProjectionResult) {
+    throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "Owned account adoption evidence changed during the financial read", 503);
+  }
+  const rows = rawRows.flatMap((row) => {
+    const reviewRequired = accountProjectionResult?.reviewRequiredByObligationId.get(row.id) ?? row.reviewRequired;
+    if (accountAdoption && row.effectiveDebtorBowlerId === null) return [];
+    if (accountAdoption && input.payerBowlerId !== undefined && row.effectiveDebtorBowlerId !== input.payerBowlerId) return [];
+    const payerBowlerId = accountAdoption ? row.effectiveDebtorBowlerId : row.payerBowlerId;
+    if (payerBowlerId === null) return [];
+    const classification = reviewRequired
+      ? "review_required" as const
+      : row.state === "voided"
+        ? "voided" as const
+        : row.outstandingMinor === 0
+          ? "settled" as const
+          : now < new Date(row.dueAt).getTime()
+            ? "future" as const
+            : now < new Date(row.pastDueAt).getTime()
+              ? "due" as const
+              : "past_due" as const;
+    const { owner: _owner, effectiveDebtorBowlerId: _effectiveDebtorBowlerId, ...responseRow } = row;
+    const rowProjection = accountProjectionResult?.rowsByObligationId.get(row.id);
+    if (accountProjectionResult && !rowProjection) throw new RosterPaymentError("FINANCIAL_EVIDENCE_INVALID", "An adopted obligation has no account projection", 503);
+    return [{
+      ...responseRow,
+      payerBowlerId,
+      classification,
+      reviewRequired,
+      ...(rowProjection ? { accountProjection: rowProjection } : {}),
+    }];
+  });
+  return {
+  contractVersion: "canonical-due-past-due/2" as const,
+  orderVersion: "due-at,payer,occurrence,obligation/2" as const,
+  organizationId: input.organizationId,
+  leagueId: input.leagueId,
+  authoritativeSource: "payment_obligations" as const,
+  asOf,
+  rows,
+  ...(accountProjectionResult ? { accountProjection: accountProjectionResult.accountProjection } : {}),
+  totals: {
+    amountMinor: rows.reduce((sum, row) => sum + row.amountMinor, 0),
+    allocatedMinor: rows.reduce((sum, row) => sum + row.allocatedMinor, 0),
+    outstandingMinor: rows.reduce((sum, row) => sum + row.outstandingMinor, 0),
+    collectiblePastDueMinor: accountProjectionResult?.collectiblePastDueMinor
+      ?? rows.filter((row) => row.classification === "past_due" && !row.reviewRequired).reduce((sum, row) => sum + row.outstandingMinor, 0),
+    reviewCount: rows.filter((row) => row.reviewRequired).length,
+    settledCount: rows.filter((row) => row.classification === "settled").length,
+    voidedCount: rows.filter((row) => row.classification === "voided").length,
+  },
+  };
 }
 
 export async function readCanonicalDuePastDueV3(input: { organizationId: number; leagueId: number; bowlerId?: number }): Promise<FinancialReadContractV3> {
