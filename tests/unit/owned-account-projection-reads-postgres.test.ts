@@ -18,7 +18,7 @@ import {
   users,
   weeklyPaymentLedgerAdoptions,
 } from "@shared/schema";
-import { readCanonicalDuePastDue, readCanonicalDuePastDueV3 } from "../../server/services/roster-payment-core";
+import { readCanonicalDuePastDue, readCanonicalDuePastDueV3, readOrganizationCanonicalDuePastDue } from "../../server/services/roster-payment-core";
 import { recordOwnedFundingInTransaction } from "../../server/services/owned-payment-ledger";
 import { getTestDb } from "../setup/test-db";
 
@@ -348,6 +348,19 @@ describe("owned account projection canonical reads (PostgreSQL)", () => {
     expect(v3.rows.every((row) => row.accountProjection?.effectiveDebtorBowlerId === ids.selfBowlerId)).toBe(true);
     expect(JSON.stringify({ v2, v3 })).not.toContain(`"bowlerId":${ids.otherBowlerId}`);
     expect(JSON.stringify({ v2, v3 })).not.toContain('"amountPaidMinor":1000');
+  });
+
+  it("returns the same league report from the single-snapshot organization read", async () => {
+    const ids = requireIds();
+    const single = await readCanonicalDuePastDue({ organizationId: ids.organizationId, leagueId: ids.leagueId });
+    const organization = await readOrganizationCanonicalDuePastDue({ organizationId: ids.organizationId, leagueIds: [ids.leagueId] });
+
+    expect(organization).toHaveLength(1);
+    expect(organization[0]?.leagueId).toBe(ids.leagueId);
+    const { asOf: _organizationAsOf, ...organizationReport } = organization[0]?.report ?? { asOf: "" };
+    const { asOf: _singleAsOf, ...singleReport } = single;
+    expect(organizationReport).toEqual(singleReport);
+    await expect(readOrganizationCanonicalDuePastDue({ organizationId: ids.organizationId, leagueIds: [] })).resolves.toEqual([]);
   });
 
   it("reads canceled reviewed partial debt without requiring its retired billing slot", async () => {
