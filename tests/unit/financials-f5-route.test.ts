@@ -6,14 +6,15 @@ import type { CanonicalPaymentRow } from "@shared/canonical-payment-report";
 
 const mocks = vi.hoisted(() => ({
   getLeague: vi.fn(),
+  getLeagues: vi.fn(),
   readReport: vi.fn(),
   readWeeks: vi.fn(),
   hasAdmin: vi.fn(),
   hasPaymentManager: vi.fn(),
 }));
 
-vi.mock("../../server/storage", () => ({ storage: { getLeague: (...args: unknown[]) => mocks.getLeague(...args) } }));
-vi.mock("../../server/storage/index.js", () => ({ storage: { getLeague: (...args: unknown[]) => mocks.getLeague(...args) } }));
+vi.mock("../../server/storage", () => ({ storage: { getLeague: (...args: unknown[]) => mocks.getLeague(...args), getLeagues: (...args: unknown[]) => mocks.getLeagues(...args) } }));
+vi.mock("../../server/storage/index.js", () => ({ storage: { getLeague: (...args: unknown[]) => mocks.getLeague(...args), getLeagues: (...args: unknown[]) => mocks.getLeagues(...args) } }));
 vi.mock("../../server/db.js", () => ({ db: {} }));
 vi.mock("../../server/services/canonical-payment-report.js", () => ({
   readCanonicalPaymentReport: (...args: unknown[]) => mocks.readReport(...args),
@@ -52,14 +53,15 @@ afterAll(async () => new Promise<void>((resolve, reject) => server.close((error)
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getLeague.mockResolvedValue({ id: 7, organizationId: 11 });
+  mocks.getLeagues.mockResolvedValue([{ id: 7, organizationId: 11, locationId: 3 }, { id: 8, organizationId: 11, locationId: 4 }]);
   mocks.hasAdmin.mockResolvedValue(true);
   mocks.hasPaymentManager.mockResolvedValue(false);
   mocks.readReport.mockResolvedValue({ data: { contractVersion: "canonical-payment-report/1", rows: [] } });
   mocks.readWeeks.mockResolvedValue([]);
 });
 
-function user(role: string, organizationId: number | null, bowlerId: number | null = null) {
-  return { id: 1, role, organizationId, bowlerId };
+function user(role: string, organizationId: number | null, bowlerId: number | null = null, locationId: number | null = null) {
+  return { id: 1, role, organizationId, bowlerId, locationId };
 }
 
 async function get(path: string, currentUser?: ReturnType<typeof user>) {
@@ -593,5 +595,59 @@ describe("F5 canonical payment report route", () => {
     expect(response.status).toBe(200);
     expect(body.data.rows[0]).toMatchObject({ allocatedMinor: 3000, grossAllocatedMinor: 3000, effectiveAllocatedMinor: 0, refundedAllocationMinor: 3000, waivedMinor: 0 });
     expect(body.data.totals).toMatchObject({ activeAllocatedMinor: 3000, refundedMinor: 3000 });
+  });
+});
+
+describe("F5 league payment totals route", () => {
+  const totals = (grossConfirmedPaidMinor: number) => ({ grossConfirmedPaidMinor, activeAllocatedMinor: 0, refundedMinor: 0, disputedReviewRequiredMinor: 0, reviewRequiredMinor: 0, unresolvedOperationMinor: 0 });
+
+  it("reads each organization league one at a time and returns only totals", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    mocks.readReport.mockImplementation(async (input: { leagueId: number }) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return { totals: totals(input.leagueId * 100), rows: [{ paymentId: 1 }] };
+    });
+
+    const response = await get("/payment-totals", user("org_admin", 11));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mocks.getLeagues).toHaveBeenCalledWith(11);
+    expect(mocks.readReport).toHaveBeenCalledTimes(2);
+    expect(mocks.readReport).toHaveBeenCalledWith({ organizationId: 11, leagueId: 7, page: 1, limit: 1 });
+    expect(maxInFlight).toBe(1);
+    expect(body.data).toEqual({ organizationId: 11, leagues: [{ leagueId: 7, totals: totals(700) }, { leagueId: 8, totals: totals(800) }] });
+  });
+
+  it("limits a payment manager to leagues at their location", async () => {
+    mocks.readReport.mockResolvedValue({ totals: totals(0) });
+
+    const response = await get("/payment-totals", user("payment_manager", 11, null, 4));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mocks.readReport).toHaveBeenCalledOnce();
+    expect(body.data.leagues.map((entry: { leagueId: number }) => entry.leagueId)).toEqual([8]);
+  });
+
+  it("hides organization totals from bowlers and other organizations", async () => {
+    expect((await get("/payment-totals", user("user", 11, 42))).status).toBe(404);
+    expect((await get("/payment-totals?organizationId=12", user("org_admin", 11))).status).toBe(404);
+    expect((await get("/payment-totals")).status).toBe(404);
+    expect(mocks.readReport).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when any league's payment evidence is incompatible", async () => {
+    const { CanonicalPaymentReportIncompatibilityError } = await import("../../server/services/roster-payment-archive-report.js");
+    mocks.readReport.mockRejectedValueOnce(new CanonicalPaymentReportIncompatibilityError("bad evidence"));
+
+    const response = await get("/payment-totals", user("org_admin", 11));
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe("FINANCIAL_EVIDENCE_INCOMPATIBLE");
   });
 });

@@ -40,7 +40,7 @@ describe("ReportsPage membership counts", () => {
         { id: 4, bowlerId: 3, leagueId: 7, teamId: 10, active: false },
         { id: 5, bowlerId: 4, leagueId: 7, teamId: 10, active: true },
       ] }), { status: 200 });
-      if (url.startsWith("/api/financials/f5/payments")) return new Response(JSON.stringify({ data: { totals: { grossConfirmedPaidMinor: 0 } } }), { status: 200 });
+      if (url.startsWith("/api/financials/f5/payment-totals")) return new Response(JSON.stringify({ data: { leagues: [{ leagueId: 7, totals: { grossConfirmedPaidMinor: 0 } }] } }), { status: 200 });
       if (url.startsWith("/api/financials/due-past-due")) return new Response(JSON.stringify({ data: { leagues: [{ leagueId: 7, report: { rows: [], totals: {} } }] } }), { status: 200 });
       return new Response(JSON.stringify({ data: {} }), { status: 404 });
     }));
@@ -72,7 +72,7 @@ describe("ReportsPage membership counts", () => {
       if (url === "/api/teams") return new Response(JSON.stringify({ data: [] }), { status: 200 });
       if (url === "/api/bowlers") return new Response(JSON.stringify({ data: [] }), { status: 200 });
       if (url === "/api/bowler-leagues") return new Response(JSON.stringify({ data: [] }), { status: 200 });
-      if (url.startsWith("/api/financials/f5/payments")) {
+      if (url.startsWith("/api/financials/f5/payment-totals")) {
         return new Response(JSON.stringify({ error: { message: "Not authenticated", code: "AUTH_REQUIRED" } }), {
           status: 401,
           headers: { "content-type": "application/json" },
