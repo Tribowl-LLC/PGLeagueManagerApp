@@ -11,7 +11,7 @@ import {
   readCanonicalPaymentReport,
   readLeaguePaymentWeeks,
 } from "../services/roster-payment-archive-report.js";
-import { canonicalPaymentReportFingerprint, leaguePaymentWeekOrdinal, type CanonicalPaymentAppliedToRow } from "@shared/canonical-payment-report";
+import { canonicalPaymentReportFingerprint, leaguePaymentWeekOrdinal, type CanonicalPaymentAppliedToRow, type CanonicalPaymentReportTotals } from "@shared/canonical-payment-report";
 
 const router = Router();
 
@@ -175,6 +175,41 @@ export function redactCanonicalPaymentRow(row: Awaited<ReturnType<typeof readCan
     ...(isInitiatingPayer && correctionEvidence ? { correctionEvidence } : {}),
   };
 }
+
+// Reports needs each league's collection totals. Fetching the full payment
+// report per league from the browser fired one request per league at once,
+// and every report validates each payment's proof chain, so the burst
+// saturated the database. Read the leagues one at a time in one request.
+router.get("/payment-totals", async (req, res) => {
+  if (!req.user) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const requestedOrganizationId = positiveQuery(req.query.organizationId);
+  if (requestedOrganizationId === null) return sendError(res, "Invalid financial report scope", 400, "INVALID_SCOPE");
+  const user = req.user;
+  const isSystemAdmin = user.role === "system_admin";
+  if (!isSystemAdmin && user.role !== "org_admin" && !isPaymentManager(user)) return sendError(res, "Not found", 404, "NOT_FOUND");
+  if (requestedOrganizationId !== undefined && !isSystemAdmin && requestedOrganizationId !== user.organizationId) {
+    return sendError(res, "Not found", 404, "NOT_FOUND");
+  }
+  const organizationId = req.organizationContextId
+    ?? (isSystemAdmin ? requestedOrganizationId : user.organizationId);
+  if (!organizationId) return sendError(res, "Not found", 404, "NOT_FOUND");
+  const leagues = (await storage.getLeagues(organizationId))
+    .filter((league) => !isPaymentManager(user) || league.locationId === user.locationId);
+
+  try {
+    const leagueTotals: Array<{ leagueId: number; totals: CanonicalPaymentReportTotals }> = [];
+    for (const league of leagues) {
+      const report = await readCanonicalPaymentReport({ organizationId, leagueId: league.id, page: 1, limit: 1 });
+      leagueTotals.push({ leagueId: league.id, totals: report.totals });
+    }
+    return sendSuccess(res, { organizationId, leagues: leagueTotals });
+  } catch (error) {
+    if (error instanceof CanonicalPaymentReportIncompatibilityError) {
+      return sendError(res, "Financial evidence requires review", 409, "FINANCIAL_EVIDENCE_INCOMPATIBLE");
+    }
+    return sendError(res, "Unable to read payment evidence", 500, "INTERNAL_ERROR");
+  }
+});
 
 router.get("/payments", async (req, res) => {
   const organizationId = positiveQuery(req.query.organizationId);

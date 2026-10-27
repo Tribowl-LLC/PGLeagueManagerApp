@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { ErrorBoundary } from "@/components/error-boundary";
 import {
@@ -23,7 +23,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { PageLoadingState } from "@/components/page-states";
 import type { League, Team, Bowler, BowlerLeague, User } from "@shared/schema"; // Added BowlerLeague type
-import type { CanonicalPaymentReport } from "@shared/canonical-payment-report";
+import type { CanonicalPaymentReportTotals } from "@shared/canonical-payment-report";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { Link } from "wouter";
 import { throwIfResNotOk } from "@/lib/queryClient";
@@ -63,29 +63,18 @@ export default function ReportsPage() {
   });
   const bowlers = bowlersResponse?.data || [];
 
-  const paymentReportQueries = useQueries({
-    queries: leagues.map((league) => ({
-      queryKey: ["/api/financials/f5/payments", league.id],
-      queryFn: async (): Promise<{ data: CanonicalPaymentReport }> => {
-        const params = new URLSearchParams();
-        params.set("leagueId", String(league.id));
-        params.set("page", "1");
-        params.set("limit", "200");
-        const response = await fetch(`/api/financials/f5/payments?${params.toString()}`);
-        await throwIfResNotOk(response);
-        return response.json();
-      },
-      enabled: leagues.length > 0,
-      staleTime: 30_000,
-    })),
+  // Keyed under the payment report prefix so payment mutations that
+  // invalidate ["/api/financials/f5/payments"] refresh these totals too.
+  const { data: paymentTotalsResponse, isLoading: loadingPayments, error: paymentReportError } = useQuery<{ data: { leagues: Array<{ leagueId: number; totals: CanonicalPaymentReportTotals }> } }>({
+    queryKey: ["/api/financials/f5/payments", "league-totals"],
+    queryFn: async () => {
+      const response = await fetch("/api/financials/f5/payment-totals");
+      await throwIfResNotOk(response);
+      return response.json();
+    },
+    staleTime: 30_000,
   });
-  const loadingPayments = paymentReportQueries.some((query) => query.isLoading);
-  const paymentReportError = paymentReportQueries.find((query) => query.error)?.error;
-  const paymentReports = new Map<number, CanonicalPaymentReport>();
-  leagues.forEach((league, index) => {
-    const report = paymentReportQueries[index]?.data?.data;
-    if (report) paymentReports.set(league.id, report);
-  });
+  const paymentTotals = new Map((paymentTotalsResponse?.data.leagues ?? []).map((entry) => [entry.leagueId, entry.totals]));
 
   const { data: financialResponse, isLoading: loadingFinancials, error: financialError } = useQuery<{ data: { leagues: Array<{ leagueId: number; report: CanonicalDuePastDueResponseV2 }> } }>({
     queryKey: ["/api/financials/due-past-due"],
@@ -139,8 +128,7 @@ export default function ReportsPage() {
         .map((membership) => membership.bowlerId),
     );
 
-    const paymentReport = paymentReports.get(league.id);
-    const collected = paymentReport?.totals.grossConfirmedPaidMinor ?? 0;
+    const collected = paymentTotals.get(league.id)?.grossConfirmedPaidMinor ?? 0;
 
     const canonicalReport = financialLeagues.find((entry) => entry.leagueId === league.id)?.report;
     const pastDueBalance = canonicalReport?.accountProjection

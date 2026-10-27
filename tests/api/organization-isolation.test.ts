@@ -678,6 +678,8 @@ describe('Resource authorization boundaries', () => {
       // scoped; cross-tenant callers receive a nondisclosing denial.
       const f5OrgScope = await apiGet(`/api/financials/f5/payments?organizationId=${sessionB.user.organizationId}&leagueId=${orgBLeagueId}`, sessionA);
       expect([403, 404, 410]).toContain(f5OrgScope.status);
+      const f5TotalsOrgScope = await apiGet(`/api/financials/f5/payment-totals?organizationId=${sessionB.user.organizationId}`, sessionA);
+      expect([403, 404]).toContain(f5TotalsOrgScope.status);
       const f5LeagueScope = await apiGet(`/api/financials/f5/payments?leagueId=${orgBLeagueId}`, sessionA);
       expect([403, 404, 410]).toContain(f5LeagueScope.status);
       const f5BowlerScope = await apiGet(`/api/financials/f5/payments?leagueId=${orgBLeagueId}&bowlerId=${orgBBowlerId}`, sessionA);
