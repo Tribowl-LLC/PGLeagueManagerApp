@@ -24,7 +24,7 @@ resource authorization, transactional email, and a Square payment integration.
 
 ## Prerequisites
 
-- Node.js `22.22.x` (the repository requires `>=22.22.0 <23`; see
+- Node.js `22.23.x` (the repository requires `>=22.23.4 <23`; see
   `.node-version`).
 - npm, installed with Node.js.
 - PostgreSQL 17 for local development, either installed locally or run with

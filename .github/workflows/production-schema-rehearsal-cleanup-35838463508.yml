@@ -134,7 +134,7 @@ jobs:
       - name: Set up cached dependencies
         uses: ./.github/actions/setup-node-dependencies
         with:
-          node-version: '22.22.0'
+          node-version: '22.23.4'
 
       - name: Install pinned Neon CLI without database credentials
         run: |

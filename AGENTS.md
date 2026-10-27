@@ -165,7 +165,7 @@ is unsafe or insufficient.
 
 ## Verification
 
-Use Node.js 22.22 or newer within the 22.x line, as specified by
+Use Node.js 22.23.4 or newer within the 22.x line, as specified by
 `.node-version` and the package engine. Use the smallest relevant local check
 for the change, then rely on the full GitHub gates for the complete suite.
 
