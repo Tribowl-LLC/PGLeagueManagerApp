@@ -401,6 +401,18 @@ export async function getTeams(leagueId?: number): Promise<Team[]> {
   return query.orderBy(teams.displayOrder, teams.number);
 }
 
+/** Teams for several leagues in one query, grouped in the given league order
+ * and ordered within each league exactly like `getTeams(leagueId)`. */
+export async function getTeamsForLeagues(leagueIds: number[]): Promise<Team[]> {
+  if (leagueIds.length === 0) return [];
+  const rows = await db.select().from(teams)
+    .where(inArray(teams.leagueId, leagueIds))
+    .orderBy(teams.displayOrder, teams.number);
+  const byLeague = new Map<number, Team[]>();
+  for (const team of rows) byLeague.set(team.leagueId, [...(byLeague.get(team.leagueId) ?? []), team]);
+  return leagueIds.flatMap((leagueId) => byLeague.get(leagueId) ?? []);
+}
+
 export async function getTeam(id: number): Promise<Team | undefined> {
   const [result] = await db.select().from(teams).where(eq(teams.id, id));
   return result;

@@ -33,6 +33,7 @@ export class DatabaseStorage implements IStorage {
   getTeams!: IStorage["getTeams"];
   getTeam!: IStorage["getTeam"];
   getTeamsByIds!: IStorage["getTeamsByIds"];
+  getTeamsForLeagues!: IStorage["getTeamsForLeagues"];
   getTeamByNumber!: IStorage["getTeamByNumber"];
   createTeam!: IStorage["createTeam"];
   updateTeam!: IStorage["updateTeam"];

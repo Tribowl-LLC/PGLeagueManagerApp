@@ -68,14 +68,10 @@ router.get("/", async (req, res) => {
           const leagues = (await storage.getLeagues(scopedOrgId)).filter(
             (league) => league.locationId !== null && league.locationId === req.user?.locationId,
           );
-          const teamPromises = leagues.map((league) => storage.getTeams(league.id));
-          const teamsArrays = await Promise.all(teamPromises);
-          teams = teamsArrays.flat();
+          teams = await storage.getTeamsForLeagues(leagues.map((league) => league.id));
         } else if (isOrgOrHigher(req.user)) {
           const leagues = await storage.getLeagues(scopedOrgId);
-          const teamPromises = leagues.map(league => storage.getTeams(league.id));
-          const teamsArrays = await Promise.all(teamPromises);
-          teams = teamsArrays.flat();
+          teams = await storage.getTeamsForLeagues(leagues.map((league) => league.id));
         } else {
           teams = [];
         }

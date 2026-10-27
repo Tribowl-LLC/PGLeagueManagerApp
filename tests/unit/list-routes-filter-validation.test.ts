@@ -47,6 +47,7 @@ const mockStorage = {
   getBowlerLeaguesByBowlerIds: vi.fn(),
   getLeaguesByIds: vi.fn(),
   getTeamsByIds: vi.fn(),
+  getTeamsForLeagues: vi.fn(),
   getBowlerLeagues: vi.fn(),
   getBowler: vi.fn(),
   getPayments: vi.fn(),
@@ -219,6 +220,7 @@ beforeEach(() => {
   mockStorage.getBowlerLeaguesByBowlerIds.mockResolvedValue([]);
   mockStorage.getLeaguesByIds.mockResolvedValue([]);
   mockStorage.getTeamsByIds.mockResolvedValue([]);
+  mockStorage.getTeamsForLeagues.mockResolvedValue([]);
   mockStorage.getBowlerLeagues.mockResolvedValue([]);
   mockStorage.getBowler.mockResolvedValue({
     id: 99,
@@ -352,6 +354,20 @@ describe('GET /api/teams — leagueId filter', () => {
     // No leagueId means we go through the "scope to user's org"
     // branch — that path doesn't call getLeague.
     expect(mockStorage.getLeague).not.toHaveBeenCalled();
+  });
+
+  it('lists organization teams with one batched read instead of one read per league', async () => {
+    mockStorage.getLeagues.mockResolvedValue([{ id: 11, organizationId: 1 }, { id: 12, organizationId: 1 }]);
+    mockStorage.getTeamsForLeagues.mockResolvedValue([{ id: 21, leagueId: 11 }, { id: 22, leagueId: 12 }]);
+
+    const res = await get('/api/teams', ORG_USER);
+
+    expect(res.status).toBe(200);
+    expect(mockStorage.getLeagues).toHaveBeenCalledWith(1);
+    expect(mockStorage.getTeamsForLeagues).toHaveBeenCalledOnce();
+    expect(mockStorage.getTeamsForLeagues).toHaveBeenCalledWith([11, 12]);
+    expect(mockStorage.getTeams).not.toHaveBeenCalled();
+    expect((await res.json()).data.map((team: { id: number }) => team.id)).toEqual([21, 22]);
   });
 });
 
