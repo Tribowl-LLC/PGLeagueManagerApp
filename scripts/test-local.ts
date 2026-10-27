@@ -242,9 +242,9 @@ function runFullVitestSuite(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (nodeMajor !== 22 || nodeMinor < 22) {
+  if (nodeMajor !== 22 || nodeMinor < 23) {
     throw new Error(
-      `This repository requires Node 22.22+ and <23 (current: ${process.version}). Install/switch to the version in .node-version before running local tests.`,
+      `This repository requires Node 22.23+ and <23 (current: ${process.version}). Install/switch to the version in .node-version before running local tests.`,
     );
   }
 

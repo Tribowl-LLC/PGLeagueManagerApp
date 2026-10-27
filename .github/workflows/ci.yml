@@ -61,7 +61,7 @@ jobs:
           # Pinned to the runtime declared in `.node-version` so CI matches
           # the dev/prod environment. Bump in lockstep when that file
           # gets bumped.
-          node-version: '22.22.0'
+          node-version: '22.23.4'
 
       # Keep the runtime and development dependency audits separate.
       # The production gate catches high/critical vulnerabilities in the
@@ -254,7 +254,7 @@ jobs:
       - name: Set up cached dependencies
         uses: ./.github/actions/setup-node-dependencies
         with:
-          node-version: '22.22.0'
+          node-version: '22.23.4'
 
       # Migration hashes cover the exact LF-normalized bytes committed to Git.
       # Re-check from a clean clone with Windows-style autocrlf enabled so a
@@ -321,7 +321,7 @@ jobs:
           # Pinned to the runtime declared in `.node-version` so CI matches
           # the dev/prod environment. Bump in lockstep when that file
           # gets bumped (mirrors `check-and-lint` and `race-suite`).
-          node-version: '22.22.0'
+          node-version: '22.23.4'
 
       # Apply the checked-in forward-only migration history to the empty
       # Postgres container. The guarded runner verifies journal metadata and

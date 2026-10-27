@@ -5,7 +5,7 @@
   "license": "MIT",
   "packageManager": "npm@10.9.4",
   "engines": {
-    "node": ">=22.22.0 <23"
+    "node": ">=22.23.4 <23"
   },
   "scripts": {
     "dev": "tsx server/index.ts",

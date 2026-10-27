@@ -217,7 +217,7 @@ jobs:
           # Pinned to the runtime declared in `.node-version` so the
           # script runs under the same node major as the live app.
           # Bump in lockstep when the Node version moves.
-          node-version: '22.22.0'
+          node-version: '22.23.4'
 
       - name: Pre-warm the live container (best-effort)
         # Why this exists (task #736): the verifier's per-attempt

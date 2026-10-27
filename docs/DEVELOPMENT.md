@@ -56,7 +56,7 @@ Install the following tools before setting up the repository:
 
 | Tool | Requirement | Why it is required |
 | --- | --- | --- |
-| Node.js | `22.22.x`; `package.json` accepts `>=22.22.0 <23` and `.node-version` pins `22.22.0` | CI and Render use the pinned Node.js version. Matching it avoids runtime and dependency differences. |
+| Node.js | `22.23.x`; `package.json` accepts `>=22.23.4 <23` and `.node-version` pins `22.23.4` | CI and Render use the pinned Node.js version. Matching it avoids runtime and dependency differences. |
 | npm | Use the npm version bundled with the repository-supported Node.js installation unless the repository explicitly pins a different version | The repository uses npm and a lockfile version 3. Do not upgrade npm independently as part of unrelated work, and do not add a Yarn or pnpm lockfile. |
 | Git | A current version with support for worktrees and normal branch workflows | `main` is protected and changes are reviewed through pull requests. |
 | PostgreSQL | PostgreSQL 17 for the normal persistent development database | This is the standard local runtime and the version used by the full local test wrapper and migration validation. |
@@ -76,7 +76,7 @@ node --version
 npm --version
 ```
 
-If Node.js does not report `v22.22.x`, switch versions before continuing.
+If Node.js does not report `v22.23.x`, switch versions before continuing.
 
 ## 3. Repository setup
 
@@ -401,7 +401,7 @@ The owning command will recreate its artifacts on the next run.
 ### Wrong Node.js version
 
 Compare `node --version` with `.node-version` and the `engines.node` range in
-`package.json`. Switch to Node.js 22.22.x, then run `npm ci` so native or
+`package.json`. Switch to Node.js 22.23.x, then run `npm ci` so native or
 runtime-sensitive packages match the supported environment.
 
 ### Dependency installation fails
