@@ -1,73 +1,92 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
-import { Trophy, Users, Activity, ArrowUpRight } from "lucide-react";
+import { Activity, ChevronDown } from "lucide-react";
 import { Link } from "wouter";
-import type { League, Payment, Bowler, BowlerLeague, ApiResponse, Organization, User } from "@shared/schema";
+import type { League, Payment, Bowler, BowlerLeague, ApiResponse, Location, User } from "@shared/schema";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
 import { PastDueBowlersSection } from "@/components/past-due-bowlers-section";
-import { formatCurrency } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { DashboardSkeleton, PageErrorState } from "@/components/page-states";
 import { ApplePayRecoveryBanner } from "@/components/apple-pay-recovery-banner";
 import { SquareCatalogCapBanner } from "@/components/square-catalog-cap-banner";
 import { shouldRetryApiQuery, throwIfResNotOk } from "@/lib/queryClient";
 import { financialReadErrorMessage } from "@/lib/financial-utils";
+import "./home-page.css";
 
 
-function LeagueHealthCard({ leagueId, name, bowlerCount, pastDueBowlerCount, reviewRequiredBowlerCount }: {
-  leagueId: number;
+type LeagueHealthRow = {
+  id: number;
   name: string;
   bowlerCount: number;
   pastDueBowlerCount: number;
   reviewRequiredBowlerCount: number;
-}) {
-  const status = pastDueBowlerCount === 0 ? "green" : pastDueBowlerCount <= 2 ? "amber" : "red";
-  const pastDueRate = bowlerCount > 0 ? Math.round((pastDueBowlerCount / bowlerCount) * 100) : 0;
+};
 
+const ALL_LOCATIONS = "all";
+
+function healthStatusClass(pastDueBowlerCount: number) {
+  return pastDueBowlerCount === 0
+    ? "dashboard-status-green"
+    : pastDueBowlerCount <= 2
+    ? "dashboard-status-amber"
+    : "dashboard-status-red";
+}
+
+function LeagueHealthTable({ leagues }: { leagues: LeagueHealthRow[] }) {
   return (
-    <Link href={`/reports/leagues/${leagueId}/past-due`}>
-      <div className="bg-white border border-navigation-200 rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow group cursor-pointer">
-        <div className="flex justify-between items-start mb-3">
-          <div className="font-semibold text-navigation-800 text-sm leading-tight">
-            {name}
-          </div>
-          <div
-            className={`size-2.5 rounded-full shrink-0 mt-0.5 ${
-              status === "green"
-                ? "bg-positive-500"
-                : status === "amber"
-                ? "bg-warning-400"
-                : "bg-danger-500"
-            }`}
-          />
-        </div>
-        <div className="flex items-center gap-2 mb-3">
-          <Users className="size-3.5 text-navigation-400" />
-          <span className="text-sm text-navigation-600">
-            <span className="font-semibold text-navigation-800">{bowlerCount}</span> bowlers
-          </span>
-        </div>
-        <div className="flex items-center justify-between">
-          <div className="text-xs text-navigation-500">Past Due</div>
-          <div className="text-sm font-bold text-navigation-900">{pastDueBowlerCount} ({pastDueRate}%)</div>
-        </div>
-        {reviewRequiredBowlerCount > 0 && (
-          <div className="text-xs text-warning-700 mt-1">{reviewRequiredBowlerCount} review required (excluded)</div>
-        )}
-        <div className="h-1.5 w-full bg-navigation-100 rounded-full overflow-hidden mt-1.5">
-          <div
-            className={`h-full w-(--progress-width) rounded-full transition-all ${
-              status === "green"
-                ? "bg-positive-500"
-                : status === "amber"
-                ? "bg-warning-400"
-                : "bg-danger-500"
-            }`}
-            style={{ "--progress-width": `${Math.max(pastDueRate > 0 ? 5 : 0, pastDueRate)}%` }}
-          />
-        </div>
+    <section className="dashboard-card" aria-labelledby="dashboard-league-health">
+      <div className="dashboard-card-head">
+        <h2 id="dashboard-league-health">League health</h2>
       </div>
-    </Link>
+      <div className="dashboard-table-wrap">
+        <table className="dashboard-table">
+          <thead>
+            <tr>
+              <th>League</th>
+              <th>Bowlers</th>
+              <th>Past due</th>
+              <th className="dashboard-hide-sm">Rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {leagues.length === 0 ? (
+              <tr><td colSpan={4} className="dashboard-empty">No active leagues</td></tr>
+            ) : leagues.map((league) => {
+              const statusClass = healthStatusClass(league.pastDueBowlerCount);
+              const pastDueRate = league.bowlerCount > 0 ? Math.round((league.pastDueBowlerCount / league.bowlerCount) * 100) : 0;
+              return (
+                <tr key={league.id}>
+                  <td>
+                    <span className="dashboard-name">
+                      <span className={cn("dashboard-dot", statusClass)} aria-hidden="true" />
+                      <Link href={`/reports/leagues/${league.id}/past-due`}>{league.name}</Link>
+                    </span>
+                    {league.reviewRequiredBowlerCount > 0 && (
+                      <span className="dashboard-review-note">{league.reviewRequiredBowlerCount} in review</span>
+                    )}
+                  </td>
+                  <td className="dashboard-center">{league.bowlerCount}</td>
+                  <td className="dashboard-center">{league.pastDueBowlerCount}</td>
+                  <td className="dashboard-hide-sm">
+                    <span className="dashboard-rate">
+                      <span className="dashboard-bar" aria-hidden="true">
+                        <span
+                          className={cn("dashboard-bar-fill block", statusClass)}
+                          style={{ "--progress-width": `${Math.max(pastDueRate > 0 ? 5 : 0, pastDueRate)}%` }}
+                        />
+                      </span>
+                      <span>{pastDueRate}%</span>
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -102,6 +121,15 @@ export default function HomePage() {
     retry: false,
   });
   const financialOrganizationId = userResponse?.data?.role === "system_admin" ? userResponse.data.organizationId : null;
+  const canListLocations = userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin";
+  const [selectedLocation, setSelectedLocation] = useState(ALL_LOCATIONS);
+
+  const { data: locationsResponse } = useQuery<ApiResponse<Location[]>>({
+    queryKey: ["/api/locations"],
+    enabled: canListLocations,
+    staleTime: 1000 * 60 * 5,
+    retry: false,
+  });
 
   const { data: financialReportResponse, isLoading: loadingFinancialReport, error: financialReportError, refetch: refetchFinancialReport } = useQuery<ApiResponse<{
     leagues: Array<{ leagueId: number; report: CanonicalDuePastDueResponseV2 }>;
@@ -133,7 +161,15 @@ export default function HomePage() {
   const bowlerLeaguesData = bowlerLeaguesResponse?.data || [];
   const activeBowlerProfileIds = new Set((bowlersResponse?.data || []).filter((bowler) => bowler.active).map((bowler) => bowler.id));
 
-  const activeLeagues = leagues.filter((l: League) => l.active);
+  const allActiveLeagues = leagues.filter((l: League) => l.active);
+  // The location filter narrows the permitted leagues already returned for
+  // this user; it never widens access or changes the organization.
+  const locationOptions = (canListLocations ? locationsResponse?.data ?? [] : [])
+    .filter((location) => location.active && allActiveLeagues.some((league) => league.locationId === location.id));
+  const locationFilter = locationOptions.some((location) => String(location.id) === selectedLocation) ? selectedLocation : ALL_LOCATIONS;
+  const activeLeagues = locationFilter === ALL_LOCATIONS
+    ? allActiveLeagues
+    : allActiveLeagues.filter((league) => String(league.locationId) === locationFilter);
   const activeLeagueIds = new Set(activeLeagues.map((l: League) => l.id));
   const activeBowlerIds = new Set<number>();
   const activeLeagueBowlerKeys = new Set<string>();
@@ -193,9 +229,9 @@ export default function HomePage() {
   const userName = userResponse?.data?.name?.split(' ')[0] || "Admin";
 
   return (
-    <Layout>
+    <Layout appearance="dashboard">
       <ErrorBoundary level="section">
-        <div className="flex flex-col gap-6">
+        <div className="dashboard-page">
           <ErrorBoundary level="section">
             <ApplePayRecoveryBanner />
           </ErrorBoundary>
@@ -204,82 +240,61 @@ export default function HomePage() {
             <SquareCatalogCapBanner />
           </ErrorBoundary>
 
-          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-2">
+          <header className="dashboard-heading">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-navigation-900">
-                Welcome back, {userName}
-              </h1>
-              <p className="text-navigation-500 mt-1">
-                Here's what's happening with your leagues today.
-              </p>
+              <h1>Dashboard</h1>
+              <p>Welcome back, {userName}.</p>
             </div>
-            <Link
-              href="/reports"
-              className="hidden md:inline-flex items-center px-4 py-2 bg-navigation-deep text-white text-sm font-medium rounded-md hover:bg-navigation-800 transition-colors shadow-sm no-underline focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent-400 focus-visible:ring-offset-2"
-            >
-              Generate Report
-            </Link>
-          </div>
+            <div className="dashboard-heading-actions">
+              {locationOptions.length > 1 && (
+                <label className="dashboard-select">
+                  <span className="sr-only">Location</span>
+                  <select value={locationFilter} onChange={(event) => setSelectedLocation(event.target.value)}>
+                    <option value={ALL_LOCATIONS}>All locations</option>
+                    {locationOptions.map((location) => (
+                      <option key={location.id} value={String(location.id)}>{location.name}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="size-4" aria-hidden="true" />
+                </label>
+              )}
+              <Link href="/reports" className="dashboard-button">View reports</Link>
+            </div>
+          </header>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            <Link href="/leagues">
-              <div className="bg-white p-3.5 border border-navigation-200 rounded-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer">
-                <div className="navigation-badge font-semibold text-navigation-500 uppercase tracking-wider mb-1.5">
-                  Active Leagues
-                </div>
-                <div className="flex items-end justify-between">
-                  <div className="text-2xl font-bold text-navigation-900">{totalLeagues}</div>
-                  <Activity className="size-3.5 text-positive-500 mb-1" />
-                </div>
+          <div className="dashboard-metrics">
+            <Link href="/leagues" className="dashboard-metric">
+              <div className="dashboard-metric-label">Active Leagues</div>
+              <div className="dashboard-metric-row">
+                <div className="dashboard-metric-value">{totalLeagues}</div>
+                <Activity className="size-3.5 dashboard-positive" aria-hidden="true" />
               </div>
             </Link>
-            <Link href="/bowlers">
-              <div className="bg-white p-3.5 border border-navigation-200 rounded-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer">
-                <div className="navigation-badge font-semibold text-navigation-500 uppercase tracking-wider mb-1.5">
-                  Active Bowlers
-                </div>
-                <div className="flex items-end justify-between">
-                  <div className="text-2xl font-bold text-navigation-900">{activeBowlers}</div>
-                  <div className="text-xs font-medium text-positive-600 flex items-center">
-                    <ArrowUpRight className="size-3 mr-0.5" />
-                  </div>
-                </div>
+            <Link href="/bowlers" className="dashboard-metric">
+              <div className="dashboard-metric-label">Active Bowlers</div>
+              <div className="dashboard-metric-row">
+                <div className="dashboard-metric-value">{activeBowlers}</div>
               </div>
             </Link>
-            <Link href="/reports/past-due">
-              <div className="bg-white p-3.5 border border-navigation-200 rounded-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer">
-                <div className="navigation-badge font-semibold text-navigation-500 uppercase tracking-wider mb-1.5">
-                  Bowlers Past Due (server contract)
-                </div>
-                <div className="flex items-end justify-between">
-                  <div className="text-2xl font-bold text-navigation-900">{pastDueBowlerIds.size} of {activeBowlers}</div>
-                  <div className="text-xs font-medium text-navigation-500 mb-0.5">{pastDueRate}%</div>
-                </div>
+            <Link href="/reports/past-due" className="dashboard-metric">
+              <div className="dashboard-metric-label">Confirmed past due</div>
+              <div className="dashboard-metric-row">
+                <div className="dashboard-metric-value">{pastDueBowlerIds.size}</div>
+                <div className="dashboard-metric-aside">{pastDueRate}%</div>
               </div>
             </Link>
           </div>
 
-          <ErrorBoundary level="section">
-            <PastDueBowlersSection enabled={userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager"} organizationId={financialOrganizationId} />
-          </ErrorBoundary>
-
-          {leagueHealthData.length > 0 && (
-            <div>
-              <h2 className="text-lg font-bold text-navigation-900 mb-3">League Health</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {leagueHealthData.map((league) => (
-                  <LeagueHealthCard
-                    key={league.id}
-                    leagueId={league.id}
-                    name={league.name}
-                    bowlerCount={league.bowlerCount}
-                    pastDueBowlerCount={league.pastDueBowlerCount}
-                    reviewRequiredBowlerCount={league.reviewRequiredBowlerCount}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
+          <div className="dashboard-split">
+            <ErrorBoundary level="section">
+              <PastDueBowlersSection
+                enabled={userResponse?.data?.role === "org_admin" || userResponse?.data?.role === "system_admin" || String(userResponse?.data?.role) === "payment_manager"}
+                organizationId={financialOrganizationId}
+                leagueIds={activeLeagueIds}
+              />
+            </ErrorBoundary>
+            <LeagueHealthTable leagues={leagueHealthData} />
+          </div>
         </div>
       </ErrorBoundary>
     </Layout>

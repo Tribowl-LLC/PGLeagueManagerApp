@@ -259,6 +259,15 @@ white ledger panels, compact table rows, and a white active Manage Payments
 navigation item. The app header, search, organization identity, authorization,
 and every other admin route retain their existing behavior and visual system.
 
+The admin Dashboard (`/`) is a second route-scoped exception. Its page content
+uses Instrument Sans on the cool slate canvas, with a "Dashboard" heading, an
+optional location filter, and a navy View reports action. Three white metric
+tiles (Active Leagues, Active Bowlers, Confirmed past due) sit above two white
+panels that share one row on wide screens and stack below 1240px: Confirmed
+past-due balances (sortable by largest balance or bowler name, five rows) and
+a compact League health table with status dots, centered counts, and rate
+bars. The admin sidebar and header keep the incumbent system.
+
 The weekly worksheet places a regular-weight team paid total in the Received
 column footer and updates it from saved receipts and valid current drafts. A
 flat white save dock stays at the bottom of the worksheet scroll area. When a
@@ -352,14 +361,16 @@ caution, and information roles when adding or redesigning components.
 
 Familiar A is the default for public account and authenticated bowler pages.
 The staff/admin interface retains its incumbent system-sans stack, except for
-the worksheet and navigation inside the Manage Payments route.
+the worksheet and navigation inside the Manage Payments route and the admin
+Dashboard page content.
 
 **Familiar A font:** Instrument Sans, with a system-sans fallback.
 
 **Admin font:** `ui-sans-serif, system-ui, sans-serif`. Monospace appears only
 where data presentation requires it, such as selected technical values or
 payment details. Manage Payments uses Instrument Sans within its worksheet and
-navigation only; other staff/admin routes keep the system-sans stack.
+navigation, and the admin Dashboard uses it within its page content; other
+staff/admin routes keep the system-sans stack.
 
 **Character:** Familiar A uses clear Instrument Sans headings and compact
 supporting labels. The admin system remains compact and neutral, using modest
