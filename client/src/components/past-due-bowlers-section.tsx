@@ -1,23 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { CheckCircle2 } from "lucide-react";
+import { useState } from "react";
+import { ArrowRight, CheckCircle2, ChevronDown } from "lucide-react";
 import { Link } from "wouter";
 import type { League, Team, BowlerLeague, BowlerWithAccount } from "@shared/schema";
 import type { CanonicalDuePastDueResponseV2 } from "@shared/roster-payment-contract";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import { throwIfResNotOk } from "@/lib/queryClient";
 import { confirmedCollectiblePastDueMinor, effectiveFinancialDebtorBowlerId, financialReadErrorMessage } from "@/lib/financial-utils";
 
-export function PastDueBowlersSection({ enabled = true, organizationId }: { enabled?: boolean; organizationId?: number | null }) {
-  const isMobile = useIsMobile();
+type BalanceSort = "amount" | "name";
+
+export function PastDueBowlersSection({ enabled = true, organizationId, leagueIds }: { enabled?: boolean; organizationId?: number | null; leagueIds?: ReadonlySet<number> }) {
+  const [sort, setSort] = useState<BalanceSort>("amount");
   const { data: leaguesResponse } = useQuery<{ success: true, data: League[] }>({
     queryKey: ["/api/leagues"],
   });
@@ -53,8 +47,32 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
     enabled,
   });
   if (!enabled) return null;
-  if (financialLoading) return <div className="text-sm text-muted-foreground">Loading server financial evidence…</div>;
-  if (financialError) return <div className="text-sm text-warning-700">{financialReadErrorMessage(financialError)}</div>;
+  const header = (
+    <div className="dashboard-card-head">
+      <div>
+        <h2 id="dashboard-past-due-balances">Confirmed past-due balances</h2>
+        <p>Review-required balances are listed separately.</p>
+      </div>
+      <label className="dashboard-select">
+        <span className="sr-only">Sort balances</span>
+        <select value={sort} onChange={(event) => setSort(event.target.value === "name" ? "name" : "amount")}>
+          <option value="amount">Largest balance</option>
+          <option value="name">Bowler name</option>
+        </select>
+        <ChevronDown className="size-4" aria-hidden="true" />
+      </label>
+    </div>
+  );
+  if (financialLoading || financialError) {
+    return (
+      <section className="dashboard-card" aria-labelledby="dashboard-past-due-balances">
+        {header}
+        <p className={cn("dashboard-card-message", financialError && "text-warning-700")}>
+          {financialError ? financialReadErrorMessage(financialError) : "Loading server financial evidence…"}
+        </p>
+      </section>
+    );
+  }
   const financialRows = financialReportResponse?.data?.leagues?.flatMap((entry) => entry.report.rows.map((row) => ({ ...row, leagueId: entry.leagueId }))) ?? [];
 
   const groupedFinancialRows = [...financialRows.reduce((map, row) => {
@@ -67,8 +85,9 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
     map.set(key, prior ? { ...prior, outstandingMinor: prior.outstandingMinor + row.outstandingMinor, collectiblePastDueMinor: prior.collectiblePastDueMinor + collectible, reviewRequired: prior.reviewRequired || row.reviewRequired, reviewMinor: prior.reviewMinor + (row.reviewRequired ? row.outstandingMinor : 0), classification: prior.reviewRequired || row.reviewRequired ? "review_required" : prior.collectiblePastDueMinor + collectible > 0 ? "past_due" : row.classification } : { ...normalized, collectiblePastDueMinor: collectible, reviewMinor: row.reviewRequired ? row.outstandingMinor : 0 });
     return map;
   }, new Map<string, (typeof financialRows)[number] & { collectiblePastDueMinor: number; reviewMinor: number }>()).values()]
+  // Review-required balances are excluded here and counted in League health.
   const pastDueBowlers = groupedFinancialRows
-    .filter((row) => row.collectiblePastDueMinor > 0 || row.reviewRequired)
+    .filter((row) => row.collectiblePastDueMinor > 0 && (!leagueIds || leagueIds.has(row.leagueId)))
     .flatMap((row) => {
       const bowler = bowlers.find((candidate) => candidate.id === row.payerBowlerId);
       const league = leagues.find((candidate) => candidate.id === row.leagueId);
@@ -78,69 +97,60 @@ export function PastDueBowlersSection({ enabled = true, organizationId }: { enab
       const association = bowlerLeagues.find((candidate) => candidate.bowlerId === row.payerBowlerId && candidate.leagueId === row.leagueId);
       const team = teams.find((candidate) => candidate.id === row.teamId) ?? teams.find((candidate) => candidate.id === association?.teamId);
       if (!bowler || !league || !league.active || !team || !association) return [];
-      return [{ bowler, team, league, weeksPastDueDisplay: row.reviewRequired ? "Review required" : league.paymentMode === "upfront" ? "Full season" : "—", pastDueAmount: row.collectiblePastDueMinor, reviewRequired: row.reviewRequired }];
+      return [{ bowler, team, league, pastDueAmount: row.collectiblePastDueMinor }];
     })
-    .sort((a, b) => b.pastDueAmount - a.pastDueAmount);
+    .sort(sort === "name"
+      ? (a, b) => a.bowler.name.localeCompare(b.bowler.name)
+      : (a, b) => b.pastDueAmount - a.pastDueAmount);
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold mb-2">Past Due Balances</h2>
-        <p className="text-sm text-muted-foreground">
-          Bowlers with outstanding payments · source: versioned server financial contract
-        </p>
-      </div>
-
-      <div className="rounded-md border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Bowler Name</TableHead>
-              <TableHead>League</TableHead>
-              <TableHead className={cn("hidden md:table-cell")}>Team</TableHead>
-              <TableHead className={cn("hidden md:table-cell")}>Weeks Past Due</TableHead>
-              <TableHead>Past Due Amount</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
+    <section className="dashboard-card" aria-labelledby="dashboard-past-due-balances">
+      {header}
+      <div className="dashboard-table-wrap">
+        <table className="dashboard-table">
+          <thead>
+            <tr>
+              <th>Bowler Name</th>
+              <th>League</th>
+              <th className="dashboard-hide-sm">Team</th>
+              <th className="dashboard-num">Past Due Amount</th>
+            </tr>
+          </thead>
+          <tbody>
             {pastDueBowlers.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={isMobile ? 3 : 5} density="normal" className="text-center">
-                  No past due balances found
-                </TableCell>
-              </TableRow>
+              <tr>
+                <td colSpan={4} className="dashboard-empty">No past due balances found</td>
+              </tr>
             ) : (
               pastDueBowlers.slice(0, 5).map(item => (
-                <TableRow key={`${item.bowler.id}-${item.league.id}`}>
-                  <TableCell>
-                    <div className="flex items-center gap-1.5">
-                      <CheckCircle2 className={`size-4 ${item.bowler.hasAccount ? "text-success-500" : "text-muted-foreground/40"}`} />
-                      <Link href={`/bowlers/${item.bowler.id}?from=home`} className="hover:underline">
-                        {item.bowler.name}
-                      </Link>
-                    </div>
-                  </TableCell>
-                  <TableCell>{item.league.name}</TableCell>
-                  <TableCell className={cn("hidden md:table-cell")}>{item.team.name}</TableCell>
-                  <TableCell className={cn("hidden md:table-cell")}>{item.weeksPastDueDisplay}</TableCell>
-                  <TableCell>
-                    <span className="text-destructive">
-                      {`$${(item.pastDueAmount / 100).toFixed(2)}`}
+                <tr key={`${item.bowler.id}-${item.league.id}`}>
+                  <td>
+                    <span className="dashboard-name">
+                      <CheckCircle2
+                        className={cn("size-4", item.bowler.hasAccount ? "dashboard-positive" : "dashboard-faint")}
+                        aria-label={item.bowler.hasAccount ? "Has account" : "No account"}
+                      />
+                      <Link href={`/bowlers/${item.bowler.id}?from=home`}>{item.bowler.name}</Link>
                     </span>
-                  </TableCell>
-                </TableRow>
+                  </td>
+                  <td>{item.league.name}</td>
+                  <td className="dashboard-hide-sm">{item.team.name}</td>
+                  <td className="dashboard-num dashboard-danger">
+                    {`$${(item.pastDueAmount / 100).toFixed(2)}`}
+                  </td>
+                </tr>
               ))
             )}
-          </TableBody>
-        </Table>
+          </tbody>
+        </table>
       </div>
       {pastDueBowlers.length > 5 && (
-        <div className="text-right">
-          <Link href="/reports/past-due" className="text-sm text-primary hover:underline">
-            View all past due balances →
+        <div className="dashboard-card-foot">
+          <Link href="/reports/past-due" className="dashboard-link">
+            View all balances<ArrowRight className="size-3.5" aria-hidden="true" />
           </Link>
         </div>
       )}
-    </div>
+    </section>
   );
 }

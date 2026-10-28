@@ -61,7 +61,7 @@ interface NavItem {
   badgeQueryKey?: readonly unknown[];
 }
 
-type LayoutAppearance = "default" | "weekly-payments";
+type LayoutAppearance = "default" | "weekly-payments" | "dashboard";
 
 const EMAIL_DELIVERY_ALERTS_PENDING_COUNT_QUERY_KEY =
   ['/api/system-admin/email-delivery-alerts/pending-count'] as const;
@@ -863,6 +863,7 @@ export function Layout({
         <div className={cn(
           "flex-1 overflow-y-auto p-4 md:p-6 lg:p-8",
           appearance === "weekly-payments" && "manage-payments-layout-content",
+          appearance === "dashboard" && "bg-familiar-canvas",
         )}>
           <div className={cn(
             "max-w-350 mx-auto",
