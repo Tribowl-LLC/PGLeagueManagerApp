@@ -777,7 +777,10 @@ export function Layout({
             ? "manage-payments-main-expanded"
             : "md:ml-64"
       )} data-manage-payments-main={appearance === "weekly-payments" || undefined}>
-        <div className="md:hidden flex h-14 items-center px-4 shrink-0">
+        <div className={cn(
+          "md:hidden flex h-14 items-center px-4 shrink-0",
+          appearance !== "default" && "bg-familiar-canvas",
+        )}>
           <button
             type="button"
             onClick={() => setMobileMenuOpen(true)}
