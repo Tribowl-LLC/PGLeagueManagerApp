@@ -173,6 +173,9 @@ describe('HomePage F1 financial boundary', () => {
 
     render(<QueryClientProvider client={queryClient}><HomePage /></QueryClientProvider>);
 
+    expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Welcome back/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'View reports' })).not.toBeInTheDocument();
     expect(within(pastDueMetric()).getByText('1')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Location'), { target: { value: '20' } });
 

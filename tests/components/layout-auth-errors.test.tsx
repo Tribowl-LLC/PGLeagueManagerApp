@@ -7,7 +7,6 @@ import { BowlerLayout } from "@/components/bowler-layout";
 
 vi.mock("@/hooks/use-business-context", () => ({ useBusinessContext: () => ({ business: null }) }));
 vi.mock("@/components/user-profile-menu", () => ({ UserProfileMenu: () => null }));
-vi.mock("@/components/global-search", () => ({ GlobalSearch: () => null }));
 
 beforeEach(() => {
   vi.stubGlobal("matchMedia", vi.fn((media: string) => ({

@@ -21,12 +21,7 @@
   -webkit-font-smoothing: antialiased;
 }
 
-.dashboard-heading { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px; }
-.dashboard-heading h1 { margin: 0; color: var(--familiar-navy); font-size: 26px; font-weight: 720; letter-spacing: -0.8px; line-height: 1.2; }
-.dashboard-heading p { margin: 4px 0 0; color: var(--familiar-muted); }
-.dashboard-heading-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.dashboard-button { display: inline-flex; min-height: 40px; align-items: center; padding: 8px 16px; border-radius: 6px; background: var(--familiar-navy); color: #fff; font-size: 13px; font-weight: 600; text-decoration: none; box-shadow: 0 1px 2px rgb(15 23 42 / 0.12); }
-.dashboard-button:hover { background: #1e293b; }
+.dashboard-filters { display: flex; justify-content: flex-end; }
 .dashboard-select { position: relative; display: inline-flex; align-items: center; }
 .dashboard-select select { min-height: 40px; padding: 8px 34px 8px 12px; border: 1px solid var(--dashboard-line); border-radius: 6px; background: #fff; color: #16233b; font: inherit; font-size: 13px; appearance: none; cursor: pointer; }
 .dashboard-select svg { position: absolute; right: 11px; color: var(--dashboard-meta); pointer-events: none; }

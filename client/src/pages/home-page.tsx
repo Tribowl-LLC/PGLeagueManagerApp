@@ -226,8 +226,6 @@ export default function HomePage() {
     }];
   });
 
-  const userName = userResponse?.data?.name?.split(' ')[0] || "Admin";
-
   return (
     <Layout appearance="dashboard">
       <ErrorBoundary level="section">
@@ -240,27 +238,20 @@ export default function HomePage() {
             <SquareCatalogCapBanner />
           </ErrorBoundary>
 
-          <header className="dashboard-heading">
-            <div>
-              <h1>Dashboard</h1>
-              <p>Welcome back, {userName}.</p>
+          {locationOptions.length > 1 && (
+            <div className="dashboard-filters">
+              <label className="dashboard-select">
+                <span className="sr-only">Location</span>
+                <select value={locationFilter} onChange={(event) => setSelectedLocation(event.target.value)}>
+                  <option value={ALL_LOCATIONS}>All locations</option>
+                  {locationOptions.map((location) => (
+                    <option key={location.id} value={String(location.id)}>{location.name}</option>
+                  ))}
+                </select>
+                <ChevronDown className="size-4" aria-hidden="true" />
+              </label>
             </div>
-            <div className="dashboard-heading-actions">
-              {locationOptions.length > 1 && (
-                <label className="dashboard-select">
-                  <span className="sr-only">Location</span>
-                  <select value={locationFilter} onChange={(event) => setSelectedLocation(event.target.value)}>
-                    <option value={ALL_LOCATIONS}>All locations</option>
-                    {locationOptions.map((location) => (
-                      <option key={location.id} value={String(location.id)}>{location.name}</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="size-4" aria-hidden="true" />
-                </label>
-              )}
-              <Link href="/reports" className="dashboard-button">View reports</Link>
-            </div>
-          </header>
+          )}
 
           <div className="dashboard-metrics">
             <Link href="/leagues" className="dashboard-metric">
