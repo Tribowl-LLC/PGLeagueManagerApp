@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { logger } from "@/lib/logger";
-import { Home, Users, CreditCard, ChevronLeft, ChevronRight, Trophy, ClipboardPlus, DollarSign, LayoutDashboard, Loader2, MapPin, Mail, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MailWarning, MailX, UserPlus } from "lucide-react";
+import { Home, Users, CreditCard, ChevronLeft, Trophy, ClipboardPlus, DollarSign, LayoutDashboard, Loader2, MapPin, Mail, Menu, ChevronDown, Settings, Trash2, Apple, ShieldAlert, ShieldCheck, MailWarning, MailX, UserPlus } from "lucide-react";
 import { useState, useEffect, Suspense, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
@@ -10,7 +10,6 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { UserProfileMenu } from "@/components/user-profile-menu";
-import { GlobalSearch } from "@/components/global-search";
 import { useBusinessContext } from "@/hooks/use-business-context";
 import {
   Sheet,
@@ -183,47 +182,6 @@ const navItems: NavItem[] = [
     ],
   },
 ];
-
-const pageLabels: Record<string, string> = {
-  "/": "Overview",
-  "/home": "Overview",
-  "/business-settings": "Business Settings",
-  "/locations": "Locations",
-  "/users": "Users",
-  "/email-templates": "Email Templates",
-  "/admin/deletion-requests": "Deletion Requests",
-  "/admin/apple-pay-jobs": "Apple Pay Jobs",
-  "/admin/data-integrity": "Data Integrity",
-  "/admin/email-change-audits": "Email Change Audits",
-  "/admin/email-delivery-alerts": "Delivery Alerts",
-  "/admin/unclaimed-users": "Unclaimed Users",
-  "/leagues": "Leagues",
-  "/bowlers": "Bowlers",
-  "/payments": "Payments",
-  "/manage-payments": "Manage Payments",
-  "/reports": "Reports",
-  "/integrations": "Integrations",
-  "/messaging": "Messaging",
-  "/profile": "Profile",
-};
-
-function getPageLabel(path: string): string {
-  if (pageLabels[path]) return pageLabels[path];
-  if (path.startsWith("/leagues/")) return "League Details";
-  if (path.startsWith("/bowlers/")) return "Bowler Details";
-  if (path.startsWith("/teams/")) return "Team Details";
-  if (path.startsWith("/reports/")) return "Report";
-  return "Page";
-}
-
-function getParentLabel(path: string): { label: string; href: string } | null {
-  if (path === "/" || path === "/home") return null;
-  if (path.startsWith("/leagues/")) return { label: "Leagues", href: "/leagues" };
-  if (path.startsWith("/bowlers/")) return { label: "Bowlers", href: "/bowlers" };
-  if (path.startsWith("/teams/")) return { label: "Teams", href: "/leagues" };
-  if (path.startsWith("/reports/")) return { label: "Reports", href: "/reports" };
-  return { label: "Dashboard", href: "/" };
-}
 
 const LoadingFallback = () => (
   <div className="p-4 flex items-center justify-center">
@@ -689,9 +647,6 @@ export function Layout({
   const orgName = business?.name || "LeagueVault";
   const orgInitials = orgName.split(/\s+/).map(w => w[0]).join("").substring(0, 2).toUpperCase();
 
-  const parentLabel = getParentLabel(location);
-  const pageLabel = getPageLabel(location);
-
   const logoElement = (business?.darkLogo || business?.logo) ? (
     <img
       src={business.darkLogo || business.logo || ''}
@@ -822,43 +777,20 @@ export function Layout({
             ? "manage-payments-main-expanded"
             : "md:ml-64"
       )} data-manage-payments-main={appearance === "weekly-payments" || undefined}>
-        <header className={cn(
-          "h-16 bg-white border-b border-navigation-200 flex items-center justify-between px-4 md:px-8 shrink-0 app-header-shadow z-10 sticky top-0",
-          appearance === "weekly-payments" && "font-familiar manage-payments-global-header",
+        <div className={cn(
+          "md:hidden flex h-14 items-center px-4 shrink-0",
+          appearance !== "default" && "bg-familiar-canvas",
         )}>
-          <div className="flex items-center gap-3 text-navigation-500">
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen(true)}
-              aria-label="Open navigation menu"
-              aria-expanded={mobileMenuOpen}
-              className="p-2 -ml-2 rounded-md hover:bg-navigation-100 text-navigation-600 transition-colors md:hidden"
-            >
-              <Menu className="size-5" />
-            </button>
-
-            <div className="hidden sm:flex items-center">
-              {parentLabel ? (
-                <>
-                  <Link href={parentLabel.href} className="text-sm font-medium hover:text-navigation-900 transition-colors">{parentLabel.label}</Link>
-                  <ChevronRight className="size-4 mx-2 text-navigation-300" />
-                  <span className="text-sm font-medium text-navigation-900">{pageLabel}</span>
-                </>
-              ) : (
-                <>
-                  <Link href="/" className="text-sm font-medium hover:text-navigation-900 transition-colors">Dashboard</Link>
-                  <ChevronRight className="size-4 mx-2 text-navigation-300" />
-                  <span className="text-sm font-medium text-navigation-900">{pageLabel}</span>
-                </>
-              )}
-            </div>
-            <span className="text-sm font-medium text-navigation-900 sm:hidden">{pageLabel}</span>
-          </div>
-
-          <div className="flex items-center gap-3 md:gap-5">
-            <GlobalSearch />
-          </div>
-        </header>
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen(true)}
+            aria-label="Open navigation menu"
+            aria-expanded={mobileMenuOpen}
+            className="p-2 -ml-2 rounded-md hover:bg-navigation-100 text-navigation-600 transition-colors"
+          >
+            <Menu className="size-5" />
+          </button>
+        </div>
 
         <div className={cn(
           "flex-1 overflow-y-auto p-4 md:p-6 lg:p-8",

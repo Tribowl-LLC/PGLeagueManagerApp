@@ -16,12 +16,6 @@ main[data-manage-payments-main] {
   -webkit-font-smoothing: antialiased;
 }
 
-.manage-payments-global-header {
-  font-size: 14px;
-  font-weight: 400;
-  line-height: 1.45;
-}
-
 @font-face {
   font-family: "Instrument Sans";
   src: url("/fonts/instrument-sans-variable.ttf") format("truetype");
@@ -958,15 +952,15 @@ main[data-manage-payments-main] {
 
 @media (max-width: 760px) {
   .manage-payments-layout-content {
-    min-height: calc(100dvh - 64px);
+    min-height: calc(100dvh - 56px);
   }
 
   .manage-payments-layout-inner {
-    min-height: calc(100dvh - 64px);
+    min-height: calc(100dvh - 56px);
   }
 
   [data-awpw="page"] {
-    min-height: calc(100dvh - 64px);
+    min-height: calc(100dvh - 56px);
     --manage-payments-page-gutter: var(--manage-payments-mobile-gutter);
     padding: 0 var(--manage-payments-page-gutter);
   }

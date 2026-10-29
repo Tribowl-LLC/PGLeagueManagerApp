@@ -5,7 +5,6 @@ import { Router } from 'wouter';
 import { Layout } from '@/components/layout';
 
 vi.mock('@/components/user-profile-menu', () => ({ UserProfileMenu: () => null }));
-vi.mock('@/components/global-search', () => ({ GlobalSearch: () => null }));
 
 beforeEach(() => {
   vi.stubGlobal('matchMedia', vi.fn((media: string) => ({

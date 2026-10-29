@@ -241,7 +241,7 @@ authenticated bowler pages use Familiar A: Instrument Sans, a navy and cool
 gray palette, responsive branded framing, and open, readable content surfaces.
 
 The staff desktop experience is an admin console with a persistent dark
-sidebar, sticky light header, responsive content area, tables, cards, forms,
+sidebar and no shared header, a responsive content area, tables, cards, forms,
 and dialogs. The Familiar A bowler shell uses a centered Perfect Game logo on a
 navy mobile brand bar, a league selector, and a four-item white bottom
 navigation. At desktop widths it changes to a persistent navy sidebar and a
@@ -256,17 +256,18 @@ accent.
 Manage Payments is a route-scoped exception within the authenticated admin
 shell. Its worksheet and navigation use Instrument Sans, a cool slate canvas,
 white ledger panels, compact table rows, and a white active Manage Payments
-navigation item. The app header, search, organization identity, authorization,
+navigation item. Organization identity, authorization,
 and every other admin route retain their existing behavior and visual system.
 
 The admin Dashboard (`/`) is a second route-scoped exception. Its page content
-uses Instrument Sans on the cool slate canvas, with a "Dashboard" heading, an
-optional location filter, and a navy View reports action. Three white metric
+uses Instrument Sans on the cool slate canvas and shows only its data: no
+page heading or View reports action. An optional location
+filter sits right-aligned above the tiles. Three white metric
 tiles (Active Leagues, Active Bowlers, Confirmed past due) sit above two white
 panels that share one row on wide screens and stack below 1240px: Confirmed
 past-due balances (sortable by largest balance or bowler name, five rows) and
 a compact League health table with status dots, centered counts, and rate
-bars. The admin sidebar and header keep the incumbent system.
+bars. The admin sidebar keeps the incumbent system.
 
 The weekly worksheet places a regular-weight team paid total in the Received
 column footer and updates it from saved receipts and valid current drafts. A
@@ -276,7 +277,7 @@ the week status, defaulted to the selected occurrence’s local calendar date;
 on phones the date remains above a full-width Save week button.
 The page title, subtitle, league and collection-week controls, and divider stay
 together in an opaque sticky header within the Manage Payments scroll pane,
-below the shared application header; team rosters scroll beneath it.
+at the top of the content area; team rosters scroll beneath it.
 
 **Key Characteristics:**
 
@@ -401,9 +402,9 @@ fonts without a design decision.
 - **Admin shell:** A fixed desktop sidebar is `16rem` wide when expanded and
   `5rem` when collapsed. The sidebar is hidden below the `md` breakpoint and
   replaced by a left-side mobile sheet that is `18rem` wide.
-- **Admin header:** The content header is sticky, `4rem` high, white, and
-  separated from the content by a cool navigation border. It uses `1rem`
-  horizontal padding on small screens and `2rem` from `md` upward.
+- **Admin header:** There is no shared header, breadcrumb trail, or global
+  search on any admin page. Below `md`, a plain `3.5rem` row above the content
+  holds only the button that opens the mobile navigation sheet.
 - **Admin content:** The scrollable content area uses `1rem`, `1.5rem`, and
   `2rem` padding at small, medium, and large breakpoints. The inner content is
   centered with the `max-w-350` utility (approximately `87.5rem`).
@@ -432,15 +433,12 @@ The incumbent admin interface uses a hybrid of tonal layering and restrained
 elevation. The app shell is cool slate, content surfaces are white, the desktop
 sidebar is dark navy, and borders carry much of the separation. Cards generally
 use `shadow-sm`; interactive dashboard cards may move to `shadow-md`; the
-sidebar uses a stronger `shadow-xl`. The admin header shadow is
-`0 1px 2px rgba(0, 0, 0, 0.02)`. The legacy mobile-navigation utility retains
+sidebar uses a stronger `shadow-xl`. The legacy mobile-navigation utility retains
 `0 -4px 12px rgba(0, 0, 0, 0.06)`, while the shipped Familiar A bowler
 navigation overrides it with `0 -4px 12px rgb(100 116 139 / 0.08)`.
 
 ### Shadow Vocabulary
 
-- **Admin app header:** `0 1px 2px rgba(0, 0, 0, 0.02)`; quiet separation from
-  the scrolling content.
 - **Legacy mobile-navigation utility:** `0 -4px 12px rgba(0, 0, 0, 0.06)`;
   retained as the global utility default.
 - **Familiar A bowler mobile navigation:** `0 -4px 12px rgb(100 116 139 / 0.08)`;

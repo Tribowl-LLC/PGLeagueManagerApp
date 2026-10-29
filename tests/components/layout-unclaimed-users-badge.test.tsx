@@ -8,7 +8,6 @@ import { Layout } from "@/components/layout";
 const COUNT_ENDPOINT = "/api/admin/unclaimed-users/count";
 
 vi.mock("@/components/user-profile-menu", () => ({ UserProfileMenu: () => null }));
-vi.mock("@/components/global-search", () => ({ GlobalSearch: () => null }));
 
 beforeEach(() => {
   window.localStorage.removeItem("sidebarCollapsed");

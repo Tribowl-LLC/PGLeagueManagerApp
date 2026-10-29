@@ -197,10 +197,6 @@
   box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.06);
 }
 
-@utility app-header-shadow {
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
-}
-
 @utility page-loading-viewport {
   height: 50vh;
 }
@@ -529,7 +525,6 @@
 @utility familiar-payment-overview__actions { --lv-familiar-pay-component: 1; }
 @utility dashboard-bar { --lv-dashboard-component: 1; }
 @utility dashboard-bar-fill { --lv-dashboard-component: 1; }
-@utility dashboard-button { --lv-dashboard-component: 1; }
 @utility dashboard-card { --lv-dashboard-component: 1; }
 @utility dashboard-card-foot { --lv-dashboard-component: 1; }
 @utility dashboard-card-head { --lv-dashboard-component: 1; }
@@ -538,9 +533,8 @@
 @utility dashboard-danger { --lv-dashboard-component: 1; }
 @utility dashboard-dot { --lv-dashboard-component: 1; }
 @utility dashboard-empty { --lv-dashboard-component: 1; }
+@utility dashboard-filters { --lv-dashboard-component: 1; }
 @utility dashboard-faint { --lv-dashboard-component: 1; }
-@utility dashboard-heading { --lv-dashboard-component: 1; }
-@utility dashboard-heading-actions { --lv-dashboard-component: 1; }
 @utility dashboard-hide-sm { --lv-dashboard-component: 1; }
 @utility dashboard-link { --lv-dashboard-component: 1; }
 @utility dashboard-metric { --lv-dashboard-component: 1; }
@@ -564,7 +558,6 @@
 @utility dashboard-table-wrap { --lv-dashboard-component: 1; }
 @utility manage-payments-layout-content { --lv-manage-payments-layout: 1; }
 @utility manage-payments-layout-inner { --lv-manage-payments-layout: 1; }
-@utility manage-payments-global-header { --lv-manage-payments-layout: 1; }
 @utility manage-payments-sidebar-expanded { --lv-manage-payments-layout: 1; }
 @utility manage-payments-main-expanded { --lv-manage-payments-layout: 1; }
 @utility manage-payments-table { --lv-manage-payments-component: 1; }
